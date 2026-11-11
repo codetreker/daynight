@@ -34,8 +34,9 @@ update, list, search and ready accept `--parent <goal-id|none>`. For queries,
 omission does not filter by parent, `none` selects Tasks without a Goal and a UUID
 selects direct children of that Goal. On create omission means no parent; on update
 it preserves the current parent. `none` writes null and a UUID sets the Goal.
-Goals cannot have parents. Membership is independent of Task dependencies, status,
-assignee and materials.
+Goals cannot have parents and may be empty. Membership is independent of Task
+dependencies, status, assignee and materials; changing it does not move materials.
+Existing Tasks and their materials are not migrated into Goals automatically.
 
 Full Goal reads include `progress:{total,done,cancelled,unfinished}` for visible
 direct ordinary children, independently of dependency chains. Counts are

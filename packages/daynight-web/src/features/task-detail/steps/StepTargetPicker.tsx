@@ -77,16 +77,16 @@ export const StepMoveDialog = ({ step, steps, available, onCancel, onConfirm }: 
   </dialog>;
 };
 
-export const StepAddTargetDialog = ({ steps, selectedId, onCancel, onConfirm }: {
-  readonly steps: readonly TaskStep[]; readonly selectedId: string | null;
-  readonly onCancel: () => void; readonly onConfirm: (id: string) => void;
+export const StepAddTargetDialog = ({ steps, selected, onSelect, onCancel, onConfirm }: {
+  readonly steps: readonly TaskStep[]; readonly selected: { id: string; createdAt: string | null } | null;
+  readonly onSelect: (id: string, createdAt: string) => void;
+  readonly onCancel: () => void; readonly onConfirm: (id: string, createdAt: string) => void;
 }) => {
   const { messages: { inspection: { steps: m } } } = useI18n();
-  const [selected, setSelected] = useState(selectedId);
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const titleId = useId();
-  const missing = selected !== null && !steps.some((step) => step.id === selected);
+  const missing = selected !== null && !steps.some((step) => step.id === selected.id && step.createdAt === selected.createdAt);
   useLayoutEffect(() => { const element = dialog.current!; element.showModal(); cancel.current?.focus(); return () => element.close(); }, []);
   return <dialog className="auth-dialog step-move-dialog" ref={dialog} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onCancel(); }} onKeyDown={(event) => {
     event.stopPropagation();
@@ -95,7 +95,7 @@ export const StepAddTargetDialog = ({ steps, selectedId, onCancel, onConfirm }: 
     if (first && last && (!items.includes(document.activeElement as HTMLElement) || document.activeElement === (event.shiftKey ? first : last))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
   }}>
     <header className="dialog-header"><h2 id={titleId}>{m.selectTarget}</h2></header>
-    <div className="dialog-body step-move-body"><StepTargetPicker steps={steps} selectedId={selected} onSelect={setSelected} />{missing && <p role="alert">{m.targetMissing}</p>}</div>
-    <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancel}</button><button className="button primary" type="button" disabled={selected === null || missing} onClick={() => { if (selected !== null && !missing) onConfirm(selected); }}>{m.confirmTarget}</button></footer>
+    <div className="dialog-body step-move-body"><StepTargetPicker steps={steps} selectedId={selected?.id ?? null} onSelect={(id) => { const step = steps.find((item) => item.id === id); if (step !== undefined) onSelect(id, step.createdAt); }} />{missing && <p role="alert">{m.targetMissing}</p>}</div>
+    <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancel}</button><button className="button primary" type="button" disabled={selected === null || selected.createdAt === null || missing} onClick={() => { if (selected !== null && selected.createdAt !== null && !missing) onConfirm(selected.id, selected.createdAt); }}>{m.confirmTarget}</button></footer>
   </dialog>;
 };

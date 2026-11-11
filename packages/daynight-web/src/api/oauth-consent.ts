@@ -1,4 +1,4 @@
-import { ApiError, isAbortError, request, requestId } from './client';
+import { ApiError, isAbortError, request, responseSignal, requestId } from './client';
 import { boolean, id, malformed, nonemptyString, record, string } from './parse';
 
 export type ConsentView = { readonly requestId: string; readonly userId: string; readonly status: 'pending' | 'approved' | 'denied' | 'consumed' | 'expired'; readonly clientName: string; readonly clientId: string; readonly clientProvenance: 'dcr' | 'cimd' | 'preregistered'; readonly redirectUri: string; readonly resource: string; readonly scope: string; readonly codeExpired: boolean };
@@ -49,7 +49,9 @@ export const parseConsentRedirect = (value: unknown, view: ConsentView, decision
 };
 
 const responseJSON = async (response: Response, signal: AbortSignal): Promise<unknown> => {
+  signal = responseSignal(response, signal);
   try {
+    signal.throwIfAborted();
     if (!/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get('Content-Type') ?? '')) throw new Error('Invalid media type');
     const data: unknown = await response.json(); signal.throwIfAborted();
     if (!response.ok) {

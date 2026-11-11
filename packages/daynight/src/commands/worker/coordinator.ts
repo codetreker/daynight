@@ -19,6 +19,8 @@ import { OperationError } from "../../api/operation.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
+import { createExecutionCapacity } from "./execution-capacity.js";
+import type { CleanupTarget, TerminalCleanupContext } from "./execution-stop.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
@@ -34,7 +36,7 @@ import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
-import { MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
+import { MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 import { encodeWorktree } from "./monitoring/worktree.js";
 import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
@@ -42,9 +44,10 @@ import type { FailureWorktree } from "./monitoring/types.js";
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" };
 export type WorkerCoordinatorOptions = {
+  freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
-  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
@@ -61,6 +64,7 @@ export type WorkerCoordinatorOptions = {
   onPromptDemand?: (projectIds: readonly string[]) => void;
   onInventory?: (inventory: WorkerTaskInventory | null) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
+  requestReconcile?: () => void;
   monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
 export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit">;
@@ -75,11 +79,19 @@ const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordin
   repositories: Object.freeze(value.repositories.map(repository => Object.freeze({ project: Object.freeze({ ...repository.project }), configuration: Object.freeze({ ...repository.configuration, args: Object.freeze([...repository.configuration.args]) }) }))),
 });
 
-type CleanupTarget = ClaimIdentity & { worktreeId?: string };
 const hasWorktreeIdentity = (target: CleanupTarget): target is ResourceOwner => target.worktreeId !== undefined;
 type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string>; unresolved: Set<string>; scannedProjects: Set<string>; unavailableProjects: Set<string>; quarantined: Map<string, ResourceOwner> };
 const key = (identity: ClaimIdentity): string => `${identity.projectId}/${identity.taskId}/${identity.claimId}`;
 const taskKey = (identity: Pick<ClaimIdentity, "projectId" | "taskId">): string => `${identity.projectId}/${identity.taskId}`;
+const isArchiveBusy = (error: unknown): boolean => {
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    if ("status" in error && error.status === 429 && "code" in error && error.code === "resource_busy") return true;
+    error = error.cause;
+  }
+  return false;
+};
 const remoteOwner = (task: Task): ResourceOwner => {
   const claim = readWorkerClaim(task.properties);
   if (claim === undefined || claim.state !== "active") throw new Error("An actual active remote claim is required.");
@@ -179,6 +191,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const webMonitoringState = new Map<string, string>();
   const webRecoveryFailures = new Map<string, { id: string; reason: "native_identity_missing" | "recovery_limit" | "recovery_blocked" }>();
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
+  const executionCapacity = createExecutionCapacity((owner, stopped) => {
+    options.requestReconcile?.();
+    if (!stopped) return;
+    const current = ending.get(key(owner)), index = publishedReservations.findIndex(item => item.identity === key(owner));
+    if (!current || !hasWorktreeIdentity(current) || current.worktreeId !== owner.worktreeId || index < 0) return;
+    observe(m => {
+      const snapshot = m.capture("0"), capacity = snapshot.capacity;
+      if (capacity === null || capacity.quality !== "current") return;
+      publishedReservations[index] = { ...publishedReservations[index]!, occupied: false };
+      m.setCapacity({ limit: capacity.limit, occupied: publishedReservations.filter(item => item.occupied).length, observedAt: capacity.observedAt,
+        partial: capacity.detailCoverage === "partial", reservations: publishedReservations.map(({ identity, roles, occupied }) => {
+          const [projectId, taskId, claimId] = identity.split("/");
+          return { identity: { projectId: projectId!, taskId: taskId!, claimId: claimId! }, roles, occupied };
+        }) });
+    });
+  });
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
   const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
@@ -576,15 +604,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const cause = error instanceof WorkerCleanupError ? error.cause : error;
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
         const repairCode = stage !== "archive" ? null : cause instanceof ArchiveRepairRequiredError ? cause.code : cleanupRetries.get(identityKey)?.archiveRepairCode ?? previous?.archiveRepairCode ?? null;
-        if (!probeOnly) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
-        const retryMs = repairCode === null ? Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6)) : ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
+        const archiveBusy = stage === "archive" && isArchiveBusy(cause);
+        if (!probeOnly && !archiveBusy) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
+        const retryMs = archiveBusy ? 5000 + Math.floor(Math.random() * 2001) : repairCode === null ? Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6)) : ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
         const nextAttemptAt = now() + retryMs;
         if (operationId !== undefined) {
           const failureKey = `true/${identityKey}/${repairCode !== null && !(cause instanceof ArchiveRepairRequiredError) ? "archive-observation" : stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
-          observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, ...worktreeContext(owner), error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, ...worktreeContext(owner), error: archiveBusy ? new MonitoringArchiveBusyEvidence(error) : error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
           for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
-          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: repairCode === null ? "retry-backoff" : "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: archiveBusy || repairCode === null ? "retry-backoff" : "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
         }
         // Storage failures must not reject the job or prevent shutdown from proving stop.
         const lastError = error instanceof Error ? error.message || error.name : String(error) || "Unknown cleanup error";
@@ -595,7 +624,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           task = options.store.getTask(identity);
         } catch (storageError) { reportedError = new AggregateError([reportedError, storageError], "Cleanup failed; retry persistence is unconfirmed and in-process backoff remains active."); }
         const stopStatus = stage === "archive" || stage === "worktree-removal" || stage === "backend-close" ? "Agent stop confirmed; " : "";
-        cleanupMessage = repairCode !== null ? `Archive requires repair (${repairCode}); originals and capacity retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.` : `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
+        cleanupMessage = archiveBusy ? `Cleanup ${key(owner)}: archive busy, short retry at ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Originals retained; failure count unchanged.` : repairCode !== null ? `Archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.` : `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources remain retained; correct the reported cause and normal reconciliation retries automatically.`;
       } else {
         task = options.store.getTask(identity);
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
@@ -622,7 +651,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     // Persist ownership before a stop can close the only workspace proving it.
     return options.store.registerPending({ ...owner, agent, sessionId: pane !== undefined && liveAgent(pane) && pane.nativeSession !== null ? pane.nativeSession.sessionId : null });
   };
-  const runCleanup = async (owner: CleanupTarget, deleteWorktree: boolean, signal?: AbortSignal): Promise<void> => {
+  const runCleanup = async (owner: CleanupTarget, deleteWorktree: boolean, signal?: AbortSignal, scope?: TerminalCleanupContext, control = false): Promise<void> => {
+    if (deleteWorktree && hasWorktreeIdentity(owner) && scope === undefined) {
+      const attempt = { owner, attemptId: randomUUID() };
+      executionCapacity.beginAttempt(attempt);
+      const context: TerminalCleanupContext = { attempt, onExecutionStopped: notice => {
+        const current = ending.get(key(owner));
+        const controller = controllers.get(key(owner));
+        if ((!current || hasWorktreeIdentity(current) && current.worktreeId === owner.worktreeId) && (controller?.terminal === true || control && controller === undefined)) executionCapacity.notice(notice);
+      } };
+      try { return await runCleanup(owner, deleteWorktree, signal, context, control); }
+      finally { executionCapacity.endAttempt(attempt); }
+    }
     if (!hasWorktreeIdentity(owner)) {
       const local = options.store.getTask(owner);
       if (local === null) throw new Error("The original claim identity is missing before reservation cleanup.");
@@ -670,28 +710,32 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (local?.sessionId !== null && local?.sessionId !== undefined) throw new Error("The original native identity has no local Web stop evidence.");
         if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
         await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal, CLEANUP_OPERATION_MS);
-        if (deleteWorktree) { await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal); if (local) options.store.completeTask(owner); }
+        if (deleteWorktree) {
+          scope!.onExecutionStopped({ attempt: scope!.attempt, observation: { kind: "not-started", owner, observedAt: now() } });
+          await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal);
+          if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner);
+        }
         return;
       }
       while (true) {
-        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? "terminal" : "shutdown", schedule?.deadline ?? now() + 600_000, signal);
+        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
         if (result.complete) {
-          if (deleteWorktree) { if (result.task.status !== "done") options.webStore.completeTask(owner, now()); if (local) options.store.completeTask(owner); }
+          if (deleteWorktree) { if (result.task.status !== "done") options.webStore.completeTask(owner, now()); if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner); }
           return;
         }
         await delay(1000, undefined, signal === undefined ? {} : { signal });
       }
     }
     if (lifecycle() !== undefined) {
-      await cleanup.advance({ owner, project: projectFor(owner), ...(local === null ? {} : { task: local }) }, deleteWorktree, signal);
-      if (deleteWorktree && local !== null && local.status !== "done") options.store.completeTask(owner);
+      await cleanup.advance({ owner, project: projectFor(owner), ...(local === null ? {} : { task: local }) }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+      if (deleteWorktree && local !== null && local.status !== "done" && executionCapacity.stopped(owner)) options.store.completeTask(owner);
       return;
     }
     await cleanupOperation(operation => options.herdr.ensureInstance(operation), signal);
     const resources = await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal);
     const task = recordMissingClaim(owner, actualTaskPane(owner, resources));
-    await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, deleteWorktree, signal);
-    if (deleteWorktree && task !== null && task.status !== "done") options.store.completeTask(owner);
+    await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+    if (deleteWorktree && task !== null && task.status !== "done" && executionCapacity.stopped(owner)) options.store.completeTask(owner);
   };
 
   const observeArchiveRepair = (owner: CleanupTarget, code: ArchiveRepairCode, nextAttemptAt: number): void => {
@@ -744,6 +788,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           archiveProbes.delete(identityKey);
         }
         await runCleanup(owner, true, signal);
+        const actual = ending.get(identityKey);
+        if (actual && hasWorktreeIdentity(actual) && !executionCapacity.stopped(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
         options.store.deleteCleanupSchedule(owner);
         selectedWorktrees.release(ending.get(identityKey) ?? owner);
         ending.delete(identityKey);
@@ -801,7 +847,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const finishShutdown = async (record: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, signal: AbortSignal) => {
     if (!options.webBackend || !options.webStore || record.cleanup?.kind !== "shutdown") throw new Error("Only an original shutdown may resume ordinary Web execution.");
-    const stopped = await options.webBackend.cleanup(record, "shutdown", now(), signal, true);
+    const stopped = await options.webBackend.cleanup(record, { kind: "shutdown", deadline: now(), immediateStop: true, ...(signal === undefined ? {} : { signal }) });
     if (!stopped.complete) throw new Error("The original Web resources remain before restart.");
     return options.webStore.clearShutdown(stopped.task, now());
   };
@@ -811,7 +857,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
     if (task.agentControlMode === "web") {
       if (!options.webStore || !options.webBackend) throw new Error("The Web execution backend is unavailable.");
-      const configuration = configurationFor(task);
+      let configuration = configurationFor(task);
       if (configuration === null) return;
       const worker = readWorkerClaim(remoteTask.properties)!;
       let record = options.webStore.getTask(task);
@@ -827,6 +873,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
             await options.verifyWebUnregistered(task, signal);
             if (task.sessionId !== null || worker.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
+            if (options.freezeConfiguration !== undefined) configuration = await options.freezeConfiguration(configuration, signal);
           }
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
           if (record.cleanup !== null) record = await finishShutdown(record, signal);
@@ -901,8 +948,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     nameFailureThisJob.delete(key(task));
     if (!execute) return;
-    const currentConfiguration = configurationFor(task);
+    let currentConfiguration = configurationFor(task);
     if (currentConfiguration === null) return;
+    if (task.sessionId === null && options.store.getNativeConfiguration(task) === null && options.freezeConfiguration !== undefined) currentConfiguration = await options.freezeConfiguration(currentConfiguration, signal);
     if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
     const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
     observe(() => selectWorktree(owner, input.project.localPath, executionContext(input).cwd));
@@ -929,18 +977,30 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const identity of resources.unresolved) add(identity, "unresolved");
     for (const identity of ending.keys()) add(identity, "cleanup");
     for (const stop of pendingStops()) add(key(stop.context), "pending-stop");
-    return [...roles].filter(([identity]) => {
-      if (resources.quarantined.has(identity)) return true;
-      if (stopped.has(identity) && controllers.get(identity)?.terminal !== false) return false;
-      if (resources.owners.has(identity) && !resources.proven.has(identity)) return true;
-      const owner = resources.owners.get(identity) ?? options.store.listTasks().find(task => key(task) === identity);
-      return owner === undefined || canAdvanceProject(owner.projectId) || !stoppedProjects.has(owner.projectId) || live.has(identity);
-    }).map(([identity, roleSet]) => ({ identity, roles: [...roleSet] }));
+    return [...roles].map(([identity, roleSet]) => {
+      const target = ending.get(identity);
+      const observedOwner = resources.owners.get(identity);
+      const local = options.store.listTasks().find(task => key(task) === identity);
+      // Cleanup can finish after this round's inventory but before its stop read
+      // returns. Keep its exact stopped fact for that stale owner; an active
+      // reservation or a replacement worktree never inherits the exemption.
+      const completedOwner = target === undefined && (local === undefined || local.status === "done") ? observedOwner : undefined;
+      const stoppedOwner = target !== undefined && hasWorktreeIdentity(target) ? target : completedOwner;
+      const terminalStopped = stoppedOwner !== undefined && (observedOwner === undefined || observedOwner.worktreeId === stoppedOwner.worktreeId)
+        && controllers.get(identity)?.terminal !== false && executionCapacity.stopped(stoppedOwner);
+      const owner = observedOwner ?? local;
+      const occupied = terminalStopped ? false : resources.quarantined.has(identity) ? true
+        : stopped.has(identity) && controllers.get(identity)?.terminal !== false ? false
+        : resources.owners.has(identity) && !resources.proven.has(identity) ? true
+        : owner === undefined || canAdvanceProject(owner.projectId) || !stoppedProjects.has(owner.projectId) || live.has(identity);
+      return { identity, roles: [...roleSet], occupied };
+    });
   };
   let latestReservations: ReturnType<typeof reservations> = [];
+  let publishedReservations: ReturnType<typeof reservations> = [];
   const capacity = (resources: Snapshot): number => {
     latestReservations = reservations(resources);
-    return latestReservations.length;
+    return latestReservations.filter(item => item.occupied).length;
   };
   const blockedByOldClaim = (task: LocalTask, owners: Iterable<ResourceOwner>): boolean =>
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
@@ -950,6 +1010,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     updatePromptDemand();
     const count = failures.get(key(task)) ?? 0;
     const owner = remoteOwner(remoteTask);
+    executionCapacity.invalidate(owner);
     startJob(owner, signal => {
       if (!canAdvance(task)) return Promise.resolve();
       const current = configurationFor(task);
@@ -978,7 +1039,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (webRecord != null) {
       if (webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web stop claim has conflicting worktree identities.");
       if (!options.webBackend) throw new Error("The Web execution backend is unavailable.");
-      const stopped = await options.webBackend.cleanup(webRecord, "shutdown", now(), signal, true);
+      const stopped = await options.webBackend.cleanup(webRecord, { kind: "shutdown", deadline: now(), immediateStop: true, ...(signal === undefined ? {} : { signal }) });
       if (!stopped.complete) throw new Error("The original Web resources remain during stop.");
       return;
     }
@@ -1336,10 +1397,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const publishCapacity = (): void => {
       const projection = latestReservations;
       if (unavailable.size > 0 || resources.unavailableProjects.size > 0 || !allMappingsObserved()) { observe(m => m.staleCapacity()); return; }
-      observe(m => m.setCapacity({ limit: configuration.maxConcurrent, occupied: projection.length, observedAt,
-        reservations: projection.map(({ identity, roles }) => {
+      publishedReservations = projection.map(item => ({ ...item, roles: [...item.roles] }));
+      observe(m => m.setCapacity({ limit: configuration.maxConcurrent, occupied: projection.filter(item => item.occupied).length, observedAt,
+        reservations: projection.map(({ identity, roles, occupied }) => {
           const [projectId, taskId, claimId] = identity.split("/");
-          return { identity: { projectId: projectId!, taskId: taskId!, claimId: claimId! }, roles };
+          return { identity: { projectId: projectId!, taskId: taskId!, claimId: claimId! }, roles, occupied };
         }) }));
     };
     // New mappings require both a claim inventory and resource discovery before admission.
@@ -1368,6 +1430,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
 
     launchCleanups();
+    await Promise.all([...ending.values()].filter(hasWorktreeIdentity).map(async owner => {
+      const sequence = executionCapacity.beginObservation(owner);
+      const local = options.store.getTask(owner), web = options.webStore?.getTask(owner);
+      const observer = local?.agentControlMode === "web" || web != null
+        ? options.webBackend?.observeExecutionStop
+        : lifecycle()?.observeExecutionStop ?? options.herdr.tasks.observeExecutionStop;
+      if (!observer) return;
+      try {
+        const observation = await cleanupOperation(operation => observer(owner, operation), normalSignal);
+        executionCapacity.observe(owner, sequence, observation);
+        if (observation.kind === "unknown") options.emit({ kind: "stop-unknown", identity: owner, component: "cleanup", phase: "agent-stop", ...(local === null ? {} : { task: local }), message: "The original execution stop could not be observed.", error: observation.error });
+      } catch (error) {
+        if (isWorkerCancellation(error, normalSignal)) throw error;
+        executionCapacity.observe(owner, sequence, { kind: "unknown", target: owner, error, observedAt: now() });
+        options.emit({ kind: "stop-unknown", identity: owner, component: "cleanup", phase: "agent-stop", ...(local === null ? {} : { task: local }), message: "The original execution stop could not be observed.", error });
+      }
+    }));
     for (const [identityKey, remoteTask] of inventory) {
       let local = options.store.getTask(remoteOwner(remoteTask));
       if (local === null) continue;
@@ -1395,7 +1474,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const cleanupFailure = (identity: string) => options.store.getCleanupSchedule(ending.get(identity)!) ?? cleanupRetries.get(identity);
     const occupied = capacity(resources);
     const blocked = occupied >= configuration.maxConcurrent
-      ? [...ending.keys()].filter(identity => cleanupFailure(identity)?.lastError != null).sort() : [];
+      ? latestReservations.filter(item => item.occupied && ending.has(item.identity) && cleanupFailure(item.identity)?.lastError != null).map(item => item.identity).sort() : [];
     publishCapacity();
     const admissionAt = new Date(now()).toISOString();
     if (cycleCoverage !== "complete") observe(m => m.setAdmission("partial", [
@@ -1407,13 +1486,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     ]));
     else if (occupied >= configuration.maxConcurrent) observe(m => m.setAdmission("complete", [
       { code: "capacity-full", scope: { kind: "worker" }, observedAt: admissionAt, nextAttemptAt: null },
-      ...(latestReservations.some(item => item.roles.includes("cleanup")) && latestReservations.filter(item => !item.roles.includes("cleanup") || inventory.has(item.identity) || resources.unresolved.has(item.identity)).length < configuration.maxConcurrent ? [{ code: "cleanup-capacity-blocked" as const, scope: { kind: "worker" as const }, observedAt: admissionAt, nextAttemptAt: null }] : []),
+      ...(latestReservations.some(item => item.occupied && item.roles.includes("cleanup")) && latestReservations.filter(item => item.occupied && (!item.roles.includes("cleanup") || inventory.has(item.identity) || resources.unresolved.has(item.identity))).length < configuration.maxConcurrent ? [{ code: "cleanup-capacity-blocked" as const, scope: { kind: "worker" as const }, observedAt: admissionAt, nextAttemptAt: null }] : []),
     ]));
     else if (configuration.repositories.length === 0) observe(m => m.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: admissionAt, nextAttemptAt: null }]));
     const warning = blocked.join(",");
     if (warning !== capacityWarning) {
       capacityWarning = warning;
-      if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. No slot is released until cleanup is confirmed.` });
+      if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. Unconfirmed execution stops retain their slots.` });
     }
     if (!allMappingsObserved() || capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0) return;
     reconciliationPhase = "claim-search";
@@ -1491,6 +1570,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           }
           requireImplementedWorkerBackend(currentRepository.configuration);
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
+          const frozenConfiguration = options.freezeConfiguration === undefined ? currentRepository.configuration : await options.freezeConfiguration(currentRepository.configuration, normalSignal);
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
           const claimId = randomUUID();
           reconciliationPhase = "claim-request";
@@ -1498,11 +1578,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           try {
             const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
             const owner = remoteOwner(granted);
-            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
+            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration });
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
             if (!quarantinedTask(local) && allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
+            capacity(resources);
             if (configuration !== acquisitionConfiguration || !allMappingsObserved()) cycleCoverage = "partial";
             observe(m => m.staleCapacity());
             return;
@@ -1529,7 +1610,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         ...[...retainedConflicts].map(projectId => ({ code: "retained-resource-conflict" as const, scope: { kind: "project" as const, projectId }, observedAt, nextAttemptAt: null })),
       ]));
     }
-    if (!sawCandidate && !searchIncomplete && cycleCoverage === "complete" && configuration === acquisitionConfiguration && allMappingsObserved() && latestReservations.length < configuration.maxConcurrent) {
+    if (!sawCandidate && !searchIncomplete && cycleCoverage === "complete" && configuration === acquisitionConfiguration && allMappingsObserved() && latestReservations.filter(item => item.occupied).length < configuration.maxConcurrent) {
       observe(m => m.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
     }
   };
@@ -1557,6 +1638,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   return {
     invalidateProject,
+    archiveYield: (): boolean => ending.size > 0 || [...cleanupRetries.values()].some(retry => retry.stage === "archive") || latestReservations.filter(item => item.occupied).length >= configuration.maxConcurrent,
     updateConfiguration: (value: WorkerCoordinatorConfiguration): void => {
       const next = configurationView(value);
       // Claim admission fences actual view changes, not repeated heartbeat acknowledgments.
@@ -1607,6 +1689,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (webRecord && (webRecord.worktreeId !== worker.worktreeId || webRecord.workerId !== worker.workerId || webRecord.userId !== worker.userId || webRecord.serverOrigin !== options.serverOrigin)) throw new Error("The original Web execution ownership no longer matches the active claim.");
       if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
+      executionCapacity.invalidate(remoteOwner(remoteTask));
       await ensureHerdr(normalSignal);
       return serialize(identity, async () => {
         if (task.agentControlMode === "web" && options.webStore) {
@@ -1622,12 +1705,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
       const { owner } = await readSource(identity);
       await ensureHerdr(normalSignal);
-      await serialize(identity, async () => { await runCleanup(owner, settings.deleteWorktree === true, normalSignal); if (settings.deleteWorktree === true) options.store.deleteCleanupSchedule(owner); });
+      await serialize(identity, async () => {
+        await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
+        if (settings.deleteWorktree === true) {
+          if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
+          options.store.deleteCleanupSchedule(owner);
+        }
+      });
       return owner;
     },
     completeSource: async (owner: ResourceOwner): Promise<void> => {
       await ensureHerdr(normalSignal);
-      await serialize(owner, async () => { await runCleanup(owner, true, normalSignal); options.store.deleteCleanupSchedule(owner); });
+      await serialize(owner, async () => {
+        await runCleanup(owner, true, normalSignal, undefined, true);
+        if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
+        options.store.deleteCleanupSchedule(owner);
+      });
     },
     shutdown: async (): Promise<boolean> => {
       cancel();
@@ -1690,7 +1783,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if (webRecord != null) {
               if (webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web cleanup claim has conflicting worktree identities.");
               if (!options.webBackend) throw new Error("The Web execution backend is unavailable during shutdown.");
-              const stopped = await options.webBackend.cleanup(webRecord, "shutdown", now(), undefined, true);
+              const stopped = await options.webBackend.cleanup(webRecord, { kind: "shutdown", deadline: now(), immediateStop: true });
               if (!stopped.complete) throw new Error("The original Web resources remain during shutdown.");
               return;
             }

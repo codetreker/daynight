@@ -4,21 +4,22 @@ import type { TaskSessionSnapshot } from './helpers/session';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
-import type { SessionApi, SessionChannel } from '../src/api/sessions';
+import { createSessionApi, type SessionApi, type SessionChannel } from '../src/api/sessions';
+import { sessionImageBytes } from './helpers/sessionImages';
 import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/controller-protocol';
 import type { SessionOperation, SessionSnapshot, TimelineEntry } from '../src/api/types';
 const snapshot = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
 afterEach(() => { clients.forEach((c) => c.close()); clients.length = 0; vi.useRealTimers(); });
-function fixture(storage: Storage | null = null, principal = userId, ownerUserId = userId, overrides: Partial<TaskSessionSnapshot> = {}) {
+function fixture(storage: Storage | null = null, principal = userId, ownerUserId = userId, overrides: Partial<TaskSessionSnapshot> = {}, isPaused = () => false) {
   const s = { ...snapshot(), ...overrides }; let receive!: (message: BrowserMessage) => void; let close!: () => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
-  const channel: SessionChannel = { close: vi.fn() };
+  const channel: SessionChannel = { close: vi.fn() }, onPrincipalMismatch = vi.fn();
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource', channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; close = onClose; return channel; }) };
-  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage });
+  const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, isPaused, onPrincipalMismatch, storage });
   client.setCurrentReadVisible(true); clients.push(client);
-  return { s, api, client, receive: (message: BrowserMessage) => receive(message), disconnect: () => close() };
+  return { s, api, client, channel, onPrincipalMismatch, receive: (message: BrowserMessage) => receive(message), disconnect: () => close() };
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
@@ -181,11 +182,12 @@ describe('task session transport lifecycle', () => {
     f.receive({ protocol: f.s.protocol, type: 'event', cursor: 'one', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'live' }] } } });
     expect(f.client.snapshot().connected).toBe(true);
   });
-  it('does not admit a different browser principal or claim', async () => {
+  it('rejects a different browser principal without discarding the current snapshot', async () => {
     const f = fixture(); await f.client.start();
-    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId: '00000010-1111-4111-8111-111111111111', snapshot: f.s, cursor: 'zero' });
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId: '00000010-1111-4111-8111-111111111111', snapshot: { ...f.s, sessionRevision: '999' }, cursor: 'zero' });
     expect(f.client.snapshot().connected).toBe(false);
-    expect(f.client.snapshot().state.snapshot).toBeNull();
+    expect(f.client.snapshot().authPaused).toBe(true);
+    expect(f.client.snapshot().state.snapshot).toEqual(f.s);
   });
 });
 
@@ -338,12 +340,95 @@ describe('session text draft ownership', () => {
     f.receive({ protocol: f.s.protocol, type: 'event', cursor: 'one', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'operation', payload: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: '1', operationId: '00000012-1111-4111-8111-111111111111', kind: 'send_message', state: 'confirmed', providerResult: 'started', error: null } } });
     expect(f.client.snapshot().draft.text).toBe('my input');
   });
-  it('clears saved text on principal mismatch and cannot recreate it through a stale client', async () => {
+  it('stops before reporting a principal mismatch and retains the original display', async () => {
     const storage = window.sessionStorage; storage.clear();
     const f = fixture(storage); await ready(f); f.client.setDraft('private text');
-    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId: '00000010-1111-4111-8111-111111111111', snapshot: f.s, cursor: 'zero' });
-    f.client.setDraft('stale write');
-    expect([...Array(storage.length)].map((_, i) => storage.getItem(storage.key(i)!)).join('')).not.toMatch(/private text|stale write/);
+    const scope = f.client.imageScope()!, state = f.client.snapshot().state;
+    f.onPrincipalMismatch.mockImplementation(() => {
+      expect(f.channel.close).toHaveBeenCalledOnce();
+      expect(f.client.snapshot().authPaused).toBe(true);
+      expect(f.client.snapshot().state).toBe(state);
+    });
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId: '00000010-1111-4111-8111-111111111111', snapshot: { ...f.s, sessionRevision: '999' }, cursor: 'other' });
+    expect(f.onPrincipalMismatch).toHaveBeenCalledOnce();
+    expect(f.client.snapshot().state).toBe(state);
+    expect(f.client.imageScope()).toBe(scope); expect(scope.valid).toBe(true);
+    expect(scope.canRead()).toBe(false);
+    f.client.setDraft('offline edit');
+    expect(f.client.snapshot().draft.text).toBe('offline edit');
+  });
+
+  it('closes the real media reader while preserving an already decoded image lease', async () => {
+    const bytes = sessionImageBytes('png'), sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const first = { resourceId: '00000012-1111-4111-8111-111111111111', revision: '1', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: String(bytes.length), sha256, width: 3, height: 2, frameCount: 1, error: null };
+    const second = { ...first, resourceId: '00000013-1111-4111-8111-111111111111' }, f = fixture();
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [{ kind: 'assistant_message', entryId: 'image', entrySeq: '1', revision: '1', content: [{ type: 'resource', resourceId: first.resourceId, label: first.name }, { type: 'resource', resourceId: second.resourceId, label: second.name }] }], resources: [first, second], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    const realApi = createSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, vi.fn());
+    let close!: ReturnType<typeof vi.spyOn>, transportSignal!: AbortSignal, cancel!: ReturnType<typeof vi.spyOn>;
+    f.api.resources = (fence, isCurrent) => { const client = realApi.resources(fence, isCurrent); close = vi.spyOn(client, 'close'); return client; };
+    const progress = vi.fn();
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(first.resourceId)) return Response.json({ resourceId: first.resourceId, byteLength: first.byteLength, sha256, offset: '0', data: Buffer.from(bytes).toString('base64'), eof: true }, { headers: { 'Daynight-User-ID': userId } });
+      transportSignal = init!.signal as AbortSignal;
+      const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{')); transportSignal.addEventListener('abort', () => controller.error(new DOMException('Stopped', 'AbortError')), { once: true }); } });
+      const getReader = body.getReader.bind(body);
+      vi.spyOn(body, 'getReader').mockImplementation(() => { const reader = getReader(); cancel = vi.spyOn(reader, 'cancel'); return reader; });
+      return new Response(body, { headers: { 'Daynight-User-ID': userId } });
+    });
+    vi.stubGlobal('fetch', fetch); vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3, height: 2, close() {} })));
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:account-retained'), revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    try {
+      await ready(f);
+      const scope = f.client.imageScope()!, lease = await scope.asset(first)!.acquire(new AbortController().signal), decoded = await lease.decode(new AbortController().signal);
+      const pending = f.client.resource(second.resourceId, new AbortController().signal, progress).catch(error => error);
+      await vi.waitFor(() => expect(progress).toHaveBeenCalledOnce());
+      f.client.suspendForAccountRefresh();
+      expect(close).toHaveBeenCalledOnce(); expect(transportSignal.aborted).toBe(true);
+      expect(f.client.imageScope()).toBe(scope); expect(scope.valid && lease.valid && decoded.valid).toBe(true);
+      expect(decoded.url).toBe('blob:account-retained'); expect(revoke).not.toHaveBeenCalled();
+      expect(await pending).toMatchObject({ name: 'AbortError' }); expect(cancel).toHaveBeenCalledOnce();
+      decoded.release(); lease.release(); expect(revoke).toHaveBeenCalledWith('blob:account-retained');
+    } finally { f.client.close(); vi.unstubAllGlobals(); create.mockRestore(); revoke.mockRestore(); }
+  });
+
+  it('settles checking locally and ignores a late denial while externally paused', async () => {
+    let paused = false, reject!: (error: Error) => void;
+    const f = fixture(null, userId, userId, {}, () => paused); await ready(f);
+    f.client.setDraft('editable'); const state = f.client.snapshot().state;
+    vi.mocked(f.api.operation).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const checking = f.client.checkOperation('pending').catch(error => error);
+    expect(f.client.snapshot().checking.has('pending')).toBe(true);
+    paused = true; f.client.suspendForAccountRefresh();
+    expect(f.client.snapshot().checking.size).toBe(0);
+    reject(new ApiError('server', 403, 'forbidden')); expect(await checking).toBeInstanceOf(Error);
+    expect(f.client.snapshot().state).toBe(state); expect(f.client.snapshot().authPaused).toBe(true);
+    f.client.setDraft('still editable'); expect(f.client.snapshot().draft.text).toBe('still editable');
+  });
+
+  it('aborts in-flight work and cannot restart after account refresh suspension', async () => {
+    const f = fixture(), resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [], resources: [resource], beforeCursor: 'older', afterCursor: null, hasMoreBefore: true, hasMoreAfter: false, lastEventSeq: '0' });
+    await ready(f); f.client.setDraft('retain me');
+    let olderResolve!: (page: TimelinePage) => void, resourceResolve!: (value: Blob) => void, commandResolve!: (value: SessionOperation) => void;
+    vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(resolve => { olderResolve = resolve; }));
+    vi.mocked(f.api.resource).mockImplementationOnce(() => new Promise(resolve => { resourceResolve = resolve; }));
+    vi.mocked(f.api.command).mockImplementationOnce(() => new Promise(resolve => { commandResolve = resolve; }));
+    const older = f.client.loadOlder(), resourceRead = f.client.resource(resource.resourceId, new AbortController().signal).catch(error => error), sending = f.client.send('retain me').catch(error => error);
+    const olderSignal = vi.mocked(f.api.timeline).mock.lastCall![3], resourceSignal = vi.mocked(f.api.resource).mock.lastCall![2], commandSignal = vi.mocked(f.api.command).mock.lastCall![2], command = vi.mocked(f.api.command).mock.lastCall![1];
+    const state = f.client.snapshot().state, scope = f.client.imageScope();
+    vi.useFakeTimers(); f.client.suspendForAccountRefresh(); f.client.suspendForAccountRefresh();
+    expect(olderSignal.aborted && resourceSignal.aborted && commandSignal.aborted).toBe(true);
+    expect(f.channel.close).toHaveBeenCalledOnce(); expect(f.client.snapshot().authPaused).toBe(true);
+    olderResolve({ sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [{ kind: 'assistant_message', entryId: 'late', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'late' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    resourceResolve(new Blob(['late']));
+    commandResolve({ protocol: command.protocol, ...sessionBinding(command), sessionId: command.sessionId, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: 'started', error: null });
+    await older; expect(await resourceRead).toBeInstanceOf(Error); expect(await sending).toBeInstanceOf(Error);
+    expect(f.client.snapshot().state).toBe(state); expect(f.client.imageScope()).toBe(scope); expect(f.client.snapshot().draft.text).toBe('retain me');
+    const calls = vi.mocked(f.api.current).mock.calls.length;
+    f.client.setCurrentReadVisible(false); f.client.setCurrentReadVisible(true); f.client.syncAvailability(); f.client.pause(); f.client.refresh(); await f.client.start();
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: { ...f.s, sessionRevision: '999' }, cursor: 'late' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.api.current).toHaveBeenCalledTimes(calls); expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.client.snapshot().authPaused).toBe(true); expect(f.client.snapshot().state).toBe(state);
   });
 });
 

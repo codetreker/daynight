@@ -28,7 +28,7 @@ func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, er
 	resource.ObservationRevision = strconv.FormatInt(observationRevision, 10)
 	if revision != nil {
 		resource.Desired = &model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(*revision, 10), UpdatedAt: updatedAt.UTC()}
-		// Historical JSONB omits agentControlMode. Its nil value means not adopted;
+		// Historical JSONB omits agentControlMode and toolPaths. Nil choices mean not adopted;
 		// neither storage reads nor observation reads supply a default or evidence.
 		if err := json.Unmarshal(value, &resource.Desired.Value); err != nil {
 			return resource, err

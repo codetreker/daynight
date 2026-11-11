@@ -19,7 +19,7 @@ vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({
 const operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
 const cwd = path.resolve("startup-volume");
-const collector = () => createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example" });
+const collector = (toolPaths?: Parameters<typeof createWorkerTelemetryCollector>[0]["toolPaths"]) => createWorkerTelemetryCollector({ ...(toolPaths === undefined ? {} : { toolPaths }), paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example" });
 const finish = async <T>(pending: Promise<T>, milliseconds = 210): Promise<T> => { await vi.advanceTimersByTimeAsync(milliseconds); return pending; };
 
 beforeEach(() => {
@@ -36,6 +36,53 @@ beforeEach(() => {
 afterEach(() => { operations.splice(0).forEach((value) => value.dispose()); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("Worker telemetry", () => {
+  it("reports only explicitly supplied tool facts without deriving paths from legacy versions", async () => {
+    expect((await finish(collector().collect(operation()))).telemetry).not.toHaveProperty("toolPaths");
+    const facts = { schemaVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", entries: [] };
+    const snapshot = vi.fn(() => facts);
+    expect((await finish(collector({ context: "web", snapshot }).collect(operation()))).telemetry.toolPaths).toEqual(facts);
+    expect(snapshot).toHaveBeenCalledOnce();
+    mocks.version.mockClear(); mocks.herdr.mockClear();
+    const sample = await finish(collector({ context: "web", snapshot }).collect(operation()));
+    expect(sample.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    expect(mocks.version).not.toHaveBeenCalled();
+    expect(mocks.herdr).toHaveBeenCalledOnce();
+  });
+  it("projects legacy versions from the selected context's actual recipe only", async () => {
+    const time = "2026-11-04T00:00:00Z";
+    const actual = (version: string) => ({ selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/copilot", executablePath: "/tool/copilot", interpreterPath: null, source: "bundled" as const, version, checkedAt: time });
+    const observation = (context: "web" | "herdr", version: string) => ({ tool: "copilot" as const, context, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual: actual(version), candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null });
+    const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [observation("web", "web-version"), observation("herdr", "herdr-version")] });
+    let context: "web" | "herdr" = "web";
+    const instance = collector({ context: () => context, snapshot });
+    const sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.versions.copilot).toEqual({ state: "ok", checkedAt: time, value: "web-version" });
+    context = "herdr";
+    expect((await finish(instance.collect(operation()))).telemetry.versions.copilot).toEqual({ state: "ok", checkedAt: time, value: "herdr-version" });
+    expect(mocks.version).not.toHaveBeenCalled();
+    expect(mocks.herdr).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Herdr legacy versions tied to running instances when a new selection is ready", async () => {
+    const time = "2026-11-04T00:00:00Z";
+    const actual = { selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/herdr", executablePath: "/tool/herdr", interpreterPath: null, source: "path" as const, version: "new-cli-selection", checkedAt: time };
+    const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [{ tool: "herdr" as const, context: "herdr" as const, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual, candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null }] });
+    const instance = collector({ context: "herdr", snapshot });
+    mocks.herdr.mockResolvedValue(null);
+    expect((await finish(instance.collect(operation()))).telemetry.versions.herdr).toMatchObject({ state: "not_running" });
+    mocks.herdr.mockResolvedValue("running-instance");
+    expect((await finish(instance.collect(operation()))).telemetry.versions.herdr).toMatchObject({ state: "ok", value: "running-instance" });
+    expect(mocks.version).not.toHaveBeenCalled();
+  });
+
+  it("retains ordinary telemetry if the runtime tool inventory cannot be read", async () => {
+    const sample = await finish(collector({ context: "web", snapshot: () => { throw new Error("private-tool-secret"); } }).collect(operation()));
+    expect(sample.telemetry.cpu.state).toBe("ok");
+    expect(sample.telemetry).not.toHaveProperty("toolPaths");
+    expect(sample.issues).toMatchObject([{ component: "toolPaths", code: "unavailable" }]);
+    expect(JSON.stringify(sample.telemetry)).not.toContain("private-tool-secret");
+  });
+
   it("samples a real CPU interval and reports the startup filesystem with exact available bytes", async () => {
     const pending = collector().collect(operation());
     await vi.advanceTimersByTimeAsync(199);

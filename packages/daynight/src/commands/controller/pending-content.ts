@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { parseTimelineEntry, parseSessionResource, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import { sessionArchiveReferences } from "../../session/archive.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
+import { syncDirectory, writeDurableJson } from "../../platform/durable-json.js";
 
 /** Pending upload source, not a second permanent native session history. */
 export type PendingResource = { resource: SessionResource; data: string | null };
@@ -13,19 +14,6 @@ export type ControlledResourceLease = { readonly path: string; readonly resource
 const MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 const entryName = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
 type EntryPointer = { id: string; content_hash: string; revision: string; entry_seq: string; content_file: string; content_sha256: string; content_bytes: number };
-const syncDirectory = (directory: string): void => {
-  // Windows does not expose directory handles through fs.open; file flush remains mandatory.
-  if (process.platform === "win32") return;
-  const fd = openSync(directory, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-};
-export const writeDurableJson = (file: string, value: unknown): void => {
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  const fd = openSync(temporary, "wx", 0o600);
-  try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(temporary, file);
-  syncDirectory(dirname(file));
-};
 const openPendingContentFiles = (journal: string, sessionId: string, db: Database.Database) => {
   const root = `${journal}.pending-content`;
   const timelineDirectory = join(root, "timeline"), entryDirectory = join(root, "entries"), resourceDirectory = join(root, "resources"), blobDirectory = join(root, "blobs");

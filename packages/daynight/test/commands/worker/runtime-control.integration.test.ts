@@ -14,6 +14,9 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn() }));
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl: mocks.submit }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));

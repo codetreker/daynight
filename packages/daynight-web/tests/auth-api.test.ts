@@ -2,7 +2,7 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
-import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
+import { ApiError, cancelAuthNetworkRequests, checkAttachmentPreview, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const userId = "20000000-0000-0000-0000-00000000000b";
@@ -136,6 +136,156 @@ describe("identity revalidation request pause", () => {
   });
 });
 
+describe("ordinary network cancellation", () => {
+  it("cancels dispatched fetches with the shared reason and installs the next lifetime before abort callbacks", async () => {
+    let firstSignal: AbortSignal | undefined;
+    let replacement: Promise<Response> | undefined;
+    const fetcher = vi.fn((url: string, init: RequestInit) => {
+      const current = init.signal as AbortSignal;
+      if (url === "/old") {
+        firstSignal = current;
+        return new Promise<Response>((_resolve, reject) => current.addEventListener("abort", () => {
+          replacement = request("/replacement", signal());
+          reject(current.reason);
+        }, { once: true }));
+      }
+      expect(current.aborted).toBe(false);
+      return Promise.resolve(response(user));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const old = request("/old", signal());
+    const cancelled = old.catch((error: unknown) => error);
+    cancelAuthNetworkRequests();
+    expect(firstSignal?.aborted).toBe(true);
+    expect(await cancelled).toBe(firstSignal?.reason);
+    expect(firstSignal?.reason).toMatchObject({ name: "AbortError" });
+    expect(replacement).toBeDefined();
+    await expect(replacement).resolves.toBeInstanceOf(Response);
+    await expect(request("/later", signal())).resolves.toBeInstanceOf(Response);
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/old", "/replacement", "/later"]);
+  });
+
+  it("preserves a caller cancellation independently of the shared lifetime", async () => {
+    let dispatched: AbortSignal | undefined;
+    const fetcher = vi.fn((_url: string, init: RequestInit) => {
+      dispatched = init.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => dispatched!.addEventListener("abort", () => reject(dispatched!.reason), { once: true }));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const caller = new AbortController();
+    const pending = request("/caller", caller.signal).catch((error: unknown) => error);
+    const reason = new Error("caller cancelled");
+    caller.abort(reason);
+    expect(await pending).toBe(reason);
+    expect(dispatched?.reason).toBe(reason);
+    fetcher.mockImplementationOnce(async () => response(user));
+    await expect(request("/next", signal())).resolves.toBeInstanceOf(Response);
+  });
+
+  it.each(["resolve", "reject"])("keeps shared cancellation when an aborted fetch later %ss", async (outcome) => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const unauthorized = vi.fn();
+    const unsubscribe = subscribeUnauthorized(unauthorized);
+    const pending = request("/late", signal()).catch((error: unknown) => error);
+    cancelAuthNetworkRequests();
+    if (outcome === "resolve") fetchGate.resolve(refusal(401, "unauthenticated")); else fetchGate.reject(new TypeError("transport failed"));
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(unauthorized).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("leaves paused requests queued until resume and gives them the new lifetime", async () => {
+    let runningSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((_url: string, init: RequestInit) => {
+      runningSignal = init.signal as AbortSignal;
+      return Promise.resolve(response(user));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const resume = pauseAuthRequests();
+    const pending = request("/queued", signal());
+    expect(fetcher).not.toHaveBeenCalled();
+    cancelAuthNetworkRequests();
+    expect(fetcher).not.toHaveBeenCalled();
+    resume();
+    await expect(pending).resolves.toBeInstanceOf(Response);
+    expect(runningSignal?.aborted).toBe(false);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not cancel an in-flight request merely because the identity gate pauses", async () => {
+    const responseGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return responseGate.promise; }));
+    const pending = request("/running", signal());
+    const resume = pauseAuthRequests();
+    expect(runningSignal?.aborted).toBe(false);
+    responseGate.resolve(response(user));
+    await expect(pending).resolves.toBeInstanceOf(Response);
+    resume();
+  });
+
+  it("keeps /me and logout on their independent caller signals", async () => {
+    const pendingMe = Promise.withResolvers<Response>();
+    const pendingLogout = Promise.withResolvers<Response>();
+    const meController = new AbortController(), logoutController = new AbortController();
+    const fetcher = vi.fn((url: string, _init: RequestInit) => url === "/api/v1/me" ? pendingMe.promise : pendingLogout.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const userRead = me(meController.signal);
+    const logoutWrite = logout(logoutController.signal);
+    cancelAuthNetworkRequests();
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ signal: meController.signal });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ signal: logoutController.signal });
+    expect(meController.signal.aborted).toBe(false);
+    expect(logoutController.signal.aborted).toBe(false);
+    pendingMe.resolve(response(user)); pendingLogout.resolve(new Response(null, { status: 204 }));
+    await expect(userRead).resolves.toEqual(user);
+    await expect(logoutWrite).resolves.toBeUndefined();
+  });
+
+  it("does not publish an attachment body that completes after shared cancellation", async () => {
+    const body = new Response("old text");
+    const readStarted = Promise.withResolvers<void>();
+    const textGate = Promise.withResolvers<string>();
+    vi.spyOn(body, "text").mockImplementation(() => { readStarted.resolve(); return textGate.promise; });
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return Promise.resolve(body); }));
+    const pending = readAttachmentText(projectId, tokenId, "guide.md", signal()).catch((error: unknown) => error);
+    await readStarted.promise;
+    cancelAuthNetworkRequests();
+    textGate.resolve("old text");
+    expect(await pending).toBe(runningSignal?.reason);
+  });
+
+  it("does not confirm a 204 response after cancellation between fetch and response consumption", async () => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const confirmed = vi.fn(), mismatch = vi.fn();
+    const pending = deleteTask(projectId, tokenId, 1n, undefined, signal(), { userId, onPrincipalMismatch: mismatch, onWriteConfirmed: confirmed }).catch((error: unknown) => error);
+    fetchGate.resolve(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    queueMicrotask(cancelAuthNetworkRequests);
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(runningSignal?.aborted).toBe(true);
+    expect(confirmed).not.toHaveBeenCalled();
+    expect(mismatch).not.toHaveBeenCalled();
+  });
+
+  it("does not report a principal mismatch after cancellation between fetch and response consumption", async () => {
+    const fetchGate = Promise.withResolvers<Response>();
+    let runningSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return fetchGate.promise; }));
+    const mismatch = vi.fn();
+    const pending = getTask(projectId, tokenId, signal(), { userId, onPrincipalMismatch: mismatch }).catch((error: unknown) => error);
+    fetchGate.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    queueMicrotask(cancelAuthNetworkRequests);
+    expect(await pending).toBe(runningSignal?.reason);
+    expect(runningSignal?.aborted).toBe(true);
+    expect(mismatch).not.toHaveBeenCalled();
+  });
+});
+
 describe("session and personal credentials API", () => {
   it("loads the current nullable profile and the configured provider list from relative endpoints", async () => {
     const fetcher = mock(response(user));
@@ -202,6 +352,36 @@ describe("private project and membership API", () => {
     await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", status: 200 } });
   });
 
+  it("reports only actual dispatch and preserves the unknown outcome after cancellation", async () => {
+    const fetcher = vi.fn((_url: string, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const input = { name: project.name, repoUrl: project.repoUrl, expectedUserId: userId };
+    const controller = new AbortController(), dispatched = vi.fn();
+    const pending = createProject(input, controller.signal, vi.fn(), dispatched);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledOnce();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { name: "AbortError" } });
+
+    const resume = pauseAuthRequests();
+    const queued = new AbortController(), queuedDispatch = vi.fn();
+    const beforeDispatch = createProject(input, queued.signal, vi.fn(), queuedDispatch);
+    queued.abort();
+    await expect(beforeDispatch).rejects.toMatchObject({ name: "AbortError" });
+    resume();
+    expect(queuedDispatch).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("retains a known refusal after dispatch", async () => {
+    const dispatched = vi.fn();
+    mock(refusal(403, "forbidden"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn(), dispatched)).rejects.toMatchObject({ kind: "server", status: 403, code: "forbidden" });
+    expect(dispatched).toHaveBeenCalledOnce();
+  });
+
   it("sends an explicit team and validates the creation ownership and grant", async () => {
     const fetcher = mock(response(creationReceipt, 201));
     const teamId = project.ownership.teamId;
@@ -232,6 +412,18 @@ describe("private project and membership API", () => {
     const mismatch = vi.fn(), fetcher = mock(refusal(409, "identity_mismatch"));
     await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), mismatch)).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
     expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a decoded identity refusal definite when its callback aborts the request", async () => {
+    const controller = new AbortController();
+    const mismatch = vi.fn(() => controller.abort());
+    const dispatched = vi.fn();
+    const fetcher = mock(refusal(409, "identity_mismatch"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, controller.signal, mismatch, dispatched))
+      .rejects.toMatchObject({ name: "ApiError", kind: "server", status: 409, code: "identity_mismatch", requestId: "auth-1" });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledOnce();
   });
 

@@ -91,3 +91,16 @@ it.each(['command', 'operation', 'resource'] as const)('does not revoke the curr
   pending.reject(new ApiError('server', 403, 'forbidden')); await result;
   expect(f.client.snapshot().status).toBe('ready'); expect(f.client.snapshot().connected).toBe(true); expect(f.onInvalidate).not.toHaveBeenCalled();
 });
+
+it('aborts a pending Bot current read and rejects its late result after account suspension', async () => {
+  const f = fixture(), current = deferred<Awaited<ReturnType<SessionApi['current']>>>();
+  vi.mocked(f.api.current).mockReturnValueOnce(current.promise);
+  const starting = f.client.start();
+  const signal = vi.mocked(f.api.current).mock.lastCall![0];
+  f.client.suspendForAccountRefresh();
+  expect(signal.aborted).toBe(true); expect(f.client.snapshot().authPaused).toBe(true);
+  current.resolve({ status: 'registered', session: f.s }); await starting;
+  f.client.syncAvailability(); await f.client.start();
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).not.toHaveBeenCalled();
+  expect(f.client.snapshot().state.snapshot).toBeNull(); expect(f.client.snapshot().authPaused).toBe(true);
+});

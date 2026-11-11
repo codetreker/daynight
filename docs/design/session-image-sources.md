@@ -46,7 +46,7 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 
 `thread/start` 的响应与随后正常的 `thread/started` 通知属于同一次启动；Codex authority 只容许一次与该请求响应的完整 thread 快照一致、`turns` 按原生通知规则清空的通知，无论通知先于还是晚于 policy 安装。没有 start 关联且尚未安装时，`thread/started` 通知使 authority 失效；已有 start 响应后，其他 thread 的通知不改变该启动关联。当前 thread 重复或快照不一致的通知仍使 authority 失效，`thread/resume` 不取得启动豁免。
 
-[Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。独占 bridge worker 使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或摘要不匹配保留普通 Provider 路径，不发布图片来源策略。
+[Copilot authority](../../packages/daynight/src/commands/controller/providers/copilot-read-authority.ts) 固定为 SDK 1.0.11、CLI 1.0.105、macOS ARM64。它核验安装的 SEA executable 以及私有有界解包得到的 `index.js`、`cli-main.js`、`runtime.node` 摘要，再由 Node 运行未修改的发行入口并加载 Daynight preload。独占 bridge worker 使用原 SDK/TCP 连接；preload 从同一真实 Session registry 调用固定 N-API 判定，不创建第二个授权 Session。未知版本、平台或原 SEA 摘要不匹配保留普通 Provider 路径，不发布图片来源策略。Worker 的受支持 profile 使用[冻结的私有运行目录](daynight-worker.md#copilot-authority-的私有运行目录)，完整发行树、Node 和 preload 闭包均核验；已匹配 profile 的准备或身份失败拒绝新启动，不降为普通 native。独立 Controller 维持私有临时解包。
 
 每个 checkpoint 核对真实 Session/cwd、账户身份、当前原生模式、完整 hooks snapshot、SDK callback registry 和 strict content-exclusion 结果，再调用该 Session 的原生 Read permission route；只有明确 `result + approved` 可以继续。来源只接受与 held proof 对应的普通组件链；alias、symlink、目录链接、parent 折返，以及显式 `.` 或空组件均拒绝；`./image.png` 不属于该 Copilot profile 的路径子集。内容排除结果按固定发行物的完整路径策略合同消费，不把路径判断说成 inode 或内容权限。未知、不可用和相关 hook 状态拒绝，既不实现自己的 permission matcher，也不关闭用户 hooks。
 
@@ -56,7 +56,7 @@ Copilot 的 `model` 与 `effort` 设置经过 controls 的 revision、可用选�
 
 需要询问的图片请求由既有 SDK callback 精确拒绝，图片功能从不批准请求。每个请求预登记并签名绑定 native Session、execution、sequence、来源证明摘要及路径；live callback 还必须匹配 SDK context，且 request 与 `event.data.permissionRequest` 必须是同一个对象。拒绝 receipt 另签实际 native requestId。固定自有 ClientMetadata namespace 保存关联密钥，缺失时才初始化并读回，恢复保留原值，畸形或不确定状态不能覆盖、轮换或继续采集。密钥不进入 intention、事件、诊断或模型输入。历史只隐藏经两份签名验证的完整请求/拒绝对；未完成记录保留既有 expired/unknown 语义，不伪造完成，也不恢复为可批准的新请求。普通工具审批保持原流程，历史关联与当前图片模式资格分开。
 
-Copilot IPC 每次只允许一个在途判定。15 秒 deadline 或未知 IPC 状态关闭图片 authority、拒绝队列并丢弃迟到允许结果；仍可能到达的本图片权限 callback 继续拒绝。原生 N-API 无法取消时最多保留一条在途调用，不能为了普通图片超时终止整个文字 Session。真正的 Provider close 才负责关闭其拥有的 runtime 并回收正常解包资源；强制终止进程不能保证执行用户态临时目录清理。
+Copilot IPC 每次只允许一个在途判定。15 秒 deadline 或未知 IPC 状态关闭图片 authority、拒绝队列并丢弃迟到允许结果；仍可能到达的本图片权限 callback 继续拒绝。原生 N-API 无法取消时最多保留一条在途调用，不能为了普通图片超时终止整个文字 Session。真正的 Provider close 负责关闭其拥有的 runtime；独立 Controller 同时回收正常临时解包资源，强制终止不能保证用户态清理。Worker 的已发布目录属于持久冻结依赖，Provider close 不删除。
 
 SDK callback 与 permission event 的共享对象跨进程时，由 worker 对真实同对象分配仅桥内部的随机 identity；facade 核对同 Session、完整序列化请求及 identity 后恢复对象对应。permission callback 保持 SDK 的 callback-before-event 次序，identity 不授予权限；普通审批仍沿原交互流程。历史先按 permission 类型以 max=1 分页扫描，最多 100,000 页和 16 MiB 元数据，完成后才认证双签名 pair，再按原 durable cursor 投影普通历史。expired 仅允许从头重扫一次；未知、超限或关联失败关闭图片 authority并保留原交互与文字 Session，不能提前隐藏不完整的拒绝对。
 

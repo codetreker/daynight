@@ -20,8 +20,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -997,5 +999,77 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("scope %d calls: %v, want %v", i, got, want)
 		}
+	}
+}
+
+func TestRegisterMCPAdaptersStopsAndPropagatesFailures(t *testing.T) {
+	projectErr := errors.New("project registration failed")
+	invitationErr := errors.New("invitation registration failed")
+	taskErr := errors.New("task registration failed")
+	for _, tc := range []struct {
+		name          string
+		projectErr    error
+		invitationErr error
+		taskErr       error
+		wantErr       error
+		wantCalls     []string
+	}{
+		{name: "project fails", projectErr: projectErr, wantErr: projectErr, wantCalls: []string{"project"}},
+		{name: "invitation fails", invitationErr: invitationErr, wantErr: invitationErr, wantCalls: []string{"project", "invitation"}},
+		{name: "task fails", taskErr: taskErr, wantErr: taskErr, wantCalls: []string{"project", "invitation", "task"}},
+		{name: "all succeed", wantCalls: []string{"project", "invitation", "task"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			err := registerMCPAdapters(func() error {
+				calls = append(calls, "project")
+				return tc.projectErr
+			}, func() error {
+				calls = append(calls, "invitation")
+				return tc.invitationErr
+			}, func() error {
+				calls = append(calls, "task")
+				return tc.taskErr
+			})
+			if !errors.Is(err, tc.wantErr) || !reflect.DeepEqual(calls, tc.wantCalls) {
+				t.Fatalf("registration: err=%v calls=%v", err, calls)
+			}
+		})
+	}
+}
+
+func TestMCPRegistrationStopsAtEveryFailure(t *testing.T) {
+	failure := errors.New("registration failed")
+	for _, index := range []int{0, 1, 2, 3, 4} {
+		calls := 0
+		adapters := make([]func() error, 5)
+		for i := range adapters {
+			adapters[i] = func() error {
+				calls++
+				if i == index {
+					return failure
+				}
+				return nil
+			}
+		}
+		err := registerMCPAdapters(adapters...)
+		if !errors.Is(err, failure) || calls != index+1 {
+			t.Fatalf("failure at %d: calls=%d err=%v", index, calls, err)
+		}
+	}
+}
+
+func TestApplicationBeginShutdownStopsWorkerReadOnlyAdmission(t *testing.T) {
+	broker := ro.New(func(context.Context, model.Principal, string) error { return nil })
+	routes := workerhttp.NewReadOnlyRoutes(broker, nil, slog.Default())
+	app := &sessionApplication{workerReadOnly: routes}
+	app.BeginShutdown()
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	_, err := broker.Connect(context.Background(), p, uuid.NewString(), ro.Hello{Type: "hello", Protocol: ro.Protocol, CapabilityGeneration: uuid.NewString(), Operations: []string{"directory.list"}})
+	if ro.ErrorCode(err) != "offline" {
+		t.Fatal("application shutdown retained Worker admission", err)
+	}
+	if err := routes.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -86,6 +86,8 @@ export class TaskSessionClient {
   } | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
+  private network = new AbortController();
+  private accountStopped = false;
   private invalidated = false;
   private connection: SessionChannel | null = null;
   private connectionGeneration = 0;
@@ -165,11 +167,11 @@ export class TaskSessionClient {
   setActionAdmission = (admitted: boolean): void => {
     if (this.view.actionAdmitted !== admitted) this.publish({ actionAdmitted: admitted });
   };
-  private owned = (): boolean => !this.lifetime.signal.aborted && this.options.isCurrent();
+  private owned = (): boolean => !this.accountStopped && !this.lifetime.signal.aborted && this.options.isCurrent();
   private paused = (): boolean => this.options.isPaused?.() ?? false;
   private live = (): boolean => this.owned() && !this.paused();
   syncAvailability = (): void => {
-    if (this.lifetime.signal.aborted) return;
+    if (this.lifetime.signal.aborted || this.accountStopped) return;
     if (!this.owned()) { if (this.availabilityRunning || this.view.authPaused) this.pause(); return; }
     if (this.paused()) { this.suspend(); return; }
     if (this.view.authPaused) {
@@ -250,7 +252,7 @@ export class TaskSessionClient {
     if (this.view.authPaused && !this.paused()) this.syncAvailability();
     return this.live();
   }
-  private async admit(signal: AbortSignal = this.lifetime.signal): Promise<boolean> {
+  private async admit(signal: AbortSignal = this.network.signal): Promise<boolean> {
     while (this.owned() && this.paused() && !signal.aborted) {
       this.suspend();
       await new Promise<void>(resolve => {
@@ -400,7 +402,7 @@ export class TaskSessionClient {
     this.disconnect();
     this.availabilityRunning = true;
     const generation = this.connectionGeneration;
-    const flight = this.beginCurrentRead('start', generation), signal = AbortSignal.any([flight.controller.signal, this.lifetime.signal]);
+    const flight = this.beginCurrentRead('start', generation), signal = AbortSignal.any([flight.controller.signal, this.network.signal]);
     this.currentReadFailure = null;
     this.publish({ connected: false, error: null, loadingOlder: false });
     try {
@@ -427,7 +429,7 @@ export class TaskSessionClient {
       if (current.session.lifecycle !== 'active') { this.finishCurrentRead(flight); await this.loadArchive(current.session, generation); return; }
       this.archive = null; this.publish({ archiveState: null });
       this.scheduleObservation(generation);
-      this.connection = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
+      const channel = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
         if (generation !== this.connectionGeneration || !this.owned()) return;
         if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
         if (this.paused()) { this.suspend(); this.disconnect(); this.publish({ connected: false }); return; }
@@ -437,6 +439,8 @@ export class TaskSessionClient {
         if (snapshot && !this.hydrated && !this.hydrating && this.historyAllowed(snapshot)) { this.hydrating = true; void this.hydrate(snapshot, generation, false); }
         this.schedule();
       });
+      if (!this.owned() || generation !== this.connectionGeneration) channel.close();
+      else this.connection = channel;
     } catch (error) {
       if (!this.currentReadCurrent(flight) || generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -473,7 +477,7 @@ export class TaskSessionClient {
     const flight = this.beginCurrentRead('observation', generation), request = flight.controller; this.observationRequest = request;
     const currentRequest = () => this.currentReadCurrent(flight) && this.owned() && this.observationRequest === request && generation === this.connectionGeneration && this.view.state.snapshot !== null && sameExecution(snapshot, this.view.state.snapshot);
     try {
-      const current = await this.options.api.current(AbortSignal.any([request.signal, this.lifetime.signal]));
+      const current = await this.options.api.current(AbortSignal.any([request.signal, this.network.signal]));
       if (!currentRequest() || !(await this.admit(request.signal)) || !currentRequest()) return;
       if (current.status !== 'registered' || !this.matches(current.session)) { this.invalidate(); return; }
       const latest = this.view.state.snapshot!;
@@ -521,10 +525,10 @@ export class TaskSessionClient {
     this.timer = setTimeout(() => { this.timer = null; this.availabilityRunning = false; void this.start(); }, delay);
   }
   private receive(value: BrowserMessage, generation: number) {
-    if (generation !== this.connectionGeneration || this.lifetime.signal.aborted) return;
+    if (generation !== this.connectionGeneration || this.lifetime.signal.aborted || this.accountStopped) return;
     if (!this.owned()) { this.pause(); return; }
     if (value.type === 'snapshot') {
-      if (value.userId !== this.options.userId) { this.invalidate(); this.options.onPrincipalMismatch(); return; }
+      if (value.userId !== this.options.userId) { this.suspendForAccountRefresh(); this.options.onPrincipalMismatch(); return; }
       if (!this.matches(value.snapshot)) { this.invalidate(); return; }
     }
     if (this.view.authPaused && !this.paused()) {
@@ -605,7 +609,7 @@ export class TaskSessionClient {
   private async loadArchive(snapshot: SessionSnapshot, generation: number): Promise<void> {
     this.publish({ connected: false, hasOlder: false, loadingOlder: false, archiveState: 'loading', error: null });
     try {
-      const status = await this.options.api.archive(snapshot.sessionId, this.lifetime.signal);
+      const status = await this.options.api.archive(snapshot.sessionId, this.network.signal);
       if (!(await this.admit()) || generation !== this.connectionGeneration) return;
       this.publish({ archiveState: status.state });
       if (status.state === 'pending' || status.state === 'unavailable' && snapshot.lifecycle === 'draining') { this.schedule(3000); return; }
@@ -624,7 +628,7 @@ export class TaskSessionClient {
     if (!this.owned() || generation !== this.connectionGeneration) return;
     const binding = { snapshot, generation };
     if (this.options.testSessionId === undefined && (!this.currentReadsVisible() || this.currentReadFlight !== null || this.paused())) { this.deferredArchive = binding; return; }
-    const flight = this.beginCurrentRead('archive', generation, binding), signal = AbortSignal.any([flight.controller.signal, this.lifetime.signal]);
+    const flight = this.beginCurrentRead('archive', generation, binding), signal = AbortSignal.any([flight.controller.signal, this.network.signal]);
     // Finalization can establish an ID whose live state was never delivered.
     // A ready receipt remains a placeholder until its original execution is verified.
     this.publish({ archiveState: 'loading' });
@@ -637,7 +641,7 @@ export class TaskSessionClient {
         this.finishCurrentRead(flight); void this.start(); return;
       }
       const finalSnapshot = current.session;
-      const archive = await this.options.api.archiveContent(snapshot.sessionId, this.lifetime.signal);
+      const archive = await this.options.api.archiveContent(snapshot.sessionId, signal);
       if (!this.currentReadCurrent(flight) || !(await this.admit(signal)) || !this.currentReadCurrent(flight) || generation !== this.connectionGeneration) return;
       assertSessionFence(archive, sessionFence(finalSnapshot));
       if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
@@ -670,7 +674,7 @@ export class TaskSessionClient {
     const request = new AbortController(); this.historyRequest = request;
     const currentRequest = () => this.owned() && this.historyRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
     try {
-      const page = await this.options.api.timeline(snapshot.sessionId, 'tail', null, AbortSignal.any([request.signal, this.lifetime.signal]));
+      const page = await this.options.api.timeline(snapshot.sessionId, 'tail', null, AbortSignal.any([request.signal, this.network.signal]));
       if (!currentRequest() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !currentRequest()) return;
       this.validatePage(page, snapshot);
       if (BigInt(page.lastEventSeq) < BigInt(snapshot.lastEventSeq)) throw new ApiError('protocol');
@@ -720,7 +724,7 @@ export class TaskSessionClient {
     const current = () => this.owned() && this.olderRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
     this.publish({ loadingOlder: true, historyError: null });
     try {
-      const page = await this.options.api.timeline(snapshot.sessionId, 'before', before, AbortSignal.any([request.signal, this.lifetime.signal]));
+      const page = await this.options.api.timeline(snapshot.sessionId, 'before', before, AbortSignal.any([request.signal, this.network.signal]));
       if (!current() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !current()) return;
       this.validatePage(page, snapshot);
       if (page.hasMoreBefore && (page.beforeCursor === before || this.beforeCursors.has(page.beforeCursor!))) throw new HistoryCursorError('Session history pagination did not advance.');
@@ -815,7 +819,7 @@ export class TaskSessionClient {
     this.beginOperationProgress(command.operationId);
     this.putOperation(pending, command.kind === 'interaction_response' ? { interactionId: command.payload.interactionId, revision: command.payload.interactionRevision } : undefined);
     try {
-      const receipt = await this.options.api.command(s.sessionId, command, this.lifetime.signal);
+      const receipt = await this.options.api.command(s.sessionId, command, this.network.signal);
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(s)) throw new Error('The active session changed.');
       assertSessionFence(receipt, sessionFence(s));
       if (receipt.state === 'unknown') this.endOperationProgress(command.operationId);
@@ -841,8 +845,9 @@ export class TaskSessionClient {
   }
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      const finish = () => { clearTimeout(timer); this.operationPolls.delete(timer); this.lifetime.signal.removeEventListener('abort', finish); resolve(); };
-      const timer = setTimeout(finish, ms); this.operationPolls.add(timer); this.lifetime.signal.addEventListener('abort', finish, { once: true });
+      if (this.network.signal.aborted) { resolve(); return; }
+      const finish = () => { clearTimeout(timer); this.operationPolls.delete(timer); this.network.signal.removeEventListener('abort', finish); resolve(); };
+      const timer = setTimeout(finish, ms); this.operationPolls.add(timer); this.network.signal.addEventListener('abort', finish, { once: true });
     });
   }
   checkOperation = async (id: string): Promise<void> => {
@@ -850,7 +855,7 @@ export class TaskSessionClient {
     if (!snapshot || !this.live() || this.view.checking.has(id)) return;
     const checking = new Set(this.view.checking).add(id); this.publish({ checking });
     try {
-      const operation = await this.options.api.operation(snapshot.sessionId, id, this.lifetime.signal);
+      const operation = await this.options.api.operation(snapshot.sessionId, id, this.network.signal);
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(snapshot)) return;
       assertSessionFence(operation, sessionFence(snapshot));
       if (operation.state === 'unknown') this.endOperationProgress(id);
@@ -859,13 +864,13 @@ export class TaskSessionClient {
       if (this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       await this.admit();
       throw error;
-    } finally { this.publish({ checking: new Set([...this.view.checking].filter((value) => value !== id)) }); }
+    } finally { if (!this.accountStopped) this.publish({ checking: new Set([...this.view.checking].filter((value) => value !== id)) }); }
   };
   private reconcile() { for (const operation of this.view.state.operations.values()) if (uncertain(operation)) void this.checkOperation(operation.operationId).catch(() => {}); }
   resource = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
     const s = this.view.state.snapshot;
     if (!this.live() || !s || this.view.state.resources.get(id)?.status !== 'available') throw new Error('Resource unavailable.');
-    const combinedSignal = AbortSignal.any([signal, this.lifetime.signal]);
+    const combinedSignal = AbortSignal.any([signal, this.network.signal]);
     combinedSignal.throwIfAborted();
     const descriptor = this.view.state.resources.get(id)!;
     if (s.lifecycle !== 'active' && this.archive?.schemaVersion !== 3) {
@@ -876,14 +881,15 @@ export class TaskSessionClient {
       onProgress?.();
       return new Blob([bytes], { type: archived.resource.mediaType ?? 'application/octet-stream' });
     }
+    const progress = () => { if (!combinedSignal.aborted && this.live()) onProgress?.(); };
     const load = async (): Promise<Blob> => {
-      if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal, onProgress);
+      if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal, progress);
       const key = sessionFenceKey(s);
       if (this.media?.key !== key) {
         void this.media?.client.close();
         this.media = { key, client: this.options.api.resources(sessionFence(s), () => this.owned() && this.sameSession(s)) };
       }
-      return new Blob([await this.media.client.readResource(descriptor, combinedSignal, onProgress)], { type: descriptor.mediaType ?? 'application/octet-stream' });
+      return new Blob([await this.media.client.readResource(descriptor, combinedSignal, progress)], { type: descriptor.mediaType ?? 'application/octet-stream' });
     };
     const blob = await load().catch((error: unknown) => {
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) this.invalidate(error);
@@ -893,7 +899,19 @@ export class TaskSessionClient {
     return blob;
   };
   refresh = (): void => { if (!this.live() || !this.currentReadsVisible()) return; this.historyFailureIdentity = null; this.historyFailureError = null; this.cursor = null; this.hydrated = false; void this.start(); };
+  /** Permanently stop remote work while retaining this account's displayed state. */
+  suspendForAccountRefresh = (): void => {
+    if (this.accountStopped || this.lifetime.signal.aborted) return;
+    this.accountStopped = true;
+    this.network.abort();
+    this.disconnect(); this.clearSuspensionTimer();
+    void this.media?.client.close(); this.media = null;
+    for (const id of this.progressTimers.keys()) this.clearProgressTimers(id);
+    for (const resume of [...this.admissionWaiters]) resume();
+    this.publish({ connected: false, authPaused: true, checking: new Set() });
+  };
   pause = (): void => {
+    if (this.accountStopped) return;
     this.disconnect(); this.clearSuspensionTimer(); this.publish({ connected: false, authPaused: false });
     for (const resume of [...this.admissionWaiters]) resume();
   };
@@ -926,5 +944,5 @@ export class TaskSessionClient {
     this.close();
     this.options.onInvalidate?.();
   };
-  close = (): void => { void this.images?.scope.invalidate(); this.images = null; void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
+  close = (): void => { void this.images?.scope.invalidate(); this.images = null; void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.network.abort(); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

@@ -107,13 +107,12 @@ describe('assignment mutation ownership', () => {
     await waitFor(() => expect(reads).toHaveBeenCalledTimes(2)); await synchronize(sessions, current); read.resolve(current); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, task).detail).toEqual(current); expect(canSetAssignedTo(sessions.snapshot(project, task))).toBe(true); expect(writes).toHaveBeenCalledOnce();
   });
-  it.each([false, true])('uses the confirmed 200 floor even when its body is invalid, equal=%s', async (equal) => {
+  it.each([false, true])('reconciles a confirmed 200 without predicting a version when its body is invalid, equal=%s', async (equal) => {
     const sessions = createSessions(); await open(sessions); const target = equal ? null : person;
-    writes.mockImplementationOnce(async (_project, _task, _target, _version, _signal, admission) => { admission.onWriteConfirmed?.(); throw new ApiError('protocol', 200); }); reads.mockResolvedValueOnce(initial);
+    writes.mockImplementationOnce(async (_project, _task, _target, _version, _signal, admission) => { admission.onDispatch?.(); admission.onWriteConfirmed?.(); throw new ApiError('protocol', 200); }); reads.mockResolvedValueOnce(initial);
     sessions.setAssignedTo(project, task, target, initial.version);
-    if (equal) { await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed')); await waitFor(() => expect(sessions.snapshot(project, task).requiresFreshRead).toBe(false)); expect(sessions.snapshot(project, task).mutation.reconciliationError).toBeNull(); }
-    else { await waitFor(() => expect(sessions.snapshot(project, task).mutation.reconciliationError).toMatchObject({ kind: 'protocol' })); assertBlocked(sessions); const saved = assigned(); await synchronize(sessions, saved); reads.mockResolvedValueOnce(saved); sessions.reconcile(project, task); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(saved)); }
-    expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'); expect(reads).toHaveBeenCalledTimes(equal ? 2 : 3); expect(writes).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ detail: initial, requiresFreshRead: false, mutation: { phase: 'confirmed', reconciling: false, reconciliationError: null } }));
+    expect(canSetAssignedTo(sessions.snapshot(project, task))).toBe(true); expect(reads).toHaveBeenCalledTimes(2); expect(writes).toHaveBeenCalledOnce();
   });
   it('keeps the old assignment uncertain when reconciliation fails and only a deliberate GET recovers it', async () => {
     const sessions = createSessions(); await open(sessions); const failure = new ApiError('network'); writes.mockRejectedValueOnce(failure); reads.mockRejectedValueOnce(failure);
@@ -157,14 +156,15 @@ describe('assignment admission through authentication and project histories', ()
     if (submitted) await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const world = worlds.get(sessions)!; void world.scope.invalidateScope(); resume?.(); pending.resolve(assigned()); await flush();
     expect(world.scope.isInvalidated).toBe(true); expect(writes).toHaveBeenCalledTimes(submitted ? 1 : 0); expect(reads).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).detail?.assignedTo).not.toBe(person);
   });
-  it('withdraws the assignment detail immediately and requests access revalidation after admission resumes', async () => {
+  it('retains the assignment detail while paused and requests access revalidation after admission resumes', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const result = deferred<Response>(); const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
     sessions.subscribe(project, task, () => {}); const notices: string[] = []; world.scope.subscribe((event) => { if (event.taskNotFound) notices.push(event.projectId); });
-    vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(result.promise)); writes.mockImplementationOnce(actual.setTaskAssignedTo); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    const fetcher = vi.fn().mockReturnValueOnce(result.promise); vi.stubGlobal('fetch', fetcher); writes.mockImplementationOnce(actual.setTaskAssignedTo); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
     const resume = pause(); const revoke = vi.spyOn(world.scope, 'revokeProject');
     result.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'Project access withdrawn', requestId: 'assignment-denied' } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(revoke).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'assignment-denied' }); expect(reads).toHaveBeenCalledOnce();
-    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'refused', reconciling: false, error: { status: 404, code: 'not_found', requestId: 'assignment-denied' } }));
+    expect(sessions.snapshot(project, task).detail).toEqual(initial); expect(revoke).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(sessions.snapshot(project, task)).toMatchObject({ detail: null, error: { status: 404, code: 'not_found', requestId: 'assignment-denied' } }); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
   });
   it('does not let an old history assignment 404 revoke its replacement project', async () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());

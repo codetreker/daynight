@@ -10,13 +10,22 @@ import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-erro
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
 import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
-import { classifyFailure, diagnostic, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
+import { classifyFailure, diagnostic, MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
 import { createMonitoringObserver, goJsonBytes } from "../../../../src/commands/worker/monitoring/observer.js";
 import type { DiagnosticCode } from "../../../../src/commands/worker/monitoring/types.js";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const identity = (index: number) => ({ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", taskId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", claimId: `cccccccc-cccc-4ccc-8ccc-${index.toString(16).padStart(12, "0")}` });
 const secret = "secret /private/path prompt $(command output)";
+
+it("reports confirmed archive contention without exposing the original failure", () => {
+  const cause = new WorkerCleanupError("archive", Object.assign(new Error(secret), { status: 429, code: "resource_busy" }));
+  const error = new MonitoringArchiveBusyEvidence(cause);
+  expect(error.cause).toBe(cause);
+  expect(classifyFailure(error)).toEqual({ type: "operation", code: "rate-limited", cause: "The operation was rate limited.", causeTruncated: false });
+  expect(classifyFailure(error, true)).toEqual(diagnostic("outcome-unknown"));
+  expect(classifyFailure(new Error("archive busy, short retry"))).toEqual(diagnostic("unknown"));
+});
 
 describe("worker monitoring observer", () => {
   it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {

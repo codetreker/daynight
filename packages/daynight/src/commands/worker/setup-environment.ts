@@ -1,3 +1,4 @@
+import { resolveToolLaunch, toolCommand, type ResolvedToolLaunch, type ToolPaths } from "../../platform/tool-executables.js";
 import { valid, gte } from "semver";
 import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
@@ -22,6 +23,7 @@ export type WorkerEnvironmentOptions = {
   paths: WorkerPaths;
   signal: AbortSignal;
   agentControlMode?: AgentControlMode;
+  toolPaths?: ToolPaths;
   configuration?: { agent: WorkerAgent; model: string | null; args: readonly string[] };
 };
 
@@ -77,8 +79,17 @@ export const inspectWorkerEnvironment = async (
   const environment = { ...(dependencies.environment === undefined ? process.env : dependencies.environment) };
   const runCommand = dependencies.runCommand === undefined ? runHerdrCommand : dependencies.runCommand;
   const operation = createOperation({ signal: options.signal, limits: { totalMs: 30_000, requestMs: 10_000, totalBytes: 4 * 1_048_576 } });
-  const command = async (file: string, args: readonly string[], scope: Operation): Promise<string> =>
-    (await runCommand({ file, args, environment, cwd: options.workingDirectory }, scope)).stdout;
+  const launches = new Map<string, Promise<ResolvedToolLaunch>>();
+  const select = (tool: "codex" | "copilot" | "herdr", scope: Operation): Promise<ResolvedToolLaunch> => {
+    const context = tool === "herdr" ? "herdr" : options.agentControlMode ?? "herdr";
+    const key = `${tool}:${context}`; let pending = launches.get(key);
+    if (!pending) { pending = resolveToolLaunch({ tool, context, choice: options.toolPaths![tool], environment, cwd: options.workingDirectory }, scope); launches.set(key, pending); }
+    return pending;
+  };
+  const command = async (file: string, args: readonly string[], scope: Operation): Promise<string> => {
+    const launch = options.toolPaths && (file === "codex" || file === "copilot" || file === "herdr") ? await select(file, scope) : undefined;
+    return (await runCommand({ ...(launch ? toolCommand(launch, args) : { file, args }), environment, cwd: options.workingDirectory }, scope)).stdout;
+  };
   try {
     if (options.configuration !== undefined && options.agentControlMode === "web") {
       return [{ label: `${options.configuration.agent} Web session runtime`, status: "unverified", agent: options.configuration.agent,
@@ -87,8 +98,13 @@ export const inspectWorkerEnvironment = async (
     }
     if (options.configuration !== undefined) {
       const { agent } = options.configuration;
+      let toolLaunch: ResolvedToolLaunch | undefined;
+      if (options.toolPaths && agent !== "claude") {
+        try { toolLaunch = await select(agent, operation); }
+        catch (error) { operation.check(); return [{ label: `${agent} executable`, agent, status: "missing", detail: error instanceof Error ? error.message : "The selected tool is unavailable.", remedy: "Repair the configured Worker tool path before running the worker." }]; }
+      }
       const probes = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
-        context: { cwd: options.workingDirectory }, configuration: options.configuration,
+        context: { cwd: options.workingDirectory }, configuration: { ...options.configuration, ...(toolLaunch ? { toolLaunch } : {}) },
       }).filter(({ kind }) => kind !== "version" && kind !== "runtime");
       const checks = await inspectProbes(probes.map((probe) => ({ ...probe, agent })), operation);
       operation.check();
@@ -141,7 +157,14 @@ export const inspectWorkerEnvironment = async (
       const [, version] = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
         context: { cwd: options.workingDirectory }, configuration: { agent, model: null, args: [] },
       });
-      probes.push({ ...version, agent }, {
+      probes.push({ ...version, agent, verify: async scope => {
+        if (!options.toolPaths || agent === "claude") return version.verify(scope);
+        const toolLaunch = await select(agent, scope);
+        const [, selected] = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
+          context: { cwd: options.workingDirectory }, configuration: { agent, model: null, args: [], toolLaunch },
+        });
+        return selected.verify(scope);
+      } }, {
         label: `${agent} Herdr integration`, agent,
         remedy: `Run herdr integration install ${agent}, then inspect herdr integration status.`,
         verify: async (scope) => integrationState(await readIntegrations(scope), agent),

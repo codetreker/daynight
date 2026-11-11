@@ -20,6 +20,9 @@ import type { createWorkerReporter } from "../../../src/commands/worker/reporter
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
@@ -64,7 +67,7 @@ const fixture = async (warm = false, configured = true) => {
   if (warm) { store = openWorkerStore(paths.databaseFile); stores.add(store); }
   return { homeDirectory, version: "0.41.0", workingDirectory: homeDirectory, packageDirectory: path.resolve("package"), paths, source, document, repository, store };
 };
-const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
+const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), archiveYield: () => false, updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
 const reporter = () => ({ trigger: vi.fn(), publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
 const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof runWorker>[0]> = {}) => {
   const cancellation = new AbortController(); cancellations.add(cancellation);
@@ -76,7 +79,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     let current = options;
     return {
-      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
         if (!current.readyProjectIds?.includes(uuid(1))) return;
         try { check(current); } finally { cancellation.abort(); }
@@ -90,7 +93,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
-  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined) });
+  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
     currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => resource(desired())),

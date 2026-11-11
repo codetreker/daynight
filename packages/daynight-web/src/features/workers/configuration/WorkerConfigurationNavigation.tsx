@@ -6,29 +6,32 @@ import { useTaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { TaskConfirmation } from '../../task-detail/TaskConfirmation';
 import { dialogFocusables } from '../../task-detail/focus';
 
-/** The configuration remains a draft owner while its tab is hidden. */
-export const useWorkerConfigurationNavigation = ({ workerId, dirty, unavailable, discard, visible, onContinueEditing }: {
+type Editor = 'configuration' | 'prompt';
+
+/** Both editors share one navigation scope, even when either panel is hidden. */
+export const useWorkerConfigurationNavigation = ({ workerId, configurationDirty, promptDirty, unavailable, discard, section, onContinueEditing }: {
   readonly workerId: string;
-  readonly dirty: boolean;
+  readonly configurationDirty: boolean;
+  readonly promptDirty: boolean;
   readonly unavailable: boolean;
   readonly discard: () => void;
-  readonly visible: boolean;
-  readonly onContinueEditing?: () => void;
+  readonly section: 'overview' | Editor;
+  readonly onContinueEditing: (editor: Editor) => void;
 }) => {
   const identity = useTaskCacheScope(), navigation = browserNavigation();
   const scope = useMemo<WorkerConfigurationDraftScope>(() => ({ kind: 'worker-configuration', identity, workerId }), [identity, workerId]);
-  const current = useRef({ dirty, unavailable, discard }); current.current = { dirty, unavailable, discard };
-  const owner = useRef<HTMLDivElement>(null), editor = useRef<HTMLElement>(null), restoreFocus = useRef(false);
+  const current = useRef({ configurationDirty, promptDirty, unavailable, discard }); current.current = { configurationDirty, promptDirty, unavailable, discard };
+  const owner = useRef<HTMLDivElement>(null), fallback = useRef<HTMLElement>(null);
+  const editors = useRef<Partial<Record<Editor, HTMLElement>>>({});
+  const lastEdited = useRef<Editor>('configuration'), restoreFocus = useRef<Editor | null>(null);
   useLayoutEffect(() => {
     if (unavailable) return;
     const unregister = navigation.register({ scope, signal: identity.signal,
-      isDirty: () => !identity.isInvalidated && !current.current.unavailable && current.current.dirty,
+      isDirty: () => !identity.isInvalidated && !current.current.unavailable && (current.current.configurationDirty || current.current.promptDirty),
       discard: () => current.current.discard(),
       survives: url => { const route = parseAuthRoute(url.pathname, url.search); return route.kind === 'worker' && route.workerId === workerId; },
     });
     return () => {
-      // A proven missing resource retires an arrived history choice before
-      // unregistering; cleanup alone cannot authorize adopting its destination.
       if (current.current.unavailable) navigation.retireScope(scope);
       unregister();
     };
@@ -36,20 +39,23 @@ export const useWorkerConfigurationNavigation = ({ workerId, dirty, unavailable,
   const decision = useSyncExternalStore(navigation.subscribeDecision, navigation.decision);
   const confirming = decision?.drafts.some(draft => draft.scope === scope) === true;
   useLayoutEffect(() => {
-    if (!restoreFocus.current || confirming || !visible) return;
-    restoreFocus.current = false;
+    const targetSection = restoreFocus.current;
+    if (targetSection === null || confirming || section !== targetSection) return;
+    restoreFocus.current = null;
     if (unavailable || identity.isInvalidated) return;
-    const fields = owner.current === null ? [] : dialogFocusables(owner.current).filter(element => element.matches('input, textarea, select'));
-    const target = fields.find(element => element === editor.current) ?? fields[0];
+    const panel = owner.current?.querySelector<HTMLElement>(`[data-worker-panel="${targetSection}"]`);
+    const fields = panel == null ? [] : dialogFocusables(panel).filter(element => element.matches('input, textarea, select'));
+    const target = fields.find(element => element === editors.current[targetSection]) ?? fields[0];
     target?.focus();
-  }, [confirming, visible, unavailable, identity]);
-  const rememberFocus = (event: FocusEvent<HTMLDivElement>) => {
-    if (event.target instanceof HTMLElement && event.target.matches('input, textarea, select')) editor.current = event.target;
+  }, [confirming, section, unavailable, identity]);
+  const rememberFocus = (editor: Editor, event: FocusEvent<HTMLElement>) => {
+    if (event.target instanceof HTMLElement && event.target.matches('input, textarea, select')) editors.current[editor] = event.target;
   };
+  const destination = () => configurationDirty && !promptDirty ? 'configuration' : promptDirty && !configurationDirty ? 'prompt' : lastEdited.current;
   const { messages: { workers: { configuration: m }, inspection: { draftNavigation: shared } } } = useI18n();
   const confirmation = !confirming ? null : <TaskConfirmation title={shared.title} question={m.leaveQuestion} explanation={m.leaveExplanation}
     taskTitle={workerId} confirmLabel={shared.discard} cancelLabel={shared.keep} closeLabel={shared.close} destructive
-    owner={owner} fallbackFocus={editor} onRestoreFocus={() => { restoreFocus.current = true; }}
-    onCancel={() => { navigation.cancel(); onContinueEditing?.(); }} onConfirm={navigation.confirm} />;
-  return { owner, rememberFocus, confirming, confirmation };
+    owner={owner} fallbackFocus={fallback} onRestoreFocus={() => { restoreFocus.current = destination(); }}
+    onCancel={() => { const target = destination(); navigation.cancelAndRestore(() => onContinueEditing(target)); }} onConfirm={navigation.confirm} />;
+  return { owner, rememberFocus, markEdited: (editor: Editor) => { lastEdited.current = editor; }, confirming, confirmation };
 };

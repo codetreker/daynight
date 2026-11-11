@@ -2,8 +2,10 @@
 
 Descriptions and attachments hold Task material, Threads durable discussion,
 Sessions execution content and activity, and Steps ordered Task records. Read each resource
-independently; none substitutes for another. Writes also require
-[write safety](write-safety.md).
+independently; none substitutes for another. A Goal has its own description,
+attachments and Thread, separate from those of its child Tasks. Use the Goal ID
+with the same material commands for shared resources; membership does not move
+child materials. Writes also require [write safety](write-safety.md).
 
 ## Descriptions and references
 

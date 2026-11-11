@@ -9,6 +9,8 @@ import type { BotDefinition, BotOwner, BotRecord } from "../../../src/commands/w
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+
 export const root = fileURLToPath(new URL("../../../../../.tmp/bot-execution-store-tests/", import.meta.url));
 export const dirs: string[] = [], handles: { close(): void }[] = [];
 export const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -18,7 +20,7 @@ export const proof: ProcessProof = { pid: 123, parentPid: 12, processGroupId: 12
 export const createBotExecutionFixture = <T extends SqliteDatabaseSource>(source: (home: string) => T) => {
   mkdirSync(root, { recursive: true }); const home = mkdtempSync(path.join(root, "case-")); dirs.push(home);
   const database = source(home), bots = openBotStore(database, { onMigration: () => {} }); handles.push(bots);
-  bots.observe(owner, definition(), 1); bots.prepare(owner, id(3), { homeDirectory: home, recoveryLimit: 3 });
+  bots.observe(owner, definition(), 1); bots.prepare(owner, id(3), { homeDirectory: home, recoveryLimit: 3, toolLaunch: frozenToolLaunch() });
   const intent = bots.get(owner, id(3))!.intent!;
   bots.observe(owner, { ...definition(), version: "2", sessionId: id(10), testExecutionId: intent.executionId }, 2);
   const record = bots.get(owner, id(3))!;

@@ -51,6 +51,15 @@ Lifecycle command deadlines use the existing Node.js runtime instead of GNU
 output, preserves ordinary exit codes, and reports expiry or interruption as
 failure. It sends TERM to the owned process group, escalates to KILL after the
 grace period, and terminates remaining group members when the leader exits.
+On macOS, a group containing only unreaped zombies can reject a repeated signal
+with `EPERM`: the [Darwin group-signal implementation](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_sig.c#L1675)
+filters zombies before counting signalable members. The wrapper resolves only
+Darwin `EPERM` through a bounded `/bin/ps` observation. A complete, successful
+table containing the observer itself must show either no group members or only
+same-user zombies. Live members, foreign ownership or unknown states in that
+group, malformed or partial output, observation errors and deadlines retain the
+cleanup failure. The observer is bound to the returned `ps` PID; macOS runs
+`ps` with effective UID 0, and unrelated processes can report an unknown state.
 Portable process tests verify expiry, cancellation and descendant cleanup;
 ordinary module tooling requires no additional command-line dependency.
 
@@ -84,6 +93,11 @@ macOS does not. Requiring it would add a dependency to both lifecycle validation
 and the module entry's portable runner tests. Node.js is already required by
 both entries and supplies process groups, signal handling and bounded timers.
 
+**Ignore `EPERM` or omit cleanup after escalation.** A permission error can still
+mean that live descendants remain. The final group signal stays in place, and
+the macOS exception requires a successful observation that no member can run.
+`/bin/ps` is part of macOS; its bounded fallback adds no installed tool.
+
 ## Consequences
 
 Module, command lifecycle and normal API validation have separate results and
@@ -92,6 +106,11 @@ preparation. Complete local server validation runs both coverage scripts; a
 successful module-only run does not establish command lifecycle validation.
 Independent scheduling alone does not establish a measured reduction in complete
 CI duration.
+
+A Darwin cleanup error can require up to one additional second to inspect the
+group. An unavailable or ambiguous observation fails validation rather than
+claiming successful cleanup. Zombie recognition confirms process termination;
+the owning parent remains responsible for reaping its exited child.
 
 The command package retains its full process, persistence and boundary proofs;
 this decision changes their execution owner and consolidates the separate normal

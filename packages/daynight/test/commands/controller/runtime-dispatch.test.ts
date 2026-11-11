@@ -1,4 +1,5 @@
 import {test,expect,vi} from 'vitest';
+vi.mock("../../../src/commands/controller/launch-tool-selection.js", () => ({ readLaunchToolSelection: async () => undefined }));
 import {EventEmitter} from 'node:events';
 const f=vi.hoisted(()=>({callbacks:null as any,receipt:vi.fn(),close:vi.fn(),gap:vi.fn(),writes:0,state:'accepted'}));
 vi.mock('node:fs/promises',()=>({mkdir:async()=>{},realpath:async(v:string)=>v,chmod:async()=>{},unlink:async()=>{}}));

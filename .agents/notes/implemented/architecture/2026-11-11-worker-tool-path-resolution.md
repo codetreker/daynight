@@ -83,8 +83,9 @@ open the file and verify its type, handle and path signatures, realpath and any
 parsed-content digest. Only stable observations populate the cache; a same-size
 rewrite with restored mtime still invalidates it through ctime.
 
-Local choices do not have a cloud adoption state and are not added to the
-existing cloud bootstrap protocol. The
+Local choices do not have a cloud adoption state. The independently negotiated
+[cloud configuration](2026-11-11-worker-tool-path-configuration.md) owns nullable
+adoption, bootstrap and legacy projections. The
 [Worker specification](../../../../docs/spec/daynight-worker.md#本地工具路径解析)
 owns the accepted local values; the
 [Worker design](../../../../docs/design/daynight-worker.md#本地工具路径选择)
@@ -141,8 +142,10 @@ and cleanup. Script imports, OS libraries and native user configuration are not
 part of the artifact set. Known loader/template registration requires explicit
 updates as supported upstream formats change.
 
-Worker Task/Bot launches, Herdr instances, version/capability probes and cloud
-configuration do not consume these choices yet. A successful parse does not
-prove that a file exists, that a tool can run, that its protocol is compatible,
-or that the Worker has applied the selection. Runtime integration must preserve
-those distinctions when it begins consuming the shared choice contract.
+The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
+adds Web Task/Bot launch consumers, shared probes and a bounded Copilot authority
+profile. That profile freezes its known preload closure and a complete private
+distribution manifest in addition to the plain resolver dependencies. Herdr
+instance mapping remains separate. A successful parse alone still does not prove
+that a file exists, that a tool can run, that its protocol is compatible, or that
+the Worker has applied the selection.

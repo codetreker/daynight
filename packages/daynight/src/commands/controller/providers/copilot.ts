@@ -1,5 +1,6 @@
 import { textNativeInput, validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
 import type { NativeInput } from "./types.js";
+import { readCopilotRuntimeVersion } from "./copilot-status.js";
 import { CopilotControls } from "./controls-copilot.js";
 import { copilotImageProfile, type CopilotImageProfile } from "./copilot-image-profile.js";
 import { randomUUID } from "node:crypto";
@@ -28,6 +29,7 @@ const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.ur
 const transportErrors = new Set([ErrorCodes.MessageWriteError, ErrorCodes.MessageReadError, ErrorCodes.PendingResponseRejected, ErrorCodes.ConnectionInactive]);
 
 export const openCopilotProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
+  if (options.toolLaunch && (options.toolLaunch.tool !== "copilot" || options.toolLaunch.context !== "web")) throw new Error("Copilot Provider requires its frozen Web tool.");
   const args = parseProviderArguments("copilot", options.args, options.validateNativeSelection), cwd = await realpath(options.cwd);
   if (!(await stat(cwd)).isDirectory()) throw new Error("Copilot working directory is not a directory.");
   const nativeId = options.resumeNativeSessionId ?? randomUUID(), turns = new NativeTurns();
@@ -124,7 +126,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     catch { disconnect(new Error("Native Copilot event could not be processed; operation results are unknown.")); }
   };
   options.onNativeReadPolicy?.(null);
-  const artifacts = options.onNativeReadPolicy && !options.executable ? await prepareCopilotAuthorityArtifacts(copilotExecutable(), options.env ?? process.env, options.onDiagnostic) : undefined;
+  const artifacts = options.onNativeReadPolicy && !options.executable && !options.toolLaunch ? await prepareCopilotAuthorityArtifacts(copilotExecutable(), options.env ?? process.env, options.onDiagnostic) : undefined;
   let runtime: ReturnType<typeof startCopilotRuntime>;
   try { runtime = startCopilotRuntime({ ...options, cwd }, disconnect, artifacts, options.imageRuntime ? { createSpool: maximum => options.imageRuntime!.createSpool(maximum) } : undefined); }
   catch (error) { await artifacts?.cleanup(); throw error; }
@@ -222,6 +224,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   };
   try {
     state(); client = await runtime.ready;
+    if (options.toolLaunch?.runtimeProfile) await call(readCopilotRuntimeVersion(client, options.toolLaunch), "Copilot frozen runtime compatibility");
     if (options.resumeNativeSessionId) {
       const metadata = await call(client.getSessionMetadata(nativeId), "Copilot session metadata");
       if (!metadata || metadata.sessionId !== nativeId || metadata.isRemote || !metadata.context?.workingDirectory || await realpath(metadata.context.workingDirectory) !== cwd) throw new Error("Native Copilot history identity or working directory is unavailable.");

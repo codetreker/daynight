@@ -139,13 +139,19 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode", "toolPaths")
 	if err != nil {
 		return value, err
 	}
 	for _, key := range []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"} {
 		if _, ok := fields[key]; !ok {
 			return value, invalidInput("configuration." + key + " is required.")
+		}
+	}
+	if rawPaths, ok := fields["toolPaths"]; ok {
+		value.ToolPaths, err = parseToolPaths(rawPaths, true)
+		if err != nil {
+			return value, err
 		}
 	}
 	if rawMode, ok := fields["agentControlMode"]; ok {
@@ -244,7 +250,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if !jsonunicode.Valid(raw) {
 		return nil, invalidInput("Worker configuration exchange must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "controlModeBootstrap")
+	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "controlModeBootstrap", "toolPathsBootstrap")
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +259,13 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		if _, ok := fields[key]; !ok {
 			return nil, invalidInput("configuration exchange." + key + " is required.")
 		}
+	}
+	if candidate, exists := fields["toolPathsBootstrap"]; exists && !configurationNull(candidate) {
+		paths, parseErr := parseToolPaths(candidate, false)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		exchange.ToolPathsBootstrap = &paths
 	}
 	if candidate, exists := fields["controlModeBootstrap"]; exists {
 		exchange.ControlModeBootstrap, err = configurationControlMode(candidate)

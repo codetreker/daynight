@@ -20,6 +20,12 @@ transport draining includes request-completion logging after connection hijack.
 Backup verification uses stderr only. Container deployments own a separate
 writable log volume for each server instance.
 
+The hijacked-request drain test waits for the real startup log handler to return
+before it blocks request-completion output. Serving begins before the synchronous
+startup write, so a connected client alone cannot establish that this write has
+finished. The test retains the shared JSON handler, output, shutdown deadlines,
+close retry and independent-process lock probe.
+
 ## Alternatives
 
 **Use a rotating library with background maintenance.** Its maintenance thread
@@ -29,10 +35,16 @@ the required failure and ownership lifecycle.
 **Use a PID file or a process-local mutex.** Neither supplies kernel-managed
 exclusive ownership and crash recovery for independent processes.
 
+**Make startup logging asynchronous to isolate the drain test.** That changes
+the production ownership and failure model. Observing startup completion gives
+the test its required ordering without changing synchronous output behavior.
+
 ## Consequences
 
 Logs survive ordinary restarts and stderr remains available to supervisors.
 Synchronous output can block on a stalled sink and does not provide per-record
-fsync durability. A server instance needs its own root and log directory; an
-absolute storage directory can still be shared. Operators must provision write
-access and include the log volume in their deployment's resource cleanup.
+fsync durability. The drain test proves shutdown behavior after startup logging
+completes; it does not promise bounded startup on a blocked sink. A server
+instance needs its own root and log directory; an absolute storage directory can
+still be shared. Operators must provision write access and include the log
+volume in their deployment's resource cleanup.

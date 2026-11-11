@@ -6,7 +6,7 @@
 
 `TaskDetailSurface` 组合 Discussion、概览、附件和可选 Session；`TaskDetailReading` 将各面板交给 `TaskDetailPanels`。顺序为概览、附件、讨论、可选 Session。Discussion 不依赖 claim、任务状态或 Controller 在线，普通 Web 发言只发送 body 和可选 replyTo，不携带 claimId。
 
-`TaskDetailTab` 类型与 router 的运行时白名单都包含 discussion。`?tab=discussion` 使用既有任务 URL，独立页以 URL 恢复页签，弹层仍保存本地选择。同一任务切换页签不卸载 Discussion；离开任务页面、关闭详情或账号生命周期退休则释放其内存。面板全部保持挂载并使用 hidden/inert，因此 controller 的活动状态必须由明确的 active 参数控制。
+`TaskDetailTab` 类型与 router 的运行时白名单都包含 discussion。`?tab=discussion` 使用既有任务 URL，独立页以 URL 恢复根页签；项目页和独立页的嵌套详情通过各自的阅读历史恢复页签。同一任务切换页签不卸载 Discussion；离开任务页面、关闭详情或账号生命周期退休则释放其内存。面板全部保持挂载并使用 hidden/inert，因此 controller 的活动状态必须由明确的 active 参数控制。
 
 | 所有者 | 职责 |
 | --- | --- |
@@ -85,9 +85,9 @@ incoming保留完整连续缓冲区间，包括已经在visible出现的回执�
 
 composer 保存完整原始 body，不 trim、重排换行或破坏代码缩进。空白仅用于可用性校验，另拒绝 NUL、非法 Unicode 和原始 UTF-8 超过 64 KiB。Ctrl/Command+Enter 发言，IME composing 不触发。同一 controller 最多一个 POST；等待结果期间仍可编辑草稿和回复。
 
-发送捕获 body、replyTo、账号及草稿/回复 revision。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed，再等待同 UID 认证准入；之后的本地取消或准入失败不能改成 unknown。确认资源只占一个在途槽及一条消息预留；真正scope退休仍阻止旧资源发布。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
+发送捕获 body、replyTo、账号、草稿/回复 revision 和导航上下文。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed；发送 promise 和 busy 随本地结果结算，不等待同 UID 发布准入。controller 持有确认资源及可取消的独立发布工作；临时阻塞保留资源，恢复后重新准入，退休时取消工作。待发布回执占一条消息预留并阻止下一次 POST，避免在新发送替换状态时丢失已确认回执，但不阻止编辑。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
 
-准入后按 ID 合并消息。仅当各自 revision 仍等于发送快照时清空草稿或回复，不清理后续编辑。201 的 displayName 不要求等于页面当前名称，改名可以与发言同时发生。
+准入后按 ID 合并消息。清空草稿和回复还须原 controller 存活、导航位置与待决选择保持提交时上下文，且草稿和回复的 revision 都等于发送快照；切换讨论页签或后续编辑不会被旧结果清除。准备及派发前的认证等待使用该发送自己的取消信号；已派发后取消不能推断回滚，未确认仍为 unknown。201 的 displayName 不要求等于页面当前名称，改名可以与发言同时发生。
 
 有效 4xx 和经过验证的 clock_not_advanced 是明确拒绝；已 dispatch 的网络失败、超时、generic 5xx、message_outcome_unknown 或无法验证的成功资源是未知结果。二者均不自动重发。未知结果保留草稿和真实状态，普通刷新只 GET；相同正文不能证明是原发送，再次点击发送是新的追加。
 
@@ -105,4 +105,4 @@ Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 
 
 功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、条数窗口边界、完整大消息页、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
 
-[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存原职责划分、复用和窗口容量的取舍；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录保留条数窗口并移除读取字节准入的职责。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存原职责划分、复用和窗口容量的取舍；[发送结算决策](../../.agents/notes/implemented/bug-fix/2026-11-11-thread-post-publication.md)记录回执与发布准入的分离；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录保留条数窗口并移除读取字节准入的职责。

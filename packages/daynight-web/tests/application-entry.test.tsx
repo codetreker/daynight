@@ -31,6 +31,21 @@ beforeEach(() => {
 });
 
 describe("public and authenticated entry ownership", () => {
+  it("routes the completion document to its own account initialization", () => {
+    window.history.replaceState(null, "", "/auth/complete?returnPath=%2Fsetup%3Ffrom%3Dlogin%23guide");
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn((_url: string, _init?: RequestInit) => pending.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const view = mount();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/v1/me");
+    expect(window.location.pathname).toBe("/auth/complete");
+    expect(screen.queryByRole("heading", { name: "Public product introduction" })).toBeNull();
+    const signal = fetcher.mock.calls[0]![1]!.signal!;
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+  });
+
   it("shows a local bilingual OAuth error without logging in or retaining request parameters", () => {
     window.history.replaceState(null, "", "/oauth/authorize?client_id=bad&state=private&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback");
     const fetcher = vi.fn(() => { throw new Error("Error page must not fetch or authenticate"); });
@@ -69,7 +84,7 @@ describe("public and authenticated entry ownership", () => {
     mount();
     expect(window.location.hash).toBe("");
     expect(writes.mock.calls.every(([state]) => !JSON.stringify(state).includes("pending-invitation"))).toBe(true);
-    expect(browserNavigation().snapshot()).toEqual({ pathname: "/invitations", search: "", hash: "" });
+    expect(browserNavigation().snapshot()).toMatchObject({ pathname: "/invitations", search: "", hash: "" });
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     await act(async () => navigate(path));
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
@@ -286,7 +301,7 @@ describe("public and authenticated entry ownership", () => {
     expect(sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
     expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
-    expect(Object.keys(history.state.__daynightNavigation).sort()).toEqual(["index", "session"]);
+    expect(Object.keys(history.state.__daynightNavigation).sort()).toEqual(["entryId", "index", "session"]);
   });
 
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {

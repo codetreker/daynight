@@ -91,6 +91,27 @@ it("preserves a confirmed write when the required refresh fails and never replay
   expect(writes).toBe(1); expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
 });
 
+it("finishes the same confirmed direct write after its follow-up read crosses a temporary pause", async () => {
+  const { sessions } = world(); const followup = deferred<Response>(); let writes = 0; let reads = 0;
+  const changed = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response(changed)); }
+    reads++; return reads === 1 ? Promise.resolve(response(body())) : reads === 2 ? followup.promise : Promise.resolve(response(changed));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => { expect(reads).toBe(2); expect(sessions.snapshot(project, task).mutation.phase).toBe("confirmed"); });
+  const operation = sessions.snapshot(project, task).mutation.operation; const resume = pauseAuthRequests();
+  try {
+    followup.resolve(response(changed));
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ operation, phase: "confirmed", reconciling: false, publicationPending: true }));
+    expect(sessions.snapshot(project, task).detail?.version).toBe(1n); expect(reads).toBe(2); expect(writes).toBe(1);
+  } finally { resume(); }
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ detail: changed, requiresFreshRead: false, mutation: { operation, phase: "confirmed", reconciling: false } }));
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation.publicationPending).not.toBe(true));
+  expect(writes).toBe(1);
+});
+
 it.each(['confirmed', 'refused'] as const)('settles a %s direct write after a peer publishes an ordinary same-epoch graph', async outcome => {
   const { sessions } = world(), peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const write = deferred<Response>(); let writes = 0, committed = false;
@@ -745,7 +766,8 @@ it.each([
     if (fastResume) resume();
     else {
       await waitFor(() => expect(rejected).toBe(true));
-      expect(sessions.snapshot(project, task).mutation.phase).toBe("pending");
+      expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : status === 409 ? "conflict" : "unknown", reconciling: false, publicationPending: true });
+      expect(sessions.snapshot(project, task).detail?.version).toBe(1n);
       expect(writes).toBe(1);
     }
   } finally { resume(); }
@@ -796,7 +818,7 @@ it.each([200, 409] as const)("holds HTTP %s outcome when identity pauses just af
     return current;
   });
   sessions.setStatus(project, task, "in_progress", 1n); await paused.promise;
-  try { expect(sessions.snapshot(project, task).mutation.phase).toBe("pending"); expect(writes).toBe(1); }
+  try { expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : "conflict", reconciling: false, publicationPending: true }); expect(sessions.snapshot(project, task).detail?.version).toBe(1n); expect(writes).toBe(1); }
   finally { (resume as (() => void) | null)?.(); }
   await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : "conflict", reconciling: false }));
   expect(writes).toBe(1);

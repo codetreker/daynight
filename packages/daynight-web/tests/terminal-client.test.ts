@@ -126,6 +126,101 @@ describe('terminal client control ownership', () => {
     current = false; h.client.setVisible(false); current = true; h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledTimes(2));
     expect(h.client.getSnapshot().ownsControl).toBe(false); h.publish(state()); expect(h.client.getSnapshot().phase).toBe('ready'); h.client.close();
   });
+  it('stops immediately after account admission closes and cannot restart the retained viewer', async () => {
+    vi.useFakeTimers(); let current = true; const h = harness(() => current);
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const confirmed = h.client.getSnapshot().session; const staleReceiver = vi.mocked(h.api.channel).mock.calls[0]![2];
+    let resolve!: (value: TerminalResult) => void; let signal!: AbortSignal;
+    vi.mocked(h.api.command).mockImplementationOnce((_id, _browser, _command, s) => { signal = s; return new Promise(done => { resolve = done; }); });
+    const sending = h.client.paste('pending input'); const command = vi.mocked(h.api.command).mock.calls[0]![2];
+    current = false; h.client.suspendForAccountRefresh();
+    expect(h.close).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
+    expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', session: confirmed, pending: false, inputReady: false, ownsControl: false, result: { operationId: command.payload.operationId, state: 'unknown' } });
+    resolve({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } });
+    await sending; current = true;
+    const late = structuredClone(confirmed!); late.snapshot!.frame.frameSeq = '99'; staleReceiver(late);
+    h.client.setVisible(true); await h.client.refresh(); await h.client.checkOperation();
+    await h.client.paste('new input'); await h.client.key('Enter'); await h.client.control('renew_control');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', session: confirmed, result: { state: 'unknown' } });
+    expect(h.api.current).toHaveBeenCalledOnce(); expect(h.api.channel).toHaveBeenCalledOnce();
+    expect(h.api.state).not.toHaveBeenCalled(); expect(h.api.operation).not.toHaveBeenCalled(); expect(h.api.command).toHaveBeenCalledOnce();
+    h.client.invalidate(); expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', transport: 'disconnected', session: null });
+    h.client.suspendForAccountRefresh(); expect(h.client.getSnapshot().transport).toBe('disconnected'); h.client.close();
+  });
+  it('cancels a scheduled discovery retry on account refresh', async () => {
+    vi.useFakeTimers(); let current = true; const h = harness(() => current);
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    current = false; h.client.suspendForAccountRefresh(); current = true; h.client.setVisible(true);
+    await vi.advanceTimersByTimeAsync(30_000); expect(h.api.current).toHaveBeenCalledOnce(); expect(h.api.channel).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('does not start a read if a connecting subscriber suspends synchronously', async () => {
+    const h = harness();
+    h.client.subscribe(() => { if (h.client.getSnapshot().transport === 'connecting') h.client.suspendForAccountRefresh(); });
+    h.client.setVisible(true); await h.client.refresh();
+    expect(h.api.current).not.toHaveBeenCalled(); expect(h.api.channel).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('closes a channel returned after its synchronous state callback suspends the client', async () => {
+    vi.useFakeTimers(); const h = harness();
+    vi.mocked(h.api.channel).mockImplementationOnce((_id, _browser, receive) => { receive(h.state()); return { close: h.close }; });
+    h.client.subscribe(() => { if (h.client.getSnapshot().transport === 'connected') h.client.suspendForAccountRefresh(); });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(h.close).toHaveBeenCalledOnce(); expect(h.client.getSnapshot().transport).toBe('paused');
+    await vi.advanceTimersByTimeAsync(30_000); expect(h.api.channel).toHaveBeenCalledOnce(); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('does not dispatch when a pending subscriber suspends synchronously', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    h.client.subscribe(() => { if (h.client.getSnapshot().pending) h.client.suspendForAccountRefresh(); });
+    await h.client.paste('must not dispatch');
+    expect(h.api.command).not.toHaveBeenCalled();
+    expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', pending: false, result: null });
+    expect(sessionStorage.getItem(`daynight:terminal-operation:${owner.ownerUserId}:${r.claimId}`)).toBeNull(); h.client.close();
+  });
+  it('settles an undispatched operation when admission closes during its pending notification', async () => {
+    let current = true; const h = harness(() => current);
+    h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const unsubscribe = h.client.subscribe(() => { if (h.client.getSnapshot().pending) current = false; });
+    await h.client.paste('not dispatched'); unsubscribe(); current = true;
+    expect(h.api.command).not.toHaveBeenCalled(); expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: null });
+    await h.client.paste('later'); expect(h.api.command).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('retains the frame if suspension interrupts a failed receipt query', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockRejectedValueOnce(new Error('lost')); await h.client.paste('pending');
+    const previous = h.client.getSnapshot().session;
+    vi.mocked(h.api.operation).mockRejectedValueOnce(new ApiError('server', 403, 'permission_denied'));
+    const unsubscribe = h.client.subscribe(() => { unsubscribe(); h.client.suspendForAccountRefresh(); });
+    await h.client.checkOperation();
+    expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', session: previous, result: { state: 'unknown' } }); h.client.close();
+  });
+  it('retains the frame if suspension interrupts a disconnect with a pending operation', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockImplementationOnce(() => new Promise(() => {}));
+    const sending = h.client.paste('pending'); const previous = h.client.getSnapshot().session;
+    const unsubscribe = h.client.subscribe(() => { if (h.client.getSnapshot().result?.state === 'unknown') { unsubscribe(); h.client.suspendForAccountRefresh(); } });
+    h.disconnect(new Error('closed')); await sending;
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'paused', session: previous, result: { state: 'unknown' } }); h.client.close();
+  });
+  it('does not install a new frame when suspension interrupts an operation fence change', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockImplementationOnce(() => new Promise(() => {}));
+    const sending = h.client.paste('pending'); const previous = h.client.getSnapshot().session;
+    const unsubscribe = h.client.subscribe(() => { if (h.client.getSnapshot().result?.state === 'unknown') { unsubscribe(); h.client.suspendForAccountRefresh(); } });
+    const replacement = structuredClone(h.state()); replacement.connectionEpoch = '2'; replacement.snapshot!.frame.frameSeq = '99';
+    h.publish(replacement); await sending;
+    expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', session: previous, result: { state: 'unknown' } }); h.client.close();
+  });
+  it('does not schedule polling after a queued result subscriber suspends', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    let notifications = 0;
+    h.client.subscribe(() => { if (h.client.getSnapshot().result?.state === 'queued' && ++notifications === 2) h.client.suspendForAccountRefresh(); });
+    await h.client.paste('queued'); expect(h.close).toHaveBeenCalledOnce();
+    expect(timers.mock.calls.some(([, delay]) => delay === 500)).toBe(false); await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.api.operation).not.toHaveBeenCalled(); expect(h.client.getSnapshot().result?.state).toBe('unknown'); h.client.close();
+    timers.mockRestore();
+  });
   it('retains the confirmed frame while paused and requires a fresh matching channel before input or renewal', async () => {
     vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
     const confirmed = structuredClone(h.state()); const staleReceiver = vi.mocked(h.api.channel).mock.calls[0]![2];

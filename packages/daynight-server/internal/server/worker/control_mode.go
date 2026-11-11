@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -24,6 +25,7 @@ func controlModeProtocol(header http.Header) (bool, error) {
 type projectedConfiguration struct {
 	model.WorkerConfigurationWire
 	AgentControlMode any `json:"agentControlMode,omitempty"`
+	ToolPaths        any `json:"toolPaths,omitempty"`
 }
 
 type projectedDesiredConfiguration struct {
@@ -32,13 +34,16 @@ type projectedDesiredConfiguration struct {
 	Value     projectedConfiguration `json:"value"`
 }
 
-func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, controlMode bool) *projectedDesiredConfiguration {
+func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capabilities workerprotocol.Capabilities) *projectedDesiredConfiguration {
 	if desired == nil {
 		return nil
 	}
 	value := projectedConfiguration{WorkerConfigurationWire: model.WorkerConfigurationWire(desired.Value)}
 	value.WorkerConfigurationWire.AgentControlMode = nil
-	if controlMode {
+	if capabilities.ToolPaths {
+		value.ToolPaths = desired.Value.ToolPaths
+	}
+	if capabilities.ControlMode {
 		// An interface holding a typed nil emits explicit null; omission belongs only to legacy clients.
 		value.AgentControlMode = desired.Value.AgentControlMode
 	}
@@ -51,9 +56,9 @@ type projectedConfigurationResource struct {
 	Observation         *model.WorkerConfigurationReportedObservation `json:"observation"`
 }
 
-func projectConfiguration(resource model.WorkerConfigurationResource, controlMode bool) projectedConfigurationResource {
+func projectConfiguration(resource model.WorkerConfigurationResource, capabilities workerprotocol.Capabilities) projectedConfigurationResource {
 	observation := resource.Observation
-	if !controlMode && observation != nil {
+	if !capabilities.ControlMode && observation != nil {
 		copied := *observation
 		copied.Items = make([]model.WorkerConfigurationItem, 0, len(observation.Items))
 		for _, item := range observation.Items {
@@ -63,7 +68,7 @@ func projectConfiguration(resource model.WorkerConfigurationResource, controlMod
 		}
 		observation = &copied
 	}
-	return projectedConfigurationResource{Desired: projectDesiredConfiguration(resource.Desired, controlMode), ObservationRevision: resource.ObservationRevision, Observation: observation}
+	return projectedConfigurationResource{Desired: projectDesiredConfiguration(resource.Desired, capabilities), ObservationRevision: resource.ObservationRevision, Observation: observation}
 }
 
 type WorkerConfigurationReceipt struct {
@@ -72,9 +77,9 @@ type WorkerConfigurationReceipt struct {
 	ObservationAccepted bool                           `json:"observationAccepted"`
 }
 
-func projectConfigurationReceipt(receipt *model.WorkerConfigurationReceipt, controlMode bool) *WorkerConfigurationReceipt {
+func projectConfigurationReceipt(receipt *model.WorkerConfigurationReceipt, capabilities workerprotocol.Capabilities) *WorkerConfigurationReceipt {
 	if receipt == nil {
 		return nil
 	}
-	return &WorkerConfigurationReceipt{Desired: projectDesiredConfiguration(receipt.Desired, controlMode), ObservationRevision: receipt.ObservationRevision, ObservationAccepted: receipt.ObservationAccepted}
+	return &WorkerConfigurationReceipt{Desired: projectDesiredConfiguration(receipt.Desired, capabilities), ObservationRevision: receipt.ObservationRevision, ObservationAccepted: receipt.ObservationAccepted}
 }

@@ -12,6 +12,8 @@ Apply [authorization and scope](authorization.md) first, read the complete task 
 | done | Report that it is already complete; consider reopening only when the explicit request includes it. |
 | cancelled | Report the cancelled terminal result and return; do not reopen, resume or substitute a completion claim. |
 
+For a Goal child Task, verify its actual Parent and the Goal-owned shared sources under the [Goal protocol](goal.md); starting the child does not start the Goal or another stage.
+
 An explicit ordinary assignment is not restricted by `allowAgents` or platform filtering for automatic selection; see [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries).
 This workflow does not select candidate tasks or advance a queue automatically.
 

@@ -6,6 +6,8 @@ import { resolveConfigurationPaths } from "../../config/paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { sessionBinding, type SessionBinding } from "../../session/protocol.js";
 import type { FrozenExecutionConfiguration } from "../worker/types.js";
+import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
+import { parseFrozenToolObservation } from "../worker/tool-observation.js";
 
 // Retain the legacy 5 MiB allowance plus room for a fully JSON-escaped 64 KiB role.
 export const MAX_TICKET_BYTES = 6 * 1024 * 1024;
@@ -65,7 +67,14 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (typeof config !== "object" || config === null || Array.isArray(config)) throw new Error("Controller frozen configuration is missing.");
   const fields = config as Record<string, unknown>;
   const selection = Object.hasOwn(fields, "validateNativeSelection");
-  if (selection && fields.validateNativeSelection !== true || Object.keys(fields).sort().join() !== ["agent", "agentControlMode", "args", "model", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : [])].sort().join() || fields.agent !== data.provider || fields.agentControlMode !== "web" || !Array.isArray(fields.args) || fields.args.some((arg) => typeof arg !== "string" || /[\0\r\n]/.test(arg)) || !(fields.model === null || typeof fields.model === "string" && fields.model.trim() !== "") || !Number.isSafeInteger(fields.recoveryLimit) || (fields.recoveryLimit as number) < 0) throw new Error("Controller frozen configuration is invalid.");
+  const launch = Object.hasOwn(fields, "toolLaunch");
+  const observation = Object.hasOwn(fields, "toolObservation");
+  if (selection && fields.validateNativeSelection !== true || observation && !launch || Object.keys(fields).sort().join() !== ["agent", "agentControlMode", "args", "model", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : []), ...(launch ? ["toolLaunch"] : []), ...(observation ? ["toolObservation"] : [])].sort().join() || fields.agent !== data.provider || fields.agentControlMode !== "web" || !Array.isArray(fields.args) || fields.args.some((arg) => typeof arg !== "string" || /[\0\r\n]/.test(arg)) || !(fields.model === null || typeof fields.model === "string" && fields.model.trim() !== "") || !Number.isSafeInteger(fields.recoveryLimit) || (fields.recoveryLimit as number) < 0) throw new Error("Controller frozen configuration is invalid.");
+  if (launch) {
+    if (data.provider === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
+    parseResolvedToolLaunch(fields.toolLaunch, { tool: data.provider, context: "web" });
+  }
+  if (observation) parseFrozenToolObservation(fields.toolObservation);
   return value as ControllerLaunchTicket;
 };
 export const readLaunchTicket = async (home: string, launchId: string): Promise<ControllerLaunchTicket> => {

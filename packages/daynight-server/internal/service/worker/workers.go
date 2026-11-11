@@ -21,22 +21,24 @@ type workerStore interface {
 }
 
 type reportOperations struct {
-	validate              func(model.WorkerReport) (model.WorkerReport, error)
-	parseConfiguration    func(json.RawMessage) (*model.WorkerConfigurationExchange, error)
-	admit                 func(store.WorkerAdmission) error
-	matchTasks            func([]store.WorkerTaskSource, model.WorkerTaskInventory, string, string) ([]model.WorkerObservedTask, error)
-	snapshot              func(string, string, model.WorkerReport, time.Time, []model.WorkerObservedTask) model.WorkerSnapshot
-	exchangeConfiguration func(context.Context, store.WorkerWriteDAO, model.Principal, string, model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error)
+	validateToolPathTargets func(context.Context, store.WorkerWriteDAO, model.Principal, string, *model.ToolPathTelemetry) error
+	validate                func(model.WorkerReport) (model.WorkerReport, error)
+	parseConfiguration      func(json.RawMessage) (*model.WorkerConfigurationExchange, error)
+	admit                   func(store.WorkerAdmission) error
+	matchTasks              func([]store.WorkerTaskSource, model.WorkerTaskInventory, string, string) ([]model.WorkerObservedTask, error)
+	snapshot                func(string, string, model.WorkerReport, time.Time, []model.WorkerObservedTask) model.WorkerSnapshot
+	exchangeConfiguration   func(context.Context, store.WorkerWriteDAO, model.Principal, string, model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error)
 }
 
 func workerReportOperations() reportOperations {
 	return reportOperations{
-		validate:              workercore.ValidateReport,
-		parseConfiguration:    workercore.ParseWorkerConfigurationExchange,
-		admit:                 workercore.AdmitActiveWorker,
-		matchTasks:            workercore.MatchTaskSnapshots,
-		snapshot:              workercore.SnapshotForReport,
-		exchangeConfiguration: workercore.ExchangeConfiguration,
+		validateToolPathTargets: workercore.ValidateToolPathTargets,
+		validate:                workercore.ValidateReport,
+		parseConfiguration:      workercore.ParseWorkerConfigurationExchange,
+		admit:                   workercore.AdmitActiveWorker,
+		matchTasks:              workercore.MatchTaskSnapshots,
+		snapshot:                workercore.SnapshotForReport,
+		exchangeConfiguration:   workercore.ExchangeConfiguration,
 	}
 }
 
@@ -178,6 +180,11 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 				if _, err := workerprotocol.EncodeObservation(io.Discard, *configuration.Observation, workercore.MaxConfigurationJSONBytes); err != nil {
 					return workercore.InputLimit(err)
 				}
+			}
+		}
+		if input.Telemetry.ToolPaths != nil {
+			if err := s.report.validateToolPathTargets(ctx, tx, principal, workerID, input.Telemetry.ToolPaths); err != nil {
+				return err
 			}
 		}
 		result.LastReportedAt = stored.LastReportedAt

@@ -14,6 +14,7 @@ import { createServer, type Socket } from "node:net";
 import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
+import { readLaunchToolSelection } from "./launch-tool-selection.js";
 import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.js";
 import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
@@ -373,7 +374,10 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if (ticket.provider === "codex") env.CODEX_HOME = ticket.nativeHome;
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
+    const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket);
+    if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(toolLaunch ? { toolLaunch, toolRuntimeRoot: path.join(paths.stateDirectory, "worker", "tool-runtimes") } : {}),
       ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),

@@ -1,4 +1,6 @@
-export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string };
+import type { PageHistoryState } from './page-history';
+
+export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string; readonly entryId: string | null; readonly view: unknown };
 export type WorkerConfigurationDraftScope = { readonly kind: 'worker-configuration'; readonly identity: object; readonly workerId: string };
 export type PromptDraftScope = { readonly kind: 'user-prompt'; readonly identity: object } | { readonly kind: 'project-prompt'; readonly identity: object; readonly projectId: string };
 export type DraftScope = { readonly kind?: 'task'; readonly identity: object; readonly projectId: string; readonly taskId: string } | WorkerConfigurationDraftScope | PromptDraftScope;
@@ -6,13 +8,25 @@ export type DirtyDraft = {
   readonly scope: DraftScope;
   readonly isDirty: () => boolean;
   readonly discard: () => void;
-  readonly survives: (destination: URL) => boolean;
+  readonly survives: (destination: URL, view?: unknown, entryId?: string) => boolean;
   readonly signal?: AbortSignal;
 };
-type Entry = { readonly url: URL; readonly index: number | null };
+type Entry = { readonly url: URL; readonly index: number | null; readonly entryId: string | null; readonly view: unknown };
 type Decision = { readonly kind: 'action'; readonly run: () => void; readonly drafts: readonly DirtyDraft[] }
   | { readonly kind: 'history'; readonly drafts: readonly DirtyDraft[] };
 const namespace = '__daynightNavigation';
+// Page choices are structured-clone values. Compare their contents, not object
+// identity, since a history traversal may deserialize a fresh copy.
+const sameValue = (left: unknown, right: unknown, seen = new WeakMap<object, object>()): boolean => {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (seen.has(left)) return seen.get(left) === right;
+  seen.set(left, right);
+  const keys = Object.keys(left), other = Object.keys(right);
+  return keys.length === other.length && keys.every(key => Object.prototype.hasOwnProperty.call(right, key) &&
+    sameValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key], seen));
+};
 const sameScope = (a: DraftScope, b: DraftScope): boolean => {
   if (a.identity !== b.identity) return false;
   if (a.kind === 'worker-configuration') return b.kind === 'worker-configuration' && a.workerId === b.workerId;
@@ -25,21 +39,22 @@ const sameScope = (a: DraftScope, b: DraftScope): boolean => {
 export class BrowserNavigation {
   private session = crypto.randomUUID();
   // Browser history state is serialized; exact URL checks stay in this window's memory.
-  private readonly urls = new Map<number, string>();
+  private readonly urls = new Map<number, { readonly url: string; readonly entryId: string }>();
   private accepted: Entry;
   private observed: Entry;
   private location: BrowserLocation;
   private pending: Decision | null = null;
   private restoring = false;
+  private afterRestore: { readonly drafts: readonly DirtyDraft[]; readonly run: () => void } | null = null;
   private readonly drafts = new Set<DirtyDraft>();
   private readonly admitting = new Set<DirtyDraft>();
   private readonly listeners = new Set<() => void>();
   private readonly decisions = new Set<() => void>();
   constructor(private readonly browser: Window) {
     const url = new URL(browser.location.href);
-    this.writeState('replaceState', url, 0);
-    this.accepted = this.observed = { url, index: 0 };
-    this.location = this.toLocation(url);
+    this.writeState('replaceState', url, 0, crypto.randomUUID());
+    this.accepted = this.observed = this.readEntry();
+    this.location = this.toLocation(this.accepted);
     browser.addEventListener('popstate', this.traversed);
     browser.addEventListener('hashchange', this.traversed);
     browser.addEventListener('beforeunload', this.beforeUnload);
@@ -49,19 +64,22 @@ export class BrowserNavigation {
   decision = (): Decision | null => this.pending;
   subscribeDecision = (listener: () => void): (() => void) => { this.decisions.add(listener); return () => { this.decisions.delete(listener); }; };
   private notifyDecision(): void { for (const listener of this.decisions) listener(); }
-  private toLocation(url: URL): BrowserLocation { return { pathname: url.pathname, search: url.search, hash: url.hash }; }
+  private toLocation(entry: Entry): BrowserLocation { return { pathname: entry.url.pathname, search: entry.url.search, hash: entry.url.hash, entryId: entry.entryId, view: entry.view }; }
   private readEntry(): Entry {
     const url = new URL(this.browser.location.href);
     const marker: unknown = this.browser.history.state?.[namespace];
     const valid = typeof marker === 'object' && marker !== null && 'session' in marker && marker.session === this.session &&
-      'index' in marker && typeof marker.index === 'number' && Number.isSafeInteger(marker.index) && this.urls.get(marker.index) === url.href;
-    return { url, index: valid ? (marker as { index: number }).index : null };
+      'index' in marker && typeof marker.index === 'number' && Number.isSafeInteger(marker.index) &&
+      'entryId' in marker && typeof marker.entryId === 'string' &&
+      this.urls.get(marker.index)?.url === url.href && this.urls.get(marker.index)?.entryId === marker.entryId;
+    return valid ? { url, index: (marker as { index: number }).index, entryId: (marker as { entryId: string }).entryId,
+      view: 'view' in marker ? marker.view : undefined } : { url, index: null, entryId: null, view: undefined };
   }
-  private writeState(method: 'pushState' | 'replaceState', url: URL, index: number): void {
+  private writeState(method: 'pushState' | 'replaceState', url: URL, index: number, entryId: string, view?: unknown): void {
     const state: unknown = this.browser.history.state;
     this.browser.history[method]({ ...(typeof state === 'object' && state !== null ? state : {}),
-      [namespace]: { session: this.session, index } }, '', url.href);
-    this.urls.set(index, url.href);
+      [namespace]: { session: this.session, index, entryId, ...(view === undefined ? {} : { view }) } }, '', url.href);
+    this.urls.set(index, { url: url.href, entryId });
   }
   /** Scrub a consumed fragment without treating cleanup as a new route or numbering native entries. */
   clearFragment(): void {
@@ -69,7 +87,7 @@ export class BrowserNavigation {
     if (current.url.hash === '') return;
     const url = new URL(current.url);
     url.hash = '';
-    if (current.index !== null) this.writeState('replaceState', url, current.index);
+    if (current.index !== null) this.writeState('replaceState', url, current.index, current.entryId!, current.view);
     else {
       let state: unknown = this.browser.history.state;
       if (typeof state === 'object' && state !== null) {
@@ -84,12 +102,14 @@ export class BrowserNavigation {
   }
   private adopt(entry: Entry): void {
     this.accepted = entry;
-    if (this.location.pathname === entry.url.pathname && this.location.search === entry.url.search && this.location.hash === entry.url.hash) return;
-    this.location = this.toLocation(entry.url);
+    if (this.location.pathname === entry.url.pathname && this.location.search === entry.url.search && this.location.hash === entry.url.hash &&
+      this.location.entryId === entry.entryId && sameValue(this.location.view, entry.view)) return;
+    this.location = this.toLocation(entry);
     for (const listener of this.listeners) listener();
   }
-  private blockers(destination?: URL): DirtyDraft[] {
-    return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined || !draft.survives(destination)));
+  private blockers(destination?: URL, view?: unknown, entryId?: string): DirtyDraft[] {
+    return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined ||
+      !(entryId === undefined ? draft.survives(destination, view) : draft.survives(destination, view, entryId))));
   }
   /** Register live readers; unregistering releases ownership and never decides to discard. */
   register(draft: DirtyDraft): () => void {
@@ -100,6 +120,7 @@ export class BrowserNavigation {
     return () => {
       draft.signal?.removeEventListener('abort', retired);
       this.drafts.delete(draft);
+      if (this.afterRestore?.drafts.includes(draft)) this.afterRestore = null;
       if (this.pending?.drafts.includes(draft)) {
         // An expired request grants no authority to adopt, discard or traverse during cleanup.
         this.pending = null;
@@ -119,21 +140,38 @@ export class BrowserNavigation {
     for (const draft of retired) draft.discard();
     // A history destination has already arrived; revocation never keeps private content mounted.
     this.restoring = false;
+    this.afterRestore = null;
     this.observed = this.readEntry();
     this.adopt(this.observed);
   }
-  navigate(to: string, replace = false): void {
+  navigate(to: string, replace = false, view?: PageHistoryState): void {
     const url = new URL(to, this.browser.location.href);
     if (url.origin !== this.browser.location.origin) throw new DOMException('Application navigation requires the same origin.', 'SecurityError');
+    if (url.href === this.accepted.url.href) return;
     this.request(() => {
       const current = this.readEntry();
       // Only application writes allocate an index. Unindexed traversal itself is never repaired.
       if (current.index === null) { this.session = crypto.randomUUID(); this.urls.clear(); }
       const index = current.index === null ? 0 : replace ? current.index : current.index + 1;
-      this.writeState(replace ? 'replaceState' : 'pushState', url, index);
+      this.writeState(replace ? 'replaceState' : 'pushState', url, index, replace && current.entryId !== null ? current.entryId : crypto.randomUUID(), view);
       this.observed = this.readEntry();
       this.adopt(this.observed);
-    }, this.blockers(url));
+    }, this.blockers(url, view));
+  }
+  /** Commit a reading choice only after the same admission used by route changes. */
+  setView(view: PageHistoryState, options: { readonly replace?: boolean; readonly onCommit?: () => void } = {}): void {
+    if (sameValue(this.accepted.view, view)) return;
+    const url = new URL(this.accepted.url);
+    this.request(() => {
+      const current = this.readEntry();
+      if (current.index === null) { this.session = crypto.randomUUID(); this.urls.clear(); }
+      const index = current.index === null ? 0 : options.replace ? current.index : current.index + 1;
+      this.writeState(options.replace ? 'replaceState' : 'pushState', url, index,
+        options.replace && current.entryId !== null ? current.entryId : crypto.randomUUID(), view);
+      this.observed = this.readEntry();
+      this.adopt(this.observed);
+      options.onCommit?.();
+    }, this.blockers(url, view));
   }
   /** Local detail close/relation changes use the same gate before changing keyed content. */
   requestAction = (action: () => void): void => this.request(action, this.blockers());
@@ -160,28 +198,37 @@ export class BrowserNavigation {
     }
     else this.adopt(this.observed);
   };
-  cancel = (): void => {
-    if (this.pending === null) return;
-    const history = this.pending.kind === 'history';
+  cancel = (): void => this.cancelAndRestore();
+  cancelAndRestore = (onRestored?: () => void): void => {
+    const pending = this.pending;
+    if (pending === null) return;
+    const history = pending.kind === 'history';
     this.pending = null;
     this.notifyDecision();
     if (history) {
+      this.afterRestore = onRestored === undefined ? null : { drafts: pending.drafts, run: onRestored };
       this.restoring = true;
       this.restore();
-    }
+    } else onRestored?.();
   };
+  private finishRestore(): void {
+    this.restoring = false;
+    const callback = this.afterRestore;
+    this.afterRestore = null;
+    callback?.run();
+  }
   private restore(): void {
     const from = this.accepted.index;
     const current = this.observed.index;
     if (from === null || current === null) {
-      this.restoring = false;
       this.adopt(this.observed);
-    } else if (from === current) this.restoring = false;
+      this.finishRestore();
+    } else if (from === current) this.finishRestore();
     else this.browser.history.go(from - current);
   }
   private traversed = (): void => {
     const entry = this.readEntry();
-    if (entry.url.href === this.observed.url.href && entry.index === this.observed.index) return;
+    if (entry.url.href === this.observed.url.href && entry.index === this.observed.index && entry.entryId === this.observed.entryId && sameValue(entry.view, this.observed.view)) return;
     this.observed = entry;
     if (this.restoring) { this.restore(); return; }
     // Native fragments and foreign/unindexed entries retain their native, unguarded behavior.
@@ -191,7 +238,7 @@ export class BrowserNavigation {
       this.adopt(entry);
       return;
     }
-    const drafts = this.blockers(entry.url);
+    const drafts = this.blockers(entry.url, entry.view, entry.entryId ?? undefined);
     if (drafts.length === 0) {
       this.pending = null;
       this.notifyDecision();
@@ -210,6 +257,7 @@ export class BrowserNavigation {
     this.browser.removeEventListener('popstate', this.traversed);
     this.browser.removeEventListener('hashchange', this.traversed);
     this.browser.removeEventListener('beforeunload', this.beforeUnload);
+    this.afterRestore = null;
     this.urls.clear(); this.drafts.clear(); this.listeners.clear(); this.decisions.clear();
     if (owner === this) owner = undefined;
   }

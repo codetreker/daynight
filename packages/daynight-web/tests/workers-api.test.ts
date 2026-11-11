@@ -141,7 +141,7 @@ describe('authenticated Worker reads', () => {
     expect(await listWorkers({ limit: 50, cursor: 'next/+ token' }, signal, gate)).toEqual(workerPage());
     expect(await getWorker(workerId(1).toUpperCase(), signal, gate)).toEqual(workerDetail());
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/v1/me/workers?limit=50&cursor=next%2F%2B+token', `/api/v1/me/workers/${workerId(1)}`]);
-    expect(fetch.mock.calls[0]![1]).toMatchObject({ signal, cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ signal: expect.any(AbortSignal), cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' } });
   });
   it.each([200, 404])('rejects another principal before admitting a %s response', async status => {
     const gate = admission();

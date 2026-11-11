@@ -19,6 +19,21 @@ import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
 
+it("reattaches a sidecar-bound legacy ticket after an orchestration interruption without allocating a launch", async () => {
+  const f = await orchestrationFixture();
+  const { toolLaunch: _launch, toolObservation: _observation, ...configuration } = f.source.ticket.configuration;
+  const legacyTicket = { ...f.source.ticket, configuration };
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(legacyTicket);
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "Temporary branch deviation." }, 20_000);
+  f.source.stopped.mockResolvedValue(false);
+  const result = await f.backend.advance(f.task, new AbortController().signal);
+  expect(result.webExecution?.launchId).toBe(f.task.webExecution?.launchId);
+  expect(result.configuration?.toolLaunch).toEqual(f.task.configuration?.toolLaunch);
+  expect(f.store.getOrchestrationBlocker(result)).toBeNull();
+  expect(f.launcher.prepare).not.toHaveBeenCalled();
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
 it("waits for new Web prompts and retries only after a rejected revision changes", async () => {
   const f = await fixture();
   const input = f.store.getTask(f.identity)!;
@@ -139,7 +154,7 @@ it("exposes the actual cleanup phase without treating the notification deadline 
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive: async () => { entered(); await archiveBarrier; }, request: source.request });
   const phases = vi.fn(), successes = vi.fn();
   backend.setMonitoringObserver({ observePhase: (...args) => { phases(...args); throw new Error("observer failed"); }, observeSuccess: (...args) => { successes(...args); throw new Error("observer failed"); } });
-  const result = backend.cleanup(task, "terminal", 30);
+  const result = backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   await enteredBarrier;
   expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "archive" }, false, undefined);
   expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "backend-close" });
@@ -348,7 +363,7 @@ it.each([false,true])("submits once and reobserves unknown first input, includin
 it("closes a provably unlaunched Web execution with backend proof rather than a Herdr workspace claim",async()=>{
  const f=await fixture();const launcher={prepare:vi.fn(),launch:vi.fn(),refreshGrant:vi.fn()};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed",emit:()=>{},now:()=>5});
- const result=await backend.cleanup(f.store.getTask(f.identity)!,"terminal",100);
+ const result=await backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } });
  expect(result.task.cleanup).toMatchObject({ kind: "terminal", startedAt: 5, deadline: 100 });
  expect(vi.mocked(f.git.removeWorktree).mock.calls[0]?.[1]).toMatchObject({ claimId: f.identity.claimId, worktreeId: f.identity.worktreeId });
  expect(launcher.launch).not.toHaveBeenCalled();
@@ -404,7 +419,7 @@ it("requires a matching unregistered server claim before recovering missing laun
 it.each(["codex", "claude", "copilot"] as const)("starts %s immediate shutdown with zero remaining cleanup budget after the caller clock advances", async provider => {
   const f = await fixture(provider), request = vi.fn<typeof requestController>();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 101, request });
-  const result = await backend.cleanup(f.store.getTask(f.identity)!, "shutdown", 100, undefined, true);
+  const result = await backend.cleanup(f.store.getTask(f.identity)!, { kind: "shutdown", deadline: 100, immediateStop: true });
   expect(result.task.cleanup).toMatchObject({ startedAt: 101, deadline: 101 });
   expect(result.task.claimId).toBe(f.identity.claimId);
   expect(request).not.toHaveBeenCalled();
@@ -414,10 +429,10 @@ it.each(["codex", "claude", "copilot"] as const)("starts %s immediate shutdown w
 it("preserves an existing cleanup deadline and gives an expired first terminal cleanup no new grace period", async () => {
   const f = await fixture(), request = vi.fn<typeof requestController>(); let now = 101;
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => now, request });
-  const first = await backend.cleanup(f.store.getTask(f.identity)!, "terminal", 100);
+  const first = await backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } });
   expect(first.task.cleanup).toMatchObject({ startedAt: 101, deadline: 101 });
   now = 1_000;
-  const retry = await backend.cleanup(first.task, "terminal", now + 600_000);
+  const retry = await backend.cleanup(first.task, { kind: "terminal", deadline: now + 600_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: first.task }, onExecutionStopped: () => {} } });
   expect(retry.task.cleanup).toMatchObject({ startedAt: 101, deadline: 101 });
   expect(request).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).toHaveBeenCalledTimes(2);
@@ -436,10 +451,10 @@ it("retains the stopped task worktree on archive failure and retries without rel
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const request = vi.fn<typeof requestController>();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
-  await expect(backend.cleanup(task, "terminal", 30)).rejects.toMatchObject({ stage: "archive", cause: archiveError });
+  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "archive", cause: archiveError });
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
   expect(f.store.getTask(task)?.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
-  const result = await backend.cleanup(task, "terminal", 30);
+  const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(result.complete).toBe(true);
   expect(archive).toHaveBeenCalledTimes(2);
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
@@ -454,7 +469,7 @@ it("ordinary shutdown retains history without publishing an ended archive", asyn
 
   const archive = vi.fn();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
-  await backend.cleanup(task, "shutdown", 30);
+  await backend.cleanup(task, { kind: "shutdown", deadline: 30, immediateStop: true });
   expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
@@ -471,17 +486,17 @@ it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execut
   const request = vi.fn<typeof requestController>();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
 
-  await expect(backend.cleanup(task, "terminal", 30)).rejects.toThrow("archive offline");
+  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toThrow("archive offline");
   const pending = f.store.getTask(task)!;
   expect(pending.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
-  const stopped = await backend.cleanup(pending, "shutdown", 20, undefined, true);
+  const stopped = await backend.cleanup(pending, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(stopped.task.cleanup).toEqual(pending.cleanup);
   expect(f.store.getTask(task)?.cleanup).toEqual(pending.cleanup);
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 
   archive.mockResolvedValue(undefined);
-  const completed = await backend.cleanup(stopped.task, "terminal", 30);
+  const completed = await backend.cleanup(stopped.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: stopped.task }, onExecutionStopped: () => {} } });
   expect(completed.task.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
   expect(archive).toHaveBeenCalledTimes(2);
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
@@ -496,7 +511,7 @@ it("cleanup propagates a source snapshot read failure before issuing stop or del
   const failure = new Error("controller journal read failed");
   source.saved.mockImplementation(() => { throw failure; });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 6, request: source.request });
-  await expect(backend.cleanup(source.task, "shutdown", 100)).rejects.toMatchObject({ stage: "agent-stop", cause: failure });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 100, immediateStop: true })).rejects.toMatchObject({ stage: "agent-stop", cause: failure });
   expect(source.request).not.toHaveBeenCalled(); expect(source.stopped).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
   expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100 });
@@ -668,7 +683,7 @@ it("does not let shutdown provenance revive a legacy exhausted failed generation
 it.each(["stopped", "ready"] as const)("persists legacy exhaustion before shutdown when the original writer is already gone (%s journal)", async lifecycleState => {
   const f = await recoveryFixture();
   f.saved.mockReturnValue({ ...f.snapshot, lifecycle: lifecycleState, error: null });
-  const shutdown = await f.backend.cleanup(f.task, "shutdown", 20, undefined, true);
+  const shutdown = await f.backend.cleanup(f.task, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(shutdown.task.recovery.pauseReason).toContain("recovery budget is exhausted");
   const restored = f.store.clearShutdown(shutdown.task, 21);
   await f.backend.advance(restored, new AbortController().signal);
@@ -698,7 +713,7 @@ it("retains a healthy exhausted generation through an actual orderly cleanup and
   const f = await recoveryFixture();
   f.saved.mockReturnValue({ ...f.snapshot, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null, error: null });
   f.stopped.mockResolvedValueOnce(false).mockResolvedValue(true);
-  const shutdown = await f.backend.cleanup(f.task, "shutdown", 20, undefined, true);
+  const shutdown = await f.backend.cleanup(f.task, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(shutdown.task.recovery.pauseReason).toBeNull();
   const restored = f.store.clearShutdown(shutdown.task, 21);
   f.saved.mockReturnValue({ ...f.snapshot, error: null });
@@ -721,7 +736,7 @@ it("does not turn a pending retry into another orderly restart during shutdown",
   const current = { ...f.snapshot, executionGeneration: starting.webExecution!.executionGeneration, controllerInstanceId: starting.webExecution!.controllerInstanceId, lifecycle: "starting" as const, nativeStopped: false, stoppedAt: null, error: null };
   f.saved.mockReturnValue(current);
   vi.mocked(launchTickets.readLaunchTicket).mockResolvedValue(await f.launcher.prepare(starting));
-  const shutdown = await f.backend.cleanup(starting, "shutdown", 30, undefined, true);
+  const shutdown = await f.backend.cleanup(starting, { kind: "shutdown", deadline: 30, immediateStop: true });
   expect(shutdown.task.recovery).toEqual({ count: 3, pauseReason: "The explicit recovery attempt stopped before a successful observation.", retryAuthorized: false });
   const restored = f.store.clearShutdown(shutdown.task, 31);
   await f.backend.advance(restored, new AbortController().signal);
@@ -837,10 +852,10 @@ it("reports deletion failure separately from the retained native cleanup result"
   const f = await fixture(), failure = new Error("EACCES: denied directory");
   vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(failure);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
-  await expect(backend.cleanup(f.store.getTask(f.identity)!, "terminal", 30)).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
+  await expect(backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
   const pending = f.store.getTask(f.identity)!;
   expect(pending.cleanup).toMatchObject({ kind: "terminal", startedAt: 20, deadline: 30 });
-  const completed = await backend.cleanup(pending, "terminal", 900_000);
+  const completed = await backend.cleanup(pending, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: pending }, onExecutionStopped: () => {} } });
   expect(completed.task.cleanup).toMatchObject({ kind: "terminal", startedAt: 20, deadline: 30 });
 });
 
@@ -854,7 +869,7 @@ it.each([false, true])("shutdown stop proof is independent of unavailable Git di
   vi.mocked(f.git.findWorktree).mockRejectedValue(new Error("Git registry unavailable"));
   const archive = vi.fn();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive });
-  const result = await backend.cleanup(task, "shutdown", 20, undefined, true);
+  const result = await backend.cleanup(task, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(result.task.cleanup).toMatchObject({ kind: alreadyStopped ? "terminal" : "shutdown" });
   if (alreadyStopped) expect(result.task.cleanup).toEqual(task.cleanup);
   expect(f.git.findWorktree).not.toHaveBeenCalled();
@@ -871,11 +886,11 @@ it("retries endpoint closure after native stop without replaying native cleanup"
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
   if (process.platform !== "win32") {
     await mkdir(endpoint);
-    await expect(backend.cleanup(task, "terminal", 900_000)).rejects.toMatchObject({ stage: "backend-close", cause: expect.objectContaining({ code: expect.stringMatching(/EISDIR|EPERM/) }) });
+    await expect(backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "backend-close", cause: expect.objectContaining({ code: expect.stringMatching(/EISDIR|EPERM/) }) });
     expect(f.store.getTask(task)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
     await rm(endpoint, { recursive: true });
   }
-  const completed = await backend.cleanup(task, "terminal", 900_000);
+  const completed = await backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(completed.complete).toBe(true);
   expect(completed.task.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
   expect(source.request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
@@ -891,12 +906,12 @@ it("reobserves recreated endpoint and Git resources after the local execution wa
   vi.mocked(f.git.removeWorktree).mockImplementation(async () => { worktreePresent = false; });
   const archive = vi.fn().mockResolvedValue(undefined);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
-  const first = await backend.cleanup(source.task, "terminal", 100);
+  const first = await backend.cleanup(source.task, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } });
   expect(first.complete).toBe(true);
   const completed = f.store.completeTask(first.task, 21);
   worktreePresent = true;
   if (process.platform !== "win32") await writeFile(source.ticket.ipcEndpoint, "retained endpoint");
-  const second = await backend.cleanup(completed, "terminal", 100);
+  const second = await backend.cleanup(completed, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: completed }, onExecutionStopped: () => {} } });
   expect(second).toMatchObject({ complete: true, task: { status: "done" } });
   expect(worktreePresent).toBe(false);
   if (process.platform !== "win32") await expect(access(source.ticket.ipcEndpoint)).rejects.toMatchObject({ code: "ENOENT" });
@@ -910,7 +925,7 @@ it("requires observed Git absence after a successful deletion call", async () =>
   const binding = await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never);
   vi.mocked(f.git.findWorktree).mockResolvedValue(binding);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
-  await expect(backend.cleanup(f.store.getTask(f.identity)!, "terminal", 30)).rejects.toMatchObject({ stage: "worktree-removal", cause: expect.objectContaining({ message: expect.stringContaining("still has Git worktree resources") }) });
+  await expect(backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: expect.objectContaining({ message: expect.stringContaining("still has Git worktree resources") }) });
   expect(f.store.getTask(f.identity)?.status).toBe("active");
   expect(f.store.getTask(f.identity)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 30 });
 });
@@ -939,7 +954,7 @@ it.each(["journal", "live"] as const)("preserves a native identity first learned
     launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
   };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, request });
-  const shutdown = await backend.cleanup(paused, "shutdown", 20, undefined, true);
+  const shutdown = await backend.cleanup(paused, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(shutdown.complete).toBe(true);
   expect(shutdown.task.resources.nativeSession).toEqual({ source: "controller", sessionId: nativeSessionId });
   expect(shutdown.task.recovery.pauseReason).toBe(paused.recovery.pauseReason);
@@ -980,7 +995,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
   if (mode === "resume") f.store.blockOrchestration(current, { source: "worktree", code: "branch_mismatch", message: "Temporary branch deviation." }, 7);
-  const result = mode === "cleanup" ? backend.cleanup(current, "shutdown", 50) : backend.advance(current, new AbortController().signal);
+  const result = mode === "cleanup" ? backend.cleanup(current, { kind: "shutdown", deadline: 50, immediateStop: true }) : backend.advance(current, new AbortController().signal);
   if (conflict !== "valid") {
     await expect(result).rejects.toThrow();
     expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
@@ -1083,7 +1098,7 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
     const cancel = (): void => { clearTimeout(timer); reject(operation.signal.reason); };
     operation.signal.addEventListener("abort", cancel, { once: true });
   }));
-  const outcome = backend.cleanup(f.store.getTask(f.identity)!, "terminal", 600_005).catch(error => error);
+  const outcome = backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 600_005, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } }).catch(error => error);
   await vi.advanceTimersByTimeAsync(0);
   now = Math.min(duration, 300_000);
   await vi.advanceTimersByTimeAsync(now);

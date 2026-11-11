@@ -44,6 +44,8 @@ export type NativeImageRuntime = {
   acquireIndexReservation(additionalBytes: number, owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  toolLaunch?: import("../../../platform/tool-executables.js").ResolvedToolLaunch;
+  toolRuntimeRoot?: string;
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
   /** Frozen role text for native prompt append on start and resume, separate from user input. */
   instructions?: string;

@@ -386,7 +386,7 @@ test.each(["codex", "claude", "copilot"] as const)("maps frozen %s selection int
   const f = fixture(provider, { model: "chosen-model", args: ["--effort", "low", "--effort", "medium"], reasoningEffort: "native-new-level",
     selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
   await f.process.advance(f.current(), new AbortController().signal);
-  expect(f.getTicket().configuration).toEqual({ agent: provider, agentControlMode: "web", model: "chosen-model", args: ["--effort", "native-new-level"], recoveryLimit: 3, validateNativeSelection: true });
+  expect(f.getTicket().configuration).toEqual({ agent: provider, agentControlMode: "web", model: "chosen-model", args: ["--effort", "native-new-level"], recoveryLimit: 3, validateNativeSelection: true, toolLaunch: f.current().intent!.toolLaunch });
   expect(f.register.mock.calls[0]![0].definition?.resolvedConfiguration).toEqual(f.getBot().resolvedConfiguration);
   await f.createProcess().advance(f.current(), new AbortController().signal);
   expect(f.launch).toHaveBeenCalledTimes(1);
@@ -396,7 +396,7 @@ test("keeps a frozen native effort delegation clear of inherited argument defaul
   const f = fixture("codex", { model: null, args: ["--model", "stale", "--effort", "high", "--sandbox", "read-only"], reasoningEffort: null,
     selection: { schemaVersion: 1, modelSource: "native", reasoningEffortSource: "native" } });
   await f.process.advance(f.current(), new AbortController().signal);
-  expect(f.getTicket().configuration).toEqual({ agent: "codex", agentControlMode: "web", model: null, args: ["--sandbox", "read-only"], recoveryLimit: 3 });
+  expect(f.getTicket().configuration).toEqual({ agent: "codex", agentControlMode: "web", model: null, args: ["--sandbox", "read-only"], recoveryLimit: 3, toolLaunch: f.current().intent!.toolLaunch });
 });
 
 

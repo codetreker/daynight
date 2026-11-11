@@ -112,3 +112,67 @@ for (const outcome of ['new-account', 'revoked'] as const) test(`real tab return
     await expect.poll(() => cache(page)).toEqual({ active: 0, summaries: 0, details: 0, profiles: 0, otherActive: false, otherSummaries: 0, otherDetails: 0, otherProfiles: 0 });
   } finally { gate.resolve(); await other.close(); await shell!.dispose(); await detail!.dispose(); await originalFrame!.dispose(); }
 });
+
+test('login completion publishes to another same-origin page before replacing a public target', async ({ page: receiver, context }) => {
+  const receiverGate = Promise.withResolvers<void>();
+  const reloadGate = Promise.withResolvers<void>();
+  const senderGate = Promise.withResolvers<void>();
+  let receiverReads = 0, senderReads = 0;
+  const user = (id: string) => ({ id, personalTeam: { id: personalId, kind: 'personal', name: null }, name: id === alice ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null });
+  await receiver.addInitScript(() => {
+    localStorage.setItem('daynight.web.locale', 'en');
+    const observations: { storage: (string | null)[]; messages: unknown[] } = { storage: [], messages: [] };
+    (window as typeof window & { identityObservations: typeof observations }).identityObservations = observations;
+    window.addEventListener('storage', event => { if (event.key === 'daynight.activeUser') observations.storage.push(event.newValue); });
+    const channel = new BroadcastChannel('daynight-identity');
+    channel.addEventListener('message', event => observations.messages.push(event.data));
+  });
+  await receiver.route('**/api/v1/me', async route => {
+    receiverReads++;
+    await (receiverReads === 1 ? receiverGate.promise : reloadGate.promise);
+    await route.fulfill({ json: user(alice), headers: { 'Daynight-User-ID': alice } });
+  });
+  const sender = await context.newPage();
+  await sender.route('**/api/v1/me', async route => {
+    senderReads++;
+    await senderGate.promise;
+    await route.fulfill({ json: user(bob), headers: { 'Daynight-User-ID': bob } });
+  });
+  const receiverURL = `/auth/complete?returnPath=${encodeURIComponent('/login')}`;
+  const target = '/?from=login%26return#public';
+  const senderURL = `/auth/complete?returnPath=${encodeURIComponent(target)}`;
+  try {
+    await receiver.goto(receiverURL);
+    await expect.poll(() => receiverReads).toBe(1);
+    const brand = receiver.getByRole('link', { name: 'Daynight' });
+    await brand.focus();
+    await expect(brand).toBeFocused();
+    await sender.goto(senderURL);
+    await expect.poll(() => senderReads).toBe(1);
+    await expect(sender).toHaveURL(new RegExp('/auth/complete\\?'));
+    senderGate.resolve();
+    await expect(sender).toHaveURL(`http://127.0.0.1:4206${target}`);
+    await expect.poll(() => receiver.evaluate(() => (window as typeof window & { identityObservations: { storage: (string | null)[] } }).identityObservations.storage)).toContain(JSON.stringify(bob));
+    await expect.poll(() => receiver.evaluate(() => (window as typeof window & { identityObservations: { messages: unknown[] } }).identityObservations.messages)).toContain('identity-changed');
+    receiverGate.resolve();
+    await receiver.bringToFront();
+    await expect(receiver.getByText('Account changed', { exact: true })).toBeVisible();
+    const refresh = receiver.getByRole('button', { name: 'Refresh page' });
+    await expect(refresh).toBeVisible();
+    await expect(brand).toBeFocused();
+    await expect(receiver).toHaveURL(`http://127.0.0.1:4206${receiverURL}`);
+    expect(await receiver.evaluate(() => localStorage.getItem('daynight.activeUser'))).toBe(JSON.stringify(bob));
+    expect(receiverReads).toBe(1);
+    expect(senderReads).toBe(1);
+    await receiver.keyboard.press('Tab');
+    await expect(refresh).toBeFocused();
+    await Promise.all([receiver.waitForEvent('load'), receiver.keyboard.press('Enter')]);
+    await expect.poll(() => receiverReads).toBe(2);
+    await expect(receiver).toHaveURL(`http://127.0.0.1:4206${receiverURL}`);
+  } finally {
+    receiverGate.resolve();
+    reloadGate.resolve();
+    senderGate.resolve();
+    await sender.close();
+  }
+});

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import type { PendingContent } from "../pending-content.js";
-import { writeDurableJson } from "../pending-content.js";
+import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { controllerMetadataBudget } from "./metadata-budget.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };

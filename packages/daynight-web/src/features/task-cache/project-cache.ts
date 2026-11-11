@@ -899,23 +899,26 @@ export class TaskCacheScope {
     if (this.isProjectSuspended(projectId) || revision !== undefined && revision !== (this.projectRevisions.get(projectId) ?? 0)) released();
     if (this.revokedGenerations.get(projectId)?.has(cacheGeneration) === true) released();
   }
-  private clearDeniedProject(projectId: string): Promise<void> {
+  private clearDeniedProject(projectId: string, notifyFailure = true, signal: AbortSignal = this.signal): Promise<void> {
     const active = this.projectPurges.get(projectId);
     if (active !== undefined) return active;
     const ticket = this.deniedProjects.get(projectId);
     if (ticket === undefined) return Promise.resolve();
     // Cleanup belongs to the scope; the observing dialog can unmount as soon as access is withdrawn.
-    const work = this.ready(this.signal).then(() => this.userTransaction(async (transaction, userFence) => {
+    const lifetime = AbortSignal.any([signal, this.signal]);
+    const work = this.ready(lifetime).then(() => this.userTransaction(async (transaction, userFence) => {
       const manifest = await this.manifest(transaction, projectId, userFence);
       if (userFence !== ticket.userFence || manifest?.cacheGeneration !== ticket.cacheGeneration) return;
       await this.clearProjectRows(transaction, projectId, true);
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence, "access", nextHistory(manifest)));
-    }, this.signal)).then(() => {
+    }, lifetime)).then(() => {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
       this.hint(projectId);
     }).catch((error: unknown) => {
-      this.emit({ projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error });
-      for (const ancestor of ticket.generationAncestors ?? []) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: ancestor, error });
+      if (notifyFailure) {
+        this.emit({ projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error });
+        for (const ancestor of ticket.generationAncestors ?? []) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: ancestor, error });
+      }
       throw error;
     }).finally(() => { if (this.projectPurges.get(projectId) === work) this.projectPurges.delete(projectId); });
     this.projectPurges.set(projectId, work);
@@ -933,7 +936,7 @@ export class TaskCacheScope {
       (ticket.generationAncestors ?? []).includes(manifest.cacheGeneration) ||
       ticket.unknownAncestors === true && !(manifest.generationAncestors ?? []).includes(ticket.cacheGeneration));
   }
-  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true): Promise<boolean> {
+  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true, onWithdrawn?: () => void): Promise<boolean> {
     if (signal.aborted) return Promise.reject(signal.reason);
     if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
     if (ticket.userId !== this.userId || ticket.userFence !== this.userFence) return Promise.reject(new ApiError("protocol"));
@@ -947,6 +950,7 @@ export class TaskCacheScope {
     if (current !== undefined && current.cacheGeneration !== ticket.cacheGeneration) revoked.add(current.cacheGeneration);
     this.withdrawnProjects.add(ticket.projectId);
     if (denied === undefined) this.deniedProjects.set(ticket.projectId, ticket);
+    onWithdrawn?.();
     this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId); this.historyPreviews.delete(ticket.projectId); this.clearProjectHistoryUncertainty(ticket.projectId);
     if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, revokedGeneration: ticket.cacheGeneration,
       generationAncestors: ticket.generationAncestors ?? [], unknownAncestors: ticket.unknownAncestors === true } satisfies Hint);
@@ -956,6 +960,16 @@ export class TaskCacheScope {
       this.emitProjection({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ancestor, error: reason });
     }
     return this.clearDeniedProject(ticket.projectId).then(() => true);
+  }
+  // A retry only clears the originally denied generation; it must not emit a
+  // second withdrawal into an editor opened after the original receipt.
+  retryDeniedProjectCleanup(ticket: SyncTicket, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
+    const denied = this.deniedProjects.get(ticket.projectId);
+    if (denied === undefined || denied.userId !== ticket.userId || denied.projectId !== ticket.projectId ||
+      denied.userFence !== ticket.userFence || denied.cacheGeneration !== ticket.cacheGeneration || !this.canRevokeProject(ticket)) return Promise.resolve(false);
+    return this.waitForScopeWork(this.clearDeniedProject(ticket.projectId, false, signal), signal).then(() => true);
   }
   async beginSync(projectId: string, signal: AbortSignal): Promise<TaskSyncTicket> {
     projectId = requestId(projectId);

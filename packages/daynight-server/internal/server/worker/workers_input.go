@@ -94,6 +94,12 @@ func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, e
 			return input, err
 		}
 	}
+	if raw, present := fields["toolPaths"]; present {
+		input.Telemetry.ToolPaths, err = workercore.ParseToolPathTelemetry(raw)
+		if err != nil {
+			return input, err
+		}
+	}
 	input.TaskInventory, err = workerInventoryInput(fields["taskInventory"])
 	return input, err
 }

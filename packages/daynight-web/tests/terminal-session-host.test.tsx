@@ -1,21 +1,29 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Blob as NodeBlob } from 'node:buffer';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { FixedSessionRecording, ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
-import { createTerminalSessionApi } from '../src/api/terminal-sessions';
+import { createTerminalSessionApi, parseTerminalSessionState, terminalEnvelope, type TerminalSessionState } from '../src/api/terminal-sessions';
 import { createSessionApi } from '../src/api/sessions';
 import type { LoadedSessionArchive } from '../src/api/sessions';
 import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { sessionImageBytes, sessionImageSamples } from './helpers/sessionImages';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import type { SessionHistoryItem } from '../src/api/terminal-sessions';
-import { ApiError } from '../src/api/client';
+import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, readCachedSessionHistory, readSessionHistoryPaginationState, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider, TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 vi.mock('../src/api/sessions', () => ({ createSessionApi: vi.fn() }));
-vi.mock('../src/api/terminal-sessions', () => ({ createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
+const terminalCapture = vi.hoisted(() => ({ client: null as import('../src/features/task-agent-session/terminal-client').TerminalSessionClient | null }));
+vi.mock('../src/api/terminal-sessions', async importOriginal => ({ ...await importOriginal<typeof import('../src/api/terminal-sessions')>(), createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
+vi.mock('../src/features/task-agent-session/terminal-client', async importOriginal => {
+  const original = await importOriginal<typeof import('../src/features/task-agent-session/terminal-client')>();
+  return { ...original, TerminalSessionClient: class extends original.TerminalSessionClient {
+    constructor(options: ConstructorParameters<typeof original.TerminalSessionClient>[0]) { super(options); terminalCapture.client = this; }
+  } };
+});
 vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), completeSessionHistoryPagination: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
 beforeEach(() => {
@@ -28,7 +36,7 @@ beforeEach(() => {
   vi.mocked(beginSessionHistoryPagination).mockReset().mockImplementation(async () => pagination());
   vi.mocked(readSessionHistoryPaginationState).mockReset().mockImplementation(async () => pagination());
 });
-afterEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => { terminalCapture.client = null; vi.useRealTimers(); sessionStorage.clear(); vi.restoreAllMocks(); });
 const render = createLocaleRender('en', { taskCache: true });
 const projectId = '00000001-1111-4111-8111-111111111111';
 const taskId = '00000002-1111-4111-8111-111111111111';
@@ -56,6 +64,46 @@ async function imageRecording(schemaVersion: 1 | 3 = 3) {
   return { api, item, archive, resource, reader, blob, bytes };
 }
 describe('unified Session and managed records', () => {
+  it('retains the terminal screen and editable draft when account refresh stops the client after admission closes', async () => {
+    const read = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
+    const registration = read('valid-registration'), owner = registration.payload.owner;
+    const state = parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(registration), owner, binding: registration.payload.binding, connectionEpoch: '1', connected: true, capabilities: registration.payload.capabilities, control: { ...read('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: read('valid-snapshot').payload, ledger: read('valid-active-ledger').payload, archive: read('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin);
+    let receive: (value: TerminalSessionState) => void = () => {};
+    const close = vi.fn();
+    const api = { current: vi.fn(async () => state), state: vi.fn(async () => state), channel: vi.fn((_id, _browser, onState: (value: TerminalSessionState) => void) => { receive = onState; return { close }; }), command: vi.fn(), operation: vi.fn(), history: vi.fn(), archive: vi.fn(), nativeArchive: vi.fn(), resources: vi.fn() };
+    vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+    const view = render(<TaskSessionHost ownerUserId={owner.ownerUserId} projectId={owner.projectId} taskId={owner.taskId} claimId={registration.claimId} mode="herdr" active current />, { taskCache: { viewerId: owner.ownerUserId } });
+    let resume = () => {};
+    try {
+      await waitFor(() => expect(api.channel).toHaveBeenCalledOnce());
+      act(() => receive(state));
+      const client = terminalCapture.client;
+      if (client === null) throw new Error('Terminal client was not constructed');
+      const frame = screen.getByRole('region', { name: /terminal/i });
+      expect(frame).toHaveTextContent('你好 <script> Ω 😀');
+      const draft = screen.getByRole('textbox', { name: 'Terminal input' });
+      fireEvent.change(draft, { target: { value: 'local draft' } });
+      act(() => {
+        resume = pauseAuthRequests();
+        expect(close).not.toHaveBeenCalled();
+        client.suspendForAccountRefresh();
+        expect(close).toHaveBeenCalledOnce();
+      });
+      expect(client.getSnapshot()).toMatchObject({ transport: 'paused', inputReady: false, session: state });
+      expect(screen.getByRole('region', { name: /terminal/i })).toBe(frame);
+      expect(frame).toHaveTextContent('你好 <script> Ω 😀');
+      expect(draft).toHaveValue('local draft');
+      expect(draft).not.toHaveAttribute('readonly');
+      fireEvent.change(draft, { target: { value: 'edited while paused' } });
+      expect(draft).toHaveValue('edited while paused');
+      resume();
+      vi.useFakeTimers();
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(api.channel).toHaveBeenCalledOnce(); expect(api.current).toHaveBeenCalledOnce(); expect(api.command).not.toHaveBeenCalled();
+      expect(screen.getByRole('region', { name: /terminal/i })).toBe(frame);
+      expect(draft).toHaveValue('edited while paused');
+    } finally { resume(); view.unmount(); }
+  });
   it('rechecks invalid recorded Markdown once without retrying its source or looping on the immutable manifest', async () => {
     const f = await imageRecording();
     const id = '00000007-1111-4111-8111-111111111111', text = 'Saved ![image](https://example.com/image.png)';

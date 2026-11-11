@@ -1,5 +1,6 @@
+import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
-import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { id, malformed, record, string, timestamp } from './parse';
 import { parseConfigurationRevision } from './worker-configuration';
 
@@ -12,7 +13,7 @@ export type PromptResource = {
   readonly text: string; readonly updatedAt: string | null;
 };
 export type PromptSubmission = { readonly expectedUserId: string; readonly revision: string; readonly text: string };
-export type PromptAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly onDispatch?: () => void };
+export type PromptAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly onDispatch?: () => void; readonly onReceipt?: (resource: PromptResource) => void; readonly onRejection?: (error: ApiError) => void };
 
 export const PROMPT_REQUEST_BYTES = 1024 * 1024;
 export const PROMPT_RESPONSE_BYTES = 6 * 1024 * 1024 + 4096;
@@ -46,15 +47,18 @@ export const parsePromptResource = (value: unknown, target: PromptTarget, userId
 // A server may escape each character as six ASCII bytes. Bound the raw stream,
 // including chunked responses, before decoding and parsing any resource.
 const decodePromptJson = async (response: Response, signal: AbortSignal): Promise<unknown> => {
+  signal = responseSignal(response, signal);
+  signal.throwIfAborted();
   if (response.body === null) throw new Error('Missing response body');
   const length = response.headers.get('Content-Length');
   if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(PROMPT_RESPONSE_BYTES))) {
-    await response.body.cancel();
+    await awaitAbortable(response.body.cancel(), signal);
     throw new Error('Prompt response exceeds its budget');
   }
   const reader = response.body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
@@ -72,8 +76,8 @@ const decodePromptJson = async (response: Response, signal: AbortSignal): Promis
     return decodeStrictSessionJson(bytes, PROMPT_RESPONSE_BYTES);
   } finally {
     signal.removeEventListener('abort', cancel);
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    try { if (!cancelled) await awaitAbortable(reader.cancel().catch(() => undefined), signal); }
+    finally { reader.releaseLock(); }
   }
 };
 
@@ -98,10 +102,18 @@ export const saveWorkerPrompt = async (target: PromptTarget, submission: PromptS
     method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(input),
   }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
-  return json(response, signal, value => {
-    if (response.status !== 200) throw new ApiError('protocol', response.status);
-    const resource = parsePromptResource(value, target, userId);
-    if (resource.text !== input.text || BigInt(resource.revision) < BigInt(revision) || BigInt(resource.revision) > BigInt(revision) + 1n) throw new ApiError('protocol', response.status);
-    return resource;
-  }, response => decodePromptJson(response, signal));
+  let resource: PromptResource;
+  try {
+    resource = await json(response, signal, value => {
+      if (response.status !== 200) throw new ApiError('protocol', response.status);
+      const resource = parsePromptResource(value, target, userId);
+      if (resource.text !== input.text || BigInt(resource.revision) < BigInt(revision) || BigInt(resource.revision) > BigInt(revision) + 1n) throw new ApiError('protocol', response.status);
+      return resource;
+    }, response => decodePromptJson(response, signal));
+  } catch (error) {
+    if (error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500) admission.onRejection?.(error);
+    throw error;
+  }
+  admission.onReceipt?.(resource);
+  return resource;
 };

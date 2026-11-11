@@ -18,12 +18,14 @@ placement, shared navigation and retained section lifetime. Administrators can
 confirm role changes and removals, while members can confirm their own departure. Personal membership is fixed, and the last
 visible administrator is disabled; the server remains authoritative for
 concurrent changes. Confirmed receipts produce a success notice independently
-of subsequent refresh and update actor context. A departure navigates to
-Personal when the live browser location still shows either settings section of
-the departed Team. The operation remains bound to its identity and Team across
-navigation; a late receipt does not override an unrelated route or newer Team
-selection. Departure fallback discards only the departed Team's pending selection and writes Personal
-only when the stored choice still names that Team. The existing save retry retains
+of subsequent refresh and update actor context. A departure resets the Team
+selection and navigates to Personal only while its submitted confirmation and
+navigation context remain current. The
+[member result ownership decision](../bug-fix/2026-11-11-team-member-result-ownership.md)
+explains how late receipts preserve later choices. The operation remains bound
+to its identity and Team across navigation. Departure fallback discards only the
+departed Team's pending selection and writes Personal only when the stored choice
+still names that Team. The existing save retry retains
 this condition after a storage read or write failure, so a subsequent choice is
 preserved. Unknown writes stay unknown and offer a read without replay. The
 [Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) records the rationale for the server's authorization and transactional rules.

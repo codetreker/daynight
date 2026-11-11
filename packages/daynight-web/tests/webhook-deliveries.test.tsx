@@ -1,11 +1,12 @@
 import { createHash, webcrypto } from "node:crypto";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { pauseAuthRequests } from "../src/api/client";
 import { parseWebhookCatalog, type WebhookActiveEndpoint, type WebhookAttempt, type WebhookDelivery, type WebhookReceipt } from "../src/api/webhooks";
 import type { CurrentUser } from "../src/api/auth-types";
 import type { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
-import type { WebhookIntentInput, WebhookIntentState } from "../src/features/webhook-intents/controller";
+import { WebhookIntentController, type WebhookIntentInput, type WebhookIntentState } from "../src/features/webhook-intents/controller";
 import { WebhooksPage } from "../src/features/webhooks/WebhooksPage";
 import { WebhookDeliveriesPanel, type WebhookHistoryEndpoint } from "../src/features/webhook-deliveries/WebhookDeliveriesPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
@@ -27,16 +28,17 @@ const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = ne
 const payloadResponse = (text = '<script>window.PAYLOAD_EXECUTED=true</script>') => { const raw = Buffer.from(text); return { owner, endpointId, deliveryId, eventId, mediaType: "application/cloudevents+json", encoding: "base64", body: raw.toString("base64"), bytes: raw.length, sha256: createHash("sha256").update(raw).digest("hex") }; };
 beforeEach(() => vi.stubGlobal("crypto", { subtle: webcrypto.subtle }));
 
-const mount = ({ initialId = null, items = [delivery()], interceptInitial = () => null }: { readonly initialId?: string | null; readonly items?: readonly WebhookDelivery[]; readonly interceptInitial?: (url: URL) => Promise<Response> | null } = {}) => {
-  const lifetime = new AbortController(), denied = vi.fn(), submitted = vi.fn<(input: WebhookIntentInput) => Promise<WebhookIntentState>>().mockResolvedValue(idle);
-  const controller = { getSnapshot: vi.fn((): WebhookIntentState => idle), forgetCurrentProjection: vi.fn(), reconcile: async () => idle };
+const mount = ({ initialId = null, items = [delivery()], interceptInitial = () => null, realController }: { readonly initialId?: string | null; readonly items?: readonly WebhookDelivery[]; readonly interceptInitial?: (url: URL, init?: RequestInit) => Promise<Response> | null; readonly realController?: WebhookIntentController } = {}) => {
+  const lifetime = new AbortController(), denied = vi.fn(), refreshEndpoint = vi.fn(), submitted = vi.fn<(input: WebhookIntentInput) => Promise<WebhookIntentState>>().mockResolvedValue(idle);
+  const stopListeners = new Set<() => void>(); let stopRevision = 0;
+  const controller = { getSnapshot: vi.fn((): WebhookIntentState => idle), subscribe: () => () => {}, getStopRevision: () => stopRevision, subscribeStop: (listener: () => void) => { stopListeners.add(listener); return () => { stopListeners.delete(listener); }; }, forgetCurrentProjection: vi.fn(), reconcile: async () => idle };
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
-  let detail = items[0] ?? delivery(), intercept: ((url: URL) => Promise<Response> | null) | null = interceptInitial;
-  const fetch = vi.fn((input: string) => { const url = new URL(input, location.origin), held = intercept?.(url); if (held !== null && held !== undefined) return held; if (url.pathname.endsWith("/payload")) return Promise.resolve(response(payloadResponse())); if (url.pathname.endsWith("/attempts")) return Promise.resolve(response(page([attempt]))); if (url.pathname.endsWith("/deliveries")) return Promise.resolve(response(page(items))); return Promise.resolve(response(detail)); });
+  let detail = items[0] ?? delivery(), intercept: ((url: URL, init?: RequestInit) => Promise<Response> | null) | null = interceptInitial;
+  const fetch = vi.fn((input: string, init?: RequestInit) => { const url = new URL(input, location.origin), held = intercept?.(url, init); if (held !== null && held !== undefined) return held; if (url.pathname.endsWith("/payload")) return Promise.resolve(response(payloadResponse())); if (url.pathname.endsWith("/attempts")) return Promise.resolve(response(page([attempt]))); if (url.pathname.endsWith("/deliveries")) return Promise.resolve(response(page(items))); return Promise.resolve(response(detail)); });
   vi.stubGlobal("fetch", fetch);
-  const View = ({ visible = true, auth = "owner-1", value = endpoint, readable = true, manager = true }: { readonly visible?: boolean; readonly auth?: string; readonly value?: WebhookHistoryEndpoint; readonly readable?: boolean; readonly manager?: boolean }) => { const [selected, setSelected] = useState(initialId); return <section className="webhooks"><WebhookDeliveriesPanel owner={owner} endpoint={value} admission={admission} active={readable} visible={visible} authorizationKey={auth} catalog={catalog} controller={controller as never} intent={idle} submit={submitted} onOwnerDenied={denied} onCheckOperation={() => { void controller.reconcile(); }} onRefreshEndpoint={() => {}} routeDeliveryId={selected} onSelectDelivery={setSelected} manageOwner={manager}/></section>; };
+  const View = ({ visible = true, auth = "owner-1", value = endpoint, readable = true, manager = true, state = idle }: { readonly visible?: boolean; readonly auth?: string; readonly value?: WebhookHistoryEndpoint; readonly readable?: boolean; readonly manager?: boolean; readonly state?: WebhookIntentState }) => { const [selected, setSelected] = useState(initialId), actual = realController ?? controller, observed = useSyncExternalStore(actual.subscribe, actual.getSnapshot, actual.getSnapshot); return <section className="webhooks"><WebhookDeliveriesPanel owner={owner} endpoint={value} admission={admission} active={readable} visible={visible} authorizationKey={auth} catalog={catalog} controller={actual as never} intent={realController === undefined ? state : observed} submit={submitted} onOwnerDenied={denied} onCheckOperation={() => { void actual.reconcile(); }} onRefreshEndpoint={refreshEndpoint} routeDeliveryId={selected} onSelectDelivery={setSelected} manageOwner={manager}/></section>; };
   const rendered = renderWithLocale(<View/>, { locale: "en" });
-  return { ...rendered, denied, submitted, fetch, controller, setDetail: (value: WebhookDelivery) => { detail = value; }, intercept: (read: typeof intercept) => { intercept = read; }, rerenderView: (props: Parameters<typeof View>[0]) => rendered.rerender(<View {...props}/>) };
+  return { ...rendered, denied, submitted, fetch, controller, refreshEndpoint, stop: () => { stopRevision++; for (const listener of stopListeners) listener(); }, setDetail: (value: WebhookDelivery) => { detail = value; }, intercept: (read: typeof intercept) => { intercept = read; }, rerenderView: (props: Parameters<typeof View>[0]) => rendered.rerender(<View {...props}/>) };
 };
 const open = async () => { const row = await screen.findByRole("button", { name: /task.created.*Failed/ }); fireEvent.click(row); return screen.findByRole("dialog", { name: "Delivery details" }); };
 
@@ -203,6 +205,159 @@ describe("webhook delivery diagnostics", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ })); expect(view.submitted).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ })); await waitFor(() => expect(view.submitted).toHaveBeenCalledTimes(1));
     expect(view.submitted).toHaveBeenCalledWith({ kind: "delivery.redeliver", endpointId, deliveryId, ifVersion: endpoint.configVersion, ifGeneration: delivery().generation, destinationRevision: "12", body: {} });
+  });
+  it("keeps the confirmation and avoids follow-up reads when a receipt arrives during a pause", async () => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+    const confirmed: WebhookIntentState = { ...idle, phase: "confirmed", result: { operation: receipt } };
+    const release = pauseAuthRequests();
+    try {
+      const before = view.fetch.mock.calls.length;
+      view.rerenderView({ state: confirmed, readable: false });
+      await act(async () => held.resolve(confirmed));
+      expect(within(dialog).getByText("Confirm redelivery")).toBeVisible();
+      expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+      release();
+      await act(async () => { await Promise.resolve(); });
+      expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+      view.rerenderView({ state: confirmed, readable: true });
+      await waitFor(() => expect(within(dialog).queryByText("Confirm redelivery")).toBeNull());
+      expect(view.refreshEndpoint).toHaveBeenCalledOnce();
+    } finally { release(); }
+  });
+  it.each([false, true])("owns the restored operation lookup across a pause (stopped: %s)", async stopped => {
+    const operationId = id(90), key = `daynight.webhook.pending:${encodeURIComponent(location.origin)}:${userId}:personal:${userId}`;
+    const prepared = { serviceOrigin: location.origin, actorUserId: userId, owner, operationId, issuedAt: occurred, requestSha256: "a".repeat(64), kind: "delivery.redeliver" as const, endpointId, deliveryId, ifVersion: endpoint.configVersion, ifGeneration: delivery().generation, destinationRevision: "12" };
+    const receipt: WebhookReceipt = { operationId, kind: prepared.kind, issuedAt: occurred, requestSha256: prepared.requestSha256, actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: String(BigInt(delivery().generation) + 1n), keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+    sessionStorage.setItem(key, JSON.stringify(prepared));
+    const lifetime = new AbortController(), actual = new WebhookIntentController({ serviceOrigin: location.origin, owner, admission: { userId, onPrincipalMismatch: vi.fn() }, signal: lifetime.signal, storage: sessionStorage });
+    const held = barrier<Response>(), view = mount({ realController: actual, interceptInitial: url => url.pathname.endsWith(`/operations/${operationId}`) ? held.promise : null });
+    const dialog = await open(); await within(dialog).findByText("Late result");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Check operation/i }));
+    await waitFor(() => expect(view.fetch.mock.calls.some(([url]) => url.endsWith(`/operations/${operationId}`))).toBe(true));
+    const release = pauseAuthRequests();
+    try {
+      const before = view.fetch.mock.calls.length;
+      let confirmed!: () => void;
+      const observed = new Promise<void>(resolve => { confirmed = resolve; });
+      const unsubscribe = actual.subscribe(() => { if (actual.getSnapshot().phase === "confirmed") confirmed(); });
+      await act(async () => { held.resolve(response(receipt)); await observed; if (stopped) actual.stopPending(); });
+      unsubscribe();
+      await waitFor(() => expect(actual.getSnapshot().phase).toBe("confirmed"));
+      expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+      release();
+      if (stopped) { await act(async () => { await Promise.resolve(); }); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled(); }
+      else { await waitFor(() => expect(view.refreshEndpoint).toHaveBeenCalledOnce()); expect(view.fetch.mock.calls.length).toBeGreaterThan(before); }
+    } finally { release(); view.unmount(); actual.dispose(); sessionStorage.removeItem(key); }
+  });
+  it("does not revalidate a rejection after a pause has come and gone", async () => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    const release = pauseAuthRequests(); release(); const before = view.fetch.mock.calls.length;
+    await act(async () => held.resolve({ ...idle, phase: "rejected" }));
+    expect(view.fetch).toHaveBeenCalledTimes(before); expect(within(dialog).getByText("Confirm redelivery")).toBeVisible();
+  });
+  it("does not close a newer confirmation when an earlier registration settles", async () => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    const decision = within(dialog).getByText("Confirm redelivery"), before = view.fetch.mock.calls.length;
+    const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+    const confirmed: WebhookIntentState = { ...idle, phase: "confirmed", result: { operation: receipt } };
+    await act(async () => held.resolve(confirmed)); view.rerenderView({ state: confirmed });
+    expect(within(dialog).getByText("Confirm redelivery")).toBe(decision); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+  });
+  it("cancels a paused confirmed publication when its confirmation is replaced", async () => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    const release = pauseAuthRequests();
+    try {
+      const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+      await act(async () => held.resolve({ ...idle, phase: "confirmed", result: { operation: receipt } }));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+      const decision = within(dialog).getByText("Confirm redelivery"), before = view.fetch.mock.calls.length;
+      release(); await act(async () => { await Promise.resolve(); });
+      expect(within(dialog).getByText("Confirm redelivery")).toBe(decision); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+    } finally { release(); }
+  });
+  it("cancels a paused publication when the controller starts a different operation", async () => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    const release = pauseAuthRequests();
+    try {
+      const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+      await act(async () => held.resolve({ ...idle, phase: "confirmed", result: { operation: receipt } }));
+      const preparing: WebhookIntentState = { ...idle, phase: "preparing" }; view.controller.getSnapshot.mockReturnValue(preparing);
+      view.rerenderView({ state: preparing });
+      const before = view.fetch.mock.calls.length; release(); await act(async () => { await Promise.resolve(); });
+      expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+    } finally { release(); }
+  });
+  it.each(["before receipt", "after receipt"])("stops confirmed follow-up work when the controller stops %s", async when => {
+    const view = mount(), dialog = await open(), held = barrier<WebhookIntentState>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    view.submitted.mockReturnValue(held.promise);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    const release = pauseAuthRequests();
+    try {
+      const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+      if (when === "before receipt") view.stop();
+      await act(async () => held.resolve({ ...idle, phase: "confirmed", result: { operation: receipt } }));
+      if (when === "after receipt") view.stop();
+      const before = view.fetch.mock.calls.length; release(); await act(async () => { await Promise.resolve(); });
+      expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); expect(view.fetch).toHaveBeenCalledTimes(before); expect(view.refreshEndpoint).not.toHaveBeenCalled();
+    } finally { release(); }
+  });
+  it("cancels a rejected delivery revalidation on pause and ignores a late refusal", async () => {
+    const view = mount(), dialog = await open(), held = barrier<Response>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    let readSignal: AbortSignal | undefined;
+    view.intercept((url, init) => { if (url.pathname.endsWith(`/deliveries/${deliveryId}`)) { readSignal = init?.signal ?? undefined; return held.promise; } return null; });
+    view.submitted.mockResolvedValue({ ...idle, phase: "rejected" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    await waitFor(() => expect(readSignal).toBeDefined());
+    const release = pauseAuthRequests();
+    try {
+      expect(readSignal?.aborted).toBe(true);
+      await act(async () => held.resolve(failure(404, "not_found")));
+      expect(within(dialog).getByText("Original title")).toBeVisible(); expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); expect(view.denied).not.toHaveBeenCalled();
+    } finally { release(); }
+  });
+  it.each(["replace confirmation", "unmount"])("cancels a rejected revalidation on %s", async action => {
+    const view = mount(), dialog = await open(), held = barrier<Response>();
+    await within(dialog).findByText("Original title"); await within(dialog).findByText("Late result");
+    let readSignal: AbortSignal | undefined;
+    view.intercept((url, init) => { if (url.pathname.endsWith(`/deliveries/${deliveryId}`)) { readSignal = init?.signal ?? undefined; return held.promise; } return null; });
+    view.submitted.mockResolvedValue({ ...idle, phase: "rejected" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Register redelivery$/ }));
+    await waitFor(() => expect(readSignal).toBeDefined());
+    if (action === "unmount") view.unmount();
+    else { fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" })); fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ })); }
+    expect(readSignal?.aborted).toBe(true);
+    await act(async () => held.resolve(failure(404, "not_found")));
+    if (action !== "unmount") { expect(within(dialog).getByText("Original title")).toBeVisible(); expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); }
+    expect(view.denied).not.toHaveBeenCalled();
   });
   it("shows retained deleted-endpoint history and authorized payload without creating capabilities or enabling redelivery", async () => {
     const value = { ...delivery(), target: { ...delivery().target, url: null, displayUrl: "https://receiver.test/…" } };

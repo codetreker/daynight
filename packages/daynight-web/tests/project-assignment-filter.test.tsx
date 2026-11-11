@@ -20,6 +20,7 @@ const people: readonly ProjectPerson[] = [
 const render = createLocaleRender('zh-CN');
 
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${projectId}`);
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
 });

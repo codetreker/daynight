@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
+import { pauseAuthRequests } from "../src/api/client";
 import { navigate } from "../src/app/router";
 import { TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { createLocaleRender } from "./helpers/renderWithLocale";
@@ -201,6 +202,71 @@ it("keeps an already dispatched save and its confirmed receipt across real route
   expect(await screen.findByText("Settings saved.")).toBeVisible();
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
   expect(app.saves()).toBe(1);
+});
+
+it("retains a newer edit when a confirmed save publishes after returning during a pause", async () => {
+  const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
+  leave();
+  const resume = pauseAuthRequests();
+  try {
+    app.setSavedProject(project(90, 2n));
+    await act(async () => app.save.resolve(json(project(90, 2n))));
+    const reads = app.projectReads;
+    returnToSettings();
+    const field = await screen.findByLabelText("Alert threshold");
+    await waitFor(() => expect(settings().queryByRole("button", { name: "Saving…" })).toBeNull());
+    expect(field).toBeEnabled(); expect(field).toHaveValue(90);
+    fireEvent.change(field, { target: { value: "110" } });
+    expect(app.projectReads).toBe(reads); expect(app.saves()).toBe(1);
+    resume();
+    await screen.findByText("Settings saved.");
+    expect(field).toHaveValue(110);
+    await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
+    expect(app.saves()).toBe(1);
+  } finally { resume(); }
+});
+
+it("retains a cancellation made after confirmation while the return publication is paused", async () => {
+  const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
+  leave();
+  const resume = pauseAuthRequests();
+  try {
+    app.setSavedProject(project(90, 2n));
+    await act(async () => app.save.resolve(json(project(90, 2n))));
+    const reads = app.projectReads;
+    returnToSettings();
+    const field = await screen.findByLabelText("Alert threshold");
+    await waitFor(() => expect(settings().queryByRole("button", { name: "Saving…" })).toBeNull());
+    const cancel = settings().getByRole("button", { name: "Cancel" }); expect(cancel).toBeEnabled();
+    fireEvent.click(cancel); expect(field).toHaveValue(60);
+    expect(app.projectReads).toBe(reads);
+    resume();
+    await screen.findByText("Settings saved.");
+    await waitForState(() => expect(app.projectReads).toBeGreaterThan(reads));
+    await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
+    expect(field).toHaveValue(60); expect(app.saves()).toBe(1);
+  } finally { resume(); }
+});
+
+it("retains a cancellation after a known rejection while its return read is paused", async () => {
+  const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
+  leave();
+  const resume = pauseAuthRequests();
+  try {
+    app.setSavedProject(project(120, 2n));
+    await act(async () => app.save.resolve(fail(400, "invalid_input", "rejected-save")));
+    const reads = app.projectReads;
+    returnToSettings();
+    const field = await screen.findByLabelText("Alert threshold");
+    await waitFor(() => expect(settings().queryByRole("button", { name: "Saving…" })).toBeNull());
+    const cancel = settings().getByRole("button", { name: "Cancel" }); expect(cancel).toBeEnabled();
+    fireEvent.click(cancel); expect(field).toHaveValue(60); expect(app.projectReads).toBe(reads);
+    resume();
+    expect(await screen.findByText("rejected-save")).toBeVisible();
+    await waitForState(() => expect(app.projectReads).toBeGreaterThan(reads));
+    await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
+    expect(field).toHaveValue(60); expect(app.saves()).toBe(1);
+  } finally { resume(); }
 });
 
 it.each([60, 120])("keeps a definitely rejected draft after navigation and reread of saved value %i", async (savedValue) => {

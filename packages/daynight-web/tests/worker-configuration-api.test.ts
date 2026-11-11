@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getWorkerConfiguration, listWorkerConfigurationProjects, parseConfigurationRevision, parseWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationOutcome, type WorkerConfigurationResource } from '../src/api/worker-configuration';
-import { invalidateAuthRequests } from '../src/api/client';
+import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
@@ -85,6 +85,64 @@ describe('principal-admitted configuration API', () => {
     expect(fetch.mock.calls.map(([url]) => url)).toEqual([`/api/v1/me/workers/${workerId(1)}/configuration`, `/api/v1/me/workers/${workerId(1)}/configuration`]);
     expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ revision: '9223372036854775806', value });
     expect(gate.onDispatch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[1]![1].headers).not.toHaveProperty('Daynight-Worker-Protocol');
+  });
+  it('reports a validated receipt even if identity pauses synchronously afterward', async () => {
+    const saved = configurationResource('2', configurationValue()), controller = new AbortController();
+    const reason = new Error('configuration view closed');
+    const fetch = vi.fn().mockResolvedValue(configurationResponse(saved)); vi.stubGlobal('fetch', fetch);
+    let resume = () => {};
+    const onConfirmed = vi.fn(() => { resume = pauseAuthRequests(); controller.abort(reason); });
+    try {
+      await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), controller.signal, { ...admission(), onConfirmed })).rejects.toBe(reason);
+      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed).toHaveBeenCalledWith(saved); expect(controller.signal.aborted).toBe(true);
+    } finally { resume(); }
+  });
+  it.each([{ status: 409, code: 'version_conflict' }, { status: 400, code: 'invalid_input' }])('reports a trusted $status refusal before a synchronous pause and abort', async ({ status, code }) => {
+    const controller = new AbortController(), fetch = vi.fn().mockResolvedValue(configurationError(status, code)); vi.stubGlobal('fetch', fetch);
+    const reason = new Error('configuration view closed');
+    let resume = () => {};
+    const onRejected = vi.fn(() => { resume = pauseAuthRequests(); controller.abort(reason); });
+    try {
+      await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), controller.signal, { ...admission(), onRejected })).rejects.toBe(reason);
+      expect(onRejected).toHaveBeenCalledOnce(); expect(onRejected).toHaveBeenCalledWith(expect.objectContaining({ status, code }));
+      expect(controller.signal.aborted).toBe(true);
+    } finally { resume(); }
+  });
+  it.each(['confirmed', 'rejected'] as const)('reports a validated %s before synchronous shared network cancellation', async outcome => {
+    const saved = configurationResource('2', configurationValue());
+    let networkSignal: AbortSignal | undefined;
+    const fetch = vi.fn((_url: string, init: RequestInit) => {
+      networkSignal = init.signal as AbortSignal;
+      return Promise.resolve(outcome === 'confirmed' ? configurationResponse(saved) : configurationError(409, 'version_conflict'));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const onConfirmed = vi.fn(() => cancelAuthNetworkRequests());
+    const onRejected = vi.fn(() => cancelAuthNetworkRequests());
+    const pending = saveWorkerConfiguration(workerId(1), '1', configurationValue(), new AbortController().signal, { ...admission(), onConfirmed, onRejected });
+    const error = await pending.catch((failure: unknown) => failure);
+    expect(networkSignal?.aborted).toBe(true);
+    expect(error).toBe(networkSignal?.reason);
+    if (outcome === 'confirmed') {
+      expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(saved);
+      expect(onRejected).not.toHaveBeenCalled();
+    } else {
+      expect(onRejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 409, code: 'version_conflict' }));
+      expect(onConfirmed).not.toHaveBeenCalled();
+    }
+  });
+  it.each([
+    { name: 'foreign principal', response: () => configurationResponse({ error: { code: 'version_conflict', message: 'conflict', requestId: 'request' } }, 409, workerId(99)) },
+    { name: 'malformed error body', response: () => new Response('{', { status: 409, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } }) },
+  ])('does not report a trusted rejection for $name', async ({ response }) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response())); const onRejected = vi.fn();
+    await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), new AbortController().signal, { ...admission(), onRejected })).rejects.toMatchObject({ kind: 'protocol' });
+    expect(onRejected).not.toHaveBeenCalled();
+  });
+  it('does not report confirmation for a mismatched receipt', async () => {
+    const fetch = vi.fn().mockResolvedValue(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 8 })));
+    vi.stubGlobal('fetch', fetch); const onConfirmed = vi.fn();
+    await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), new AbortController().signal, { ...admission(), onConfirmed })).rejects.toMatchObject({ kind: 'protocol' });
+    expect(onConfirmed).not.toHaveBeenCalled();
   });
   it('rejects a foreign principal, missing capability and inconsistent successful PUT', async () => {
     const mismatch = admission(), fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource(), 200, workerId(99)))

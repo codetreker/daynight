@@ -3,7 +3,9 @@ import { createRequire, stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
+import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../../../src/commands/worker/codex-probe-owner.js";
+import { withinOperation } from "../../../src/platform/tool-io.js";
 import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 
 // Exercise the locked launcher sources while replacing every filesystem and process effect.
@@ -48,7 +50,7 @@ const launcher = (kind: "native" | "shebang") => {
 const ownerSource = readFileSync(new URL("../../../src/commands/worker/codex-probe-owner.ts", import.meta.url), "utf8")
   .split("\n").filter(line => !line.startsWith("import ") && !line.startsWith("export { ")).join("\n").replaceAll("export ", "");
 const windows = vm.runInNewContext(`${stripTypeScriptTypes(ownerSource)}\n({ createCodexProbeOwner, captureCodexProbeEnvironment });`, {
-  process: { platform: "win32" }, hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup,
+  process: { platform: "win32" }, BotCliProbeCleanupError, hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, withinOperation,
   captureCodexProbeEnvironment: (environment: NodeJS.ProcessEnv) => captureCodexProbeEnvironment(environment, "win32"),
 }) as { createCodexProbeOwner: typeof createCodexProbeOwner; captureCodexProbeEnvironment: typeof captureCodexProbeEnvironment };
 

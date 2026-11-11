@@ -2,11 +2,13 @@ import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { Project, TaskSummary } from '../src/api/types';
+import { pausedSummaryTaskIds } from '../src/features/task-pause/paused-summary';
 import { projectSummaries } from '../src/features/task-cache/projection';
+import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { ProjectOverview } from '../src/features/projects/ProjectOverview';
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
@@ -14,6 +16,8 @@ import { overviewProgress } from '../src/features/projects/overview-progress';
 import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSession';
 import { TaskPauseControl, TaskPauseFeedback } from '../src/features/task-pause/TaskPauseControl';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { detailFixture, graphFixture, resourceResponse } from './helpers/taskDetail';
+import { taskSyncQuery, taskSyncResponse } from './helpers/taskSync';
 import { installGraphMeasurements } from './graph-measurements';
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
@@ -34,7 +38,7 @@ afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView={activeView}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView={activeView}
   goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
@@ -66,7 +70,7 @@ describe('paused task discovery', () => {
 
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
-    const view = renderWithLocale(<ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="standalone"
+    const view = renderWithLocale(<ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView="standalone"
       goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
       unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
@@ -75,6 +79,78 @@ describe('paused task discovery', () => {
     expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
     expect(document.getElementById(`standalone-task-${id(3)}`)).toBeNull();
     expect(document.getElementById(`standalone-task-${id(4)}`)).toBeVisible();
+  });
+
+  it('filters the task heading by assignee while preserving project and chain scopes', async () => {
+    const other = id(202);
+    const person = { version: 'a'.repeat(64), userId: other, name: 'Other person', avatarUrl: null, hasProjectAccess: true };
+    const people = [person, { ...person, userId: TEST_VIEWER_ID, name: 'Current person' }];
+    const task = (n: number, assignedTo: string | null, changes: Parameters<typeof detailFixture>[2] = {}) =>
+      detailFixture(project.id, id(n), { title: `Task ${n}`, assignedTo, ...changes });
+    const paused = { paused: true };
+    const tasks = [
+      task(1, TEST_VIEWER_ID, { properties: paused }),
+      task(2, other, { dependsOn: [id(1), id(3)], externalDependsOn: [id(3)], properties: paused }),
+      task(3, other, { properties: paused }),
+      task(4, null, { status: 'cancelled', cancelledAt: time, properties: paused }),
+      task(5, TEST_VIEWER_ID, { status: 'done', properties: paused }),
+      task(6, TEST_VIEWER_ID, { parentId: id(7), properties: paused }),
+      task(7, TEST_VIEWER_ID, { type: 'goal', properties: paused }),
+      ...Array.from({ length: 21 }, (_, n) => task(100 + n, TEST_VIEWER_ID, n === 0 ? { properties: paused } : {})),
+    ];
+    window.history.replaceState(null, '', `/projects/${project.id}`);
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async (address: string) => {
+      const url = new URL(address, location.origin);
+      if (url.pathname === `/api/v1/projects/${project.id}/task-sync`) return taskSyncResponse(graphFixture(tasks), {
+        assigneeVersions: [TEST_VIEWER_ID, other].map((userId) => ({ userId, version: person.version, hasProjectAccess: true })), viewerId: TEST_VIEWER_ID,
+        query: taskSyncQuery(url), versionForTask: (item) => tasks.find((task) => task.id === item.id)!.version,
+        propertiesForTask: (item) => tasks.find((task) => task.id === item.id)!.properties,
+      });
+      if (url.pathname === `/api/v1/projects/${project.id}/task-assignees`) {
+        const requested = url.searchParams.getAll('userId');
+        return resourceResponse({ items: people.filter((item) => requested.length === 0 || requested.includes(item.userId)), unresolvedUserIds: requested.filter((userId) => !people.some((item) => item.userId === userId)) }, TEST_VIEWER_ID);
+      }
+      throw new Error(`Unexpected request ${address}`);
+    }));
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const view = renderWithLocale(<ProjectPage projectId={project.id} />, { container: root, locale: 'zh-CN', taskCache: true });
+    const headingCount = () => view.container.querySelector('#project-section-panel-tasks .project-section-heading .task-pause-count');
+    await waitFor(() => expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停'));
+    fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
+    await waitFor(() => expect(headingCount()).toHaveTextContent('6 已暂停'));
+    const selectAssignee = async (label: string | RegExp) => {
+      fireEvent.click(screen.getByRole('button', { name: /^负责人:/ }));
+      fireEvent.click(await screen.findByRole('option', { name: label }));
+    };
+    await selectAssignee('分配给我');
+    expect(headingCount()).toHaveTextContent('3 已暂停');
+    const chain = document.getElementById(`task-root-${id(1)}`)!;
+    expect(within(chain).getByText('2 已暂停')).toBeVisible();
+    fireEvent.click(chain);
+    expect(within(chain).getByText('2 已暂停')).toBeVisible();
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
+    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'done' } });
+    expect(headingCount()).toHaveTextContent('3 已暂停');
+    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+    fireEvent.click(screen.getByRole('tab', { name: '独立任务' }));
+    expect(headingCount()).toHaveTextContent('3 已暂停');
+    const pagination = screen.getByRole('navigation', { name: '独立任务列表分页' });
+    fireEvent.click(within(pagination).getByRole('button', { name: '下一页' }));
+    expect(pagination).toHaveTextContent('第 2 / 2 页');
+    expect(headingCount()).toHaveTextContent('3 已暂停');
+    fireEvent.click(screen.getByRole('tab', { name: 'Goal' }));
+    expect(headingCount()).toHaveTextContent('3 已暂停');
+    await selectAssignee('未分配');
+    expect(headingCount()).toHaveTextContent('1 已暂停');
+    await selectAssignee(/^Other person/);
+    expect(headingCount()).toHaveTextContent('2 已暂停');
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停');
+    fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
+    await selectAssignee('所有负责人');
+    expect(headingCount()).toHaveTextContent('6 已暂停');
   });
 
   it('counts whole chains, identifies the paused representative and child, and passes pause data into the graph', async () => {

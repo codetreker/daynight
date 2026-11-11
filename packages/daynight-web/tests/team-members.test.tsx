@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TeamMembersPanel } from "../src/features/teams/TeamMembersPanel";
+import { navigate } from "../src/app/router";
 import { createTaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { stringifyWireJson } from "./helpers/wireJson";
@@ -149,6 +150,22 @@ describe("Team members", () => {
     await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(2));
     expect(writes(fixture.fetcher)[1]?.[1]?.body).toBe(`{"version":9007199254740994,"expectedUserId":"${userId}"}`);
   });
+  it("retains the original confirmation after navigation while accepting its role receipt", async () => {
+    const write = Promise.withResolvers<Response>(), refresh = Promise.withResolvers<Response>(); let reads = 0;
+    const fixture = setup({ mutate: () => write.promise, rosterRead: () => ++reads === 2 ? refresh.promise : undefined });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    fireEvent.change(within(row(otherId)).getByRole("combobox"), { target: { value: "member" } });
+    const dialog = screen.getByRole("dialog", { name: "Change Team role" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm change" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1));
+    act(() => navigate("/shared-projects"));
+    await act(async () => write.resolve(response({ membership: membership(otherId, "member", 9007199254740994n), actorRole: "admin" })));
+    await waitFor(() => { expect(fixture.changed).toHaveBeenCalledWith(true); expect(reads).toBe(2); });
+    expect(screen.getByRole("dialog", { name: "Change Team role" })).toBe(dialog);
+    expect(within(row(otherId)).getByRole("combobox")).toHaveValue("member");
+    await act(async () => refresh.resolve(response({ items: [{ ...membership(userId, "admin"), profile: profile("Alice") }, { ...membership(otherId, "member", 9007199254740994n), profile: profile(null) }] })));
+    expect(within(dialog).getByRole("button", { name: "Confirm change" })).toBeDisabled();
+  });
   it.each(["role", "remove", "self-exit"] as const)("keeps newer membership facts when a %s receipt arrives late", async (kind) => {
     const write = Promise.withResolvers<Response>(), refresh = Promise.withResolvers<Response>(); let reads = 0;
     const rejoinedAt = "2026-10-21T09:00:00Z";
@@ -186,8 +203,23 @@ describe("Team members", () => {
     fireEvent.click(within(row("Alice")).getByRole("button", { name: "Leave Team" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Leave Team" }));
     await waitFor(() => expect(fixture.left).toHaveBeenCalledOnce());
+    expect(fixture.left).toHaveBeenCalledWith(true, 1n);
     expect(fixture.fetcher.mock.calls.filter(([, init]) => !init?.method)).toHaveLength(2);
     expect(fixture.changed).not.toHaveBeenCalled();
+  });
+  it("does not withdraw a newer confirmed Team membership for an old self-exit receipt", async () => {
+    const write = Promise.withResolvers<Response>();
+    const fixture = setup({ actor: "member", mutate: () => write.promise });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    fireEvent.click(within(row("Alice")).getByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1));
+    const newer = { id: teamId, kind: "ordinary" as const, name: "Alpha", version: 1n, createdAt: time, updatedAt: time, membership: membership(userId, "member", 2n) };
+    fixture.rerender(<TeamMembersPanel teamId={teamId} confirmedTeam={newer} admission={fixture.scope} onIdentityMismatch={fixture.mismatch} onChanged={fixture.changed} onLeft={fixture.left} />);
+    await act(async () => write.resolve(response({ teamId, userId, removed: true, actorRole: null })));
+    await waitFor(() => expect(fixture.changed).toHaveBeenCalledWith(true));
+    expect(fixture.left).not.toHaveBeenCalled();
+    expect(row("Alice")).toBeVisible();
   });
   it.each(["version_conflict", "last_admin"])("reports %s and requires review before another write", async (code) => {
     const fixture = setup({ mutate: () => fail(code) });

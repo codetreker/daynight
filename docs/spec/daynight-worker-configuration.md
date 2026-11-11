@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。通过独立托管模式能力协商的完整值还必须包含 agentControlMode。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -24,6 +24,7 @@
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
 | agentControlMode | 协商后为 herdr 或 web；已有旧目标尚未采纳时可为 null，不是第三种模式 |
+| toolPaths | 工具能力协商后为固定三键 codex/copilot/herdr，各项为未采纳 null、显式自动或显式路径 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
 | projects | 显式数组；条目为 {projectId,nativeOverrides}，规范 Project UUID 不重复，最多 128 项 |
 
@@ -31,11 +32,19 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode 是 Worker 级全局目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode 与 toolPaths 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
+
+### 工具路径三态
+
+toolPaths 的三个键均必填。每项 null 表示尚未采纳；`{kind:"auto"}` 表示明确恢复自动；`{kind:"path",path:string}` 表示完整文件路径。旧存储缺少 toolPaths 时读取为三个 null，不能推断为 auto。已采纳 choice 不能清回 null。自动来源由工具及执行模式决定，Web Copilot 的内置来源与 Herdr Copilot 的命令环境发现分别保留。
+
+path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控制字符的绝对路径；保留原始空格、大小写和词法路径，不 trim、不展开环境变量或 `~`、不拆参数、不交给 shell。服务和浏览器只校验远端路径语法，不访问文件；真实存在性、入口种类、解释器与协议由 Worker 验证。不能用服务所在操作系统的路径规则拒绝另一平台的合法路径。
 
 ## 首次导入与编辑
 
-完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode 并推进目标 revision，其他字段原样保留。候选来自本机有效默认配置：明确 web 必须采纳为 web，未指定时才为 herdr。完整首次导入不额外再推进一次版本。网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同；先保存的非 null 模式不会被后来的候选覆盖，同值报告不反复升版。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
+完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。候选来自同一捕获的本机配置：明确 web 保持 web，未指定模式才为 herdr；省略的本地工具项成为 auto。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。
+
+网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同。网页先明确 Codex 时，随后 bootstrap 只填仍未采纳的 Copilot/Herdr；bootstrap 先提交时，旧 revision 的网页 PUT 冲突，不能自动重放。已保存的非 null choice 不被候选覆盖；恢复 auto 后本地旧路径不再出现。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
 PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
 
@@ -53,9 +62,19 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 ## 心跳扩展
 
+### 工具路径能力
+
+`Daynight-Worker-Tool-Paths: 1` 独立于托管模式头和配置协议 1/2，适用于配置 GET/HEAD/PUT、报告 POST 及 Worker 列表/详情读取。多个头值或非 1 在业务调用前拒绝。只有服务回显同名头才确认支持；未协商响应省略 desired.value.toolPaths 和 telemetry.toolPaths，未协商报告拒绝工具正文扩展。列表仍是原摘要，不增加 telemetry。
+
+旧 PUT 在 Worker 锁内通过目标 CAS 后保留当前 toolPaths，再执行完整规范化、预算与 no-op 比较；不能让旧客户端保存其它字段清除工具选择。客户端仅在当前 origin 和认证账号的配置 GET（包括已认证的 404）确认能力后上传工具扩展，不能跨账号复用或按版本号猜测。运行中的 Worker 必须独立重新发现工具能力；已支持托管模式的服务升级后，无需重启 Worker 或等待其它故障即可开始同步工具选择。旧服务下继续本地选择和原配置合同，不发送工具字段；响应未确认能力不等同于新字段已生效，也不允许重放未知写。
+
+工具实际状态使用[工具路径观察](daynight-worker-snapshots.md#工具路径观察)，不增加 observation.items 的 appliedValue 分支。协议支持只证明可交换目标与事实，不能证明工具已应用。Web Codex/Copilot 的版本、模型、host 能力及新执行必须消费同一个已验证选择；保存目标不等于准入成功。首次执行冻结实际命令及依赖身份，改变目标或 PATH 仅影响后续新执行；原身份缺失或变化时恢复拒绝新 spawn，不能改用其它安装。已有活执行的输入、停止和归档继续原归属操作。旧记录不能证明工具身份或历史版本时明确报告未知。Herdr 未接入显式目标的运行能力时必须拒绝该目标，不能静默忽略或标为就绪。
+
+### 配置报告
+
 Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告和协议 1 保留各自的既有合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
-扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；即使已有云端 desired，仍可提交独立模式候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
+扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；工具能力确认后必填 toolPathsBootstrap，为完整三项 choice 或 null。即使已有云端 desired，仍可提交独立采纳候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
 
 扩展回执保留原时间字段，并含 configuration:{desired,observationRevision,observationAccepted}。观测 CAS 不匹配时返回 false 与当前版本，保留已有应用观测；合法机器报告仍按原规则保存。响应未知不能被当作未写入，后续使用最新实际状态收敛，不重放旧报告。
 
@@ -110,10 +129,12 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
 
-保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。完整编辑与交互要求由[Web 需求](daynight-web.md#云端运行配置)拥有，机制由[Web 设计](../design/daynight-web.md#worker-云端配置编辑)拥有；Web 展示的应用结果来自 Worker 报告，不能作为本机副作用的独立证明。
+保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。保存准备或结果发布期间准入暂停时，本地 pending 与保存 promise 在结果已知或取消分类后结束，保留已有配置和草稿；暂停期间不自动读取或重放。未派发的取消不代表写入，已派发而未确认的结果仍需核对，可信保存确认不因后续发布失败变为未知。取消网络不证明服务端回滚。
+
+延迟结果的资源发布仍须通过原账号和 Worker 的准入，且不能覆盖提交之后的草稿编辑或清除其未保存状态。临时暂停恢复后可发布同一操作的结果；新的保存仍须重新满足版本、权限、新鲜度和操作身份检查。本地 pending 结束本身不授权再次保存；已确认结果尚未发布时不能以旧资源执行丢弃，离开时放弃草稿的意图仍需在结果发布时保留。完整编辑与交互要求由[Web 需求](daynight-web.md#云端运行配置)拥有，机制由[Web 设计](../design/daynight-web.md#worker-云端配置编辑)拥有；Web 展示的应用结果来自 Worker 报告，不能作为本机副作用的独立证明。
 
 ## 失败与验证
 
 输入约束与格式错误为 400；目标版本冲突、尚未初始化或版本耗尽为明确错误；未认证为 401、其他账号或未知 Worker 为 404。存储错误保留链并返回清洗后的 500。响应沿用 requestId，不记录配置正文或原始工具错误。
 
-验证覆盖账号与 Origin、闭合字段、继承/null/[]、完整版本范围、并发导入、独立 CAS、相同值 no-op、过期窗口、当前项目权限、旧格式及存在运行中任务时的接入。服务端接纳应用观测不代替真实 Worker 应用验证。
+验证覆盖账号与 Origin、闭合字段、继承/null/[]、完整版本范围、并发导入、独立 CAS、相同值 no-op、过期窗口、当前项目权限、旧格式及存在运行中任务时的接入。Web 保存验证覆盖准入前取消、派发后未确认、可信确认后的发布失败、暂停中的本地收尾和保留草稿、恢复发布与较新编辑，以及 owner 替换或销毁时的取消。服务端接纳应用观测不代替真实 Worker 应用验证。

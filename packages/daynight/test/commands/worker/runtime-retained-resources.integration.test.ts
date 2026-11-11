@@ -14,8 +14,11 @@ import type { LocalTask as WebTask } from "../../../src/commands/worker/backends
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
@@ -114,7 +117,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   ]));
   cancellation.abort(); await execution;
   expect(lifecycle.close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
-  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), "shutdown", expect.any(Number), undefined, true);
+  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), immediateStop: true });
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
   expect(await readFile(retainedJournal, "utf8")).toBe("retained Herdr journal marker");

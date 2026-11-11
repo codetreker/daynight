@@ -191,13 +191,14 @@ export const parseWorkerCloudBootstrap = async (
   signal.throwIfAborted();
   return parseWorkerCloudValue({
     agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
+    toolPaths: parseLocalToolPaths(worker.toolPaths),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, true);
+  }, true, { controlMode: true, toolPaths: true });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>
