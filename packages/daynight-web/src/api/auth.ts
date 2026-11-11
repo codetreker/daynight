@@ -190,12 +190,12 @@ export const removeMember = (projectId: string, userId: string, input: { readonl
   });
 };
 
-export const setProjectGrant = (projectId: string, userId: string, input: { readonly version: bigint | null; readonly role: ProjectRole; readonly expectedUserId: string }, signal: AbortSignal, onIdentityMismatch: () => void): Promise<ProjectGrantResult> => {
+export const setProjectGrant = (projectId: string, userId: string, input: { readonly version: bigint | null; readonly role: ProjectRole; readonly expectedUserId: string }, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<ProjectGrantResult> => {
   const project = requestId(projectId), user = requestId(userId), expected = requestId(input.expectedUserId);
   const version = input.version === null ? null : parseMemberVersion(input.version), role = parseRole(input.role);
   return projectGrantWrite(signal, onIdentityMismatch, async () => {
     const response = await request(`${projectUrl(project)}/grants/${user}`, signal, { method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: `{"version":${version === null ? "null" : version},"role":${JSON.stringify(role)},"expectedUserId":${JSON.stringify(expected)}}` });
+      body: `{"version":${version === null ? "null" : version},"role":${JSON.stringify(role)},"expectedUserId":${JSON.stringify(expected)}}` }, onDispatch);
     assertResponsePrincipal(response, expected, onIdentityMismatch);
     return json(response, signal, (data) => {
       if (response.status !== 200) throw new ApiError("protocol", response.status);
@@ -204,11 +204,11 @@ export const setProjectGrant = (projectId: string, userId: string, input: { read
   });
 };
 
-export const removeProjectGrant = (projectId: string, userId: string, input: { readonly version: bigint; readonly expectedUserId: string }, signal: AbortSignal, onIdentityMismatch: () => void): Promise<RemoveProjectGrantResult> => {
+export const removeProjectGrant = (projectId: string, userId: string, input: { readonly version: bigint; readonly expectedUserId: string }, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<RemoveProjectGrantResult> => {
   const project = requestId(projectId), user = requestId(userId), expected = requestId(input.expectedUserId), version = parseMemberVersion(input.version);
   return projectGrantWrite(signal, onIdentityMismatch, async () => {
     const response = await request(`${projectUrl(project)}/grants/${user}`, signal, { method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: `{"version":${version},"expectedUserId":${JSON.stringify(expected)}}` });
+      body: `{"version":${version},"expectedUserId":${JSON.stringify(expected)}}` }, onDispatch);
     assertResponsePrincipal(response, expected, onIdentityMismatch);
     return json(response, signal, (data) => {
       if (response.status !== 200) throw new ApiError("protocol", response.status);
