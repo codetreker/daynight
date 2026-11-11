@@ -102,6 +102,11 @@ describe('prompt editor state', () => {
     const checked = apply(unknown, { type: 'read/start', id: 3 }, { type: 'reconcile/success', id: 3, resource: resource('2', 'sent') });
     expect(checked).toMatchObject({ draft: 'sent', baseline: resource('2', 'sent'), write: 'idle', reconciled: true });
     expect(promptDirty(checked)).toBe(false);
+    const confirmed = apply(left, { type: 'write/confirmed', id: 2 }, { type: 'write/success', id: 2, resource: resource('2', 'sent') });
+    expect(confirmed).toMatchObject({ draft: 'sent', baseline: resource('2', 'sent'), write: 'idle', abandoned: false });
+    expect(promptDirty(confirmed)).toBe(false);
+    const resumedEdit = apply(left, { type: 'edit', text: 'newer' }, { type: 'write/confirmed', id: 2 }, { type: 'write/success', id: 2, resource: resource('2', 'sent') });
+    expect(resumedEdit.draft).toBe('newer'); expect(promptDirty(resumedEdit)).toBe(true);
   });
 
   it('protects edits back to the old baseline while a submission or conflicting result is outstanding', () => {

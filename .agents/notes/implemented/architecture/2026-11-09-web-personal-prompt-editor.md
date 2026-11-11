@@ -19,6 +19,11 @@ accepted monotonically, and later input remains separate from the submission.
 An uncertain write is reconciled by reading current facts without replaying it
 or attributing a matching value to that request. Explicit conflict choices
 control whether to replace a draft or continue from the latest version.
+Identity pauses cancel the operation's preparation or network wait. Local
+settlement distinguishes no dispatch, an unknown dispatched result and a
+validated receipt. The original owner retains cancellable publication of a
+confirmed receipt behind identity and Project access admission; a later edit
+remains separate and a pending publication cannot authorize another save.
 
 Worker prompt and runtime configuration are sibling forms. Their navigation
 protection is aggregated into one confirmation; retained owners keep pending
@@ -37,6 +42,10 @@ and one form submission could imply a cross-resource atomicity the API lacks.
 **Replace drafts on every refresh or retry uncertain writes.** Refresh can
 arrive while a person is typing, and a lost response can follow a committed
 write. Replacing input loses work; replay can apply a second write.
+
+**Hold the save open until publication is admitted.** An identity pause can
+last for the rest of the document lifetime, leaving the original promise and
+busy state unresolved even when the network outcome is already known.
 
 ## Consequences
 
