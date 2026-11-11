@@ -111,7 +111,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
 `tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|attachments|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
+默认为附件；显式 `tab=overview|attachments|steps|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。
@@ -119,8 +119,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 独立外壳拥有任务关系、页签和附件选择的导航。显式交互通过 `navigate()` 请求准入后写入
 目标 URL，Back/Forward 由应用导航所有者在采用目标前决定草稿去留；相同 Task 的
 页签和附件往返保留主体。确认历史目标不再写历史，同一状态不重复生成条目。
-弹窗使用本地状态，关系切换和关闭同样在修改状态前请求准入；历史编号、取消恢复和
-未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
+独立页以身份、项目和根资源绑定轻量阅读载荷，保存根 Goal 的图和子 Task，以及外部 Goal 对话框及其子层选择。URL 继续拥有根页签和文件；每个受控条目初始化时以 replace 保存选择，用户阅读变化以 push 提交，关闭经既有保护后以 replace 清除相应子层。遍历只应用已准入载荷，不重放用户操作。`TypedDetail` 在确认 Goal 类型后接入受控子层；`TaskDetailDialog` 透传页签与文件选择，项目页调用者仍使用本地选择。页面载荷只保存资源 ID、图根和阅读导航，不保存资源内容、权限、草稿或 DOM；焦点入口和阅读工作区仍由原组件持有。异常载荷显示导航错误，不用于打开其他资源。相同 Task 只有在资源、父宿主和呈现方式均保留时才视为同一草稿工作区；身份或历史退休仍撤销旧资源。历史编号、取消恢复和未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 弹窗通过标题栏“…”菜单中的新标签真实链接导出当前选择，附件
 预览的新标签入口也进入完整详情并定位该文件。两个窗口不交换任务对象、图快照、
 草稿或确认状态。

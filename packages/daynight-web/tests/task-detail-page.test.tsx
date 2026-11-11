@@ -475,6 +475,7 @@ describe('standalone full task details', () => {
 
 describe('typed Goal routes', () => {
   it('restores focus inside the Goal when the child moves and its opener disappears', async () => {
+    window.history.replaceState(null, '', address());
     const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
     const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
     const fixture = installed(goal); fixture.tasks.set(otherId, child);
@@ -488,6 +489,7 @@ describe('typed Goal routes', () => {
       const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
       fireEvent.click(opener);
       const dialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
+      fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
       const moved = { ...child, parentId: null, version: 2n, updatedAt: '2026-10-23T10:00:00Z' };
       fixture.tasks.set(otherId, moved);
       const update = taskSyncFromGraph(graphFixture([goal, moved]), { query: { epoch: sync.epoch }, epoch: sync.epoch, versionForTask: (task) => task.id === otherId ? 2n : 1n, propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties });
@@ -497,6 +499,8 @@ describe('typed Goal routes', () => {
       await waitFor(() => expect(opener.isConnected).toBe(false), { timeout: 10000 });
       fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
       await waitFor(() => expect(screen.getByRole('heading', { name: goal.title })).toHaveFocus(), { timeout: 10000 });
+      await moveHistory('back');
+      expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
     } finally { view.unmount(); scope.dispose(); }
   }, 20000);
 
@@ -602,6 +606,7 @@ describe('typed Goal routes', () => {
   }, 20000);
 
   it('does not reopen a child Task when the Goal returns in a new epoch', async () => {
+    window.history.replaceState(null, '', address());
     const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Release goal', ready: false });
     const child = detailFixture(projectId, otherId, { title: 'Goal child', parentId: taskId });
     const fixture = installed(goal);
@@ -618,13 +623,16 @@ describe('typed Goal routes', () => {
     try {
       const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
       fireEvent.click(opener);
-      await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
+      const childDialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
+      fireEvent.click(within(childDialog).getByRole('tab', { name: '附件' }));
       const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
       epoch = replacement;
       rememberTaskEpoch(projectId, replacement);
       await act(async () => { expect(await scope.observeHistory(fence, replacement, scope.signal)).toBe('retired'); });
       await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
       await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
+      expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
+      await moveHistory('back');
       expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
     } finally { view.unmount(); scope.dispose(); }
   }, 20000);

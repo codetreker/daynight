@@ -492,3 +492,107 @@ test('a nested task and goal draft share one topmost leave confirmation', async 
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
   await expect(otherGoal.locator(`[data-goal-task-id="${otherTaskId}"]`)).toBeFocused();
 });
+
+test('standalone Goal restores graph, child, tab and file through browser history', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await expect(goalPage.locator('.task-detail-title')).toHaveText('Goal reading');
+  await goalPage.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}\\?tab=attachments$`));
+  await goalPage.getByRole('tab', { name: 'Tasks', exact: true }).click();
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  const graphDialog = page.locator('.task-chain-dialog');
+  await expect(graphDialog).toBeVisible();
+  await graphDialog.getByRole('button', { name: 'First task, Details' }).click();
+  const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'First task' }) });
+  await expect(child).toBeVisible();
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await child.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+
+  await page.goBack();
+  await expect(child.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack();
+  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible();
+  await page.goBack(); await expect(graphDialog).toHaveCount(0);
+  await expect(goalPage.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(goalPage.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward();
+  await expect(goalPage.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward(); await expect(graphDialog).toBeVisible();
+  await page.goForward(); await expect(child).toBeVisible();
+  await page.goForward(); await expect(child.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward(); await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+test('closing a standalone Goal child replaces the current entry with its graph parent', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  const graphDialog = page.locator('.task-chain-dialog');
+  await graphDialog.getByRole('button', { name: 'First task, Details' }).click();
+  const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'First task' }) });
+  await child.getByRole('button', { name: 'Close task details' }).click();
+  await expect(child).toHaveCount(0); await expect(graphDialog).toBeVisible();
+  await page.goBack(); await expect(graphDialog).toBeVisible(); await expect(child).toHaveCount(0);
+  await page.goBack(); await expect(graphDialog).toHaveCount(0);
+  await page.goForward(); await expect(graphDialog).toBeVisible();
+  await page.goForward(); await expect(graphDialog).toBeVisible(); await expect(child).toHaveCount(0);
+  await graphDialog.getByRole('button', { name: 'Close dependency graph' }).click();
+  await expect(graphDialog).toHaveCount(0);
+  await page.goBack(); await expect(graphDialog).toBeVisible();
+  await page.goForward(); await expect(graphDialog).toHaveCount(0);
+});
+
+test('standalone Goal child keeps its draft across tab and file history and protects departure', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  const child = page.locator('.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Standalone task' }) });
+  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await child.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Retained child draft');
+  const original = await child.elementHandle();
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await child.getByRole('button', { name: /^notes\.txt/ }).click();
+  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack();
+  await expect(draft).toHaveValue('Retained child draft');
+  expect(await child.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.goBack();
+  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(child).toBeVisible();
+  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(draft).toHaveValue('Retained child draft');
+});
+
+test('standalone Goal restores the external Goal dialog and its reading selection', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal();
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  const graphDialog = page.locator('.task-chain-dialog');
+  await graphDialog.getByRole('button', { name: 'Other task, Details' }).click();
+  const external = page.getByRole('dialog', { name: 'Other goal' });
+  await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
+  await external.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await external.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+  await page.goBack(); await expect(external.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack(); await expect(external.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(external).toHaveCount(0); await expect(graphDialog).toBeVisible();
+  await page.goForward(); await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
+  await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+});

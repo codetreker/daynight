@@ -3,12 +3,16 @@ import { createPortal } from 'react-dom';
 import { TaskDetailSessionBoundary } from './TaskDetailSession';
 import { TaskDetailSurface, type TaskDetailSurfaceProps } from './TaskDetailSurface';
 import { TypedDetail } from './TypedDetail';
+import type { GoalChildren } from '../../app/page-history';
 
-export type TaskDetailDialogProps = Omit<TaskDetailSurfaceProps, 'fullscreen' | 'presentation' | 'navigation' | 'onNavigate' | 'attachmentApi' | 'attachmentUrls' | 'detailUrl' | 'onClose' | 'onRestoreFocus'> & {
+export type TaskDetailDialogProps = Omit<TaskDetailSurfaceProps, 'fullscreen' | 'presentation' | 'attachmentApi' | 'attachmentUrls' | 'detailUrl' | 'onClose' | 'onRestoreFocus'> & {
   readonly onClose: () => void;
   readonly onRestoreFocus: () => void;
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly initialWitness?: string;
+  readonly goalChildren?: GoalChildren;
+  readonly onGoalChildrenChange?: (next: GoalChildren, options?: { readonly replace?: boolean }) => void;
+  readonly requireParentMatch?: boolean;
 };
 
 export const TaskDetailDialog = (props: TaskDetailDialogProps) => {
