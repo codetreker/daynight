@@ -6,6 +6,7 @@ import type { ControllerFence } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import { readControllerGrant } from "../relay.js";
+import { historySyncHttpError } from "./history-sync-error.js";
 
 /** A frozen body and sync ID survive unknown HTTP results and reconnects. */
 export const syncControllerImageHistory = async (options: {
@@ -22,7 +23,7 @@ export const syncControllerImageHistory = async (options: {
     const grant = await readControllerGrant(ticket);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
     const response = await request(`${url}${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${grant.token}`, "Daynight-Controller-Fence": JSON.stringify(fence), ...(bytes === undefined ? {} : { "Content-Type": "application/octet-stream", "Daynight-File-Byte-Length": intent.byteLength, "Daynight-File-SHA256": intent.sha256, "Daynight-Chunk-SHA256": createHash("sha256").update(bytes).digest("hex") }) }, ...(bytes === undefined ? {} : { body: Uint8Array.from(bytes) }), signal });
-    if (!response.ok) throw Object.assign(new Error(`Controller history synchronization failed (${response.status}).`), { status: response.status });
+    if (!response.ok) throw await historySyncHttpError(response, method === "GET" ? "GET status" : "PUT chunk", signal);
     return response.json();
   };
   const parse = (value: unknown): SessionArchiveFileReceipt => {

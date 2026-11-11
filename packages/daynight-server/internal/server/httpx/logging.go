@@ -109,6 +109,13 @@ func runtimeComponent(err error) *RuntimeError {
 
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
 	diagnostic := "operation failed"
+	controllerFailure := false
+	if component == "session" {
+		switch phase {
+		case "controller_connect", "controller_source", "controller_fence", "controller_handle", "controller_poll":
+			controllerFailure = true
+		}
+	}
 	kind, code := ErrorKind(err), "internal_error"
 	if component == "task_search" {
 		var transaction *store.TransactionError
@@ -119,7 +126,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var configurationError *configvalue.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
-	if failure := runtimeComponent(err); failure != nil {
+	if failure := runtimeComponent(err); failure != nil && !controllerFailure {
 		component, phase = failure.Component, failure.Phase
 	}
 	var identityFailure *model.IdentityProviderError
@@ -139,6 +146,11 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	if component == "task_search" {
 		// Search failures may contain query parameters or driver diagnostics.
 		diagnostic = "search operation failed"
+	}
+	if controllerFailure {
+		// The adapter supplies the phase; nested error messages can include user
+		// content or driver details even when the error has a known domain code.
+		diagnostic = "controller operation failed"
 	}
 	upstreamID := ""
 	var protocolFailure *uniauth.ProtocolError
