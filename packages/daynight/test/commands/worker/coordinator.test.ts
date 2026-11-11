@@ -2038,6 +2038,7 @@ describe("worker cancellation classification", () => {
     const second = new Error("Endpoint request stopped", { cause: new OperationError("cancelled", { cause: reason }) });
     expect(isWorkerCancellation(new AggregateError([first, second], "Both endpoints could not be inspected"), controller.signal)).toBe(true);
     expect(isWorkerCancellation(new AggregateError([new AggregateError([first, second], "Concurrent cancellation")], "Shutdown"), controller.signal)).toBe(true);
+    expect(isWorkerCancellation(new AggregateError([first, second], "Shutdown", { cause: reason }), controller.signal)).toBe(true);
   });
 
   it("preserves a real endpoint failure mixed with cancellation", () => {
@@ -2045,6 +2046,7 @@ describe("worker cancellation classification", () => {
     const cancellation = new OperationError("cancelled", { cause: reason });
     expect(isWorkerCancellation(new AggregateError([cancellation, new Error("Endpoint configuration invalid")], "Endpoints failed", { cause: reason }), controller.signal)).toBe(false);
     expect(isWorkerCancellation(new AggregateError([], "No endpoint observations", { cause: reason }), controller.signal)).toBe(false);
+    expect(isWorkerCancellation(new AggregateError([cancellation], "Cleanup and cancellation", { cause: new Error("Cleanup failed") }), controller.signal)).toBe(false);
   });
 
   it("does not suppress another operation's cancellation or errors before shutdown", () => {
