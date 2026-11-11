@@ -149,13 +149,13 @@ describe('window navigation admission', () => {
     const unregister = owner.register(draft());
     vi.spyOn(history, 'go').mockImplementation(() => {});
     const continuation = vi.fn(() => owner.navigate('/account?editing=1'));
-    arrival(start, '/projects'); owner.cancel(continuation);
+    arrival(start, '/projects'); owner.cancelAndRestore(continuation);
     expect(continuation).not.toHaveBeenCalled();
     arrival(original, '/account');
     expect(continuation).toHaveBeenCalledOnce();
     expect(owner.decision()).not.toBeNull();
     owner.cancel();
-    arrival(start, '/projects'); owner.cancel(continuation);
+    arrival(start, '/projects'); owner.cancelAndRestore(continuation);
     unregister();
     arrival(original, '/account');
     expect(continuation).toHaveBeenCalledOnce();

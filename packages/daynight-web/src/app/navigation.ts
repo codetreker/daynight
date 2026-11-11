@@ -197,7 +197,8 @@ export class BrowserNavigation {
     }
     else this.adopt(this.observed);
   };
-  cancel = (onRestored?: () => void): void => {
+  cancel = (): void => this.cancelAndRestore();
+  cancelAndRestore = (onRestored?: () => void): void => {
     const pending = this.pending;
     if (pending === null) return;
     const history = pending.kind === 'history';

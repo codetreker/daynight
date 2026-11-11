@@ -40,7 +40,7 @@ export const usePromptNavigation = (target: { readonly scope: 'user' } | { reado
   const { locale, messages: { inspection: { draftNavigation: shared } } } = useI18n();
   const m = promptMessages(locale);
   const rememberFocus = (event: FocusEvent<HTMLDivElement>) => { if (event.target instanceof HTMLElement && event.target.matches('textarea')) editor.current = event.target; };
-  const confirmation = !confirming ? null : <TaskConfirmation title={shared.title} question={m.leaveQuestion} explanation={m.leaveExplanation} taskTitle="" confirmLabel={shared.discard} cancelLabel={shared.keep} closeLabel={shared.close} destructive owner={owner} fallbackFocus={editor} onRestoreFocus={() => { restoreFocus.current = true; }} onCancel={() => navigation.cancel(options.onContinueEditing)} onConfirm={navigation.confirm} />;
+  const confirmation = !confirming ? null : <TaskConfirmation title={shared.title} question={m.leaveQuestion} explanation={m.leaveExplanation} taskTitle="" confirmLabel={shared.discard} cancelLabel={shared.keep} closeLabel={shared.close} destructive owner={owner} fallbackFocus={editor} onRestoreFocus={() => { restoreFocus.current = true; }} onCancel={() => navigation.cancelAndRestore(options.onContinueEditing)} onConfirm={navigation.confirm} />;
   return { owner, rememberFocus, confirmation };
 };
 
