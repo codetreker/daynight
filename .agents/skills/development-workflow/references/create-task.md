@@ -17,7 +17,7 @@ After an interruption, verify existing resources before creating anything again.
 Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements. Prepare each delivery task's problem, selected solution, detailed design, ordered implementation steps and acceptance criteria under [definitions and results](task-content.md#definitions-and-results). For each Goal delivery task, also prepare its [delivery task brief](goal.md#delivery-task-brief), including its contribution to the Goal.
 Registration and handoff remain separate operations; incomplete task definition prevents passing the [delivery handoff threshold](task-content.md#content-sufficiency).
 Genuinely required sources must be readable, and future outputs must be explicitly assigned to prerequisite tasks.
-Keep shared inputs in their owning tasks; do not copy the full set of material.
+Keep shared inputs in their owning resource; a Goal owns its shared requirements, architecture and whole-Goal acceptance. Do not copy the full set of material.
 
 Frontend delivery requires an interactive prototype that runs entirely on the frontend and matches the final visual style, covering applicable populated, empty, loading, failure, disabled, long-content, and narrow-screen states.
 Include all resources with valid references, and view and actually interact with the prototype. Static sketches or simplified styling do not satisfy the requirement.
@@ -55,7 +55,7 @@ task boundaries before handoff; one platform value cannot express an OS set.
 
 ## Register and read back
 
-1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries). Creation defaults to proposed; explicitly pass `--status todo` for already-confirmed work, including internal multi-step tasks.
+1. Register with `task create` and retain the returned ID. For a Goal stage or delivery Task, use the actual Goal as Parent and verify that relationship on readback. New task status and permissions follow [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries). Creation defaults to proposed; explicitly pass `--status todo` for already-confirmed work, including internal multi-step tasks.
 2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md) for all writes.
 3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources. For delivery tasks, check the selected solution, detailed design, implementation steps and acceptance against the content standard; report concrete gaps before handoff.
    Check dependencies through [post-change verification](dependencies.md#verify-dependency-changes).

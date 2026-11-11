@@ -13,7 +13,7 @@ A cancelled task satisfies dependency readiness without proving its output exist
 acceptance must assess the current confirmed requirements and actual combined
 results rather than count cancelled tasks as delivered requirements.
 
-Deliver requirement-based conclusions, defects, unverified items, and the evaluated sources, key observations, and material limitations needed to support those conclusions in the owning task.
+Deliver requirement-based conclusions, defects, unverified items, and the evaluated sources, key observations, and material limitations needed to support those conclusions in the owning resource. For a whole Goal, the acceptance Task produces the conclusion on the Goal and identifies the Goal ID and exact path; Task-specific results remain on their Tasks.
 Content ownership follows the [task content standard](task-content.md); managed acceptance must also meet the evidence attachment requirements of the [complete delivery standard](delivery.md#worker-delivery-results).
 Keep verification commands, debugging history, and progress in the session unless they are themselves required deliverables.
 
