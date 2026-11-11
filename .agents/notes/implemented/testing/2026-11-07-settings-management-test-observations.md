@@ -14,6 +14,10 @@ additional work within the same stable interaction phase. OAuth revocation can
 render its confirmation notice before the passive effect restores heading focus;
 finding the notice alone does not establish completion of that effect.
 
+An invitation control can exist while its initial read still disables the
+operation. Clicking during that interval sends no request; waiting for a
+creation result afterward cannot establish readiness or recover the ignored click.
+
 ## Decision
 
 Pure request, mock-callback and abort predicates use the existing
@@ -39,6 +43,12 @@ at each assertion or interaction so a later route or data revision is not
 mistaken for a retained node. Assertions specifically proving retained nodes
 keep their original identities. Global secret, privacy, absence, focus and
 duplicate-control checks retain their original scope.
+
+The Team settings workspace invitation check waits for both the Invite member
+button and the current dialog's Create invitation link button to be enabled,
+then clicks each observed node once. These DOM waits retain the default deadline
+and interval. The result still must survive section changes as the same input
+node, with exactly one creation request.
 
 The settings tests retain the full authenticated application, real routing,
 cache ownership, dispatched writes, save/transfer exclusion, Cancel/Restore
@@ -74,6 +84,10 @@ remain intact.
 can report a notice before passive focus restoration. Waiting for focus alone
 avoids that observation race, but does not prove that confirmation waits for the
 current-state read. Held write and read responses establish both stages.
+
+**Click an existing invitation control and wait only for the result.** Presence
+does not establish that the current read admits an operation. A disabled click
+is ignored, so waiting longer for its result cannot prove retention across routes.
 
 ## Consequences
 

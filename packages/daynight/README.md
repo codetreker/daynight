@@ -902,6 +902,17 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
+Repository Git commands share the invocation deadline, cap each command at
+30 seconds, and bound each output stream to 1 MiB. On Windows, native creation
+assigns Git to a private Job before its first instruction. Cancellation and
+command failures
+that require stopping retain the original cause when cleanup is uncertain;
+root or pipe closure alone does not establish descendant completion. Unforced
+Git completion joins the real output streams and releases its own ownership
+without terminating ordinary background work. The
+[repository Git design](../../docs/design/daynight-project-task.md#git-定位与仓库身份)
+defines the lifecycle and failure rules.
+
 Creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Creation uses `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
@@ -3524,7 +3535,9 @@ Ctrl+C stops new work and polling, terminates current managed execution, waits
 for operations and closes SQLite before releasing the instance lock. Agents must
 run tools in the foreground and stop their services before returning. Normal
 unforced exit and drained streams are evidence under that contract. POSIX uses
-current process groups; Windows cancels live trees with `taskkill /T /F`.
+current process groups; Windows skill discovery and review phases stop their
+held Jobs and join captured process objects and direct streams. The legacy
+unowned helper retains its separate ancestry checks and termination policy.
 Uncertain termination retains the lock and interrupted state.
 
 Startup checks the PID in an existing `~/.daynight/instance.lock` with a
