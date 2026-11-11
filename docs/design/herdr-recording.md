@@ -24,7 +24,7 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 ## 不可变归档
 
-执行槽与远端归档分离。本地所有原运行有 stopped proof、采集段已关闭后可释放执行槽；服务端 ledger 尚未同步仍需保留收尾责任。shutdown 保留原 claim 和 Session，不封最终归档。只有原 claim 已终态或已被其他 claim 替代时，才在独立收尾队列处理该 Session。
+执行槽与远端归档分离。终态清理确认原运行的 stopped proof 后可释放执行槽；采集段关闭和服务端 ledger 同步仍需保留收尾责任。shutdown 保留原 claim 和 Session，不封最终归档。只有原 claim 已终态或已被其他 claim 替代时，才在独立收尾队列处理该 Session。
 
 收尾先核验原生命周期与全部登记源，发布每代 closed recording evidence，再以持久的 finalizationId 请求服务端冻结。任务删除后的 410 终态仍保留原 owner 收尾责任；停止 ledger 的未知结果和归档进度均通过原 owner PAT 专用 `/archive/state` 读回，普通 Session 状态入口继续拒绝已删除任务。服务端冻结与恢复授权在同一 Session 锁下互斥。只有读回原 finalizationId 后才建立最终 seal；同一 seal 的正文、hash、size、completeness 固定，上传重试不能重建不同正文。可见的 journal 内容不替代持久确认；读取 receipt 或处置意图时重新完成文件与目录同步，失败则不能据此删除资源。
 

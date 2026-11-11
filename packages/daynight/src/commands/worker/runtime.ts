@@ -19,7 +19,7 @@ import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
+import { createReconcileWake } from "./reconcile-wake.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
@@ -188,7 +188,10 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildWorkerPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
       },
-      emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
+      emit: event => {
+        const task = event.task === undefined ? null : store.getTask(event.task);
+        emit({ kind: event.kind, message: event.message, ...(event.task === undefined ? {} : { identity: { projectId: event.task.projectId, taskId: event.task.taskId, claimId: event.task.claimId, worktreeId: event.task.worktreeId } }), ...(task === null ? {} : { task }), ...(event.component === undefined ? {} : { component: event.component }), ...(event.phase === undefined ? {} : { phase: event.phase }), ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }), ...(event.runKey === undefined ? {} : { runKey: event.runKey }), ...(event.error === undefined ? {} : { error: event.error }) });
+      },
     });
     return { webStore, webBackend, launcher, archiveMaintenance, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
   } catch (error) {
@@ -380,7 +383,7 @@ export const runWorker = async (options: {
     const nativeActivities = new Map<string, { operationId: string; revision: string }>();
     let monitoringTargetSignature: string | undefined;
     let effectiveSignature = "";
-    let configurationChanged = new AbortController();
+    const reconcileWake = createReconcileWake();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode,
@@ -469,7 +472,7 @@ export const runWorker = async (options: {
           if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
         }
         const signature = JSON.stringify(snapshot.effective);
-        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); configurationChanged.abort(); }
+        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); reconcileWake.request(); }
         const current = view(snapshot);
         coordinator?.updateConfiguration(current ?? { repositories: [], targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false });
         scheduleInitialRemovals?.();
@@ -805,6 +808,7 @@ export const runWorker = async (options: {
             return (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
+          requestReconcile: reconcileWake.request,
           promptSource: currentPromptSource,
           onPromptDemand: projectIds => { if (currentPromptSource.setDemand(projectIds)) reporter!.demandChanged(); },
           buildPrompt: web.buildPrompt, emit, signal });
@@ -870,6 +874,7 @@ export const runWorker = async (options: {
     let attachmentShown = false, started = false;
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
+      const revision = reconcileWake.snapshot();
       try {
         observeMonitoring(m => m.setPhase("configuration"));
         scheduleLocalMappingChecks();
@@ -898,16 +903,13 @@ export const runWorker = async (options: {
       if (signal.aborted) break;
       const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
       observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
-      const changed = configurationChanged;
-      if (!changed.signal.aborted && fallback !== null && manager.current().desired === null) {
+      if (reconcileWake.snapshot() === revision && fallback !== null && manager.current().desired === null) {
         const nextAttemptAt = new Date(Date.now() + (interval ?? 1_000)).toISOString();
         for (const [projectId, failure] of fallbackPreparationFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt }); });
         for (const [projectId, failure] of fallbackNativeFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setNativeConfigurationReason({ kind: "project", projectId }, { observedAt: failure.observedAt, nextAttemptAt }); });
       }
-      try {
-        if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
-      } catch (error) { if (!changed.signal.aborted && !isWorkerCancellation(error, signal)) throw error; }
-      finally { if (configurationChanged === changed) configurationChanged = new AbortController(); }
+      try { await reconcileWake.waitAfter(revision, interval ?? 1_000, signal); }
+      catch (error) { if (!isWorkerCancellation(error, signal)) throw error; }
       observeMonitoring(m => m.setNextPoll(null));
     }
   } catch (error) {

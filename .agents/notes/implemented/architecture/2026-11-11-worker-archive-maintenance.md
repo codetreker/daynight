@@ -32,4 +32,4 @@ of their finalizers and can close resources while they are still in use.
 Normal polling or configuration changes initiate future attempts; idle or
 backed-off maintenance does not create a busy loop. Cancellation remains
 cooperative, so shutdown waits for an unresponsive operation rather than claiming
-its resources have closed. The separate execution-capacity policy is unchanged.
+its resources have closed. The separate [execution-capacity policy](2026-11-11-worker-execution-capacity.md) releases stopped executions independently of retained archive work.

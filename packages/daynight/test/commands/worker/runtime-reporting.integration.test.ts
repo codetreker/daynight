@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
@@ -31,14 +31,14 @@ vi.mock("node:timers/promises", async original => {
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive, probeStoppedControllerArchive: mocks.archiveProbe }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
-vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
+vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
@@ -93,6 +93,7 @@ beforeEach(async () => {
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
+  mocks.webBackend.mockReturnValue({});
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
@@ -1027,4 +1028,121 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
       expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
     }
   } finally { read.close(); }
+});
+
+it("runs the next round on a stop wake while historical and current cleanup remain pending", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), cleanup = deferred<void>();
+  let ticks = 0;
+  let options!: WorkerCoordinatorOptions;
+  const polls: AbortSignal[] = [];
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+  });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    polls.push(signal);
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    return { tick: async () => { ticks++; if (ticks === 1) void cleanup.promise; }, updateConfiguration: update, shutdown: async () => { await cleanup.promise; return true; } };
+  });
+  const running = start(f);
+  await entered.promise;
+  await eventually(() => expect(polls.some(signal => !signal.aborted)).toBe(true));
+  const before = ticks;
+  options.requestReconcile!();
+  await eventually(() => expect(ticks).toBeGreaterThan(before));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort();
+  cleanup.resolve();
+  await running;
+});
+
+it("admits another task through the real coordinator after a stop wake with both cleanups pending", async () => {
+  const f = await fixture(), timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+  const stopEntered = deferred<void>(), stopRelease = deferred<void>(), archiveEntered = deferred<void>(), removeEntered = deferred<void>(), removeRelease = deferred<void>(), promptsReceived = deferred<void>();
+  const owner = { projectId: uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
+  const repo = path.join(f.homeDirectory, "repo"), binding = { repositoryPath: repo, commonDirectory: path.join(repo, ".git"), worktreePath: path.join(repo, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
+  const oldBinding = { session: "w", workspaceId: "old-workspace", paneId: "old-pane", terminalId: "old-terminal" };
+  await mkdir(repo, { recursive: true }); await mkdir(f.paths.workerDirectory, { recursive: true });
+  const seed = openWorkerStore(f.paths.databaseFile);
+  seed.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: repo });
+  seed.activateTask(seed.registerPending({ ...owner, agent: "codex" }));
+  seed.close();
+  const resources = new Map<string, any>([[owner.claimId, { owner, workspaceId: oldBinding.workspaceId, panes: [{ binding: oldBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(23) }, stateChangeSeq: 1, completionSeq: 1 }] }]]);
+  const worktrees = new Map<string, any>([[owner.claimId, { owner, binding }]]);
+  const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false;
+  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+  const candidates = [task(owner.taskId), task(uuid(30))];
+  const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
+  const tasks = {
+    pendingStops: () => [], listResources: async () => [...resources.values()],
+    observeExecutionStop: async (target: any) => ({ ...(stopped && target.claimId === owner.claimId ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "original" } } : { kind: "unknown", target, error: new Error("not stopped") }), observedAt: Date.now() }),
+    submitPrompt: async (context: any, nativeBinding: any) => ({ submission: "submitted", observation: { ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null } }),
+    stopAndClose: async (context: any) => { if (context.claimId === owner.claimId) { stopEntered.resolve(); await stopRelease.promise; stopped = true; } resources.delete(context.claimId); },
+    prepareWorkspace: async (context: any) => { trace.push("workspace"); const nativeBinding = { session: "w", workspaceId: "new-workspace", paneId: "new-pane", terminalId: "new-terminal" }; resources.set(context.claimId, { owner: context, workspaceId: nativeBinding.workspaceId, panes: [{ binding: nativeBinding, cwd: context.cwd, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(33) }, stateChangeSeq: 1, completionSeq: 0 }] }); return nativeBinding; },
+    start: started, syncWorkspaceName: async () => {},
+  };
+  mocks.herdr.mockReturnValue({ tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} });
+  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
+    prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.taskId), branch: `daynight/${target.taskId}` }; worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
+    removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); },
+  });
+  mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: () => null, listCompletedTasks: mocks.completed });
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => { archiveEntered.resolve(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted(); });
+  const polls: AbortSignal[] = [];
+  mocks.delay.mockImplementation(async (ms: number, value: unknown, options?: { signal?: AbortSignal }) => {
+    if (ms !== 60_000) return timers.setTimeout(ms === 1_000 ? 1 : ms, value, options);
+    const signal = options!.signal!; polls.push(signal);
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted();
+  });
+  const remote = mocks.remote();
+  Object.assign(remote, { ownInventory: async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: projects.map(project => project.projectId), unavailableProjectIds: [] }),
+    candidates: async function* () { for (const candidate of candidates) if (![...grants.values()].some(value => value.id === candidate.id)) yield candidate; },
+    claim: async (candidate: any, descriptor: any) => { const granted = { ...candidate, status: "in_progress", ready: false, version: 2n, properties: { worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(6), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } } }; grants.set(descriptor.claimId, granted); return granted; },
+    readTask: async (_project: string, id: string) => [...grants.values()].find(value => value.id === id),
+    update: async (current: any, patch: any) => { const next = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker, ...patch } } }; grants.set(next.properties.worker.claimId, next); return next; },
+    reportConfiguration: async (...args: any[]) => { const receipt = await report(args[0], args[1], args[2], args[3]); const selectors = args[4] ?? []; if (selectors.some(({ key }: any) => key.scope === "project")) promptsReceived.resolve(); return { ...receipt, prompts: { ok: true, results: selectors.map(({ key }: any) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } })) } }; },
+  });
+  let actualOptions!: WorkerCoordinatorOptions;
+  mocks.coordinator.mockImplementation(value => { actualOptions = value; return createWorkerCoordinator(value); });
+  const running = start(f);
+  try {
+    await Promise.all([archiveEntered.promise, stopEntered.promise, promptsReceived.promise]);
+    await eventually(() => expect(actualOptions.promptSource?.current(owner.projectId)).not.toBeNull());
+    await eventually(() => expect(polls.some(signal => !signal.aborted)).toBe(true));
+    stopRelease.resolve();
+    await removeEntered.promise;
+    await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture("1"), grants: [...grants.values()].map(value => value.id) })); });
+    expect([...grants.values()].map(value => value.id)).toEqual([uuid(30)]);
+    expect(worktrees.has(owner.claimId)).toBe(true);
+    expect(mocks.archive).toHaveBeenCalledOnce();
+  } finally { stopRelease.resolve(); removeRelease.resolve(); f.signal.abort(); await running; }
+});
+
+it("retains Web stop observation causes and claim identity through runtime diagnostics", async () => {
+  const f = await fixture();
+  const running = start(f);
+  try {
+    await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const backendOptions = mocks.webBackend.mock.calls[0]![0] as { emit: (event: { kind: string; message: string; task: { projectId: string; taskId: string; claimId: string; worktreeId: string }; component: string; phase: string; attemptId: string; runKey: string; error: unknown }) => void };
+    const owner = { projectId: uuid(1), taskId: uuid(60), claimId: uuid(61), worktreeId: uuid(62) };
+    const cause = new Error("original process failure"), error = new Error("observation failed", { cause });
+    const metadata = { component: "cleanup", phase: "agent-stop", attemptId: uuid(63), runKey: "original run" };
+    backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
+    expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", identity: owner, ...metadata, error });
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    const task = coordinatorOptions.store.registerPending({ ...owner, agent: "codex" });
+    backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
+    expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", task, identity: owner, ...metadata, error });
+  } finally { f.signal.abort(); await running; }
 });

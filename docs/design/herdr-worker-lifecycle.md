@@ -78,13 +78,13 @@ journal 无法落盘时只依据已有证明尝试受控停止，并报告结果
 
 ## 调度、退出与人工接入
 
-Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。原执行可靠 stopped 且本地段已关闭后可释放执行槽，不等待网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源；人工 resume 在申请新 claim 前拒绝尚未完成的 Herdr archive/worktree 责任，不能先授予一个无法执行的新 claim。
+Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源；人工 resume 在申请新 claim 前拒绝尚未完成的 Herdr archive/worktree 责任，不能先授予一个无法执行的新 claim。
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
 共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、任务未暂停、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
-Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止与本地封段后可以结束本机执行行并释放槽；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
+Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽，本地封段及 ledger 确认后可以结束本机执行行；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
 
 `worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再使用原实例目录打开 Herdr client。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
 
