@@ -3138,13 +3138,13 @@ describe("worker monitoring of coordinator jobs", () => {
     const f = await fixture(), monitor = createMonitoringObserver(); f.options.repositories = [];
     const owner = { projectId: f.project.projectId, taskId: uuid(977), claimId: uuid(987), worktreeId: uuid(997) };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
-    const retained = { owner, sessionId: uuid(1007), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: "/wrong/path", sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "ready", error: null, nextAttemptAt: null, worktreeDeleted: true, disposition: null };
+    const retained = { owner, sessionId: uuid(1007), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: path.join(f.root, "wrong", "path"), sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "ready", error: null, nextAttemptAt: null, worktreeDeleted: true, disposition: null };
     const archive = { resources: () => [retained], advance: vi.fn(), cleaned: vi.fn() };
     Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, archive, stop: vi.fn() } });
     const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, monitoring: monitor });
     try {
       await coordinator.tick(); const failure = monitor.capture("1").currentFailures[0]!;
-      expect(failure).toMatchObject({ component: "cleanup", phase: "worktree-removal", worktree: { kind: "project-relative", path: path.relative(f.project.localPath, retained.worktreePath).split(path.sep).join("/") } });
+      expect(failure).toMatchObject({ component: "cleanup", phase: "worktree-removal", worktree: { kind: "project-relative", path: "../wrong/path" } });
       retained.worktreePath = f.bind(owner).worktreePath;
       await coordinator.tick();
       expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failure.operationId });
