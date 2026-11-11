@@ -64,7 +64,7 @@ const fixture = async (warm = false, configured = true) => {
   if (warm) { store = openWorkerStore(paths.databaseFile); stores.add(store); }
   return { homeDirectory, version: "0.41.0", workingDirectory: homeDirectory, packageDirectory: path.resolve("package"), paths, source, document, repository, store };
 };
-const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
+const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), archiveYield: () => false, updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
 const reporter = () => ({ trigger: vi.fn(), publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
 const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof runWorker>[0]> = {}) => {
   const cancellation = new AbortController(); cancellations.add(cancellation);
@@ -76,7 +76,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     let current = options;
     return {
-      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
         if (!current.readyProjectIds?.includes(uuid(1))) return;
         try { check(current); } finally { cancellation.abort(); }

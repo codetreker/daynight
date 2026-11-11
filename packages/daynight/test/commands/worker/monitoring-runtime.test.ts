@@ -109,7 +109,7 @@ beforeEach(async () => {
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), archiveYield: () => false, updateConfiguration: update, shutdown }));
 });
 afterEach(async () => {
   for (const { signal } of runs) signal.abort();
@@ -164,7 +164,7 @@ describe("worker runtime monitoring isolation", () => {
     const remote = mocks.remote(); mocks.remote.mockClear();
     mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async () => ({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: null, observationRevision: "0", observationAccepted: false } })), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
     mocks.probe.mockRejectedValueOnce(new OperationError("request_timeout", { cause: new Error("private native output") })).mockImplementationOnce(async () => { retryStarted.resolve(); await retryRelease.promise; return "1.2.3"; });
-    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const running = start(f);
     try {
       await eventuallyWithoutAdvancingTime(() => { expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
@@ -196,7 +196,7 @@ describe("worker runtime monitoring isolation", () => {
       return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: remoteDesired, observationRevision: String(remoteRevision), observationAccepted } };
     }), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
     mocks.probe.mockRejectedValueOnce(new OperationError("request_timeout"));
-    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const running = start(f);
     try {
       await eventuallyWithoutAdvancingTime(() => { expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
@@ -279,7 +279,7 @@ describe("worker runtime monitoring isolation", () => {
       monitor.startCycle("claim-search"); monitor.markCycleSuccessful(); monitor.endCycle("completed", "complete");
       monitor.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
       if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true }));
-    }), updateConfiguration: update, shutdown }));
+    }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     mocks.remote.mockReturnValue({ ...remote, readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
     const running = start(f);
@@ -383,7 +383,7 @@ describe("worker runtime monitoring isolation", () => {
     const remote = mocks.remote(); mocks.remote.mockClear();
     mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject, reportConfiguration: vi.fn(async () => ({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: null, observationRevision: "0", observationAccepted: false } })), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
     prepare.mockRejectedValueOnce(new Error("private fallback preparation output")).mockImplementationOnce(async () => { retryStarted.resolve(); await retryRelease.promise; });
-    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const running = start(f);
     try {
       await eventuallyWithoutAdvancingTime(() => { expect(prepare).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
@@ -416,7 +416,7 @@ describe("worker runtime monitoring isolation", () => {
       return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: remoteDesired, observationRevision: String(remoteRevision), observationAccepted } };
     }), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
     prepare.mockRejectedValueOnce(new Error("fallback failed")).mockImplementationOnce(async () => { cloudStarted.resolve(); await cloudRelease.promise; throw new Error("cloud failed"); }).mockImplementationOnce(async () => { successStarted.resolve(); await successRelease.promise; });
-    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const running = start(f);
     try {
       await eventuallyWithoutAdvancingTime(() => { expect(prepare).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
@@ -454,7 +454,7 @@ describe("worker runtime monitoring isolation", () => {
       ...(fallback ? { configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async () => ({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: null, observationRevision: "0", observationAccepted: false } })) } : {}),
       readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => { writes.push(observation); return { revision: uuid(8), runId: observation.runId, sequence: observation.sequence }; }),
     });
-    if (fallback) mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    if (fallback) mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     prepare.mockRejectedValueOnce(new Error("prepare failed")).mockImplementationOnce(async () => { retryStarted.resolve(); await retryRelease.promise; });
     const running = start(f);
     try {
