@@ -12,7 +12,7 @@ export type PromptResource = {
   readonly text: string; readonly updatedAt: string | null;
 };
 export type PromptSubmission = { readonly expectedUserId: string; readonly revision: string; readonly text: string };
-export type PromptAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly onDispatch?: () => void };
+export type PromptAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly onDispatch?: () => void; readonly onConfirmed?: (resource: PromptResource) => void; readonly onRejected?: (error: ApiError) => void };
 
 export const PROMPT_REQUEST_BYTES = 1024 * 1024;
 export const PROMPT_RESPONSE_BYTES = 6 * 1024 * 1024 + 4096;
@@ -102,6 +102,7 @@ export const saveWorkerPrompt = async (target: PromptTarget, submission: PromptS
     if (response.status !== 200) throw new ApiError('protocol', response.status);
     const resource = parsePromptResource(value, target, userId);
     if (resource.text !== input.text || BigInt(resource.revision) < BigInt(revision) || BigInt(resource.revision) > BigInt(revision) + 1n) throw new ApiError('protocol', response.status);
+    admission.onConfirmed?.(resource);
     return resource;
-  }, response => decodePromptJson(response, signal));
+  }, response => decodePromptJson(response, signal), false, admission.onRejected);
 };

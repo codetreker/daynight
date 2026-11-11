@@ -404,6 +404,7 @@ export class TaskCacheScope {
     if (this.invalidated || this.disposed || this.lifetime.signal.aborted || authRequestsPaused()) released();
   }
   get signal(): AbortSignal { return this.lifetime.signal; }
+  get mismatchSignal(): AbortSignal { return this.admission.signal; }
   private assertAdmitted(signal?: AbortSignal): void {
     if (this.identityMismatch) throw new TaskCacheLifecycleChanged(false);
     this.assertLive(signal);

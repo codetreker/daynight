@@ -68,12 +68,18 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       }
       signal.throwIfAborted();
     };
+    const abortable = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+      const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener('abort', abort, { once: true });
+      promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    });
     const denied = (error: unknown) => error instanceof ApiError && error.status === 404 && error.code === 'not_found';
     const readNow = async (replace = false) => {
       if (!alive() || !enabled || !visible || (read !== null && !replace)) return;
       if (replace) read?.abort();
       const controller = new AbortController(); read = controller;
-      const signal = AbortSignal.any([controller.signal, scope.signal]), id = ++sequence;
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]), id = ++sequence;
       dispatch({ type: 'read/start', id });
       try {
         await waitForAdmission(signal, true);
@@ -83,8 +89,11 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
         if (get().unavailable) store({ ...get(), unavailable: false });
         dispatch({ type: get().state.write === 'unknown' ? 'reconcile/success' : 'read/success', id, resource });
       } catch (error) {
-        if (!alive() || signal.aborted || read !== controller) return;
+        if (!alive() || read !== controller) return;
+        if (scope.hasIdentityMismatch) { dispatch({ type: 'read/cancel', id }); return; }
+        if (signal.aborted) return;
         try { await waitForAdmission(signal, true); } catch (failure) {
+          if (scope.hasIdentityMismatch) { dispatch({ type: 'read/cancel', id }); return; }
           if (denied(failure) && alive()) clear();
           else if (alive() && !signal.aborted) dispatch({ type: get().state.write === 'unknown' ? 'reconcile/error' : 'read/error', id, error: 'read' });
           return;
@@ -99,17 +108,26 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       if (submission === null || !promptDirty(state) || !isPromptText(submission.text) || promptSubmissionBytes({ expectedUserId: submission.expectedUserId, revision: submission.revision, text: submission.text }) > PROMPT_REQUEST_BYTES) return;
       const controller = new AbortController(); write = controller;
       writeDispatched = false;
-      const signal = AbortSignal.any([controller.signal, scope.signal]);
-      let dispatched = false;
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]);
+      let dispatched = false, confirmed = false, rejection: ApiError | null = null;
       dispatch({ type: 'write/start', submission });
       try {
         await waitForAdmission(signal, true);
-        const resource = await saveWorkerPrompt(target, submission, signal, { ...admission, onDispatch: () => { dispatched = true; writeDispatched = true; } });
+        const resource = await abortable(saveWorkerPrompt(target, submission, signal, { ...admission, onDispatch: () => { dispatched = true; writeDispatched = true; }, onConfirmed: () => { confirmed = true; }, onRejected: error => { rejection = error; } }), signal);
+        confirmed = true;
         await waitForAdmission(signal, false, true);
         if (alive() && !signal.aborted) dispatch({ type: 'write/success', id: submission.id, resource });
       } catch (error) {
-        if (!alive() || signal.aborted) return;
+        if (!alive()) return;
+        const settleMismatch = () => {
+          const observed = rejection ?? error;
+          const refusal = observed instanceof ApiError && observed.kind === 'server' && observed.status !== null && observed.status >= 400 && observed.status < 500;
+          dispatch({ type: 'write/settle', id: submission.id, outcome: confirmed ? 'confirmed' : !dispatched || refusal ? observed instanceof ApiError && observed.code === 'version_conflict' ? 'conflict' : 'refused' : 'unknown' });
+        };
+        if (scope.hasIdentityMismatch) { settleMismatch(); return; }
+        if (signal.aborted) return;
         try { await waitForAdmission(signal, false, dispatched); } catch (failure) {
+          if (scope.hasIdentityMismatch) { settleMismatch(); return; }
           if (denied(failure) && alive()) clear();
           else if (!dispatched && alive() && !signal.aborted) dispatch({ type: 'write/error', id: submission.id, error: 'write' });
           return;
@@ -143,6 +161,6 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
   const unavailable = owned.owner === scope && owned.key === key && owned.unavailable;
   const submission = state.baseline === null ? null : { expectedUserId: scope.userId, revision: state.baseline.revision, text: state.draft };
   const invalid = !isPromptText(state.draft), tooLarge = submission !== null && promptSubmissionBytes(submission) > PROMPT_REQUEST_BYTES;
-  return { ...state, loading: state.resource === null && state.read !== 'error' && !unavailable, unavailable, dirty: promptDirty(state), pending: state.write === 'pending', uncertain: state.write === 'unknown', invalid, tooLarge, readEnabled, edit, refresh, save, discard, abandon, useLatest, keepDraft };
+  return { ...state, loading: state.resource === null && state.read !== 'error' && !unavailable, unavailable, dirty: promptDirty(state), pending: state.write === 'pending', confirmed: state.write === 'confirmed', uncertain: state.write === 'unknown', invalid, tooLarge, readEnabled, edit, refresh, save, discard, abandon, useLatest, keepDraft };
 };
 export type WorkerPromptController = ReturnType<typeof useWorkerPrompt>;

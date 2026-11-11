@@ -17,7 +17,7 @@ export type PromptState = {
   readonly readId: number | null;
   readonly readError: string | null;
   readonly submission: PromptSubmission | null;
-  readonly write: 'idle' | 'pending' | 'unknown';
+  readonly write: 'idle' | 'pending' | 'unknown' | 'confirmed';
   readonly writeError: string | null;
   readonly conflict: boolean;
   readonly conflictReady: boolean;
@@ -52,8 +52,10 @@ export type PromptAction =
   | { type: 'read/start'; id: number }
   | { type: 'read/success'; id: number; resource: PromptResource }
   | { type: 'read/error'; id: number; error: string }
+  | { type: 'read/cancel'; id: number }
   | { type: 'write/start'; submission: PromptSubmission }
   | { type: 'write/success'; id: number; resource: PromptResource }
+  | { type: 'write/settle'; id: number; outcome: 'confirmed' | 'unknown' | 'refused' | 'conflict' }
   | { type: 'write/conflict'; id: number; error: string }
   | { type: 'write/error'; id: number; error: string }
   | { type: 'write/unknown'; id: number; error: string }
@@ -71,6 +73,8 @@ export const promptReducer = (state: PromptState, action: PromptAction): PromptS
     case 'edit':
       return action.text === state.draft ? state : { ...state, draft: action.text, editGeneration: state.editGeneration + 1, reconciled: false, abandoned: false };
     case 'read/start': return { ...state, read: 'pending', readId: action.id, readError: null };
+    case 'read/cancel':
+      return state.readId !== action.id ? state : { ...state, read: 'idle', readId: null };
     case 'read/error':
     case 'reconcile/error':
       return state.readId !== action.id ? state : { ...state, read: 'error', readId: null, readError: action.error };
@@ -89,6 +93,11 @@ export const promptReducer = (state: PromptState, action: PromptAction): PromptS
       if (state.write !== 'idle' || state.conflict || !state.baseline || submission.revision !== state.baseline.revision || submission.text !== state.draft || submission.editGeneration !== state.editGeneration) return state;
       return { ...state, submission, write: 'pending', writeError: null, reconciled: false };
     }
+    case 'write/settle':
+      if (state.write !== 'pending' || state.submission?.id !== action.id) return state;
+      if (action.outcome === 'confirmed') return { ...state, write: 'confirmed', writeError: null };
+      if (action.outcome === 'unknown') return { ...state, write: 'unknown', writeError: 'write' };
+      return { ...state, write: 'idle', submission: null, writeError: 'write', conflict: action.outcome === 'conflict', conflictReady: false };
     case 'write/success': {
       const submission = state.submission;
       if (state.write !== 'pending' || !submission || submission.id !== action.id) return state;

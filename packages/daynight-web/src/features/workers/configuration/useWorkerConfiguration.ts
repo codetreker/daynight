@@ -123,7 +123,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
             store({ ...initialState(scope, workerId), error, errorSource: 'read', unavailable: true });
           } else update(old => ({ ...old, refreshing: false, error: old.errorSource === 'write' ? old.error : error, errorSource: old.errorSource === 'write' ? 'write' : 'read', unavailable: false }));
         }
-      } finally { if (attempt === generation) read = null; }
+      } finally { if (attempt === generation) { read = null; if (scope.hasIdentityMismatch) update(old => ({ ...old, refreshing: false })); } }
     };
     const replaceDraft = () => update(old => {
       if (old.pending || old.uncertain || old.submission !== null || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;
