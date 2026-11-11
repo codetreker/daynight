@@ -32,6 +32,12 @@ func TestTaskPropertiesCandidateFailureAndWriteErrorPropagation(t *testing.T) {
 			}
 			return []model.Task{dependency}, nil
 		}
+		f.dao.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+			if ctx != f.ctx || !slices.Equal(ids, []string{prerequisite.ID}) {
+				t.Fatalf("property visibility query: %v", ids)
+			}
+			return slices.Clone(ids), nil
+		}
 		f.dao.ReachableFn = func(ctx context.Context, from, to string, replacement store.DependencyReplacement) (bool, error) {
 			if ctx != f.ctx || from != prerequisite.ID || to != target.ID || replacement.TaskID != target.ID || !slices.Equal(replacement.DependsOn, []string{prerequisite.ID}) {
 				t.Fatalf("property replacement reachability: %#v", replacement)
@@ -80,6 +86,12 @@ func TestTaskPropertiesCandidateFailureAndWriteErrorPropagation(t *testing.T) {
 				t.Fatal("create prerequisite selection changed")
 			}
 			return []model.Task{prerequisite}, nil
+		}
+		f.dao.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+			if ctx != f.ctx || !slices.Equal(ids, []string{prerequisite.ID}) {
+				t.Fatalf("property visibility query: %v", ids)
+			}
+			return slices.Clone(ids), nil
 		}
 		f.dao.ReachableFn = func(ctx context.Context, from, to string, r store.DependencyReplacement) (bool, error) {
 			if ctx != f.ctx || from != prerequisite.ID || to != r.TaskID || !slices.Equal(r.DependsOn, []string{prerequisite.ID}) {

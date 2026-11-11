@@ -52,6 +52,12 @@ func TestTaskResponseAdmissionPropagatesPostWriteFailure(t *testing.T) {
 				}
 				return []model.Task{prerequisite}, nil
 			}
+			f.dao.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+				if ctx != f.ctx || !slices.Equal(ids, []string{prerequisite.ID}) {
+					t.Fatal("response candidate changed visibility scope")
+				}
+				return slices.Clone(ids), nil
+			}
 			f.dao.ReachableFn = func(ctx context.Context, from, to string, replacement store.DependencyReplacement) (bool, error) {
 				if ctx != f.ctx || from != prerequisite.ID || to != replacement.TaskID || !slices.Equal(replacement.DependsOn, []string{prerequisite.ID}) {
 					t.Fatal("response candidate changed reachability scope")

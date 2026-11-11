@@ -44,12 +44,7 @@ export const MonitoringCard = ({ item, now, expired = false }: { readonly item: 
   if (now === null) return <p className="monitoring-card-state">{m.unknown}</p>;
   if (now - Date.parse(item.receivedAt) >= 3_600_000) return <p className="monitoring-card-state">{m.expired}</p>;
   const s = item.summary;
-  const admission = s.admission;
-  const codes = admission?.reasonCodes.filter(code => code !== 'no-ready-tasks' || admission.coverage === 'complete') ?? [];
-  return <div className="monitoring-card-state"><strong>{m.labels[s.scheduler.phase]}</strong><span>{s.capacity === null ? m.capacityUnknown : `${m.capacity}: ${s.capacity.occupied} / ${s.capacity.limit} ${m.occupied}${s.capacity.quality === 'stale' ? ` · ${m.stale}` : ''}`}</span>
-    <span>{codes.length === 0 ? m.summaryReasonsUnknown : codes.map(code => m.labels[code]).join(' · ')}</span>
-    {admission !== null && <small>{m.admission}: <WorkerTimestamp value={admission.observedAt} />{admission.coverage !== 'complete' ? ` · ${m.labels[admission.coverage]}` : ''}{admission.permissionProjection === 'restricted' ? ` · ${m.summaryRestricted}` : ''}</small>}
-    <small><Age receivedAt={item.receivedAt} now={now} /></small></div>;
+  return <div className="monitoring-card-state"><strong>{m.labels[s.scheduler.phase]}</strong><span>{s.capacity === null ? m.capacityUnknown : `${m.capacity}: ${s.capacity.occupied} / ${s.capacity.limit} ${m.occupied}${s.capacity.quality === 'stale' ? ` · ${m.stale}` : ''}`}</span></div>;
 };
 
 export const MonitoringListError = ({ state, readEnabled }: { readonly state: WorkerReadState<unknown>; readonly readEnabled: boolean }) => <ErrorNotice state={state} readEnabled={readEnabled} />;

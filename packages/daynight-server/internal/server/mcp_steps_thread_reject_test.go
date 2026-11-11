@@ -12,6 +12,14 @@ import (
 
 type mcpStepsRejectedTaskReader struct{ t *testing.T }
 
+func (d mcpStepsRejectedTaskReader) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskBodies")
+	panic("unreachable")
+}
+func (d mcpStepsRejectedTaskReader) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.GoalProgresses")
+	panic("unreachable")
+}
 func (d mcpStepsRejectedTaskReader) Task(context.Context, string, string) (model.Task, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.Task")
 	panic("unreachable")

@@ -413,7 +413,7 @@ func TestThreadReadCancellationAndParentDeadlineAreBounded(t *testing.T) {
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	first := appendStoredThread(t, database, task.ID, principal.UserID, "first")
 	appendStoredThread(t, database, task.ID, principal.UserID, "second")
-	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_grants", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
+	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_grants", "SELECT effective_deleted_at FROM task_resource_rows", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
 		t.Run(fragment, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()

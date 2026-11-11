@@ -469,6 +469,9 @@ func (f *strictStepWrite) TasksByID(context.Context, []string) ([]model.Task, er
 	f.unexpected("TasksByID")
 	return nil, nil
 }
+func (f *strictStepWrite) VisibleTaskIDs(context.Context, []string) ([]string, error) {
+	panic("unexpected VisibleTaskIDs")
+}
 func (f *strictStepWrite) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	f.unexpected("ActiveDependentIDs")
 	return nil, nil

@@ -241,14 +241,18 @@ func testHistorySourcesDistinguishTombstonesMissingFactsAndStorageFailures(t *te
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"webhook_events", "tasks", "projects", "webhook_delivery_matches"} {
+	for _, table := range []string{"webhook_events", "task_resource_rows", "projects", "webhook_delivery_matches"} {
 		t.Run(table, func(t *testing.T) {
 			tx, err := f.conn.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(context.Background())
-			if _, err = tx.Exec(ctx, `ALTER TABLE `+pgx.Identifier{table}.Sanitize()+` RENAME TO unavailable_history_source`); err != nil {
+			kind := "TABLE"
+			if table == "task_resource_rows" {
+				kind = "VIEW"
+			}
+			if _, err = tx.Exec(ctx, `ALTER `+kind+` `+pgx.Identifier{table}.Sanitize()+` RENAME TO unavailable_history_source`); err != nil {
 				t.Fatal(err)
 			}
 			_, err = New(tx).HistorySources(ctx, row, f.user)

@@ -33,7 +33,10 @@ packages is not itself a saving.
 The Root fixture retains its existing shared names and semantics for ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. The [test-writing rules](../../../../docs/writing_tests.md)
+and protected API proofs. Worker HTTP protocol matrices live with their Worker
+registrar, with real Service and Core where appropriate and narrow controlled
+capabilities for precise outcomes; HTTP fault classification belongs to httpx.
+The [test-writing rules](../../../../docs/writing_tests.md)
 own the current requirements.
 
 ## Alternatives

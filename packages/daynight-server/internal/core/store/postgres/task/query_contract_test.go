@@ -63,7 +63,7 @@ func TestActiveDependentIDsUseOnlyDirectScopedOrdinaryAndExternalEdges(t *testin
 	testutil.MustExec(t, database.Pool, `CREATE FUNCTION reject_dependent_materials() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'dependent materials must not be selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, status, reject_dependent_materials() AS title,
+		CREATE VIEW tasks AS SELECT id, project_id, type, status, reject_dependent_materials() AS title,
 		reject_dependent_materials() AS description, deleted_at FROM task_source`)
 	if err := testutil.WriteProject(ctx, database, project.ID, func(tx ProjectWriteScope) error {
 		ids, err := tx.TaskDAO().ActiveDependentIDs(ctx, predecessor.ID)
@@ -225,8 +225,11 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 		s := testutil.OpenStore(t, postgres.Open)
 		project := testutil.QueryProject(t, s.Pool, s, 1)
 		task := testutil.QueryTask(t, s, project.ID, 11, model.TaskTodo)
-		testutil.MustExec(t, s.Pool, `ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, description, status, 'invalid version'::text AS version,
+		testutil.MustExec(t, s.Pool, `ALTER VIEW task_resource_rows RENAME TO resource_source;
+			CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, title, description, status, 'invalid version'::text AS version,
+			created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at, effective_deleted_at FROM resource_source;
+			ALTER TABLE tasks RENAME TO task_source;
+			CREATE VIEW tasks AS SELECT id, project_id, type, parent_id, title, description, status, 'invalid version'::text AS version,
 			created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
 		if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 			_, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}})

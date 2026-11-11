@@ -63,7 +63,7 @@ func (d *DAO) HistorySources(ctx context.Context, delivery store.WebhookDelivery
 	if err != nil {
 		return s, pg.QueryError("read webhook history event", err)
 	}
-	err = d.tx.QueryRow(ctx, `SELECT title FROM tasks WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL`, e.TaskID, e.ProjectID).Scan(&s.TaskTitle)
+	err = d.tx.QueryRow(ctx, `SELECT title FROM task_resource_rows WHERE id=$1 AND project_id=$2 AND effective_deleted_at IS NULL`, e.TaskID, e.ProjectID).Scan(&s.TaskTitle)
 	if err == nil {
 		s.TaskPresent = true
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -123,8 +123,8 @@ func (d *DAO) HistoryDisclosure(ctx context.Context, _ wm.Owner, _ string, actor
 	)
 	SELECT 'project', id::text FROM accessible
 	UNION ALL
-	SELECT 'task', t.id::text FROM accessible JOIN tasks t ON t.project_id=accessible.id
-		WHERE t.created_at <= $2 AND t.deleted_at IS NOT NULL
+	SELECT 'task', t.id::text FROM accessible JOIN task_resource_rows t ON t.project_id=accessible.id
+		WHERE t.created_at <= $2 AND t.effective_deleted_at IS NOT NULL
 	ORDER BY 1,2`, actor, before)
 	if err != nil {
 		return "", pg.QueryError("read webhook disclosure", err)

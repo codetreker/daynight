@@ -44,18 +44,16 @@ properties in the same snapshot. Query counts do not grow linearly with Task or
 property counts for these ordinary batch paths.
 
 Graph reads return the complete selected component and direct external
-prerequisites without stored node/edge capacity admission. Search sends the
-entire matched page into one `ContextGraph` batch operation for nodes and edges;
-Go computes component representatives and the actual returned description
-snippets, then reads distinct representative titles in one batch. Exact-ID
+prerequisites without stored node/edge capacity admission. Search computes the actual returned description snippets and reads distinct
+parent Goal titles in one batch. The [typed resource read decision](../architecture/2026-11-11-typed-task-resource-reads.md)
+replaces the earlier ordinary-component search context with actual membership. Exact-ID
 ranking, Boolean evidence, the project fence, sort order and count cursors remain.
 
 Step collection and item reads use pure `ProjectCollection`/`ProjectItem`
 projection. MCP Step lists use one `limit+1` DAO query; ordinary Get/GetSummary
 preserve their response views. Request syntax and explicit expected parent
 versions remain checked before page reads. Task MCP lists keep their existing
-priority selection and fence; full views retain their ordinary selected-item
-materialization. Task graph summary and full views both return the complete
+priority selection and fence; full views batch their selected-item materialization. Task graph summary and full views both return the complete
 selected graph. These domain paths have no read-byte slicing or admission; the
 shared MCP entry has no read-output schema or byte admission. Input checks,
 deadlines and resource permits remain independent. The
