@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../src/api/client";
+import { ApiError, pauseAuthRequests } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
 import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
@@ -29,6 +29,32 @@ describe("complete Steps resources", () => {
 });
 
 describe("Steps transport", () => {
+  it.each(["status", "add", "edit", "delete", "move"] as const)("reports actual %s dispatch separately from a receipt", async (action) => {
+    const events: string[] = [];
+    const owner = { ...admission(), onDispatch: vi.fn(() => events.push("dispatch")), onWriteConfirmed: vi.fn() };
+    const fetcher = vi.fn(() => { events.push("fetch"); return Promise.resolve(response({ error: { code: "version_conflict", message: "changed", requestId: "r" } }, 409)); });
+    vi.stubGlobal("fetch", fetcher);
+    const signal = new AbortController().signal;
+    const write = action === "status" ? setTaskStepStatus(projectId, taskId, step.id, "todo", 5n, signal, owner, "r")
+      : action === "add" ? addTaskStep(projectId, taskId, { id: "0000000b", title: "New", description: "", status: "todo", version: 5n }, signal, owner, "r")
+      : action === "edit" ? editTaskStep(projectId, taskId, step.id, "New", "", 5n, signal, owner, "r")
+      : action === "delete" ? deleteTaskStep(projectId, taskId, step.id, 5n, signal, owner, "r")
+      : moveTaskStep(projectId, taskId, step.id, { position: "first" }, 5n, signal, owner, "r");
+    await expect(write).rejects.toMatchObject({ status: 409, code: "version_conflict" });
+    expect(events).toEqual(["dispatch", "fetch"]);
+    expect(owner.onDispatch).toHaveBeenCalledOnce(); expect(owner.onWriteConfirmed).not.toHaveBeenCalled();
+  });
+  it("does not report dispatch when an authentication wait is cancelled", async () => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onDispatch: vi.fn(), onWriteConfirmed: vi.fn() };
+    const controller = new AbortController(); const resume = pauseAuthRequests();
+    try {
+      const write = setTaskStepStatus(projectId, taskId, step.id, "todo", 5n, controller.signal, owner, "r");
+      controller.abort();
+      await expect(write).rejects.toMatchObject({ name: "AbortError" });
+      expect(fetcher).not.toHaveBeenCalled(); expect(owner.onDispatch).not.toHaveBeenCalled(); expect(owner.onWriteConfirmed).not.toHaveBeenCalled();
+    } finally { resume(); }
+  });
   it("sends one scoped status write with the exact version and request identity", async () => {
     const fetcher = vi.fn().mockResolvedValue(response(resource)); vi.stubGlobal("fetch", fetcher);
     const owner = { ...admission(), onWriteConfirmed: vi.fn() }; const signal = new AbortController().signal;

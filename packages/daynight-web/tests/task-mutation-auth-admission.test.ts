@@ -50,10 +50,10 @@ describe('task mutation admission across authentication pauses', () => {
     pending.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
   });
   it.each(['204', '410', 'network'] as const)('waits for authentication before reconciling a sent DELETE%s from another history', async (response) => {
-    const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); writes.mock.calls[0]![5].onDispatch?.();
     await replace(sessions, [restored]); const world = worlds.get(sessions)!; sessions.observe(project, task, world.node(project, task), true); const resume = pause();
     if (response === '204') { writes.mock.calls[0]![5].onWriteConfirmed?.(); pending.resolve(); } else pending.reject(response === '410' ? new ApiError('server', 410, 'task_deleted') : new ApiError('network'));
-    await flush(); expect(sessions.snapshot(project, task).mutation.phase).toBe('pending'); expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
+    await flush(); expect(sessions.snapshot(project, task).mutation.phase).toBe(response === '204' ? 'confirmed' : response === '410' ? 'refused' : 'unknown'); expect(sessions.snapshot(project, task).status).not.toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
     reads.mockResolvedValue(restored); resume(); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored));
     expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledTimes(2);
   });
@@ -69,6 +69,57 @@ describe('task mutation admission across authentication pauses', () => {
     const sessions = createSessions(); await open(sessions); const resume = pause(); sessions.deleteTask(project, task, initial.version, true); const world = worlds.get(sessions)!;
     void world.scope.invalidateScope(); resume(); await flush(); expect(world.scope.isInvalidated).toBe(true); expect(writes).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
   });
+  it('settles cancelled preparation locally without dispatch or a read while paused', async () => {
+    const sessions = createSessions(); await open(sessions); const resume = pause();
+    sessions.deleteTask(project, task, initial.version, true);
+    expect(sessions.snapshot(project, task).mutation.phase).toBe('pending');
+    sessions.suspendForAccountRefresh();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'refused', reconciling: false }));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial });
+    expect(writes).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
+    resume();
+    await flush(); expect(writes).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
+  });
+  it('settles a dispatched, unconfirmed cancellation as unknown without replay', async () => {
+    const sessions = createSessions(); await open(sessions);
+    const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
+    const fetcher = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetcher); writes.mockImplementationOnce(actual.deleteTask);
+    sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    const resume = pause(); sessions.suspendForAccountRefresh();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'unknown', reconciling: false }));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial });
+    expect(reads).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
+    resume(); await flush(); expect(fetcher).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+  });
+  it('retains a trusted receipt when publication is cancelled before installation', async () => {
+    const sessions = createSessions(); await open(sessions); const received = deferred<void>();
+    writes.mockImplementationOnce((_project, _task, _version, _removeDepends, signal, admission) => {
+      admission.onDispatch?.(); admission.onWriteConfirmed?.(); received.resolve();
+      return new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    sessions.deleteTask(project, task, initial.version, true); await received.promise;
+    const resume = pause(); sessions.suspendForAccountRefresh();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'confirmed', reconciling: false }));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial });
+    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+    resume(); await flush(); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+  });
+  it.each([404, 410])('keeps task content when a sent write reports %s after cancellation', async (status) => {
+    const sessions = createSessions(); await open(sessions); const dispatched = deferred<void>();
+    writes.mockImplementationOnce((_project, _task, _version, _removeDepends, signal, admission) => {
+      admission.onDispatch?.(); dispatched.resolve();
+      return new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new ApiError('server', status, status === 404 ? 'not_found' : 'task_deleted')), { once: true }));
+    });
+    sessions.deleteTask(project, task, initial.version, true); await dispatched.promise;
+    const resume = pause(); sessions.suspendForAccountRefresh();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'unknown', reconciling: false }));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial });
+    expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+    resume(); await flush(); expect(sessions.snapshot(project, task).detail).toEqual(initial); expect(reads).toHaveBeenCalledOnce();
+  });
   it('keeps a restored new owner intact when an old result waits through authentication', async () => {
     const sessions = createSessions(); await open(sessions); const oldResult = deferred<void>(); const newResult = deferred<void>(); writes.mockReturnValueOnce(oldResult.promise).mockReturnValueOnce(newResult.promise);
     sessions.deleteTask(project, task, initial.version, true); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await replace(sessions, [detailFixture(project, sibling)]); sessions.observe(project, task, undefined, true);
@@ -77,13 +128,14 @@ describe('task mutation admission across authentication pauses', () => {
     resume(); await flush(); expect(sessions.snapshot(project, task).mutation).toMatchObject({ operation: { action: 'delete', version: 3n, removeDepends: true }, phase: 'pending' }); expect(reads).toHaveBeenCalledTimes(2); expect(writes).toHaveBeenCalledTimes(2);
     newResult.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
   });
-  it('withdraws task content immediately and requests project access revalidation after authentication resumes', async () => {
+  it('retains task content until a paused 404 can be admitted after authentication resumes', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const response = deferred<Response>(); const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
     sessions.subscribe(project, task, () => {}); const notices: string[] = []; world.scope.subscribe((event) => { if (event.taskNotFound) notices.push(event.projectId); });
     const fetcher = vi.fn().mockReturnValue(response.promise); vi.stubGlobal('fetch', fetcher); writes.mockImplementationOnce(actual.deleteTask); sessions.deleteTask(project, task, initial.version, true);
     await waitFor(() => expect(fetcher).toHaveBeenCalledOnce()); const revoke = vi.spyOn(world.scope, 'revokeProject'); const resume = pause();
     response.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'No project access', requestId: 'paused-denied' } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(sessions.snapshot(project, task).status).toBe('error'); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'paused-denied' }); expect(revoke).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
-    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'refused', reconciling: false }));
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: initial }); expect(revoke).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(sessions.snapshot(project, task).detail).toBeNull(); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
   });
 });

@@ -10,6 +10,8 @@ A valid Step write can be confirmed while its asynchronous collection admission 
 
 The successful Steps continuation re-enters the shared mutation stage after collection admission. It waits for same-identity verification, then checks disposal, deletion, detail admission, the current operation, and the source-specific generation and read ticket before scheduling project and parent refreshes. Summary tickets retain cache and project-revision qualification. Direct tickets retain persistent history, opening and request qualification; they do not acquire a synthetic cache generation.
 
+The [local mutation settlement decision](../architecture/2026-11-11-task-mutation-local-settlement.md) separates local completion from this qualified continuation without weakening the deletion check.
+
 The [original Step status decision](../../archived/architecture/2026-11-04-task-steps-web-status.md) established the shared write and reconciliation owner. The [direct observation decision](../architecture/2026-11-06-task-direct-observation.md) supplies the newer source-specific qualification. The [Steps design](../../../../docs/design/daynight-task-steps.md) owns the current lifecycle contract.
 
 ## Alternatives

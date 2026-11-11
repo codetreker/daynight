@@ -66,7 +66,7 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
   if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version) || !["todo", "in_progress", "done", "skipped"].includes(status)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}/status`, signal, {
     method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, status }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -85,7 +85,7 @@ export const deleteTaskStep = async (projectId: string, taskId: string, stepId: 
   if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
     method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -103,7 +103,7 @@ export const editTaskStep = async (projectId: string, taskId: string, stepId: st
     [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
     method: "PATCH", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, title, description }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -126,7 +126,7 @@ export const addTaskStep = async (projectId: string, taskId: string, input: AddS
   const response = await request(path, signal, {
     method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId },
     body: stringifyApiJson({ version: input.version, id: target, title: input.title, description: input.description, status: input.status, ...placement }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 201) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -149,7 +149,7 @@ export const moveTaskStep = async (projectId: string, taskId: string, stepId: st
     ("before" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.before) : "after" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.after) : normalized.position !== "first" && normalized.position !== "last")) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}/position`, signal, {
     method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, ...normalized }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {

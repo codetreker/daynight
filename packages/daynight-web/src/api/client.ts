@@ -239,6 +239,7 @@ export type TaskResponseAdmission = {
   readonly userId: string;
   readonly onPrincipalMismatch: () => void;
   readonly onWriteConfirmed?: () => void;
+  readonly onDispatch?: () => void;
 };
 
 export type TaskObservation = { readonly epoch: string; readonly detail: TaskDetail };
@@ -282,7 +283,7 @@ export const updateTaskFields = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, ...body }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -326,7 +327,7 @@ export const deleteTask = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, removeDepends }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 204) { admission.onWriteConfirmed?.(); return; }
   if (response.ok) throw new ApiError("protocol", response.status);
@@ -342,7 +343,7 @@ export const setTaskStatus = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/status`, signal, {
     method: "PUT", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, status }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -364,7 +365,7 @@ export const withdrawWorkerClaim = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/worker-claim/withdraw`, signal, {
     method: "POST", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, claimId: claim }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -384,7 +385,7 @@ export const setTaskAgentPermission = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, allowAgents }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -405,7 +406,7 @@ export const unpauseTask = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -426,7 +427,7 @@ export const setTaskRequiredPlatform = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, requiredPlatform }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
@@ -448,7 +449,7 @@ export const setTaskAssignedTo = async (
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, assignedTo: target }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
