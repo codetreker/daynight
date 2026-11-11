@@ -10,6 +10,7 @@ import { parseProviderArguments } from "../../../src/commands/controller/provide
 import { createOperation } from "../../../src/api/operation.js";
 import { syncWorkerConfigurationOnce } from "../../../src/commands/worker/reporter.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
+import type { Tool, ToolPaths } from "../../../src/platform/tool-path-choice.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
@@ -60,6 +61,128 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("publishes local targets until complete cloud adoption and retains explicit auto", async () => {
+    const localToolPaths: ToolPaths = { codex: { kind: "path", path: "/local/codex" }, copilot: { kind: "path", path: "/local/copilot" }, herdr: { kind: "auto" } };
+    const { manager } = await fixture({ localToolPaths });
+    expect(manager.current().toolTargets).toEqual({ source: "local", revision: null, choices: localToolPaths });
+    const original = desired("1", "original", false);
+    await manager.receive(original); await manager.settle();
+    expect(manager.current().toolTargets).toEqual({ source: "local", revision: null, choices: localToolPaths });
+    expect(manager.report()).toMatchObject({ bootstrap: null, toolPathsBootstrap: localToolPaths });
+    await manager.receive({ ...original, revision: "2", value: { ...original.value, toolPaths: { codex: { kind: "auto" }, copilot: null, herdr: null } } });
+    expect(manager.current().toolTargets).toBeNull();
+    const cloud: ToolPaths = { codex: { kind: "auto" }, copilot: { kind: "path", path: "/cloud/copilot" }, herdr: { kind: "auto" } };
+    await manager.receive({ ...original, revision: "3", value: { ...original.value, toolPaths: cloud } }); await manager.settle();
+    expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "3", choices: cloud });
+    expect(manager.report()).toMatchObject({ toolPathsBootstrap: localToolPaths });
+  });
+
+  it("migrates schema 3 without dropping native modes or unacknowledged failures", async () => {
+    const { first, rejected } = await failedModeSwitchCache();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 3;
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    expect(JSON.parse(await readFile(first.file, "utf8"))).toEqual({ ...saved, schemaVersion: 4 });
+    expect(reopened.current().desired).toEqual(rejected);
+    expect(reopened.current().effective.native).toBeNull();
+    expect(reopened.current().items.some(entry => entry.lastFailure !== null)).toBe(true);
+    expect(reopened.current()).not.toHaveProperty("toolPaths");
+  });
+
+  it("invalidates only native proofs that depend on a changed tool selection", async () => {
+    const blocked = deferred(), release = deferred();
+    const selections: Record<Tool, string> = { codex: "a".repeat(64), copilot: "b".repeat(64), herdr: "c".repeat(64) };
+    let changing = false;
+    const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => selections,
+      applyNative: async native => { if (changing && native.agent === "codex") { blocked.resolve(); await release.promise; } },
+    });
+    const original = desired();
+    await manager.receive({ ...original, value: { ...original.value, agentControlMode: "web", projects: [{ projectId, nativeOverrides: { agent: "copilot" } }] } }); await manager.settle();
+    changing = true; selections.codex = "d".repeat(64);
+    await manager.refreshToolSelections(); await blocked.promise;
+    try {
+      expect(manager.current().effective.native).toBeNull();
+      expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
+      expect(manager.current().effective.agentControlMode).toBe("web");
+      expect(item(manager.current(), "native")?.state).toBe("applying");
+    } finally { release.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective.native?.agent).toBe("codex");
+  });
+
+  it("keeps native validation unavailable when the runtime has no tool selection proof", async () => {
+    const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => ({}) });
+    await manager.receive(desired("1", "original", false)); await manager.settle();
+    expect(manager.current().effective.native).toBeNull();
+    expect(item(manager.current(), "native")).toMatchObject({ state: "error", error: { code: "unavailable" } });
+  });
+
+  it("qualifies an unrelated project in the proven mode while the global tool is unavailable", async () => {
+    let selections: Partial<Record<Tool, string>> = { codex: "a".repeat(64), copilot: "b".repeat(64) };
+    const { manager } = await fixture({ readToolSelectionKeys: () => selections });
+    const original = desired("1", "original", false), first = { ...original, value: { ...original.value, agentControlMode: "web" as const } };
+    await manager.receive(first); await manager.settle();
+    selections = { copilot: "b".repeat(64) };
+    await manager.refreshToolSelections(); await manager.settle();
+    await manager.receive({ ...first, revision: "2", value: { ...first.value, projects: [{ projectId, nativeOverrides: { agent: "copilot" } }] } }); await manager.settle();
+    expect(manager.current().effective.native).toBeNull();
+    expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
+    expect(manager.current().effective.agentControlMode).toBe("web");
+  });
+
+  it("invalidates a changed path even before a new selection key is published", async () => {
+    const entered = deferred(), release = deferred();
+    let changing = false;
+    const { manager } = await fixture({ localControlMode: "web", applyNative: async native => {
+      if (changing && native.agent === "codex") { entered.resolve(); await release.promise; }
+    } });
+    const original = desired(), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+    const first = { ...original, value: { ...original.value, toolPaths: tools, projects: [{ projectId, nativeOverrides: { agent: "copilot" as const } }] } };
+    await manager.receive(first); await manager.settle();
+    changing = true;
+    await manager.receive({ ...first, revision: "2", value: { ...first.value, toolPaths: { ...tools, codex: { kind: "path", path: "/new/codex" } } } });
+    await entered.promise;
+    try {
+      expect(manager.current().effective.native).toBeNull();
+      expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
+      expect(manager.current().toolTargets?.choices.codex).toEqual({ kind: "path", path: "/new/codex" });
+    } finally { release.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective.native?.agent).toBe("codex");
+  });
+
+  it("discards a late native validation when its tool selection changed during validation", async () => {
+    const entered = deferred(), release = deferred(), latestEntered = deferred(), latestRelease = deferred();
+    let key = "a".repeat(64), checks = 0;
+    const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => ({ codex: key }), applyNative: async () => {
+      if (++checks === 1) { entered.resolve(); await release.promise; }
+      else { latestEntered.resolve(); await latestRelease.promise; }
+    } });
+    await manager.receive(desired("1", "original", false)); await entered.promise;
+    key = "b".repeat(64);
+    await manager.refreshToolSelections(); release.resolve(); await latestEntered.promise;
+    try {
+      expect(manager.current().effective.native).toBeNull();
+      expect(item(manager.current(), "native")?.state).toBe("applying");
+    } finally { latestRelease.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective.native?.model).toBe("original");
+  });
+
+  it.each(["web", "herdr"] as const)("invalidates Herdr-dependent native proof only in %s mode", async mode => {
+    let herdr = "a".repeat(64), allow = true;
+    const { manager } = await fixture({ localControlMode: mode, readToolSelectionKeys: () => ({ codex: "b".repeat(64), herdr }),
+      applyNative: async () => { if (!allow) throw new Error("changed Herdr unavailable"); },
+    });
+    await manager.receive(desired("1", "original", false)); await manager.settle();
+    herdr = "c".repeat(64); allow = false;
+    await manager.refreshToolSelections(); await manager.settle();
+    expect(manager.current().effective.native?.model ?? null).toBe(mode === "web" ? "original" : null);
+    expect(item(manager.current(), "native")?.state).toBe(mode === "web" ? "applied" : "error");
+  });
+
   it("migrates schema 2 without treating historical native settings as current-process proof", async () => {
     const original = desired("1", "original", false), first = await fixture();
     await first.manager.receive(original); await first.manager.settle(); await first.manager.stop();
@@ -70,7 +193,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, localControlMode: "web", signal: new AbortController().signal, applyNative: async (_native, _signal, mode) => { checked.push(mode); } });
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
-    expect(JSON.parse(await readFile(first.file, "utf8"))).toMatchObject({ schemaVersion: 3, desired: original, nativeModes: {}, observationRevision: cache.observationRevision });
+    expect(JSON.parse(await readFile(first.file, "utf8"))).toMatchObject({ schemaVersion: 4, desired: original, nativeModes: {}, observationRevision: cache.observationRevision });
     await reopened.receive(original); await reopened.settle();
     expect(checked).toEqual(["web"]);
     expect(reopened.current().effective.agentControlMode).toBe("web");
@@ -328,7 +451,7 @@ describe("Worker cloud configuration application", () => {
     await manager.settle();
     expect(manager.current().effective.preferPlatformSpecificTasks).toBe(false);
     expect(item(manager.current(), "preferPlatformSpecificTasks")).toMatchObject({ state: "applied", appliedValue: false, targetRevision: "2" });
-    expect(parseWorkerCloudReport(manager.report(), true).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
+    expect(parseWorkerCloudReport(manager.report(), { controlMode: true, toolPaths: true }).observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "preferPlatformSpecificTasks" }, appliedValue: false }));
   });
 
   it("atomically migrates a full schema-1 cache without discarding removal or failure ownership", async () => {
@@ -349,7 +472,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = JSON.parse(await readFile(first.file, "utf8"));
-    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.schemaVersion).toBe(4);
     expect(migrated.desired).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.observationRevision).toBe(saved.observationRevision);
@@ -358,7 +481,7 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
     await reopened.receive(target); await reopened.settle();
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
-    expect(parseWorkerCloudReport(reopened.report(), true).observation?.items).toHaveLength(1025);
+    expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation?.items).toHaveLength(1025);
     expect(item(reopened.current(), "projectRemoval")).toMatchObject({ state: "error", lastFailure: failure });
   });
 

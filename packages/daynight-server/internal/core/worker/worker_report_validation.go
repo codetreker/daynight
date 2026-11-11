@@ -29,6 +29,7 @@ func ValidateReport(input model.WorkerReport) (model.WorkerReport, error) {
 		return model.WorkerReport{}, invalidInput("Worker platform and sample time are invalid.")
 	}
 	checks := []error{
+		ValidateToolPaths(telemetry.ToolPaths, telemetry.Platform),
 		validateWorkerRuntimeConfiguration(telemetry.RuntimeConfiguration),
 		validateWorkerAssistantHost(telemetry.AssistantHost, telemetry.Platform),
 		validateWorkerProbe(telemetry.OS, "", func(value model.WorkerOS) bool {

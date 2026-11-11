@@ -54,6 +54,41 @@ CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的�
 
 版本探测的成功值为非空白字符串。未安装、未运行和检测失败是独立结果，不以 null 或空字符串代替。某项探测为 error 不影响其他有效字段的保存，也不使一份格式正确的机器报告失效。
 
+### 工具路径观察
+
+`Daynight-Worker-Tool-Paths: 1` 请求与响应回显控制此扩展。报告的可选 toolPaths 保存为 telemetry.toolPaths；缺字段表示本次报告未提供工具路径信息，与 not_checked 不同，不能沿用旧报告或猜测自动路径。旧读者的详情响应省略该字段，versions 继续原有严格形状。列表不复制完整遥测。
+
+对象为 `{schemaVersion:1,observedAt,entries}`。entries 最多五个唯一 tool/context：codex/web、codex/herdr、copilot/web、copilot/herdr、herdr/herdr；Herdr/web 拒绝。Bot 使用 web 上下文。每个可用上下文都保留条目，未检查时使用 not_checked。
+
+每项完整包含以下字段，所有对象均拒绝未知字段：
+
+| 字段 | 合同 |
+| --- | --- |
+| tool、context | 上述工具和上下文组合 |
+| configurationSource | local 或 cloud |
+| targetRevision | local 为 null；cloud 为正 int64 规范十进制字符串，并绑定该版本的 target |
+| target | 完整 ToolPathChoice，不能是未采纳 null |
+| state | not_checked、checking、pending、applied 或 error |
+| reason | null、active_instance、cleanup_unconfirmed、configuration_unavailable 或 report_budget_exceeded |
+| actual、candidate | 各自为完整实际选择或 null |
+| activeSelectionCount | 实际运行选择总组数；无法确认总集合时为 null |
+| activeSelectionsComplete | 布尔值；数量、预算省略或无法确认集合时为 false |
+| activeObservationError | null、legacy_tool_identity_missing、cleanup_unknown 或 inventory_unavailable |
+| activeSelections | 按 selectionKey 排序的运行选择分组，每项含 actual、nullable executionCount、nullable instanceCount、unconfirmedCount |
+| error | null 或闭合 `{code,occurredAt}`，不能包含自由诊断正文 |
+
+实际选择为 `{selection,selectionKey,entryPath,executablePath,interpreterPath,source,version,checkedAt}`。selection 是产生该结果的完整 choice；selectionKey 为运行管理器给出的 64 位小写 SHA-256 十六进制标识。entryPath 表示入口、executablePath 表示实际工具程序、interpreterPath 为解释器路径或 null。source 只能是 explicit/path/bundled；path 每项最多 4096 UTF-8 字节，version 最多 256 字节。时间必须有效；服务不接收 command、argv、环境、artifact 内容或进程凭据。target 沿用 desired 的平台无关路径语法，使 Worker 能携带原目标报告平台不匹配的 invalid_path；actual、candidate 和 activeSelections 的实际路径仍须符合所报 Worker 平台。
+
+actual 仅表示后续新执行可准入的已验证选择，不代表全部旧执行。candidate 是已探测但尚未安全应用的目标，不能替代 actual。目标失败可以保留旧 actual，但新执行不得借旧值回退。applied 必须有与 target 相等的 actual.selection；消费者还必须核对 cloud targetRevision、当前 desired choice 和 tool/context，不能把迟到报告当作新目标成功。保存成功、单独 versions probe 和候选都不能证明工具已应用。离线或快照过期时，actual 只能作为带 checkedAt 的历史事实展示。
+
+activeSelections 由原 Task/Bot/Herdr 责任按选择聚合，不逐 Task 枚举。每个上下文最多八组；超出数量或编码预算只省略完整组，不截断路径。activeSelectionCount 保留已知真实总数，activeSelectionsComplete=false 明确尚有未展示选择；未知总数不能写成已展示数量。旧执行没有冻结工具身份时以 activeObservationError 和不完整标记表达，不能重建伪路径，也不能因此把已正确应用的新目标改报 error。停止未确认的责任继续计入 unconfirmedCount。
+
+错误 code 只接受 not_found、permission_denied、not_executable、invalid_path、unsupported_launcher、unrecognized_output、incompatible_runtime、probe_timeout、cleanup_unknown、tool_identity_changed、legacy_tool_identity_missing、io_error、unavailable。它们保留路径、权限、启动器、输出、协议、期限、回收和原身份故障，原始命令输出及 cause 只留本地。not_checked 是状态而非异常。
+
+工具扩展受 256 KiB UTF-8 JSON 编码子预算、完整请求 1 MiB 和已存 telemetry/Worker 4 MiB 预算共同约束，不保证所有字段可同时取最大值。生产者预算不足时省略完整运行组，并在仍不能容纳时降为有界 pending/report_budget_exceeded 观察，保留本地完整事实和普通心跳；不能删掉必需任务清单或未确认配置结果制造成功。若必需内容占用的剩余预算连保留完整 target 的降级条目也无法容纳，则省略可选工具扩展，保留本地 report_budget_exceeded 结果；缺少扩展不能继续展示上次成功。服务继续严格拒绝超限或格式错误输入，不替客户端截断数据。
+
+服务只验证结构、来源时间、版本关系、路径语法、预算和账号归属，不运行工具。工具状态由 Worker 运行管理器提供；未接入该管理器的 Worker 不得从 bare 版本字符串生成工具实际路径或 applied。
+
 ### 助手托管预检
 
 可选 `assistantHost` 一旦提供就必须是完整对象，不接受 null、未知字段或重复键：

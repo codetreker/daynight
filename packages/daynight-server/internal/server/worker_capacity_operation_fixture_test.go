@@ -23,6 +23,7 @@ import (
 type capacityReportOperations struct {
 	t             *testing.T
 	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	sync          func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
 	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
 	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
 	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
@@ -42,7 +43,10 @@ func (s *capacityReportOperations) Report(ctx context.Context, principal model.P
 	return s.report(ctx, principal, worker, input)
 }
 
-func (s *capacityReportOperations) ReportSync(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error) {
+func (s *capacityReportOperations) ReportSync(ctx context.Context, principal model.Principal, worker string, input model.WorkerReport, selectors []model.PromptSelector) (workerservice.ConfigurationSyncResult, error) {
+	if s.sync != nil {
+		return s.sync(ctx, principal, worker, input, selectors)
+	}
 	return workerservice.ConfigurationSyncResult{}, s.unexpected("ReportSync")
 }
 
@@ -186,6 +190,7 @@ func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls i
 	f.t.Helper()
 	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
 	want.PreserveAgentControlMode = true
+	want.PreserveToolPaths = true
 	revision := body["revision"].(string)
 	used := 0
 	f.operations.put = func(ctx context.Context, principal model.Principal, worker, actualRevision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {

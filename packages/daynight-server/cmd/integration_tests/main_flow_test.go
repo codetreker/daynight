@@ -17,6 +17,7 @@ import (
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
 	t.Run("personal worker prompts", func(t *testing.T) { serverAPIPromptNormalFlow(t, f) })
 	t.Run("MCP manual and repository project context", func(t *testing.T) {
 		const repository = "https://github.com/example/manual-integration"

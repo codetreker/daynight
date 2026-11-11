@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。通过独立托管模式能力协商的完整值还必须包含 agentControlMode。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -24,6 +24,7 @@
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
 | agentControlMode | 协商后为 herdr 或 web；已有旧目标尚未采纳时可为 null，不是第三种模式 |
+| toolPaths | 工具能力协商后为固定三键 codex/copilot/herdr，各项为未采纳 null、显式自动或显式路径 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
 | projects | 显式数组；条目为 {projectId,nativeOverrides}，规范 Project UUID 不重复，最多 128 项 |
 
@@ -31,11 +32,19 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode 是 Worker 级全局目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode 与 toolPaths 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
+
+### 工具路径三态
+
+toolPaths 的三个键均必填。每项 null 表示尚未采纳；`{kind:"auto"}` 表示明确恢复自动；`{kind:"path",path:string}` 表示完整文件路径。旧存储缺少 toolPaths 时读取为三个 null，不能推断为 auto。已采纳 choice 不能清回 null。自动来源由工具及执行模式决定，Web Copilot 的内置来源与 Herdr Copilot 的命令环境发现分别保留。
+
+path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控制字符的绝对路径；保留原始空格、大小写和词法路径，不 trim、不展开环境变量或 `~`、不拆参数、不交给 shell。服务和浏览器只校验远端路径语法，不访问文件；真实存在性、入口种类、解释器与协议由 Worker 验证。不能用服务所在操作系统的路径规则拒绝另一平台的合法路径。
 
 ## 首次导入与编辑
 
-完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode 并推进目标 revision，其他字段原样保留。候选来自本机有效默认配置：明确 web 必须采纳为 web，未指定时才为 herdr。完整首次导入不额外再推进一次版本。网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同；先保存的非 null 模式不会被后来的候选覆盖，同值报告不反复升版。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
+完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。候选来自同一捕获的本机配置：明确 web 保持 web，未指定模式才为 herdr；省略的本地工具项成为 auto。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。
+
+网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同。网页先明确 Codex 时，随后 bootstrap 只填仍未采纳的 Copilot/Herdr；bootstrap 先提交时，旧 revision 的网页 PUT 冲突，不能自动重放。已保存的非 null choice 不被候选覆盖；恢复 auto 后本地旧路径不再出现。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
 PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
 
@@ -53,9 +62,19 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 ## 心跳扩展
 
+### 工具路径能力
+
+`Daynight-Worker-Tool-Paths: 1` 独立于托管模式头和配置协议 1/2，适用于配置 GET/HEAD/PUT、报告 POST 及 Worker 列表/详情读取。多个头值或非 1 在业务调用前拒绝。只有服务回显同名头才确认支持；未协商响应省略 desired.value.toolPaths 和 telemetry.toolPaths，未协商报告拒绝工具正文扩展。列表仍是原摘要，不增加 telemetry。
+
+旧 PUT 在 Worker 锁内通过目标 CAS 后保留当前 toolPaths，再执行完整规范化、预算与 no-op 比较；不能让旧客户端保存其它字段清除工具选择。客户端仅在当前 origin 和认证账号的配置 GET（包括已认证的 404）确认能力后上传工具扩展，不能跨账号复用或按版本号猜测。旧服务下继续本地选择和原配置合同，不发送工具字段；响应未确认能力不等同于新字段已生效，也不允许重放未知写。
+
+工具实际状态使用[工具路径观察](daynight-worker-snapshots.md#工具路径观察)，不增加 observation.items 的 appliedValue 分支。协议支持只证明可交换目标与事实，不能证明 Worker 已接入真实工具管理器。
+
+### 配置报告
+
 Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告和协议 1 保留各自的既有合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
-扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；即使已有云端 desired，仍可提交独立模式候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
+扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；工具能力确认后必填 toolPathsBootstrap，为完整三项 choice 或 null。即使已有云端 desired，仍可提交独立采纳候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
 
 扩展回执保留原时间字段，并含 configuration:{desired,observationRevision,observationAccepted}。观测 CAS 不匹配时返回 false 与当前版本，保留已有应用观测；合法机器报告仍按原规则保存。响应未知不能被当作未写入，后续使用最新实际状态收敛，不重放旧报告。
 

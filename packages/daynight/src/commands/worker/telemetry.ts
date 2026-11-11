@@ -1,3 +1,4 @@
+import { boundToolPathTelemetry, type ToolPathTelemetry, type ToolContext } from "../../api/worker-tool-paths.js";
 import { constants } from "node:fs";
 import { access, stat, statfs } from "node:fs/promises";
 import * as os from "node:os";
@@ -16,7 +17,7 @@ import type { CodexProbeOwner } from "./codex-probe-owner.js";
 import type { AssistantHostSample } from "./bots/host-capabilities.js";
 
 export type WorkerTelemetryIssue = {
-  component: "os" | "cpu" | "memory" | "disk" | "herdr" | "codex" | "copilot" | "assistantHost_codex" | "assistantHost_claude" | "assistantHost_copilot";
+  component: "toolPaths" | "os" | "cpu" | "memory" | "disk" | "herdr" | "codex" | "copilot" | "assistantHost_codex" | "assistantHost_claude" | "assistantHost_copilot";
   code: WorkerProbeCode;
   error: unknown;
 };
@@ -119,6 +120,7 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
+  toolPaths?: { context: ToolContext; snapshot: () => ToolPathTelemetry | undefined };
   assistantHost?: { collect: (operation: Operation, codexProbes?: CodexProbeOwner) => Promise<AssistantHostSample | undefined> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
@@ -193,6 +195,16 @@ export const createWorkerTelemetryCollector = (options: {
         return result;
       };
       const sampledAt = new Date().toISOString();
+      let toolPaths: ToolPathTelemetry | undefined, sourceToolPaths: ToolPathTelemetry | undefined;
+      try {
+        const snapshot = options.toolPaths?.snapshot();
+        if (snapshot !== undefined) { toolPaths = boundToolPathTelemetry(snapshot); sourceToolPaths = snapshot; }
+      } catch (error) { issues.push({ component: "toolPaths", code: "unavailable", error }); }
+      const selectedVersion = (tool: "codex" | "copilot"): WorkerProbe<string> => {
+        const actual = sourceToolPaths?.entries.find(entry => entry.tool === tool && entry.context === options.toolPaths!.context)?.actual;
+        return actual === undefined || actual === null ? { state: "error", checkedAt: toolPaths?.observedAt ?? sampledAt, code: "unavailable" }
+          : { state: "ok", checkedAt: actual.checkedAt, value: actual.version };
+      };
       try {
         // The assistant collector owns its five-second budget. Capture rejection so ordinary probes still finish their process cleanup.
         const assistantPending = Promise.resolve().then(() => options.assistantHost?.collect(operation, codexProbes)).then(value => ({ value }), (error: unknown) => ({ error }));
@@ -201,7 +213,7 @@ export const createWorkerTelemetryCollector = (options: {
           probe("cpu", () => sampleCPU(collection)),
           probe("memory", () => { const totalBytes = integer(os.totalmem()); const free = integer(os.freemem()); if (totalBytes <= 0 || free > totalBytes) throw new SampleError("invalid_sample", "Available memory must fit its positive total capacity."); return { totalBytes, usedBytes: totalBytes - free }; }),
           probe("disk", () => disk(collection)),
-          probe("herdr", async () => { const result = await observe(herdr.observe(collection), collection); return result === null ? null : text(result, 256); }), version("codex"), version("copilot"),
+          probe("herdr", async () => { const result = await observe(herdr.observe(collection), collection); return result === null ? null : text(result, 256); }), options.toolPaths === undefined ? version("codex") : selectedVersion("codex"), options.toolPaths === undefined ? version("copilot") : selectedVersion("copilot"),
           assistantPending,
         ]);
         const assistant = "value" in assistantOutcome ? assistantOutcome.value : undefined;
@@ -215,7 +227,7 @@ export const createWorkerTelemetryCollector = (options: {
           if (errors.length > 1) throw new AggregateError(errors, "Worker telemetry failed after joining native probes.", { cause: failures[0] });
           throw errors[0];
         }
-        return { telemetry: { machine: { ...options.machine }, platform: options.platform, workingDirectory: options.workingDirectory, sampledAt, os: system, cpu, memory, disk: filesystem,
+        return { telemetry: { ...(toolPaths === undefined ? {} : { toolPaths }), machine: { ...options.machine }, platform: options.platform, workingDirectory: options.workingDirectory, sampledAt, os: system, cpu, memory, disk: filesystem,
           ...(assistant === undefined ? {} : { assistantHost: assistant.assistantHost }),
           versions: { daynight: options.version, codex, copilot, herdr: daemon.state === "error" ? daemon : daemon.value === null ? { state: "not_running", checkedAt: daemon.checkedAt } : { state: "ok", checkedAt: daemon.checkedAt, value: daemon.value } } }, issues };
       } finally { collection.dispose(); }

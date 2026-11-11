@@ -474,7 +474,7 @@ export const runWorker = async (options: {
     let configurationChanged = new AbortController();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode,
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
       applyNative: nativeApplication.apply,
       onNativeApplication: event => {
         const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
@@ -839,7 +839,7 @@ export const runWorker = async (options: {
         },
         capture: () => {
           const captured = manager.report(manager.current().desired === null ? bootstrap : null);
-          try { parseWorkerCloudReport(captured, true); }
+          try { parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") }); }
           catch (error) { reconcileReport = true; throw error; }
           return captured;
         },
@@ -1107,7 +1107,7 @@ export const runWorkerControl = async (options: {
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
-        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
+        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, applyNative: nativeApplication.apply });
         await configurationManager.receive(resource.desired, resource.observationRevision);
         await configurationManager.settle();
         const effective = configurationManager.current().effective;
@@ -1151,7 +1151,7 @@ export const runWorkerControl = async (options: {
                   resource = { desired: null, observationRevision: "0", observation: null };
                 }
               }
-              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, applyNative: nativeApplication.apply });
+              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, applyNative: nativeApplication.apply });
               await configurationManager.receive(resource.desired, resource.observationRevision);
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }
