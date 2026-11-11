@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import { clearInvitation } from "../features/auth/invitation";
+import { LoginCompletePage } from "../features/auth/LoginCompletePage";
 import { OAuthStartErrorPage } from "../features/auth/OAuthStartErrorPage";
 import { LandingPage } from "../features/landing/LandingPage";
 import { SetupGuideShell } from "../features/setup/SetupGuideShell";
@@ -15,5 +16,5 @@ export const Application = (props: { readonly navigateToLogin?: (url: string) =>
   useLayoutEffect(() => {
     if (publicPage) setCleanupFailed(!clearInvitation());
   }, [pathname, publicPage]);
-  return <>{publicPage && cleanupFailed && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{pathname === "/" ? <LandingPage /> : pathname === "/setup" ? <SetupGuideShell /> : pathname === "/oauth/authorize" ? <OAuthStartErrorPage /> : <AuthenticatedApp {...props} />}</>;
+  return <>{publicPage && cleanupFailed && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{pathname === "/" ? <LandingPage /> : pathname === "/setup" ? <SetupGuideShell /> : pathname === "/oauth/authorize" ? <OAuthStartErrorPage /> : pathname === "/auth/complete" ? <LoginCompletePage /> : <AuthenticatedApp {...props} />}</>;
 };
