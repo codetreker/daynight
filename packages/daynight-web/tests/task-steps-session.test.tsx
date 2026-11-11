@@ -68,6 +68,45 @@ it("keeps loaded Steps when a dispatched status write is suspended before a rece
   } finally { resume(); }
 });
 
+it("releases a retained Steps collection after permanent suspension and the last reader leaves", async () => {
+  const scope = await seed(); const session = await open(scope);
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT"
+    ? new Promise<Response>((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true }))
+    : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); const unsubscribe = start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1));
+  const resume = pauseAuthRequests();
+  try {
+    session.suspendForAccountRefresh();
+    await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "unknown", reconciling: false }));
+    expect(session.stepsSnapshot(projectId, taskId).resource).toEqual(resource());
+    unsubscribe();
+    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull());
+    expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+  } finally { resume(); }
+});
+
+it("releases Steps when the last reader leaves before a confirmed publication is permanently suspended", async () => {
+  const scope = await seed(); const session = await open(scope); const write = deferred<Response>();
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT" ? write.promise
+    : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); const unsubscribe = start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1));
+  const resume = pauseAuthRequests();
+  try {
+    write.resolve(resourceResponse(resource(6n, [{ ...item, status: "done" }]), TEST_VIEWER_ID));
+    await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "confirmed", reconciling: false, publicationPending: true }));
+    unsubscribe(); expect(session.stepsSnapshot(projectId, taskId).resource).toEqual(resource());
+    session.suspendForAccountRefresh();
+    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull());
+    expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+  } finally { resume(); }
+});
+
 it.each(["conflict", "missing", "network"] as const)("settles a known %s outcome when its admission is paused", async (outcome) => {
   const scope = await seed(); const session = await open(scope); const write = deferred<Response>();
   const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT" ? write.promise
@@ -95,9 +134,10 @@ it.each(["conflict", "missing", "network"] as const)("settles a known %s outcome
 });
 
 it("preserves a newer Step draft when a confirmed edit publishes after a temporary pause", async () => {
-  const scope = await seed(); const taskNode = node(scope); const write = deferred<Response>(); let updated = false;
+  const scope = await seed(); let taskNode = node(scope); const write = deferred<Response>(); let updated = false;
   const saved = { ...item, title: "Submitted title", updatedAt: "2026-10-22T10:00:06Z" };
-  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PATCH" ? write.promise
+  const newer = { ...saved, title: "Newer draft", updatedAt: "2026-10-22T10:00:07Z" }; let writes = 0;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PATCH" ? ++writes === 1 ? write.promise : Promise.resolve(resourceResponse(resource(7n, [newer]), TEST_VIEWER_ID))
     : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(updated ? 6n : 5n, updated ? [saved] : [item]) : body(updated ? 6n : 5n), TEST_VIEWER_ID)));
   vi.stubGlobal("fetch", fetcher);
   let session!: TaskDetailSessions;
@@ -109,7 +149,7 @@ it("preserves a newer Step draft when a confirmed edit publishes after a tempora
   const tree = () => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>
     <TaskDraftBoundary projectId={projectId} taskId={taskId} page><Workspace /></TaskDraftBoundary>
   </TaskDetailSessionProvider></TaskCacheProvider>;
-  renderWithLocale(tree(), { locale: "en" });
+  const view = renderWithLocale(tree(), { locale: "en" });
   await waitForDom(() => expect(screen.getByRole("button", { name: "Read" })).toBeVisible());
   fireEvent.click(screen.getByRole("button", { name: "Read" }));
   fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
@@ -127,10 +167,15 @@ it("preserves a newer Step draft when a confirmed edit publishes after a tempora
     expect(screen.getByRole("textbox", { name: "Title" })).toBeEnabled();
     fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Newer draft" } });
     updated = true; resume(); resume = null;
-    await act(async () => { await apply(scope, body(6n)); });
-    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId).resource?.version).toBe(6n));
+    await act(async () => { await apply(scope, body(6n)); taskNode = node(scope); view.rerender(tree()); });
+    await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 6n }, requiresFreshRead: false, mutation: { phase: "confirmed", reconciling: false } }));
+    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(6n, [saved]), stale: false }));
+    await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.publicationPending).not.toBe(true));
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Newer draft");
-    expect(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")).toHaveLength(1);
+    await waitForDom(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")).toHaveLength(2));
+    expect(JSON.parse(String(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")[1]![1].body))).toEqual({ version: 6, title: "Newer draft", description: item.description });
   } finally { release.resolve(); resume?.(); }
 });
 
@@ -978,6 +1023,7 @@ it("leaves a later operation in control when an earlier Step success resumes adm
   const reads = parentReadCount(fetcher); const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
   release.resolve(); await drainReads(scope);
   expect(session.snapshot(projectId, taskId)).toMatchObject({ requiresFreshRead: false, refreshing: false, mutation: { operation, phase: "pending" } });
+  expect(session.stepsSnapshot(projectId, taskId).resource).toEqual(resource(6n, changed));
   expect(parentReadCount(fetcher)).toBe(reads); expect(refresh).not.toHaveBeenCalled();
   replacementWrite.resolve(failure(403, "forbidden")); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("refused"));
 });

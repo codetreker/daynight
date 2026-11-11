@@ -1,13 +1,17 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSession';
-import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
+import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions, type TaskMutationState } from '../src/features/task-detail/TaskDetailSession';
+import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
+import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import { GoalCreate } from '../src/features/goal-detail/GoalCreate';
 import { ApiError, createTask, pauseAuthRequests } from '../src/api/client';
 import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { wireResponse } from './helpers/wireJson';
 
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => null }));
@@ -88,6 +92,48 @@ it('keeps a newer Goal draft when a locally confirmed edit is published after a 
     expect(within(screen.getByRole('alertdialog', { name: 'Edit Goal' })).getByRole('textbox', { name: 'Name' })).toHaveValue('Newer draft');
     expect(write).toHaveBeenCalledOnce();
   } finally { resume(); }
+});
+
+it('retains a confirmed Goal draft until a direct retry reaches the real receipt version', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const saved = { ...detail, title: 'Submitted', version: detail.version + 1n };
+  const epoch = '30000000-0000-4000-8000-000000000001';
+  const response = (value: unknown) => wireResponse(value, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  let rejectFollowup!: (error: Error) => void; const followup = new Promise<Response>((_resolve, reject) => { rejectFollowup = reject; });
+  let reads = 0; let writes = 0; let resume: (() => void) | null = null; let sessions!: TaskDetailSessions;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === 'PATCH') { writes++; return Promise.resolve(response(saved)); }
+    reads++;
+    if (reads === 2) { resume = pauseAuthRequests(); return followup; }
+    return Promise.resolve(response(reads <= 3 ? detail : saved));
+  }));
+  const Workspace = () => {
+    sessions = useTaskDetailSessions(); const task = useTaskDetail(projectId, goalId, { kind: 'direct' });
+    return task.detail === null ? null : <GoalDetailSurface projectId={projectId} taskId={goalId} detail={task.detail} resourceState={task} snapshot={null} presentation="dialog"
+      fullscreen={{ active: false, onChange: () => {} }} onSelectTask={() => {}} onClose={() => {}} onRefreshGraph={() => {}} onRetryDetail={task.retry} />;
+  };
+  const view = renderWithLocale(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Workspace /></TaskDetailSessionProvider></TaskCacheProvider>, { locale: 'en', container: root });
+  try {
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Edit$/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    const editor = screen.getByRole('alertdialog', { name: 'Edit Goal' });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Name' }), { target: { value: 'Submitted' } });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Save' }));
+    await waitFor(() => { expect(reads).toBe(2); expect(resume).not.toBeNull(); });
+    expect(sessions.snapshot(projectId, goalId).mutation).toMatchObject({ phase: 'confirmed', publicationPending: true });
+    await act(async () => { rejectFollowup(new Error('Offline')); });
+    (resume as (() => void) | null)?.(); resume = null;
+    await waitFor(() => expect(sessions.snapshot(projectId, goalId)).toMatchObject({ requiresFreshRead: true, error: { kind: 'network' }, mutation: { phase: 'confirmed', publicationPending: true } }));
+    expect(within(screen.getByRole('alertdialog', { name: 'Edit Goal' })).getByRole('textbox', { name: 'Name' })).toHaveValue('Submitted');
+    await act(async () => { sessions.load(projectId, goalId, 1, 'refresh'); });
+    await waitFor(() => { expect(reads).toBe(3); expect(sessions.snapshot(projectId, goalId).error).not.toBeNull(); });
+    expect(sessions.snapshot(projectId, goalId).mutation.publicationPending).toBe(true);
+    expect(screen.getByRole('alertdialog', { name: 'Edit Goal' })).toBeVisible();
+    await act(async () => { sessions.load(projectId, goalId, 1, 'refresh'); });
+    await waitFor(() => expect(sessions.snapshot(projectId, goalId)).toMatchObject({ detail: saved, requiresFreshRead: false, mutation: { phase: 'confirmed', publicationPending: false } }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog', { name: 'Edit Goal' })).toBeNull());
+    expect(writes).toBe(1); expect(reads).toBe(4);
+  } finally { (resume as (() => void) | null)?.(); view.unmount(); scope.dispose(); vi.unstubAllGlobals(); }
 });
 
 it('shows the unknown outcome after checking even when the error object is cleared', () => {

@@ -174,6 +174,7 @@ export class TaskDetailSessions {
   private readonly entries = new Map<string, Entry>();
   private readonly retiredMutations = new Map<TaskMutationOperation, { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null; readonly goalEpoch: string | null; phase: "pending" | "confirmed" | "unknown" | "conflict" | "refused"; error: unknown; reconciling: boolean; committedVersion: bigint | null; historyRetries: number; historyConfirmRetries: number }>();
   private readonly mutationControllers = new Map<string, { readonly operation: TaskMutationOperation; readonly controller: AbortController; settle?: () => void; dispose?: () => void }>();
+  private readonly receiptReadGenerations = new WeakMap<TaskMutationOperation, number>();
   private readonly projects = new Map<string, Set<() => void>>();
   private readonly committedTasks = new Map<string, ReadonlyMap<string, CommittedTaskProjection>>();
   private readonly committedListeners = new Map<string, Set<() => void>>();
@@ -404,7 +405,9 @@ export class TaskDetailSessions {
   };
   private stepOperationNeedsResource(entry: Entry): boolean {
     const mutation = entry.state.mutation;
-    return isStepOperation(mutation.operation) && (mutation.phase === "pending" || mutation.reconciling);
+    const owner = this.mutationControllers.get(`${entry.steps.projectId}/${entry.steps.taskId}`);
+    const pendingPublication = mutation.publicationPending === true && mutation.phase === "confirmed" && owner?.operation === mutation.operation && !owner.controller.signal.aborted && !this.scope.signal.aborted;
+    return isStepOperation(mutation.operation) && (mutation.phase === "pending" || mutation.reconciling || pendingPublication);
   }
   private stepRecoveryId(entry: Entry): string | undefined {
     const mutation = entry.state.mutation;
@@ -424,7 +427,7 @@ export class TaskDetailSessions {
     if (!isStepOperation(mutation.operation) || !mutation.reconciling || steps.state.stale || steps.state.error !== null || version === undefined ||
       entry.state.detail?.version !== version || this.observedParentVersion(entry) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return false;
     entry.state = { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase,
-      ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null } };
+      ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null, publicationPending: false } };
     if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
     return true;
   }
@@ -891,9 +894,15 @@ export class TaskDetailSessions {
     if (writeGeneration === null || writeGeneration === entry.generation) entry.liveVersion = detail.version;
     if (readOpeningGeneration !== null) entry.liveOpeningGeneration = readOpeningGeneration;
     entry.withdrawn = false;
+    const currentMutation = entry.state.mutation;
+    const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);
+    const published = !isStepOperation(currentMutation.operation) && currentMutation.phase === "confirmed" && currentMutation.publicationPending === true &&
+      receiptGeneration !== undefined && generation !== null && generation > receiptGeneration && readOpeningGeneration === entry.openingGeneration &&
+      (entry.committedVersion === null || detail.version >= entry.committedVersion) && entry.mismatch === null && storageError === null &&
+      (entry.operationFence === null || this.scope.isTaskReadCurrent(entry.operationFence));
     const mutation = reconciliation
-      ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase, reconciling: false, reconciliationError: null }
-      : readOpeningGeneration !== null && !isStepOperation(entry.state.mutation.operation) ? { ...entry.state.mutation, reconciling: false, reconciliationError: null } : entry.state.mutation;
+      ? { ...currentMutation, phase: currentMutation.phase === "unknown" ? "reconciled" as const : currentMutation.phase, reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) }
+      : readOpeningGeneration !== null && !isStepOperation(currentMutation.operation) ? { ...currentMutation, reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) } : currentMutation;
     this.publish(entry, { ...entry.state, revision, loadedRevision: revision,
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
       requiresFreshRead: entry.liveVersion !== detail.version || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null, graphMismatch: entry.mismatch !== null, error: storageError, mutation });
@@ -1005,10 +1014,15 @@ export class TaskDetailSessions {
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
       entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
+      const currentMutation = entry.state.mutation;
+      const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);
+      const published = !isStepOperation(currentMutation.operation) && currentMutation.phase === "confirmed" && currentMutation.publicationPending === true &&
+        receiptGeneration !== undefined && generation > receiptGeneration && (entry.committedVersion === null || observation.detail.version >= entry.committedVersion) &&
+        entry.operationFence !== null && this.scope.isTaskReadCurrent(entry.operationFence);
       const mutation = reconciliation
-        ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase,
-          ...(entry.state.mutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null }
-        : !isStepOperation(entry.state.mutation.operation) ? { ...entry.state.mutation, reconciling: false, reconciliationError: null } : entry.state.mutation;
+        ? { ...currentMutation, phase: currentMutation.phase === "unknown" ? "reconciled" as const : currentMutation.phase,
+          ...(currentMutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) }
+        : !isStepOperation(currentMutation.operation) ? { ...currentMutation, reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) } : currentMutation;
       this.publish(entry, { ...entry.state, revision, loadedRevision: revision, detail: preserveCollection(entry.state.detail, observation.detail),
         status: "ready", refreshing: false, requiresFreshRead: false, graphMismatch: false, error: null, mutation });
       for (const [operation, retired] of this.retiredMutations) {
@@ -1606,6 +1620,7 @@ export class TaskDetailSessions {
           onDispatch: () => { dispatched = true; },
           onWriteConfirmed: () => {
             confirmed = true;
+            this.receiptReadGenerations.set(operation, entry.generation);
             if (!authRequestsPaused() && !signal.aborted) publishGoalReceipt();
             if (authRequestsPaused()) this.settlePausedMutation(projectId, taskId, operation, { dispatched, confirmed, committedVersion: actualVersion, error: null, publicationPending: true });
           } };
@@ -1651,6 +1666,7 @@ export class TaskDetailSessions {
             await this.runMutationStage(projectId, taskId, operation, signal, () => {
               if (this.disposed || entry.state.status === "deleted" || !entry.admitted ||
                 entry.observedGeneration !== this.entryGeneration(entry) || !this.mutationIsCurrent(projectId, entry, operation, requestTicket)) return;
+              if (entry.state.mutation.publicationPending) this.publish(entry, { ...entry.state, mutation: { ...entry.state.mutation, reconciling: true, publicationPending: false } });
               this.refreshProject(projectId);
               void this.read(projectId, taskId, entry.state.revision, false, true);
             });
@@ -1725,12 +1741,13 @@ export class TaskDetailSessions {
           validateResponse();
           validated = true;
           confirmed = true;
+          if (!this.receiptReadGenerations.has(operation)) this.receiptReadGenerations.set(operation, entry.generation);
           actualVersion = detail.version;
           entry.committedVersion = detail.version;
           if ("historyGeneration" in requestTicket) {
             const projectReceipt = operation.action === 'parent' || operation.action === 'status' && (detail.type === 'goal' || detail.parentId !== null);
             this.publish(entry, { ...entry.state, ...(projectReceipt ? { detail: preserveCollection(entry.state.detail, detail), status: "ready" as const, graphMismatch: true } : {}), requiresFreshRead: true,
-              mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
+              mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null, publicationPending: true } });
             if (projectReceipt) this.publishCommittedTask(projectId, previous, detail, projectFence);
             this.refreshProject(projectId);
             await this.read(projectId, taskId, entry.state.revision, false, true);
@@ -1861,7 +1878,7 @@ export class TaskDetailSessions {
           }
           if (confirmed) {
             this.publish(entry, { ...entry.state, error, requiresFreshRead: true, refreshing: false,
-              mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
+              mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null, publicationPending: true } });
             this.refreshProject(projectId);
             if (!validated) await this.read(projectId, taskId, entry.state.revision, true, true);
             return;
@@ -1876,7 +1893,10 @@ export class TaskDetailSessions {
         });
       } finally {
         releasePause();
-        if (this.mutationControllers.get(key)?.operation === operation) this.mutationControllers.delete(key);
+        if (this.mutationControllers.get(key)?.operation === operation) {
+          this.mutationControllers.delete(key);
+          if (isStepOperation(operation) && entry.steps.listeners.size === 0 && !this.stepOperationNeedsResource(entry)) this.clearSteps(entry.steps, emptyTaskStepsState, false);
+        }
         if (!signal.aborted && !authRequestsPaused()) this.drainReads(projectId, taskId);
       }
     })();

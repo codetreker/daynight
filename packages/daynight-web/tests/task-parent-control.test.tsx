@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { TaskDetail, TaskSummary } from '../src/api/types';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
@@ -6,11 +6,58 @@ import { ExistingSelection, TaskParentControl } from '../src/features/task-detai
 import * as taskDetailHook from '../src/features/task-detail/useTaskDetail';
 import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSession';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { pauseAuthRequests } from '../src/api/client';
+import { detailFixture, snapshotFixture } from './helpers/taskDetail';
+import { createTaskSessionWorld } from './helpers/taskSessions';
+import { fixtureTaskEpoch, TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { wireResponse } from './helpers/wireJson';
 
 const goal = (id: string, title: string) => ({ id, type: 'goal', titlePreview: title, titleTruncated: false } as TaskSummary);
 const snapshot = { summaries: new Map([['a', goal('a', 'Goal A')], ['b', goal('b', 'Goal B')]]), index: { nodes: new Map() }, revision: 1 } as unknown as GraphSnapshot;
 const detail = { parentId: 'a', version: 9007199254740993n } as TaskDetail;
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
+
+it('retains a summary Task choice after a malformed confirmed receipt until fresh detail matches the summary', async () => {
+  const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const goalId = '20000000-0000-4000-8000-000000000002';
+  const original = detailFixture(projectId, taskId, { title: 'Task' }); const target = detailFixture(projectId, goalId, { type: 'goal', title: 'Target Goal', ready: false });
+  const saved = { ...original, parentId: goalId, version: original.version + 1n };
+  const world = createTaskSessionWorld(); await world.sync([original, target]); let node = world.node(projectId, taskId); let snapshot = snapshotFixture([original, target]);
+  const response = (value: unknown) => wireResponse(value, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': fixtureTaskEpoch(projectId) }) });
+  let resolveWrite!: (value: Response) => void; const writeResponse = new Promise<Response>((resolve) => { resolveWrite = resolve; });
+  let reads = 0; let writes = 0; let sessions!: TaskDetailSessions; let resume: (() => void) | null = null;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === 'PATCH') { writes++; return writeResponse; }
+    reads++; return reads === 1 ? Promise.resolve(response(original)) : reads === 2 ? Promise.reject(new Error('Offline')) : Promise.resolve(response(saved));
+  }));
+  const Workspace = () => {
+    sessions = useTaskDetailSessions(); const task = taskDetailHook.useTaskDetail(projectId, taskId, 1, node);
+    return task.detail === null ? null : <TaskParentControl detail={task.detail} snapshot={snapshot} disabled={!task.canSetParent} mutation={task.mutation} onSelect={task.setParent} onReconcile={task.reconcile} />;
+  };
+  const tree = () => <TaskCacheProvider scope={world.scope}><TaskDetailSessionProvider><Workspace /></TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = renderWithLocale(tree(), { locale: 'en' });
+  try {
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Current Goal' })).toBeEnabled());
+    fireEvent.change(screen.getByRole('combobox', { name: 'Current Goal' }), { target: { value: goalId } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Goal membership' }));
+    await waitFor(() => expect(writes).toBe(1)); resume = pauseAuthRequests();
+    await act(async () => { resolveWrite(response({ invalid: true })); });
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ phase: 'confirmed', publicationPending: true }));
+    const operation = sessions.snapshot(projectId, taskId).mutation.operation;
+    expect(reads).toBe(1); (resume as (() => void) | null)?.(); resume = null;
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ operation, phase: 'confirmed', publicationPending: true, reconciliationError: { kind: 'network' } }));
+    expect(screen.getByRole('combobox', { name: 'Current Goal' })).toHaveValue(goalId);
+    const refreshed = vi.fn(); sessions.subscribeProject(projectId, refreshed);
+    await act(async () => { sessions.load(projectId, taskId, 1, 'refresh'); });
+    await waitFor(() => { expect(reads).toBeGreaterThanOrEqual(3); expect(refreshed).toHaveBeenCalled(); });
+    expect(sessions.snapshot(projectId, taskId)).toMatchObject({ detail: original, mutation: { operation, phase: 'confirmed', publicationPending: true } });
+    expect(screen.getByRole('combobox', { name: 'Current Goal' })).toHaveValue(goalId);
+    await act(async () => { await world.sync([saved]); node = world.node(projectId, taskId); snapshot = snapshotFixture([saved, target], 2); view.rerender(tree()); });
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId)).toMatchObject({ detail: saved, requiresFreshRead: false, mutation: { operation, phase: 'confirmed', publicationPending: false } }));
+    expect(screen.getByRole('combobox', { name: 'Current Goal' })).toHaveValue(goalId); expect(writes).toBe(1);
+  } finally { (resume as (() => void) | null)?.(); view.unmount(); world.dispose(); vi.unstubAllGlobals(); }
+});
 
 describe('Task Goal control', () => {
   it('moves or removes membership using the exact reviewed Task version', () => {
