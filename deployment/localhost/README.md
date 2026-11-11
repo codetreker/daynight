@@ -5,7 +5,8 @@ project/task HTTP API, PostgreSQL and temporary Redis monitoring storage togethe
 Docker Engine 28 or newer, Linux containers and Docker Compose 2.20 or newer
 are required. Linux hosts and macOS
 with Docker Desktop using Linux containers can run this stack. The first build
-accesses Docker Hub, the npm registry and the Go module registry. No host Go,
+accesses Docker Hub, the npm registry, the Go module registry and Debian package
+repositories. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
 and its server-side credentials are required.
 
@@ -102,7 +103,9 @@ in the Go 1.27.2 binary, recreates the service containers while preserving the
 PostgreSQL, attachment and server log volumes, and waits up to 120 seconds for
 their health checks. Redis is required to start but has no health gate on Server. Build time
 is separate from that readiness timeout. The final nonroot runtime image contains
-the server binary, Node.js 24 and the lockfile-selected sharp dependency closure.
+the server binary, Node.js 24, Debian's system CA certificates and the
+lockfile-selected sharp dependency closure. Go uses the system trust store to
+verify outbound HTTPS connections, including the UniAuth gateway.
 The pinned image-validation helper and its build manifest live under
 `/opt/daynight/image-validation`; service validation runs independently from
 Controller validation. Provider image profiles remain disabled until their full

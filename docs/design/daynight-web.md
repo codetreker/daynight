@@ -783,17 +783,17 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/startup-shutdown.sh
 完整规模图与几何测试由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`。
 `web:build` 不调用 Go；Go 模块验证使用独立资源覆盖层。
 
-开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
+开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。源码构建固定使用 Node 24 与 pnpm 11.28.6；localhost 运行镜像还包含 Node 和图片验证依赖。根目录现有 CLI build/test/acceptance 命令的含义保持独立，web 命令显式选择 `@codetreker/daynight-web`。
 
 ### localhost 交付部署
 
-生产交付直接集成既有 `deployment/localhost/`。继续执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；完成后同一地址可打开项目页面与 API。镜像加入前端构建阶段，最终运行阶段仍只有非 root Go 二进制，不增加前端容器。日常重建与停止保持现有数据保留语义。
+生产交付集成 `deployment/localhost/`。执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；同一地址可打开项目页面与 API。最终镜像以非 root 用户运行 Go 服务，包含 Node 24、sharp 图片验证 helper 和用于 Go 出站 HTTPS 验证的系统 CA 证书，不增加前端容器。日常重建与停止保持现有数据保留语义。
 
 ```text
 仓库根构建上下文
   → Node 24 + pnpm 11.28.6：锁文件安装 → web:build
   → Go 构建阶段：Go 源码 + 已验证 dist → 二进制
-  → 非 root 运行阶段：仅复制二进制
+  → 非 root 运行阶段：Go 二进制 + Node 24 + 图片验证 helper + 系统 CA
 ```
 
 `deployment/localhost/compose.yaml` 使用仓库根 context 并显式指定 `deployment/localhost/Dockerfile`。Dockerfile专属`.dockerignore`使用根相对allowlist，纳入workspace/root/web/Go manifests、锁文件、`patches/`中的Dagre运行时与XYFlow声明补丁、实际构建脚本与源码。共享 CLI 的整个 `packages/daynight/src/` 树同时纳入 context 并 COPY 到前端阶段，支持 API、Thread、Session 与 Task 状态协议的传递依赖，避免重复维护逐目录的依赖清单。TypeScript 只检查生产入口可达的源码，Vite 只打包浏览器导入图；宿主`node_modules`、`.tmp`、生成dist和无关工作区内容继续排除。安装层只下载 web 所需依赖；镜像内部执行同一 `web:build`，不依赖宿主预构建产物。
@@ -1075,5 +1075,5 @@ Web 覆盖率采集包含所有 `src/**/*.{ts,tsx}` 产品文件。独立 checke
 - 大量共享节点会重复出现在不同根图中；通过去重统计和同时只打开一个图浮层控制成本。需要同时比较多条图时再重审交互。
 - 图读取和同步不复查保存集合的节点或边容量，布局与存储成本随实际集合增长。长虚线绘制分解已交付；旧回执不能替代当前源码的 CI 证据。布局归一化成本取决于 rank 跨距，不能把固定矩阵的结果宣称为任意 DAG 的相同耗时保证。
 - 普通分量及其直接 external 前置仍可能使一条链接近完整项目规模；外部前置必须保留显式标记与独立计数，避免把上下文误认为链内进度。完整上游检查独立于一层画布投影，隐藏祖先仍准确计数。历史容量矩阵包含外部祖先密集输入，当前投影只保留直接前置；当前模块压力测试不能替代浏览器时延证据。
-- Node 成为 Go 二进制的构建前置；固定构建顺序与干净 checkout 验证，运行时仍只有 Go 与 PostgreSQL。
+- Node 是 Go 二进制的构建前置，也是 localhost 镜像中图片验证 helper 的运行依赖；固定构建顺序并以干净 checkout 验证。
 - 只有本机访问需求。出现远程访问要求时必须先补齐身份与授权设计。
