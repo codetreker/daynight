@@ -3,7 +3,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { sessionFence, sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration } from '../../api/client';
 import type { LoadedSessionArchive } from '../../api/sessions';
-import { createTerminalSessionApi, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
+import { createTerminalSessionApi, SessionDenialProtocolError, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import type { SyncTicket } from '../task-cache/project-cache';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
@@ -459,7 +459,7 @@ function SessionHostContent({ projectId, taskId, claimId, ownerUserId, mode, act
   const loading = history.loading || history.checking;
   const refresh = history.refresh;
   return <div className="task-session-host">
-    {error ? <p className="session-error" role="alert">{recordingError(error, m)} <button className="button" disabled={loading || !current} onClick={refresh}>{m.refresh}</button></p> : null}
+    {error ? <p className="session-error" role="alert">{recordingError(error, m, direct)} <button className="button" disabled={loading || !current} onClick={refresh}>{m.refresh}</button></p> : null}
     {item ? <FixedSessionRecording key={`${item.sessionId}/${item.executionGeneration}`} projectId={projectId} api={history.api} item={item} active={active && presentationCurrent} current={current} /> : !error ? <div className="session-empty" role="status"><p>{loading ? m.loading : m.empty}</p></div> : null}
   </div>;
 }
@@ -483,7 +483,7 @@ function SummaryManagedRecords(props: ManagedRecordsProps) {
   const history = useRecords(props.projectId, props.taskId, props.active);
   return <ManagedRecordsContent {...props} history={history} />;
 }
-function ManagedRecordsContent({ projectId, taskId, active, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
+function ManagedRecordsContent({ projectId, taskId, active, direct, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
   const m = useTerminalHostMessages();
   const [selection, setSelection] = useState<{ scope: typeof history.scope; projectId: string; taskId: string; item: SessionHistoryItem | null }>(() => ({ scope: history.scope, projectId, taskId, item: null }));
   const selected = selection.scope === history.scope && selection.projectId === projectId && selection.taskId === taskId && !history.denied ? selection.item : null;
@@ -491,9 +491,9 @@ function ManagedRecordsContent({ projectId, taskId, active, resetSelection, chil
   useLayoutEffect(() => { setSelection({ scope: history.scope, projectId, taskId, item: null }); }, [resetSelection, history.scope, projectId, taskId]);
   useLayoutEffect(() => { if (history.denied) setSelection({ scope: history.scope, projectId, taskId, item: null }); }, [history.denied, history.scope, projectId, taskId]);
   const clearSelection = () => setSelected(null);
-  const sidebar = history.checking ? null : history.confirmedEmpty ? (history.error ? <div className="session-error" role="alert">{recordingError(history.error, m)} <button className="button" onClick={history.refresh}>{m.refresh}</button></div> : null) : <section className="managed-session-records" aria-label={m.records}>
+  const sidebar = history.checking ? null : history.confirmedEmpty ? (history.error ? <div className="session-error" role="alert">{recordingError(history.error, m, direct)} <button className="button" onClick={history.refresh}>{m.refresh}</button></div> : null) : <section className="managed-session-records" aria-label={m.records}>
     <div className="terminal-host-toolbar"><h4>{m.records}</h4><button className="button" disabled={history.loading} onClick={history.refresh}>{m.refresh}</button></div>
-    {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m)}</p> : null}
+    {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m, direct)}</p> : null}
     {history.loading && history.items.length === 0 ? <p role="status">{m.loading}</p> : null}
     <ul className="managed-session-list">{history.items.map(item => <li key={item.sessionId}><button className="button" aria-pressed={selected?.sessionId === item.sessionId} onClick={() => setSelected(item)}>{recordLabel(item)} · {m[item.archive.state === 'ready' ? 'readonly' : item.archive.state]}</button></li>)}</ul>
     {history.cursor ? <button className="button" disabled={history.loading} onClick={history.more}>{m.more}</button> : null}
@@ -642,8 +642,8 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
   </SessionImageScope>;
 }
 
-function recordingError(error: unknown, m: ReturnType<typeof useTerminalHostMessages>): string {
-  if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) return m.permission;
+function recordingError(error: unknown, m: ReturnType<typeof useTerminalHostMessages>, direct = false): string {
+  if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0) && (!direct || error.kind === 'server' || error instanceof SessionDenialProtocolError)) return m.permission;
   if (error instanceof ApiError && ['unsupported_protocol', 'unsupported_content_kind'].includes(error.code)) return m.unsupported;
   return m.error;
 }

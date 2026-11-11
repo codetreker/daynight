@@ -6,7 +6,7 @@ import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 import { createTerminalSessionApi, type SessionHistoryItem } from '../src/api/terminal-sessions';
-import { ApiError, pauseAuthRequests } from '../src/api/client';
+import { ApiError, pauseAuthRequests, subscribeUnauthorized } from '../src/api/client';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessionProvider, useTaskDetailSessions, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
@@ -404,6 +404,86 @@ it('withdraws a direct-only peer during a same-account identity pause', async ()
     await act(async () => reject(new ApiError('server', 403)));
     await waitFor(() => expect(within(screen.getByTestId('second')).queryByRole('button', { name: /Herdr/ })).toBeNull());
   } finally { resume(); }
+});
+
+it.each([403, 404])('retains direct records and peers on a different principal %i response', async status => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+  const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, peer);
+  const report = vi.spyOn(first, 'reportDirectSessionDenied');
+  let finish!: (response: Response) => void; const held = new Promise<Response>(resolve => { finish = resolve; });
+  let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests === 3) return held;
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<><div data-testid="first"><TaskCacheProvider scope={first}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div><div data-testid="peer"><TaskCacheProvider scope={peer}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div></>);
+  try {
+    await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+    await waitFor(() => expect(within(screen.getByTestId('peer')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+    fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' }));
+    await waitFor(() => expect(historyRequests).toBe(3));
+    const response = wireResponse({ error: { code: 'forbidden', message: 'Denied', requestId: 'other-user' } }, { status, headers: viewerHeaders('00000000-0000-4000-8000-000000000202') });
+    await act(async () => { finish(response); await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); });
+    expect(first.signal.aborted).toBe(false); expect(first.isInvalidated).toBe(false);
+    expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(within(screen.getByTestId('peer')).getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(report).not.toHaveBeenCalled();
+  } finally { view.unmount(); resume(); vi.mocked(createTerminalSessionApi).mockReset(); }
+});
+
+it.each([401, 403, 404, 410])('withdraws direct records on a trusted %i response with an invalid body', async status => {
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  const mismatch = vi.fn(), unauthorized = vi.fn(); const unsubscribe = subscribeUnauthorized(unauthorized);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch }); scopes.push(scope);
+  let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests > 1) return new Response('invalid', { status, headers: status === 401 ? {} : viewerHeaders(TEST_VIEWER_ID) });
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  try {
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull());
+    expect(screen.getByRole('alert')).toHaveTextContent('You no longer have permission');
+    expect(mismatch).not.toHaveBeenCalled(); expect(unauthorized).toHaveBeenCalledTimes(status === 401 ? 1 : 0);
+  } finally { view.unmount(); unsubscribe(); vi.mocked(createTerminalSessionApi).mockReset(); }
+});
+
+it.each([null, 'invalid'])('does not withdraw direct records for an untrusted 403 principal %s', async principal => {
+  const actual = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+  vi.mocked(createTerminalSessionApi).mockImplementation(actual.createTerminalSessionApi);
+  const mismatch = vi.fn(); const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch }); scopes.push(scope);
+  const report = vi.spyOn(scope, 'reportDirectSessionDenied'); let historyRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/sessions?')) {
+      historyRequests++;
+      if (historyRequests > 1) return new Response('invalid', { status: 403, headers: principal === null ? {} : { 'Daynight-User-ID': principal } });
+      return wireResponse({ items: [item], nextCursor: 'next' }, { headers: viewerHeaders(TEST_VIEWER_ID) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  }));
+  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  try {
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The session could not be loaded or verified.');
+    expect(screen.getByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(mismatch).not.toHaveBeenCalled(); expect(report).not.toHaveBeenCalled();
+  } finally { view.unmount(); vi.mocked(createTerminalSessionApi).mockReset(); }
 });
 
 it('does not publish records after a peer silently replaces the user fence', async () => {

@@ -3,6 +3,8 @@ import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { useCompletedTaskSession } from '../src/features/task-agent-session/automatic-task-session';
 import { createSessionApi } from '../src/api/sessions';
+import { pauseAuthRequests } from '../src/api/client';
+import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import type { TerminalSessionApi } from '../src/api/terminal-sessions';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -12,22 +14,41 @@ vi.mock('../src/api/sessions', () => ({ createSessionApi: vi.fn() }));
 const render = createLocaleRender('en');
 const userId = '00000009-1111-4111-8111-111111111111';
 const scopes: TaskCacheScope[] = [];
-afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); vi.restoreAllMocks(); });
+afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
-function fixture(mode: 'web' | 'herdr') {
+function fixture(mode: 'web' | 'herdr', onIdentityMismatch: () => void = vi.fn()) {
   const s: TaskSessionSnapshot = { ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), lifecycle: 'archived' };
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch }); scopes.push(scope);
   const ready = vi.spyOn(scope, 'ready').mockResolvedValue(undefined);
   const native = { current: vi.fn(async (_signal: AbortSignal) => ({ status: 'registered' as const, session: s })) };
   const terminal = { current: vi.fn(async (_signal: AbortSignal) => ({ status: 'registered' as const, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration })) };
   vi.mocked(createSessionApi).mockReturnValue(native as never);
   function Probe({ active, claimId }: { active: boolean; claimId: string }) {
     const result = useCompletedTaskSession({ projectId: s.identity.projectId, taskId: s.identity.taskId, claimId, mode, api: terminal as unknown as TerminalSessionApi, active });
-    return <output>{result.item === null ? result.availability === null ? 'loading' : result.availability : result.item.claimId}</output>;
+    return <><output>{result.item === null ? result.availability === null ? 'loading' : result.availability : result.item.claimId}</output><span data-testid="error">{result.error ? 'error' : ''}</span><button onClick={result.refresh}>Refresh</button></>;
   }
   const element = (active = true, claimId = s.claimId) => <TaskCacheProvider scope={scope}><Probe active={active} claimId={claimId} /></TaskCacheProvider>;
   return { s, scope, ready, native, terminal, current: mode === 'web' ? native.current : terminal.current, element };
 }
+
+it.each(['web', 'herdr'] as const)('retains the completed %s selection when its response proves another principal', async mode => {
+  let resume = () => {};
+  const f = fixture(mode, () => { resume = pauseAuthRequests(); });
+  render(f.element()); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(f.s.claimId));
+  const actual = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
+  const api = mode === 'web' ? actual.createSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch)
+    : createTerminalSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch);
+  const fetcher = vi.fn(async () => new Response('{}', { status: 403, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } }));
+  vi.stubGlobal('fetch', fetcher);
+  f.current.mockImplementationOnce(signal => api.current(signal) as never);
+  try {
+    act(() => screen.getByRole('button', { name: 'Refresh' }).click());
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    await act(async () => {});
+    expect(f.scope.signal.aborted).toBe(false); expect(screen.getByRole('status')).toHaveTextContent(f.s.claimId);
+    expect(screen.getByTestId('error')).toBeEmptyDOMElement();
+  } finally { resume(); }
+});
 
 it.each(['web', 'herdr'] as const)('does not discover a hidden completed %s tab or hidden document', async mode => {
   const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');

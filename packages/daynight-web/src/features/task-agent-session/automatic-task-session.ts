@@ -69,6 +69,7 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
       if (preparing) timer = setTimeout(refresh, 3000);
     })().catch(error => {
       if (!isCurrent()) return;
+      if (error instanceof ApiError && error.code === 'principal_mismatch') return;
       const denied = error instanceof ApiError && (error.kind === 'protocol' || [401, 403, 404, 410].includes(error.status ?? 0));
       setState(old => ({ owner, item: !denied && old.owner === owner ? old.item : null, loading: false, error, availability: null, preparing: false }));
     }).finally(() => {
