@@ -139,11 +139,11 @@ async function runFixture(source: string, blocked = false, writeFault = false) {
 test("real Vitest failure details are readable while another test is active before final summary", async () => {
   const f = await runFixture("test('first assertion fails', () => { expect('observed').toBe('wanted'); });", true);
   try {
-    await vi.waitFor(() => { expect(existsSync(f.ready)).toBe(true); expect(readEvents(f.output).some(event => event.kind === "test-failed")).toBe(true); }, { timeout: 12_000 });
+    await vi.waitFor(() => { expect(existsSync(f.ready)).toBe(true); expect(readEvents(f.output).some(event => event.kind === "test-failed")).toBe(true); expect(f.transcript()).toContain("AssertionError"); }, { timeout: 12_000 });
     expect(f.child.exitCode).toBeNull(); expect(f.transcript()).not.toContain("Test Files");
     const failure = readEvents(f.output).find(event => event.kind === "test-failed");
     expect(failure.test).toContain("first assertion fails"); expect(failure.errors[0].message).toContain("wanted");
-    expect(failure.errors[0].stack).toContain("fixture.test.mjs"); expect(f.transcript()).toContain("AssertionError");
+    expect(failure.errors[0].stack).toContain("fixture.test.mjs");
     f.release(); expect(await f.exit).toBe(1); expect(f.transcript()).toContain("Test Files");
   } finally { await f.close(); }
 }, 25_000);

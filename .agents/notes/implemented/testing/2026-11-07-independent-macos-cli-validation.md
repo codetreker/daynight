@@ -19,8 +19,10 @@ jobs, separate from their execution time and failure isolation.
 ## Decision
 
 The ordinary `verify` and installed `verify-installed` jobs both use an OS matrix
-containing `ubuntu-latest`, `windows-latest` and `macos-15`. Each matrix entry
-prepares its own runner, and both matrices depend only on module detection with
+containing `ubuntu-latest`, `windows-latest` and `macos-15`. The
+[Windows shard decision](2026-11-11-windows-cli-verified-shards.md) assigns two
+ordinary Windows entries to the complete phase; all other native phases retain
+one entry. Each matrix entry prepares its own runner, and both matrices depend only on module detection with
 the same CLI selection condition and `fail-fast: false`. All entries use common
 checkout, Node.js 24, pnpm, locked dependency installation, environment recording
 and build steps. Every job has the same 10-minute limit, including setup,
@@ -29,7 +31,9 @@ validation and uploads. Test, hook and command deadlines retain their settings.
 Conditional macOS steps assert Darwin ARM64 in both matrices. Ordinary macOS
 verification runs the complete ordinary Vitest command under the
 [termination observer](2026-11-05-native-test-termination-diagnostics.md) and
-uploads its diagnostics. Linux and Windows run that command directly. Source
+uploads its diagnostics. Linux runs that command directly. Windows runs its two
+built-in file shards and the final gate verifies their actual execution union.
+Source
 type checking and development-installer tests remain ordinary responsibilities;
 installed acceptance executes the complete `vitest.acceptance.config.ts` suite.
 The [image availability decision](2026-11-05-macos-ci-image-availability.md) owns
@@ -37,7 +41,8 @@ the selected macOS image and supported architecture boundary.
 
 Separate workspaces give each phase its own fixed receipt paths. Matrix-expanded
 environment, probe and acceptance artifact names retain the existing platform
-and phase identities. Ordinary macOS termination evidence remains exclusive to
+and phase identities; Windows ordinary artifacts also identify the shard.
+Ordinary macOS termination evidence remains exclusive to
 its ordinary entry. No clearing or cross-phase continuation guard is needed.
 Final `checks` waits for both matrix jobs, so a failure or cancellation in either
 phase on any native platform fails the gate.
