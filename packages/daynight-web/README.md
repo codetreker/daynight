@@ -214,35 +214,40 @@ records the original trade-offs.
 
 The header's book icon and visible Setup guide link appear before the language
 selector and open public `/setup` in a new tab with native link behavior and
-`noopener noreferrer`. The opener retains its current page. The expanded five steps explain CLI
-installation with Node.js 22 or newer, `daynight login` device authorization,
-discovering or creating a project from a Git repository's `origin`, `daynight skill install`
-and registering and viewing the first task. Each step gives its execution
-location, prerequisites, copyable text and success signal. Remote terminals can
-use `daynight login --no-browser`; Agent reload instructions come from the
-installer's actual output for the selected launcher and User/Project scope.
+`noopener noreferrer`. The opener retains its current page. Two always-expanded
+sections offer independent MCP and CLI with Agent skill paths. MCP covers
+configuration of Codex, Claude Code or Copilot CLI for the current user and browser
+account authorization, and provides a read-only `team_list` request to verify connection.
+The guide links to the public `/mcp` installation manual, the selected client's
+official documentation and `/account`, where Tokens manages tokens and authorized
+applications. The five CLI steps cover installation with Node.js 22 or newer,
+device login, repository project discovery or creation, Agent skill installation,
+and registering and viewing a first task. Each gives its execution location,
+prerequisites, copyable text and success signal. Remote terminals can use
+`daynight login --no-browser`; Agent reload instructions follow the installer's
+output for the selected launcher and User/Project scope.
 
-`SetupGuidePage` uses the typed `messages.setup` catalogs inside a public shell
-with a localized title, breadcrumb, skip link and language selector. It displays
-the current origin as information; the CLI's default login service remains
-`https://daynight.cc`. Direct access, reloads, copying, locale changes and
-focus/visibility restoration make zero API requests. No identity, provider, task
-cache or business-resource lifecycle mounts. Return-to-project links load a new
-document at `/projects`, where the normal authentication workflow starts.
+`SetupGuidePage` uses typed `messages.setup` catalogs inside a public shell with a
+localized title, breadcrumb, skip link and language selector. It derives the MCP
+endpoint from the current origin; the CLI's default login service remains
+`https://daynight.cc`. Direct access, reloads, in-page navigation, client and locale
+changes, copying and focus/visibility restoration make zero API, fetch or XHR
+requests. No identity, provider, task cache or business-resource lifecycle mounts.
+Project and account links navigate to a new document and normal authentication.
 
 Command blocks retain selectable source text, exact newlines and argument quotes.
 One current copy operation disables the copy buttons until it settles. A floating
-status message reports success or explicitly asks for manual selection when the
-clipboard is unavailable or denied, without shifting content. Unmount and locale
-changes invalidate old results; switching language does not repeat a copy.
-The public reading layout supports the header at desktop, 390px and 320px widths.
-Go serves direct GET/HEAD requests and reloads through the normal no-store HTML
+status message reports success or manual-copy recovery without shifting content.
+Unmount, locale and client changes invalidate old results, including completion
+handlers that might otherwise release a newer pending copy. Client choice survives
+a language change and resets to Codex on reopening. The public reading layout
+supports long addresses and controls at desktop, 390px and 320px widths. Go
+serves direct GET/HEAD requests and reloads through the normal no-store HTML
 handler; `/setup` and its descendants are reserved from authentication callbacks.
 The [requirements](../../docs/spec/daynight-web.md#日常使用引导) and
 [design](../../docs/design/daynight-web.md#日常使用引导页) own the behavior and
-mechanisms. The
-[decision](../../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md)
-records the original trade-offs.
+mechanisms. The [path decision](../../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
+records the trade-offs.
 
 ## Authenticated workspace
 
