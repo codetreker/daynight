@@ -179,6 +179,27 @@ describe('Worker configuration navigation', () => {
     expect(prompt.selectionStart).toBe(1); expect(prompt.selectionEnd).toBe(4);
   });
 
+  it('retains a confirmed configuration result until its hidden panel can publish it', async () => {
+    const put = Promise.withResolvers<Response>();
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${target}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null }));
+      if (url.endsWith('/configuration')) return init.method === 'PUT' ? put.promise : Promise.resolve(configurationResponse(configurationResource()));
+      return Promise.resolve(workerResponse(workerDetail()));
+    }));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const retention = vi.fn(); browserNavigation().navigate(path);
+    renderWithLocale(<TaskCacheProvider scope={scope}><WorkerDetailPage workerId={target} userId={WORKER_USER} readEnabled onRetentionChange={retention} /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush(); edit();
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }))); await flush();
+    expect(retention).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(retention).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('3');
+  });
+
   it('retains the page until both independent saves settle', async () => {
     const configPut = Promise.withResolvers<Response>(), promptPut = Promise.withResolvers<Response>();
     vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {

@@ -15,7 +15,7 @@ Worker detail presents Runtime monitoring, Configuration and Prompts as peer
 tabs. A page-level editing coordinator owns both resource controllers and a
 single Worker draft scope. Each tab enables its own resource reads; opened
 editors remain mounted across tab changes. The coordinator combines dirty and
-pending or uncertain states for navigation and owner retention while each
+pending, uncertain, and configuration receipt publication states for owner retention while each
 resource keeps its own save, discard and failure behavior. History stores only
 an account- and Worker-bound tab selection. The
 [Web requirements](../../../../docs/spec/daynight-web.md#我的-worker) and

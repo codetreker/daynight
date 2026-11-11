@@ -643,7 +643,7 @@ validation or Worker online status, and failures in either resource do not block
 the other. One navigation guard covers both drafts: cancelling a leave returns to
 the dirty tab, or the last edited tab when both are dirty, and restores focus.
 The page owner stays retained while either resource has a pending or uncertain
-write, without aborting or replaying an already dispatched prompt PUT.
+write or a configuration receipt awaits publication, without aborting or replaying an already dispatched prompt PUT.
 
 Background identity checks retain the editor, dialogs, local input and unapplied
 Project selection while private requests and new saves remain gated. In-flight

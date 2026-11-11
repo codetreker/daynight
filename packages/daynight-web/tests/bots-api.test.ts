@@ -203,6 +203,15 @@ describe('Bot account API', () => {
     await expect(createBot({ id: botId(), name: 'Assistant 1' }, controller.signal, admission())).rejects.not.toBeInstanceOf(BotCreationUnknown);
     expect(fetch).toHaveBeenCalledOnce();
   });
+  it('reports dispatch only after the request passes admission', async () => {
+    const dispatch = vi.fn(), controller = new AbortController();
+    const fetch = vi.fn().mockResolvedValue(botResponse(botDefinition())); vi.stubGlobal('fetch', fetch);
+    controller.abort();
+    await expect(createBot({ id: botId(), name: 'Assistant 1' }, controller.signal, { ...admission(), onDispatch: dispatch })).rejects.toBeDefined();
+    expect(dispatch).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+    await createBot({ id: botId(), name: 'Assistant 1' }, signal(), { ...admission(), onDispatch: dispatch });
+    expect(dispatch).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce();
+  });
   it('checks frozen explicit overrides in successful create responses', async () => {
     const overrides = { workerId: botId(20), cwd: '/ordinary/directory', provider: 'codex' as const };
     const fetch = vi.fn().mockResolvedValueOnce(botResponse({ ...botDefinition(), requestedOverrides: overrides })).mockResolvedValueOnce(botResponse(botDefinition())); vi.stubGlobal('fetch', fetch);

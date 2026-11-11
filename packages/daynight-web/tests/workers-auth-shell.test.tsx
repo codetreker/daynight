@@ -118,6 +118,32 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(input).toHaveValue('2');
   });
 
+  it('keeps an in-flight configuration save when switching Worker tabs', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>(); let writeSignal: AbortSignal | undefined, writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) {
+        if (init?.method === 'PUT') { writes++; writeSignal = init.signal as AbortSignal; return pending.promise; }
+        return configurationResponse(configurationResource(), 200, owner);
+      }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' }); fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await waitFor(() => expect(writes).toBe(1));
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
+    expect(writeSignal?.aborted).toBe(false);
+    await act(async () => pending.resolve(configurationResponse(configurationResource('2', { ...configurationResource().desired!.value, maxConcurrent: 3 }), 200, owner)));
+    expect(writeSignal?.aborted).toBe(false); expect(writes).toBe(1);
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
+    expect(input).toHaveValue('3'); await waitFor(() => expect(screen.getByText('Saved to the cloud. Application is confirmed by a Worker report.')).toBeVisible());
+  });
+
   it('does not send an abandoned configuration while identity admission is waiting', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     let writes = 0;
@@ -139,7 +165,7 @@ describe('Worker pages in the authenticated workspace', () => {
     const resume = pauseAuthRequests();
     try {
       fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
-      await screen.findByRole('button', { name: 'Saving…' });
+      expect(screen.queryByRole('button', { name: 'Saving…' })).toBeNull();
       act(() => navigate('/workers'));
       fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
       expect(writes).toBe(0);
