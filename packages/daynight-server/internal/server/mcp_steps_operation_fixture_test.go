@@ -102,20 +102,20 @@ func newMCPStepOperationServer(t *testing.T, files filestorage.Storage, principa
 	})
 	origin := "http://" + server.Listener.Addr().String()
 	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin = origin
+	config.UniAuth.CallbackURL = origin + "/api/v1/auth/callback"
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	client, err := service.NewIdentityClient(config)
+	client, err := service.NewIdentityClient(config.UniAuth)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// No store callback is configured: any unexpected business access fails.
 	app = service.NewModules(config, &httpTestStore{t: t}, nil, files, client)
 	ops := &mcpStepOperations{t: t, total: make(map[string]int)}
-	identity := &mcpStepIdentity{t: t, callback: config.UniAuthCallbackURL, principals: make(map[string]model.Principal, len(principals))}
+	identity := &mcpStepIdentity{t: t, callback: config.UniAuth.CallbackURL, principals: make(map[string]model.Principal, len(principals))}
 	for token, principal := range principals {
 		identity.principals[token] = principal
 	}

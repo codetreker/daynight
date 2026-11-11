@@ -3,14 +3,15 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -93,7 +94,7 @@ func TestTeamHTTPProductionCompositionAndLifecycle(t *testing.T) {
 
 func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
 	for _, path := range []string{"/api/v1/teams", "/api/v1/teams/" + uuid.NewString(), "/teams", "/teams/" + uuid.NewString()} {
-		_, _, err := configpkg.ValidateAuthSettings(configpkg.AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)
+		_, _, err := authconfig.ValidateAuthSettings(authconfig.AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)
 		if err == nil {
 			t.Fatalf("identity callback captured Team path %s", path)
 		}

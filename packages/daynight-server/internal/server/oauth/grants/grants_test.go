@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -94,7 +95,7 @@ func (u unknownLifecycle) RevokeSessionGrant(ctx context.Context, principal mode
 
 func TestOwnerGrantsHTTP(t *testing.T) {
 	h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, config.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+		return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 	})
 	alice := h.Login(t, "grant-alice")
 	bob := h.Login(t, "grant-bob")
@@ -204,7 +205,7 @@ func TestRevokeRechecksSessionAfterGrantLockWait(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-				return authhttp.NewAuthentication(identity, config.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+				return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 			})
 			cookie := h.Login(t, "grant-wait-"+scenario)
 			req := httptest.NewRequest("GET", "/", nil)

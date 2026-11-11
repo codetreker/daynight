@@ -641,6 +641,8 @@ UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
 owns the shared authentication setup.
 
+Startup configuration fields, defaults, environment decoding and validation belong to their respective modules. `internal/config` assembles these types and invokes cross-module checks before resources are opened. An empty environment value retains the existing default; the storage root is required and relative paths use the process working directory.
+
 The executable accepts no command-line arguments. Arguments are rejected before
 configuration, database connections or HTTP listeners are initialized, and the
 diagnostic does not echo their contents.

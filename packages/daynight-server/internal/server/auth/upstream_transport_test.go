@@ -16,7 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+
 	coreidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -69,13 +71,13 @@ func TestCallbackBoundsDecompressedGatewayResponse(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(gateway.Close)
-	client, err := service.NewIdentityClient(configpkg.Config{UniAuthURL: gateway.URL, UniAuthAppID: "test", UniAuthAppSecret: "secret", AllowLoopbackHTTP: true})
+	client, err := service.NewIdentityClient(identityconfig.Config{URL: gateway.URL, AppID: "test", AppSecret: "secret", AllowLoopbackHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	h.Identity = identityservice.New(h.Database, client, h.Origin+"/api/v1/auth/callback")
-	h.Auth, err = NewAuthentication(h.Identity, configpkg.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
+	h.Auth, err = NewAuthentication(h.Identity, authconfig.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

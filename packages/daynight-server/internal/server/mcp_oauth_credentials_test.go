@@ -79,8 +79,8 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	}
 	configureAccess(false)
 	config := configuredTestConfig()
-	config.PublicOrigin = f.Origin
-	config.UniAuthCallbackURL = f.Origin + "/api/v1/auth/callback"
+	config.Server.PublicOrigin = f.Origin
+	config.UniAuth.CallbackURL = f.Origin + "/api/v1/auth/callback"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	production, err := newTestHandler(Dependencies{Store: f.Store, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {

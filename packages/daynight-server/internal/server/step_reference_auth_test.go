@@ -2,13 +2,14 @@ package server
 
 import (
 	"bytes"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"io"
 	"net/http"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
@@ -61,7 +62,7 @@ func TestStepsHTTPRevokedMemberCannotRead(t *testing.T) {
 	f.principal = admin
 	f.role = model.ProjectAdmin
 	f.expectStepsWrite(stepHTTPWritePlan{Header: header, Steps: []model.TaskStep{}, Operation: "add", Candidate: step, Observed: at})
-	created := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":1,"id":"abcdef01","title":"Secret Step"}`, configuredTestConfig().PublicOrigin, 201, ""), 201)
+	created := decodeResponse[api.StepsResource](t, f.authenticatedRequest(admin, "POST", path, `{"version":1,"id":"abcdef01","title":"Secret Step"}`, configuredTestConfig().Server.PublicOrigin, 201, ""), 201)
 	header.Version = 2
 	f.principal = member
 	f.role = model.ProjectMemberRole

@@ -10,7 +10,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
@@ -101,7 +102,7 @@ func TestIdentityPortConstruction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			identity := &strictIdentity{t: t, callback: func() string { calls++; return tc.callback }}
-			settings := config.AuthSettings{PublicOrigin: tc.origin, AllowHTTPTestOrigin: tc.allow}
+			settings := authconfig.AuthSettings{PublicOrigin: tc.origin, AllowHTTPTestOrigin: tc.allow}
 			h, err := NewAuthentication(identity, settings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if calls != 1 || (err == nil) != tc.valid {
 				t.Fatalf("callback calls=%d auth=%v error=%v", calls, h, err)
@@ -142,7 +143,7 @@ func TestIdentityPortRequestBinding(t *testing.T) {
 					}
 					return principal, nil
 				}
-				h, err := NewAuthentication(identity, config.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -196,7 +197,7 @@ func TestIdentityPortRefusals(t *testing.T) {
 				}
 				return model.Principal{}, cause
 			}}
-			h, err := NewAuthentication(identity, config.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -245,7 +246,7 @@ func TestIdentityPortRefusals(t *testing.T) {
 					return model.Principal{UserID: "user", CredentialID: "session", Kind: kind}, nil
 				}
 			}
-			h, err := NewAuthentication(identity, config.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}

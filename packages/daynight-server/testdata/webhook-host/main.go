@@ -21,7 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -203,7 +204,7 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 	}
 	origin := "http://" + f.listener.Addr().String()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	auth, err := authhttp.NewAuthentication(identityservice.New(f.db, nil, origin+"/auth/callback"), config.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: true}, logger)
+	auth, err := authhttp.NewAuthentication(identityservice.New(f.db, nil, origin+"/auth/callback"), authconfig.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		return nil, err
 	}

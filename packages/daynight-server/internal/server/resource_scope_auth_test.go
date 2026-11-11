@@ -52,8 +52,8 @@ func resourceScopeServer(t *testing.T, tx store.Transactions, files filestorage.
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
 	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthCallbackURL = origin, origin+"/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin, config.UniAuth.CallbackURL = origin, origin+"/api/v1/auth/callback"
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := newTestHandler(Dependencies{Store: tx, Files: files}, config, logger)
 	if err != nil {

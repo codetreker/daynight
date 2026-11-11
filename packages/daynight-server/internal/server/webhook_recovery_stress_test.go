@@ -50,7 +50,7 @@ func startRecoveryApplication(t *testing.T, f *webhookApplicationFixture, ca *x5
 		if !owned {
 			return
 		}
-		cleanup, cancel := context.WithTimeout(context.Background(), f.cfg.ShutdownTimeout)
+		cleanup, cancel := context.WithTimeout(context.Background(), f.cfg.Server.ShutdownTimeout)
 		defer cancel()
 		if runtime != nil {
 			if err := runtime.Close(cleanup); err != nil {
@@ -80,7 +80,7 @@ func startRecoveryApplication(t *testing.T, f *webhookApplicationFixture, ca *x5
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err = Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+	runtime, err = Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.Server.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,10 +193,10 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	}))
 	defer receiver.Close()
 	c := configuredTestConfig()
-	c.DatabaseURL = sourceURL
-	c.StorageRoot = filepath.Join(storageDir, "source-storage")
-	c.ShutdownTimeout = 5 * time.Second
-	c.WebhookEnabled = true
+	c.Database.URL = sourceURL
+	c.Storage.Root = filepath.Join(storageDir, "source-storage")
+	c.Server.ShutdownTimeout = 5 * time.Second
+	c.Webhook.Enabled = true
 	f := &webhookApplicationFixture{t: t, cfg: c, user: user, token: token}
 	t.Cleanup(f.stop)
 	startRecoveryApplication(t, f, receiver.Certificate())
@@ -239,7 +239,7 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	}
 	historyBefore := f.expect("GET", "/api/v1/me/webhooks/"+ep.Endpoint.ID+"/deliveries/"+confirmed, "", 200)
 	f.stop()
-	f.cfg.WebhookEnabled = false
+	f.cfg.Webhook.Enabled = false
 	startRecoveryApplication(t, f, nil)
 	f.expect("POST", path, `{"title":"pending before backup"}`, 201)
 	var pending string
@@ -269,8 +269,8 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	if err = restored.Pool.QueryRow(ctx, `SELECT e.destination_configuration,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id WHERE e.id=$1`, ep.Endpoint.ID).Scan(&restoredDestination, &restoredSecret); err != nil || !bytes.Equal(sourceDestination, restoredDestination) || !bytes.Equal(sourceSecret, restoredSecret) {
 		t.Fatalf("restored plaintext configuration differs: %v", err)
 	}
-	f.cfg.DatabaseURL = restoreURL
-	f.cfg.StorageRoot = filepath.Join(storageDir, "restored-storage")
+	f.cfg.Database.URL = restoreURL
+	f.cfg.Storage.Root = filepath.Join(storageDir, "restored-storage")
 	confirmedAfter := readRecoveryFacts(t, ctx, restored, confirmed)
 	pendingAfter := readRecoveryFacts(t, ctx, restored, pending)
 	if !reflect.DeepEqual(confirmedBefore, confirmedAfter) || !reflect.DeepEqual(pendingBefore, pendingAfter) {
@@ -282,7 +282,7 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 		t.Fatalf("confirmed history changed before=%s after=%s", historyBefore, historyAfter)
 	}
 	f.stop()
-	f.cfg.WebhookEnabled = true
+	f.cfg.Webhook.Enabled = true
 	startRecoveryApplication(t, f, receiver.Certificate())
 	select {
 	case body := <-arrivals:
