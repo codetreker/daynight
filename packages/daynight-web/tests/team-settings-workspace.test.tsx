@@ -143,21 +143,109 @@ describe("Team settings workspace", () => {
     expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(personal);
   });
 
-  it("returns to Personal when a pending self exit completes on General", async () => {
+  it.each(["unchanged", "general", "back", "other"] as const)("keeps self-exit navigation ownership when the context is %s", async (destination) => {
     window.history.replaceState(null, "", members);
+    const beta = "00000000-0000-4000-8000-000000000006", betaSettings = `/teams/${beta}/settings`;
     const receipt = Promise.withResolvers<Response>();
     const fetcher = install((url, init) => {
-      if (url === `/api/v1/teams/${teamId}`) return json(team("Alpha", "member"));
-      if (url === `/api/v1/teams/${teamId}/members`) return json(roster("member"));
       if (url === `/api/v1/teams/${teamId}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url === `/api/v1/teams/${beta}`) return json({ ...team("Beta"), id: beta, membership: { ...team().membership, teamId: beta } });
       return undefined;
     });
     render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Leave Team" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Leave Team" })).getByRole("button", { name: "Leave Team" }));
     await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
-    go(general); await screen.findByText("Only an admin of an ordinary Team can change its settings.");
+    if (destination === "general") { go(general); await screen.findByRole("button", { name: "Edit" }); }
+    if (destination === "back") {
+      go("/shared-projects"); await screen.findByRole("heading", { name: "Projects shared with me" });
+      act(() => window.history.back()); await screen.findByRole("dialog", { name: "Leave Team" });
+    }
+    if (destination === "other") { go(betaSettings); await screen.findByText("Beta", { selector: ".team-settings-context" }); }
     await act(async () => receipt.resolve(json({ teamId, userId, removed: true, actorRole: null })));
-    await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`));
+    await screen.findByText("You left the Team; direct Project grants remain.");
+    expect(window.location.pathname).toBe(destination === "unchanged" ? `/teams/${personal}` : destination === "general" ? general : destination === "back" ? members : betaSettings);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+    if (destination === "general") { expect(screen.queryByRole("button", { name: "Edit" })).toBeNull(); expect(screen.getByText("This Team is unavailable or you do not have access.")).toBeVisible(); }
+    if (destination === "other") expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(beta);
+    if (destination === "back") {
+      expect(screen.getByText("This Team is unavailable or you do not have access.")).toBeVisible();
+      expect(document.querySelector(".team-members-list")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+    }
+  });
+
+  it("restores a rejoined membership only after a newer Team read", async () => {
+    window.history.replaceState(null, "", members);
+    const receipt = Promise.withResolvers<Response>(), oldRead = Promise.withResolvers<Response>();
+    let departed = false, newer = false, departureReads = 0;
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${teamId}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url === `/api/v1/teams/${teamId}` && departed) {
+        departureReads++;
+        if (departureReads === 1) return oldRead.promise;
+        if (newer) return json({ ...team(), membership: { ...team().membership, version: 2n } });
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Leave Team" })).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
+    go(general); await screen.findByRole("button", { name: "Edit" }); departed = true;
+    await act(async () => receipt.resolve(json({ teamId, userId, removed: true, actorRole: null })));
+    await waitFor(() => expect(departureReads).toBe(1));
+    await act(async () => oldRead.resolve(json(team())));
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    newer = true; fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("button", { name: "Edit" });
+    expect(window.location.pathname).toBe(general);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+  it("keeps the General route and selection when an older Team read fails after exit", async () => {
+    window.history.replaceState(null, "", members);
+    const receipt = Promise.withResolvers<Response>(), generalRead = Promise.withResolvers<Response>();
+    let holdGeneral = false, observedGeneral = false;
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${teamId}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url === `/api/v1/teams/${teamId}` && holdGeneral && !observedGeneral) { observedGeneral = true; return generalRead.promise; }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Leave Team" })).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
+    holdGeneral = true; go(general); await waitFor(() => expect(observedGeneral).toBe(true));
+    await act(async () => receipt.resolve(json({ teamId, userId, removed: true, actorRole: null })));
+    await screen.findByText("You left the Team; direct Project grants remain.");
+    await act(async () => generalRead.resolve(json({ error: { code: "not_found", message: "not found", requestId: "request-1" } }, 404)));
+    expect(window.location.pathname).toBe(general);
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId);
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+  it("revalidates the original Team after returning from another Team and rejoining", async () => {
+    window.history.replaceState(null, "", members);
+    const beta = "00000000-0000-4000-8000-000000000006", receipt = Promise.withResolvers<Response>();
+    let left = false, rejoined = false;
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${teamId}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url === `/api/v1/teams/${beta}`) return json({ ...team("Beta"), id: beta, membership: { ...team().membership, teamId: beta } });
+      if (url === `/api/v1/teams/${teamId}` && left) return rejoined ? json({ ...team(), membership: { ...team().membership, version: 2n } }) : json({ error: { code: "not_found", message: "not found", requestId: "request-1" } }, 404);
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Leave Team" })).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
+    go(`/teams/${beta}/settings`); await screen.findByText("Beta", { selector: ".team-settings-context" });
+    left = true; await act(async () => receipt.resolve(json({ teamId, userId, removed: true, actorRole: null })));
+    await screen.findByText("You left the Team; direct Project grants remain.");
+    go(general);
+    await waitFor(() => expect(screen.getAllByText("This Team is unavailable or you do not have access.").some(node => node.closest(".team-settings-nav") === null && node.parentElement?.querySelector(".team-settings-nav"))).toBe(true));
+    expect(window.location.pathname).toBe(general);
+    rejoined = true;
+    const workspace = document.querySelector(".team-settings-nav")!.parentElement!;
+    fireEvent.click(within(workspace).getByRole("button", { name: "Retry" }));
+    await screen.findByRole("button", { name: "Edit" });
+    expect(window.location.pathname).toBe(general);
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId);
   });
 
   it("retains each unknown invitation revoke after another succeeds and the workspace is revisited", async () => {

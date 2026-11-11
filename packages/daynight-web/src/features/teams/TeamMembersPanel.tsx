@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, authRequestsPaused } from "../../api/client";
+import { browserNavigation } from "../../app/navigation";
 import { getTeam, listTeamMembers, removeTeamMember, setTeamMemberRole, type Team, type TeamMember, type TeamMembership, type TeamRole } from "../../api/teams";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { Identity, identityName } from "../management/feedback";
@@ -15,15 +16,18 @@ const messages = (zh: boolean) => zh ? {
 };
 type ReadReason = "initial" | "background" | "reconcile";
 type Action = { readonly kind: "role"; readonly member: TeamMember; readonly role: TeamRole } | { readonly kind: "remove"; readonly member: TeamMember };
-type Props = { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly preferenceDenied?: boolean; readonly onRoute?: boolean; readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onChanged: (confirmed: boolean) => void; readonly onStart?: () => void; readonly onLeft: () => void; readonly onGuardChange?: (guarded: boolean) => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error" };
+type Props = { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly preferenceDenied?: boolean; readonly confirmedTeam?: Team | null; readonly onRoute?: boolean; readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onChanged: (confirmed: boolean) => void; readonly onStart?: () => void; readonly onLeft: (unchangedContext: boolean, version: bigint) => void; readonly onGuardChange?: (guarded: boolean) => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error" };
 
-export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = false, preferenceDenied = false, onRoute = true, admission, onIdentityMismatch, onChanged, onStart, onLeft, onGuardChange, onUnavailable }: Props) => {
+export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = false, preferenceDenied = false, confirmedTeam = null, onRoute = true, admission, onIdentityMismatch, onChanged, onStart, onLeft, onGuardChange, onUnavailable }: Props) => {
   const { locale, messages: { auth: { roles } } } = useI18n(), m = messages(locale === "zh-CN");
   const [team, setTeam] = useState<Team | null>(null), [members, setMembers] = useState<readonly TeamMember[] | null>(null);
   const latestMembers = useRef<readonly TeamMember[] | null>(null);
   const [loading, setLoading] = useState(true), [error, setError] = useState<unknown>(null), [accessDenied, setAccessDenied] = useState(false), [storageError, setStorageError] = useState(false);
   const [action, setAction] = useState<Action | null>(null), [stale, setStale] = useState(false), [observed, setObserved] = useState(false);
   const actionRef = useRef(action); actionRef.current = action;
+  const owner = useRef({ teamId, admission }); owner.current = { teamId, admission };
+  const confirmed = useRef(confirmedTeam); confirmed.current = confirmedTeam;
+  const selectAction = (next: Action | null) => { actionRef.current = next; setAction(next); };
   // Retain the roster while rechecking, but admit writes only against fresh membership.
   const loaded = useRef(false), fresh = useRef(false);
   const [reconciling, setReconciling] = useState(false);
@@ -64,29 +68,40 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) { setLoading(false); setReconciling(false); } } }
   }, [admission, teamId, onIdentityMismatch]);
   useEffect(() => {
-    if (!active || admissionBlocked) return;
+    if (!active || admissionBlocked || preferenceDenied) return;
     void load(loaded.current ? "background" : "initial");
     return () => read.current?.abort();
-  }, [active, admissionBlocked, load]);
-  useEffect(() => { if (!onRoute && !operation.current.guarded()) setAction(null); }, [onRoute]);
+  }, [active, admissionBlocked, preferenceDenied, load]);
+  useEffect(() => { if (!onRoute && !operation.current.guarded()) selectAction(null); }, [onRoute]);
   const actor = members?.find((member) => member.userId === admission.userId);
   const admin = team?.kind === "ordinary" && actor?.role === "admin";
   const unknown = op.result?.kind === "unknown";
   const unavailable = accessDenied || preferenceDenied;
   const locked = unavailable || loading || reconciling || error !== null || op.pending || unknown || invitationGuard.lock || !active;
-  const open = (next: Action) => { if (locked) return; op.clear(); onStart?.(); setStale(false); setObserved(false); setAction(next); };
+  const open = (next: Action) => { if (locked) return; op.clear(); onStart?.(); setStale(false); setObserved(false); selectAction(next); };
   const submit = () => {
     if (!action || locked || stale || authRequestsPaused() || !fresh.current || !team || team.kind !== "ordinary" || !actor) return;
     if (action.kind === "role" && !admin || action.kind === "remove" && !admin && action.member.userId !== admission.userId) return;
+    const navigation = browserNavigation().snapshot();
     guardCallback.current?.(true);
     const reject = (failure: unknown) => {
       if (failure instanceof ApiError && ["version_conflict", "forbidden", "not_found", "last_admin"].includes(failure.code)) { setStale(true); if (activeRef.current) void load(); callbacks.current.onChanged(false); }
     };
     const success = (actorRole: TeamRole | null, change: { readonly kind: "role"; readonly membership: TeamMembership } | { readonly kind: "remove"; readonly userId: string }) => {
-      read.current?.abort(); setAction(null);
+      if (owner.current.teamId !== teamId || owner.current.admission !== admission) return;
+      read.current?.abort();
+      // An Action is an immutable confirmation and its in-memory revision.
+      const unchangedContext = actionRef.current === action && browserNavigation().snapshot() === navigation;
+      if (unchangedContext) selectAction(null);
+      else if (actionRef.current === action) setStale(true);
       const current = latestMembers.current?.find((member) => member.userId === action.member.userId);
-      const sameSubmission = current === undefined || current.createdAt === action.member.createdAt && current.version <= action.member.version;
-      if (actorRole === null && sameSubmission) { callbacks.current.onLeft(); return; }
+      const newerActor = action.member.userId === admission.userId && confirmed.current?.id === teamId && confirmed.current.membership.version > action.member.version;
+      const sameSubmission = !newerActor && (current === undefined || current.createdAt === action.member.createdAt && current.version <= action.member.version);
+      if (actorRole === null && sameSubmission) {
+        fresh.current = false; setPermissionReady(false); setAccessDenied(true);
+        loaded.current = false; setTeam(null); latestMembers.current = null; setMembers(null);
+        callbacks.current.onLeft(unchangedContext, action.member.version); return;
+      }
       const next = latestMembers.current?.flatMap((member) => {
         if (change.kind === "remove" && member.userId === change.userId && sameSubmission) return [];
         if (change.kind === "role" && member.userId === change.membership.userId && member.createdAt === change.membership.createdAt && member.version <= change.membership.version) return [{ ...member, ...change.membership }];
@@ -104,9 +119,10 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
   return <>
     {loading && <div className="empty-inline" role="status">{m.loading}</div>}
     {error !== null && <div className="notice error" role="alert"><p>{storageError ? m.storage : error instanceof ApiError && (error.code === "not_found" || error.code === "forbidden") ? m.unavailable : m.failed}</p>{error instanceof ApiError && error.requestId !== null && <p>{m.id}<code>{error.requestId}</code></p>}<button type="button" className="button" onClick={() => void load()}>{m.retry}</button></div>}
+    {accessDenied && !preferenceDenied && error === null && <div className="notice error" role="alert">{m.unavailable}</div>}
     {(action === null || unavailable) && notice}
     {(action === null || unavailable) && unknown && <button className="button" type="button" disabled={loading || reconciling} onClick={() => void load()}>{m.check}</button>}
-    {unavailable && unknown && action !== null && <button className="button" type="button" onClick={() => setAction(null)}>{m.close}</button>}
+    {unavailable && !op.pending && action !== null && <button className="button" type="button" onClick={() => selectAction(null)}>{m.close}</button>}
     {unavailable && op.pending && <div role="status">{m.pending}</div>}
     {!unavailable && team && members && <section className="panel"><header className="panel-heading"><div><h2>{m.members}</h2><p>{team.kind === "personal" ? m.personal : m.description}</p></div></header><div className="team-members-list">{members.map((member) => {
       const self = member.userId === admission.userId, last = member.role === "admin" && admins === 1;
@@ -114,7 +130,7 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
       return <div className="team-member-row" key={member.userId}><Identity user={identity} self={self} /><div className="team-member-role"><label className="visually-hidden" htmlFor={`team-role-${teamId}-${member.userId}`}>{m.role}: {identityName(identity)}</label><select id={`team-role-${teamId}-${member.userId}`} className="role-select" value={member.role} disabled={locked || !admin || last} onChange={(event) => open({ kind: "role", member, role: event.target.value as TeamRole })}><option value="member">{roles.member}</option><option value="admin">{roles.admin}</option></select></div>{last && team.kind === "ordinary" && <div className="team-member-caption">{m.lastAdmin}</div>}<div className="team-member-actions"><button className="button quiet" type="button" disabled={locked || team.kind === "personal" || last || !self && !admin} onClick={() => open({ kind: "remove", member })}>{self ? m.leave : m.remove}</button></div></div>;
     })}</div></section>}
     <TeamInvitations teamId={teamId} teamName={team?.name ?? ""} active={active} admissionBlocked={admissionBlocked} permissionReady={permissionReady && fresh.current && !admissionBlocked && !unavailable} onRoute={onRoute} editable={!unavailable && Boolean(admin) && !loading && !reconciling && !op.pending && !unknown && error === null} actorRole={unavailable || team?.kind !== "ordinary" ? null : actor?.role ?? null} unavailable={unavailable} admission={admission} onIdentityMismatch={onIdentityMismatch} onPermissionChange={() => { if (activeRef.current) void load(); callbacks.current.onChanged(false); }} onGuardChange={(retain, lock) => { invitationGuardRef.current = { retain, lock }; guardCallback.current?.(retain || operation.current.guarded()); setInvitationGuard((previous) => previous.retain === retain && previous.lock === lock ? previous : { retain, lock }); }} />
-    {action && <ManagementDialog title={action.kind === "role" ? m.change : action.member.userId === admission.userId ? m.leave : m.confirmRemove} busy={op.pending} suspended={!active || unavailable} onClose={() => setAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => setAction(null)}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={() => { setObserved(false); void load().then((ok) => { if (ok) setObserved(true); }); }}>{m.check}</button> : <button className={`button ${action.kind === "remove" ? "danger" : "primary"}`} type="button" disabled={locked || stale} onClick={submit}>{op.pending ? m.pending : action.kind === "role" ? m.save : action.member.userId === admission.userId ? m.leave : m.confirmRemove}</button>}</>}>
+    {action && <ManagementDialog title={action.kind === "role" ? m.change : action.member.userId === admission.userId ? m.leave : m.confirmRemove} busy={op.pending} suspended={!active || unavailable} onClose={() => selectAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => selectAction(null)}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={() => { setObserved(false); void load().then((ok) => { if (ok) setObserved(true); }); }}>{m.check}</button> : <button className={`button ${action.kind === "remove" ? "danger" : "primary"}`} type="button" disabled={locked || stale} onClick={submit}>{op.pending ? m.pending : action.kind === "role" ? m.save : action.member.userId === admission.userId ? m.leave : m.confirmRemove}</button>}</>}>
       <Identity user={{ ...action.member.profile, userId: action.member.userId }} self={action.member.userId === admission.userId} />
       {action.kind === "role" && <p>{m.from}: {roles[action.member.role]} → {roles[action.role]}</p>}<p>{m.effect}</p>{notice}
       {unknown && observed && <section><h3>{m.current}</h3>{members?.find((member) => member.userId === action.member.userId) ? <p>{roles[members.find((member) => member.userId === action.member.userId)!.role]}</p> : <p>{m.absent}</p>}</section>}
