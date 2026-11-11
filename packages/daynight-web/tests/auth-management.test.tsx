@@ -595,8 +595,10 @@ describe('authoritative project management', () => {
       await dialogClick('创建邀请链接');
       await screen.findByDisplayValue('https://daynight.test/invitations#next');
       await dialogClick('我已保存，关闭');
-      await readyMembers();
-      expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+      await waitFor(() => {
+        expect(memberRoster().getByRole('combobox', { name: 'Alice 的单独授权' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+      });
       expect(auth.revokeInvitation).toHaveBeenCalledOnce();
     } finally { resume(); }
   });
