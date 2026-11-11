@@ -59,7 +59,8 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     if (closing) throw new Error("Copilot runtime closed during connection.");
     return client;
   });
-  let sdkCleanup: Promise<unknown[]> | undefined, sdkCleanupReported = false, termRequested = false, killRequested = false;
+  let sdkCleanup: Promise<unknown[]> | undefined, sdkCleanupReported = false, shutdownAcknowledged = false, termRequested = false, killRequested = false;
+  let gracefulExit: Promise<void> | undefined;
   const stopSdk = (force: boolean): Promise<unknown[]> => sdkCleanup ??= (async () => {
     const errors: unknown[] = [];
     if (!client) return errors;
@@ -69,14 +70,20 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     } else {
       // forUri treats the runtime as external. This owner requests native stop
       // once; cleanup retries cannot dispatch it again after an unknown result.
-      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); } catch (error) { errors.push(error); }
+      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); shutdownAcknowledged = true; } catch (error) { errors.push(error); }
       try { const result = await copilotDeadline(client.stop(), "Copilot SDK shutdown", 3000); if (result.length) errors.push(...result); }
       catch (error) { errors.push(error); }
       if (errors.length) try { await copilotDeadline(client.forceStop(), "Copilot SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
     }
     return errors;
   })();
-  const joinNative = async (): Promise<void> => {
+  const joinNative = async (force: boolean): Promise<void> => {
+    if (stopped) return;
+    if (shutdownAcknowledged && !force) {
+      // The RPC acknowledgement precedes, and does not prove, process exit.
+      gracefulExit ??= copilotDeadline(exited, "Copilot graceful process exit", 1500).catch(() => {});
+      await gracefulExit;
+    }
     if (stopped) return;
     if (!termRequested && child.pid) {
       termRequested = true;
@@ -95,7 +102,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
       // A bridge media failure cannot prevent native process cleanup. Both
       // owners retain failed work, and neither owner spawns during a retry.
       try { await bridge?.close(); } catch (error) { errors.push(error); }
-      try { await joinNative(); } catch (error) { errors.push(error); }
+      try { await joinNative(force); } catch (error) { errors.push(error); }
       if (stopped) try { await artifacts?.cleanup(); } catch (error) { errors.push(error); }
       if (sdkErrors.length && !sdkCleanupReported) {
         sdkCleanupReported = true;
