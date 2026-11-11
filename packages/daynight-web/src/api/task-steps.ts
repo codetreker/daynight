@@ -66,14 +66,14 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
   if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version) || !["todo", "in_progress", "done", "skipped"].includes(status)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}/status`, signal, {
     method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, status }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || result.steps.find((step) => step.id === target)?.status !== status) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export type AddStepInput = { readonly id: string; readonly title: string; readonly description: string; readonly status: StepStatus; readonly version: bigint; readonly placement?: { readonly before: string } | { readonly after: string } };
@@ -85,14 +85,14 @@ export const deleteTaskStep = async (projectId: string, taskId: string, stepId: 
   if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
     method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version + 1n || result.steps.some((step) => step.id === target)) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const editTaskStep = async (projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -103,7 +103,7 @@ export const editTaskStep = async (projectId: string, taskId: string, stepId: st
     [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
     method: "PATCH", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, title, description }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -111,7 +111,7 @@ export const editTaskStep = async (projectId: string, taskId: string, stepId: st
     const targetStep = result.steps.find((step) => step.id === target);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || targetStep?.title !== title || targetStep.description !== description) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const addTaskStep = async (projectId: string, taskId: string, input: AddStepInput, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -126,7 +126,7 @@ export const addTaskStep = async (projectId: string, taskId: string, input: AddS
   const response = await request(path, signal, {
     method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId },
     body: stringifyApiJson({ version: input.version, id: target, title: input.title, description: input.description, status: input.status, ...placement }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 201) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
@@ -137,7 +137,7 @@ export const addTaskStep = async (projectId: string, taskId: string, input: AddS
     if (response.status !== 201 || response.headers.get("Location") !== `${path}/${target}` || result.version !== input.version + 1n ||
       !positionValid || added?.id !== target || added.title !== input.title || added.description !== input.description || added.status !== input.status || added.createdAt !== added.updatedAt) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const moveTaskStep = async (projectId: string, taskId: string, stepId: string, placement: StepPlacement, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -149,12 +149,12 @@ export const moveTaskStep = async (projectId: string, taskId: string, stepId: st
     ("before" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.before) : "after" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.after) : normalized.position !== "first" && normalized.position !== "last")) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}/position`, signal, {
     method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, ...normalized }),
-  });
+  }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (value) => {
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || !result.steps.some((step) => step.id === target)) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };

@@ -1,6 +1,7 @@
 import type { AuthMessages } from "../auth";
 
 export const auth: AuthMessages = {
+  completion: { title: "正在完成登录", loading: "正在确认账户…", syncError: "登录已完成，但账户同步失败。", retrySync: "重试账户同步", refreshRequired: "请刷新页面后继续。" },
   accountChange: { message: "账户已变化", reload: "刷新页面" },
   roles: { admin: "管理员", member: "成员" },
   shell: {
