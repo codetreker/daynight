@@ -282,7 +282,7 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 ### 响应身份与写操作结果
 
-详情 GET 及全部任务写 API 必须接收 `TaskResponseAdmission`：明确 userId、onPrincipalMismatch，写入可提供 onWriteConfirmed。客户端在解析正文和资源错误前检查实际 `Daynight-User-ID`，401 继续既有会话失效流程。缺失/畸形头是协议错误，可信不同用户同步失效旧 scope；这些失败不能被当成本用户 404 撤权。
+详情 GET 及全部任务写 API 必须接收 `TaskResponseAdmission`：明确 userId、onPrincipalMismatch，写入可提供 onWriteConfirmed。客户端在解析正文和资源错误前检查实际 `Daynight-User-ID`，401 继续既有会话失效流程。缺失/畸形头是协议错误，可信不同用户同步通知根账户 owner 并拒绝该响应；由根 owner 决定旧 scope 的清理策略。这些失败不能被当成本用户 404 撤权。
 
 写入接受时同步捕获确认所审阅的 cacheGeneration 与 mutation 对象身份；每次异步准备完成后及网络派发前，都要求该 owner、审阅历史和当前准入仍匹配。`beginSync` 在等待期间取得的新历史 ticket 不能替换旧确认的历史，即使任务 ID、版本相同也不足以派发。失效准备零写入，只 GET 刷新当前历史，取得 fresh GET 后要求新确认；被取代的准备不改变较新 mutation 的反馈或共享写锁。详情关闭本身保留仍属于同一 owner 和历史的已接受意图。提交准备和普通结果处理在同用户身份暂停时先经现有 `scope.ready` 等待，恢复后复核身份生命周期、原审阅 generation 与 owner，再读取受保护的实时投影或同步改变阶段；若又暂停则重新等待，不能在异常处理里重复访问受阻 getter。未发送的过期准备转为本地冲突或拒绝并 GET 当前历史；已发送的旧历史结果进入 unknown 与 GET 核对，被新 owner 取代的处理不再修改 entry。身份结束丢弃旧操作。
 
@@ -292,7 +292,7 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信 Task 404 在身份暂停期间先撤回任务并安排项目访问重验；项目确认撤权的路径按捕获历史检查，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
 
-实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
+实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户先同步通知根账户 owner，再拒绝响应。缓存 scope 不在通知前销毁投影，根 owner 负责暂停或失效；当前根回调同步失效旧 scope 并重新核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
 
 `canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
 
@@ -302,9 +302,9 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 direct 详情的在线观察不持有项目快照代际，不能仅凭祖先链判断负向提示发生在观察之前。提示到达时先隔离对应 direct 内容并保留已派发写入的互斥所有权，再核验当前 Project 访问；确认仍可访问后重新读取 direct Task 和 Session，失败或离线保持隐藏。独立目录及 Worker 仍按各自代际接收撤回，Project 权威撤权和持久清理不因 direct 重验而跳过。历史清理不能覆盖已提交的访问撤权记录；未观察到的跨服务撤权与重新授权顺序仍遵循 direct 观察的服务端合同。
 
-持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。退出/换号/401 通过 invalidateScope 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户内容并保留失效 manifest；dispose 仅关闭当前 scope，保留可重用持久记录。
+持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。退出/换号/401 通过 invalidateScope 同步中止 scope、释放内存；持久事务只在已绑定 fence 与当前有效 fence 相同、尚未绑定或当前 fence 缺失/损坏时轮换 userFence、清除该用户内容并保留失效 manifest。已绑定 scope 不能清除其他生命周期的较新 fence 和内容；dispose 仅关闭当前 scope，保留可重用持久记录。
 
-IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的共享缓存修复事务直接写新用户 fence、清除该用户摘要/详情/人员和 Session 目录内容，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 关闭并发起身份核验，不能采用替代 fence。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
+IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的共享缓存修复事务直接写新用户 fence、清除该用户摘要/详情/人员和 Session 目录内容，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 同步通知根 owner 并拒绝操作，不关闭 scope 或采用替代 fence。根 owner 决定清理，当前根回调失效 scope 并发起身份核验。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
 
 schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓存并轮换生命周期 fence，兼容升级保留已有内容。组件/身份释放关闭句柄、通道、timer 并取消读请求；已提交修改继续由身份级详情会话核对。保留现有筛选、焦点、视口、全屏、滚动和附件 frame，以及对话框、独立任务详情页、独立附件工作区的读取与操作。TaskDetailPage 的完整详情使用 direct 观察，关系与项目图读取独立；图失败不能阻塞详情。
 

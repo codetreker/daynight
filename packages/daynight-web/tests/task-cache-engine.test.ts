@@ -2,7 +2,7 @@ import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
 import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pauseAuthRequests } from "../src/api/client";
+import { getTask, pauseAuthRequests } from "../src/api/client";
 import type { Project, TaskSummary, TaskSync, WorkerClaim } from "../src/api/types";
 import { deriveTaskSyncBindings, eligibleTaskExecutionBinding, sameTaskExecutionBinding, taskExecutionBinding } from "../src/features/task-cache/execution-binding";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
@@ -47,7 +47,7 @@ class Channel {
   }
   close() { Channel.channels.delete(this); }
 }
-const scope = (identity = userId, onIdentityMismatch = vi.fn()) => {
+const scope = (identity = userId, onIdentityMismatch: () => void = vi.fn()) => {
   const value = createTaskCacheScope({ userId: identity, onIdentityMismatch }); scopes.push(value); return value;
 };
 const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(database); return database; };
@@ -450,9 +450,33 @@ it("synchronously invalidates a user and rotates its persistent fence while reta
   expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]); expect(await database.getAllFromIndex("summaries", "by-user", otherUser)).toHaveLength(1);
 });
 
-it("invalidates a principal mismatch before the root identity check", async () => {
-  const mismatch = vi.fn(); const cache = scope(userId, mismatch); await seed(cache); cache.principalMismatch();
-  expect(mismatch).toHaveBeenCalledOnce(); expect(() => cache.getAuthorizedProject(projectId)).toThrow(); await cache.invalidateScope();
+it("notifies the owner before destroying a projection on a real principal mismatch", async () => {
+  let resume = () => {};
+  let cache: TaskCacheScope;
+  const mismatch = vi.fn(() => {
+    expect(cache.signal.aborted).toBe(false);
+    expect(cache.isInvalidated).toBe(false);
+    expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+    resume = pauseAuthRequests();
+  });
+  cache = scope(userId, mismatch); await seed(cache);
+  const ticket = await cache.beginSync(projectId, signal());
+  const received = wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) });
+  const body = vi.spyOn(received, "text"); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(received));
+  try {
+    await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch })).rejects.toMatchObject({ kind: "protocol", code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(body).not.toHaveBeenCalled();
+    expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
+    const controller = new AbortController();
+    const late = cache.applySync(ticket, response([task(2)]), controller.signal);
+    let settled = false; void late.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(settled).toBe(false);
+    const database = await inspect();
+    expect((await database.getAllFromIndex("summaries", "by-user", userId)).map(row => row.taskId)).toEqual([taskId(1)]);
+    controller.abort(); await expect(late).rejects.toMatchObject({ name: "AbortError" });
+  } finally { resume(); }
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
 });
 
 it("holds disk reads and publication behind the foreground identity gate", async () => {
@@ -512,12 +536,45 @@ it("aborts its lifetime synchronously and prevents a late cold bootstrap from cr
   expect(await database.get("userScopes", userId)).toBeDefined();
 });
 
-it("rechecks identity when another scope rotates its captured fence and preserves the new scope's rows", async () => {
-  const mismatch = vi.fn(); const old = scope(userId, mismatch); const reset = scope(); await seed(old);
+it("notifies before closing when another scope rotates its fence and rejects old transactions", async () => {
+  let old: TaskCacheScope;
+  const mismatch = vi.fn(() => {
+    expect(old.signal.aborted).toBe(false); expect(old.isInvalidated).toBe(false);
+    expect(old.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+  });
+  old = scope(userId, mismatch); const reset = scope(); await seed(old); const stale = await old.beginSync(projectId, signal());
   await reset.invalidateScope(); const current = scope(); await seed(current, [task(2)]);
   await expect(old.readProject(projectId, signal())).rejects.toMatchObject({ name: "AbortError" });
-  expect(mismatch).toHaveBeenCalledOnce(); expect(old.isInvalidated).toBe(true);
+  expect(mismatch).toHaveBeenCalled(); expect(old.isInvalidated).toBe(false);
+  await expect(old.applySync(stale, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ name: "AbortError" });
   expect((await current.readProject(projectId, signal()))!.graph.tasks[0]!.id).toBe(taskId(2));
+});
+
+it("keeps a replacement fence and its rows when the root invalidates the old scope", async () => {
+  vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  let old: TaskCacheScope; let cleanup: Promise<void> | undefined;
+  old = scope(userId, vi.fn(() => { cleanup = old.invalidateScope(); }));
+  await seed(old); const stale = await old.beginSync(projectId, signal());
+  const reset = scope(); await reset.invalidateScope();
+  const current = scope(); await seed(current, [task(2)]);
+  const database = await inspect(); const currentFence = await database.get("userScopes", userId);
+  await expect(old.applySync(stale, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect(cleanup).toBeDefined(); expect(old.signal.aborted).toBe(true); await cleanup;
+  expect(await database.get("userScopes", userId)).toEqual(currentFence);
+  expect((await current.readProject(projectId, signal()))!.graph.tasks.map(row => row.id)).toEqual([taskId(2)]);
+});
+
+it("rejects projection preparation on a changed fence even when the owner pauses", async () => {
+  vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  let resume = () => {};
+  const cache = scope(userId, () => { resume = pauseAuthRequests(); });
+  await seed(cache); const database = await inspect();
+  await database.put("userScopes", { userId, userFence: crypto.randomUUID() });
+  try {
+    await expect(cache.prepareProjection(signal())).rejects.toMatchObject({ name: "AbortError" });
+    expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
+  } finally { resume(); }
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
 });
 
 it("classifies invalid newly received dependencies as protocol data and preserves the valid baseline", async () => {
@@ -635,7 +692,7 @@ it("retires an old bound scope only after its damaged-fence replacement commits 
   const bound = scope(userId, mismatch); const otherTab = scope(); await seed(bound); database = await inspect(); const late = await otherTab.beginSync(projectId, signal());
   const before = await bound.beginSync(projectId, signal()); await database.put("userScopes", { userId, userFence: "damaged" });
   await expect(bound.beginSync(projectId, signal())).rejects.toMatchObject({ name: "AbortError" });
-  expect(mismatch).toHaveBeenCalledOnce(); expect(bound.isInvalidated).toBe(true);
+  expect(mismatch).toHaveBeenCalledOnce(); expect(bound.isInvalidated).toBe(false); expect(bound.signal.aborted).toBe(false);
   const user = (await database.get("userScopes", userId))!; expect(user.userFence).not.toBe(before.userFence); expect(user.userFence).not.toBe("damaged");
   expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", userFence: user.userFence });
   await vi.waitFor(() => expect(observations).toEqual([{ userFence: user.userFence, state: "committed" }]));

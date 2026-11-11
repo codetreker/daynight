@@ -19,8 +19,8 @@ const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const response = (value: unknown, taskEpoch: string | null = epoch, status = 200) => wireResponse(value, { status, headers: viewerHeaders(TEST_VIEWER_ID, taskEpoch === null ? {} : { "Daynight-Task-Epoch": taskEpoch }) });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 const worlds: { scope: TaskCacheScope; sessions: TaskDetailSessions }[] = [];
-const world = () => {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+const world = (onMismatch: (scope: TaskCacheScope) => void = (scope) => { void scope.invalidateScope(); }) => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => onMismatch(scope) });
   const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
   sessions.subscribe(project, task, () => {});
   return { scope, sessions };
@@ -1114,6 +1114,32 @@ it("does not publish a direct write receipt after the persisted identity changes
   await waitFor(() => expect(scope.isInvalidated).toBe(true));
   expect(sessions.snapshot(project, task).detail).toBeNull();
   expect(sessions.snapshot(project, task).mutation.phase).not.toBe("confirmed");
+});
+
+it.each(["success", "error"] as const)("keeps direct content when a late %s write encounters a changed fence and the owner pauses", async (outcome) => {
+  const mismatch = deferred<void>(); let resume = () => {};
+  const { sessions, scope } = world((current) => {
+    expect(current.signal.aborted).toBe(false);
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    resume = pauseAuthRequests(); mismatch.resolve();
+  });
+  const write = deferred<Response>(); let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => init.method === "PUT" ? (writes++, write.promise) : Promise.resolve(response(body()))));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(1));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  await db.put("userScopes", { userId: TEST_VIEWER_ID, userFence: crypto.randomUUID() }); db.close();
+  write.resolve(outcome === "success"
+    ? response({ ...body(2n), title: "Late", status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" })
+    : response({ error: { code: "forbidden", message: "Denied", requestId: "late" } }, null, 403));
+  try {
+    await mismatch.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(scope.isInvalidated).toBe(false);
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    expect(sessions.snapshot(project, task).mutation.phase).not.toBe("confirmed");
+    expect(writes).toBe(1);
+  } finally { resume(); }
 });
 
 it("withdraws a reopened task and keeps it locked while a retired write's 404 is revalidated", async () => {

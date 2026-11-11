@@ -3,7 +3,7 @@ import { ApiError, authRequestsPauseRevision, isAbortError } from '../../api/cli
 import { createTerminalSessionApi, type SessionHistoryItem } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskDetailSessions, type DirectQualification } from '../task-detail/TaskDetailSession';
-import { TaskCacheLifecycleChanged, type SyncTicket } from '../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange, type SyncTicket } from '../task-cache/project-cache';
 import { clearSessionHistory, readSessionHistoryOwnership, type SessionHistoryOwnership } from './session-history-cache';
 
 type Page = { readonly items: SessionHistoryItem[]; readonly cursor: string | null };
@@ -133,7 +133,7 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
             });
             break;
           } catch (error) {
-            if (error instanceof TaskCacheLifecycleChanged && pauseRevision !== authRequestsPauseRevision() && current()) continue;
+            if (isRetryableTaskCacheLifecycleChange(error) && pauseRevision !== authRequestsPauseRevision() && current()) continue;
             throw error;
           }
         }

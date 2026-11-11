@@ -6,7 +6,7 @@ import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
-import { TaskCacheLifecycleChanged, type SyncTicket, type TaskCacheScope, type TaskReadFence } from "../task-cache/project-cache";
+import { TaskCacheLifecycleChanged, isRetryableTaskCacheLifecycleChange, type SyncTicket, type TaskCacheScope, type TaskReadFence } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 import type { CommittedTaskProjection } from '../projects/committed-task-projection';
 
@@ -1005,7 +1005,7 @@ export class TaskDetailSessions {
       }
     } catch (error) {
       if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
-      if (error instanceof TaskCacheLifecycleChanged && fence !== null && this.scope.isTaskReadCurrent(fence, true)) {
+      if (isRetryableTaskCacheLifecycleChange(error) && fence !== null && this.scope.isTaskReadCurrent(fence, true)) {
         if (!entry.historyRetry) {
           entry.historyRetry = true;
           queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
@@ -1494,7 +1494,7 @@ export class TaskDetailSessions {
           } catch (failure) {
             if (settleRetired(error)) return;
             // A pause can also end before the rejected transaction is observed.
-            if (!admitted && failure instanceof TaskCacheLifecycleChanged && admissionPauseRevision !== authRequestsPauseRevision() &&
+            if (!admitted && isRetryableTaskCacheLifecycleChange(failure) && admissionPauseRevision !== authRequestsPauseRevision() &&
               outcomeTicket !== null && "historyGeneration" in outcomeTicket && this.scope.isTaskReadCurrent(outcomeTicket, true)) {
               continue;
             }
@@ -1709,7 +1709,7 @@ export class TaskDetailSessions {
             }, !negative);
           } catch (failure) {
             if (settleRetired(error)) return;
-            if (ticket !== null && "historyGeneration" in ticket && (failure instanceof TaskCacheLifecycleChanged && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
+            if (ticket !== null && "historyGeneration" in ticket && (isRetryableTaskCacheLifecycleChange(failure) && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
               this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
           }
         };

@@ -38,7 +38,7 @@ const mount = async (strict = false, withProject = false) => {
     return Promise.resolve(missing ? configurationError(404, 'not_found') : configurationResponse(resource));
   });
   vi.stubGlobal('fetch', fetch);
-  const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
   browserNavigation().navigate(path);
   const view = (enabled = true) => { const content = <TaskCacheProvider scope={scope}><Workspace enabled={enabled} /></TaskCacheProvider>; return strict ? <StrictMode>{content}</StrictMode> : content; };
   const rendered = renderWithLocale(view(), { locale: 'en' });
@@ -60,7 +60,7 @@ describe('Worker configuration navigation', () => {
       if (url.endsWith('/configuration')) return config.promise;
       return Promise.resolve(workerResponse(workerDetail()));
     }));
-    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
@@ -84,7 +84,7 @@ describe('Worker configuration navigation', () => {
       if (url.endsWith('/configuration')) return Promise.resolve(configurationResponse(configurationResource()));
       return Promise.resolve(workerResponse(workerDetail()));
     }));
-    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();

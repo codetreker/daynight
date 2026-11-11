@@ -45,8 +45,10 @@ type HistoryUncertain = { readonly taskId: string; readonly expectedToken: strin
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
 export class TaskCacheLifecycleChanged extends DOMException {
-  constructor() { super("The task cache lifecycle changed.", "AbortError"); }
+  constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
 }
+export const isRetryableTaskCacheLifecycleChange = (error: unknown): error is TaskCacheLifecycleChanged =>
+  error instanceof TaskCacheLifecycleChanged && error.retryable;
 const released = (): never => { throw new TaskCacheLifecycleChanged(); };
 const protocol = (): never => { throw new ApiError("protocol"); };
 const invalidated = (userId: string, projectId: string, userFence: string, invalidatedBy: "access" | "corrupt" | "user" = "access", history?: { readonly generationAncestors: readonly string[]; readonly unknownAncestors: boolean }): ProjectRecord => ({
@@ -313,7 +315,7 @@ export class TaskCacheScope {
         } catch (error) {
           // A new foreground check may interrupt the durable read; retain the
           // provisional isolation until the same live scope can check again.
-          if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && !this.signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && !this.isInvalidated && !this.signal.aborted) continue;
           if (!unknownAncestors || isAbortError(error)) throw error;
           stopPause();
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
@@ -376,7 +378,6 @@ export class TaskCacheScope {
     this.assertLive(signal);
   }
   principalMismatch = (): void => {
-    this.invalidateScope();
     this.onIdentityMismatch();
   };
   subscribe = (listener: (event: CacheEvent) => void): (() => void) => {
@@ -402,7 +403,7 @@ export class TaskCacheScope {
       catch (error) {
         // A foreground identity check can interrupt the durable snapshot without
         // retiring this scope or the caller's request.
-        if (error instanceof TaskCacheLifecycleChanged && !signal.aborted && !this.isInvalidated) continue;
+        if (isRetryableTaskCacheLifecycleChange(error) && !signal.aborted && !this.isInvalidated) continue;
         throw error;
       }
     }
@@ -558,13 +559,13 @@ export class TaskCacheScope {
             if (!this.isInvalidated && (this.directHintCounts.has(projectId) || this.isProjectSuspended(projectId) || this.directRecheckPending.has(projectId))) {
               this.directRecheckPending.add(projectId); return;
             }
-            if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && pauseRevision !== authRequestsPauseRevision()) continue;
+            if (isRetryableTaskCacheLifecycleChange(error) && !this.isInvalidated && pauseRevision !== authRequestsPauseRevision()) continue;
             throw error;
           }
         }
       } catch (error) {
-        if (!this.isInvalidated && (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged)) {
-          const failure = error instanceof TaskCacheLifecycleChanged ? new ApiError("protocol") : error;
+        if (!this.isInvalidated && (!isAbortError(error) || isRetryableTaskCacheLifecycleChange(error))) {
+          const failure = isRetryableTaskCacheLifecycleChange(error) ? new ApiError("protocol") : error;
           this.directRecheckErrors.set(projectId, failure);
           this.emit({ projectId, directAccessRecheck: true, error: failure }, true, true);
         }
@@ -835,7 +836,9 @@ export class TaskCacheScope {
     // Lifecycle changes become visible only after their transaction is durable.
     if (outcome.kind === "repaired" && !this.isInvalidated && !authRequestsPaused()) this.hint(null);
     if (this.userFence !== null && this.userFence !== outcome.userFence && !this.isInvalidated) {
-      this.close(); this.onIdentityMismatch(); return released();
+      this.onIdentityMismatch();
+      // Unlike a temporary gate interruption, a replaced fence cannot be retried by this scope.
+      throw new TaskCacheLifecycleChanged(false);
     }
     this.assertLive(signal);
     this.userFence = outcome.userFence;
@@ -1530,8 +1533,15 @@ export class TaskCacheScope {
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
     this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
-    this.purge = this.transaction(async (transaction) => { await this.replaceUserScope(transaction, "user"); }, undefined, true)
-      .then(() => { this.hint(null); }).finally(() => { this.close(); });
+    this.purge = this.transaction(async (transaction) => {
+      const stored = await transaction.objectStore("userScopes").get(this.userId);
+      let currentFence: string | null = null;
+      try { currentFence = validateUserScope(stored, this.userId).userFence; }
+      catch (error) { if (!(error instanceof TaskCacheError) || error.category !== "corrupt") throw error; }
+      if (this.userFence !== null && currentFence !== null && this.userFence !== currentFence) return false;
+      await this.replaceUserScope(transaction, "user");
+      return true;
+    }, undefined, true).then((cleared) => { if (cleared) this.hint(null); }).finally(() => { this.close(); });
     // Session clearing is synchronous; storage failure remains observable without blocking identity removal.
     void this.purge.catch((error: unknown) => { console.error("Task cache user cleanup failed", { error_category: error instanceof TaskCacheError ? error.category : "storage" }); });
     return this.purge;
