@@ -26,6 +26,7 @@ import { compareTaskStatus } from "./task-order";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { useProjectAssigneeReceipt } from "../task-assignees/TaskAssignees";
 import { TaskAssigneeFilter, matchesAssignee, type AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
+import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
 import "../../styles/project.css";
@@ -149,6 +150,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     .toReversed().sort((left, right) => compareTaskStatus(left.status, right.status)), [snapshot]);
   const goals = allGoals.filter((goal) => matchesAssignee(goal.assignedTo, assigneeFilter, viewer.userId) &&
     (statusFilter === "all" || goal.status === statusFilter));
+  const pausedTaskCount = useMemo(() => snapshot === null ? 0 : pausedSummaryTaskIds(
+    snapshot.graph.tasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)), snapshot.pausedTaskIds).size,
+  [snapshot, assigneeFilter, viewer.userId]);
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
       (statusFilter === "all" || task.status === statusFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId]);
@@ -479,7 +483,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={graph.sessionStore} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={scopedStandaloneIds.filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length}
               unfinishedChainTaskCount={[...scopedMembers.values()].flat().filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length} goalCount={allGoals.length} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openChainId, onOpenChain, onCloseChain, onNavigateExternalTask,
