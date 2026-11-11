@@ -211,7 +211,7 @@ it("keeps compact list order, status, dependencies and escaped PR values", async
   await runTaskCommand(["list", "--all", "--project", projectId], f.context, f.dependencies);
   const output = f.context.stdout.mock.calls[0]![0];
   expect(output.indexOf(`ID: ${taskId}\n`)).toBeLessThan(output.indexOf(`ID: ${doneId}\n`));
-  expect(output).toContain(`ID: ${doneId}\nProject: ${projectId}\nTitle: Done\n`);
+  expect(output).toContain(`ID: ${doneId}\nProject: ${projectId}\nType: task\nParent: none\nTitle: Done\n`);
   expect(output).toContain("Status: todo\n"); expect(output).toContain("Status: done\n");
   expect(output).toContain("Properties: 0\n");
   expect(output).toContain("Ready: true\nDepends on: none\nExternal dependencies (0): none\nBlocked by: none\n");
@@ -226,6 +226,7 @@ it("reports a version conflict with the task and server request identity without
   const operation = createOperation(); operations.push(operation);
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
     if (String(url).endsWith(`/api/v1/projects/${projectId}`)) return new Response(stringifyApiJson(project), { headers: { "Content-Type": "application/json" } });
+    if (init?.method === "GET" && String(url).endsWith(`/api/v1/projects/${projectId}/tasks/${taskId}`)) return new Response(stringifyApiJson({ ...task, version: 2n }), { headers: { "Content-Type": "application/json" } });
     expect(init?.method).toBe("PUT");
     return new Response(stringifyApiJson({ error: { code: "version_conflict", message: "Task changed.", requestId: "fixture-version-conflict" } }), { status: 409, headers: { "Content-Type": "application/json" } });
   });
@@ -239,7 +240,7 @@ it("reports a version conflict with the task and server request identity without
   expect(f.context.stdout).not.toHaveBeenCalled();
   const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
   expect(diagnostic).toContain("version_conflict"); expect(diagnostic).toContain(taskId); expect(diagnostic).toContain("fixture-version-conflict");
-  expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "PUT"]);
+  expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "GET", "PUT"]);
 });
 
 it("keeps concurrent same-version updates independent and does not retry the refused write", async () => {
@@ -280,6 +281,7 @@ it("keeps concurrent same-version status outcomes separate without retrying eith
   const writes: { status: string; version: bigint }[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
     if (String(url).endsWith(`/api/v1/projects/${projectId}`)) return new Response(stringifyApiJson(project), { headers: { "Content-Type": "application/json" } });
+    if (init?.method === "GET" && String(url).endsWith(`/api/v1/projects/${projectId}/tasks/${taskId}`)) return new Response(stringifyApiJson({ ...task, version: 2n }), { headers: { "Content-Type": "application/json" } });
     expect(init?.method).toBe("PUT");
     expect(String(url)).toContain(`/api/v1/projects/${projectId}/tasks/${taskId}/status`);
     const body = parseApiJson(String(init!.body)) as { status: string; version: bigint };

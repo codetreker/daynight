@@ -102,8 +102,8 @@ describe("Bash completion rendering", () => {
 
   it("completes deletion with a task ID and exact-version/project text options", () => {
     const script = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "delete")!);
-    expect(script).toContain("dn_options=('--remove-depends' '--if-version' '--project' '-h' '--help')");
-    expect(script).toContain("dn_option_values=('' 'text' 'text' '' '')");
+    expect(script).toContain("dn_options=('--remove-depends' '--force' '--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_option_values=('' '' 'text' 'text' '' '')");
     expect(script).toContain("dn_argument_count=1");
     expect(script).not.toContain("'--status'");
     expect(script).not.toContain("'--json'");
@@ -111,10 +111,10 @@ describe("Bash completion rendering", () => {
 
   it("completes set-status with task/status arguments and claim/version/project text options", () => {
     const script = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "set-status")!);
-    expect(script).toContain("dn_options=('--claim-id' '--if-version' '--project' '-h' '--help')");
-    expect(script).toContain("dn_option_values=('text' 'text' 'text' '' '')");
-    expect(script).toContain("dn_option_actions=('' '' '' 'help' 'help')");
-    expect(script).toContain("dn_option_repeats=('0' '0' '0' '0' '0')");
+    expect(script).toContain("dn_options=('--claim-id' '--force' '--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_option_values=('text' '' 'text' 'text' '' '')");
+    expect(script).toContain("dn_option_actions=('' '' '' '' 'help' 'help')");
+    expect(script).toContain("dn_option_repeats=('0' '0' '0' '0' '0' '0')");
     expect(script).toContain("dn_argument_count=2");
     expect(script).toContain("dn_choices=('proposed' 'todo' 'in_progress' 'done' 'cancelled')");
     expect(script).not.toContain("'--status'");
