@@ -53,6 +53,29 @@ func authLookupError(err error) error {
 	return err
 }
 
+// browserReturnPath resolves URL dot segments before decoding escaped slashes.
+func browserReturnPath(escaped string) string {
+	segments := []string{}
+	escaped = strings.TrimPrefix(escaped, "/")
+	for _, segment := range strings.Split(escaped, "/") {
+		switch strings.ToLower(segment) {
+		case ".", "%2e":
+		case "..", ".%2e", "%2e.", "%2e%2e":
+			if len(segments) > 0 {
+				segments = segments[:len(segments)-1]
+			}
+		default:
+			segments = append(segments, segment)
+		}
+	}
+	return "/" + strings.Join(segments, "/")
+}
+
+func isLoginCompletionPath(value string) bool {
+	target := path.Clean(value)
+	return target == "/auth/complete" || strings.HasPrefix(target, "/auth/complete/")
+}
+
 func (s *Identity) validReturnPath(value string) bool {
 	if !utf8.ValidString(value) || strings.ContainsAny(value, "\\\r\n\x00") {
 		return false
@@ -67,6 +90,35 @@ func (s *Identity) validReturnPath(value string) bool {
 	}
 	callback, err := url.Parse(s.callbackURL)
 	if err != nil {
+		return false
+	}
+	// The original HTTP redirect cleans the raw target relative to the callback
+	// directory before a browser resolves escaped dot segments. Check that final
+	// path too, so no alias can navigate back into the completion page.
+	redirect := value
+	if !strings.HasPrefix(redirect, "/") {
+		dir, _ := path.Split(callback.EscapedPath())
+		redirect = dir + redirect
+	}
+	redirectPath, query, hasQuery := strings.Cut(redirect, "?")
+	trailing := strings.HasSuffix(redirectPath, "/")
+	redirectPath = path.Clean(redirectPath)
+	if trailing && !strings.HasSuffix(redirectPath, "/") {
+		redirectPath += "/"
+	}
+	if hasQuery {
+		redirectPath += "?" + query
+	}
+	redirectURL, err := url.Parse(redirectPath)
+	if err != nil {
+		return false
+	}
+	browserPath, err := url.PathUnescape(browserReturnPath(redirectURL.EscapedPath()))
+	if err != nil {
+		return false
+	}
+	browserDecoded, err := url.PathUnescape(browserPath)
+	if err != nil || isLoginCompletionPath(u.Path) || isLoginCompletionPath(decoded) || isLoginCompletionPath(browserPath) || isLoginCompletionPath(browserDecoded) {
 		return false
 	}
 	target := path.Clean(decoded)

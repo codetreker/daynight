@@ -48,6 +48,23 @@ func TestConfigurationErrorCause(t *testing.T) {
 	}
 }
 
+func TestLoginCompletionCallbackPathReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/auth/complete", "/auth/complete/child"} {
+		_, _, err := ValidateAuthSettings(config, config.PublicOrigin+path)
+		var failure *configvalue.ConfigurationError
+		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" {
+			t.Fatalf("callback %s: got %v", path, err)
+		}
+	}
+	for _, path := range []string{"/auth/completed", "/auth/complete-callback"} {
+		_, got, err := ValidateAuthSettings(config, config.PublicOrigin+path)
+		if err != nil || got != path {
+			t.Fatalf("callback %s: got %q, %v", path, got, err)
+		}
+	}
+}
+
 func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
 	for _, path := range []string{"/api/v1/teams", "/api/v1/teams/" + uuid.NewString(), "/teams", "/teams/" + uuid.NewString()} {
 		_, _, err := ValidateAuthSettings(AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)

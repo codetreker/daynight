@@ -341,6 +341,77 @@ func TestPATLifecycleValidationAndFailures(t *testing.T) {
 	}
 }
 
+func TestLoginCompletionReturnPath(t *testing.T) {
+	identity := NewIdentity("https://daynight.example/auth/callback")
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/auth/complete", false},
+		{"/auth/complete?next=%2Fprojects#section", false},
+		{"/auth/complete/child", false},
+		{"/auth/other/../complete/child", false},
+		{"/auth/%63omplete", false},
+		{"/auth/complete%2Fchild", false},
+		{"/x%2Fsomething/../auth/complete?returnPath=%2F", false},
+		{"/x%2Fsomething/%2e%2e/auth/complete", false},
+		{"/x%2Fsomething/.%2E/auth/complete/child", false},
+		{"/foo#fragment/../auth/complete", false},
+		{"/foo#fragment/../auth/complete/child", false},
+		{"/foo?x=1#fragment/../auth/complete", true},
+		{"%2Ffoo/../complete?returnPath=%2F", false},
+		{"%2Ffoo/%2e%2e/complete", false},
+		{"/x%2Fsomething/../auth/completed", true},
+		{"%2Ffoo/../completed", true},
+		{"/auth/completed", true},
+		{"/", true},
+		{"/setup?from=login#instructions", true},
+		{"/assets/app.js?version=1#fragment", true},
+		{"/assets/%FF?x=1#fragment", true},
+		{"/%C3", true},
+		{"%2Fprojects", true},
+		{"/projects?sort=recent#current", true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			_, pending, err := identity.StartLogin("github", tc.path, time.Now())
+			if tc.want {
+				if err != nil || pending.ReturnPath != tc.path {
+					t.Fatalf("return path %q: pending=%q err=%v", tc.path, pending.ReturnPath, err)
+				}
+			} else {
+				checkFault(t, err, "invalid_input")
+			}
+		})
+	}
+}
+
+func TestLoginCompletionReturnPathUsesCallbackDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		callback, target string
+		want             bool
+	}{
+		{"/auth/callback", "%2Ffoo/../complete?returnPath=%2F", false},
+		{"/auth/callback", "%2Ffoo/%2e%2e/complete/child", false},
+		{"/custom/callback", "%2Ffoo/../complete?returnPath=%2F", true},
+		{"/custom/callback", "%2Ffoo/%2e%2e/complete/child", true},
+		{"/custom/callback", "%2Ffoo/../../auth/complete", false},
+		{"/custom/callback", "%2Ffoo/%2e%2e/%2e%2e/auth/complete", false},
+		{"/custom/callback", "%2Fprojects?view=1#part", true},
+	} {
+		t.Run(tc.callback+" -> "+tc.target, func(t *testing.T) {
+			identity := NewIdentity("https://daynight.example" + tc.callback)
+			_, pending, err := identity.StartLogin("github", tc.target, time.Now())
+			if tc.want {
+				if err != nil || pending.ReturnPath != tc.target {
+					t.Fatalf("return path %q: pending=%q err=%v", tc.target, pending.ReturnPath, err)
+				}
+			} else {
+				checkFault(t, err, "invalid_input")
+			}
+		})
+	}
+}
+
 func TestOAuthConsentLoginReturn(t *testing.T) {
 	identity := NewIdentity("https://daynight.example/api/v1/auth/callback")
 	for _, tc := range []struct {

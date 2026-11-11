@@ -2360,11 +2360,12 @@ the assistant suite below without depending on the quality job or its artifacts.
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
 
-The independent login completion page validates a single local return target,
-retains its query and fragment, and waits for server-confirmed identity and local
-account publication before replacing the document. Identity and publication retries
-are separate; a superseded account requires an explicit reload. The server callback
-still returns directly to its original target until its completion route is enabled.
+The independent login completion page validates the local return target and callback
+path supplied by the successful server callback. It retains the target query and
+fragment and uses the callback path to preserve the original destination of accepted
+relative references. It waits for server-confirmed identity and local account
+publication before replacing the document. Identity and publication retries are
+separate; a superseded account requires an explicit reload.
 The identity-cache browser fixture exercises the completion entry and native
 cross-page storage and BroadcastChannel signals with controlled API responses.
 

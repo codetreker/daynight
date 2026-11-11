@@ -404,6 +404,8 @@ participant 新增单独授权，或修改、移除真实 grant；操作前确�
 profile 准入失败返回 502 外，显示独立登录错误并保留有效目标，包括建立本地 session 失败；
 失败不重放可能已消费的身份 code。
 
+callback 成功设置会话 Cookie 后，所有允许的站内目标均先进入 `/auth/complete`，包括公开首页、指南和本地资源。完成页确认服务端身份并完成本地账户发布后才返回完整目标，保留其 query 和 fragment；对允许的相对引用，按原 callback 基址解析以保持原有落点。身份读取或本地发布失败时分别提供重试，不重放 callback 或 code。完成页自身及后代路径不能作为返回目标，防止循环。
+
 邀请凭据在首个 API 请求前从已准入入口的 fragment 捕获并移出地址；启动、应用导航和
 原生历史进入项目或 Team 邀请时，凭据均不得进入序列化的 `history.state`，清理后的地址与已准入 location
 保持一致。两种 scope 使用独立临时 key，捕获一种时清理另一种；认证后仅保留内存邀请，登录或
@@ -487,10 +489,10 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
-`/login`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams` API 命名空间；
+`/login`、`/auth/complete`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams` API 命名空间；
 配置和启动验证必须先于路由注册拒绝冲突。已有 callback
 占用该命名空间时须更换路径并同步 UniAuth 登记值。不接受编码别名、
-路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口和实际 callback
+路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口、完成页和实际 callback
 路径，避免认证循环。callback URL 与 UniAuth App 登记值精确匹配，主站 origin
 及 callback 不从 Host、转发 header 或随机 listener 推导。
 

@@ -740,14 +740,20 @@ must be canonical decimal in `0..65535`, and the two configured nonzero ports
 must differ. Port zero requests an ephemeral port; the lifecycle log reports the
 actual bound address. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
+`/mcp`, `/login`, `/auth/complete`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace and `/api/v1/webhook-event-types`. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
-starting the server. Login return loops, including `/login`, are rejected before a
+starting the server. Login return loops, including `/login` and `/auth/complete`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
 known callback failure redirects to the explicit login error page and retains the
-validated target, including when local session creation fails. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
-mode. The two HTTP exceptions control different origins and do not imply each
+validated target, including when local session creation fails. A successful callback
+sets the session Cookie and redirects to `/auth/complete` with the complete encoded
+return target, including its query and fragment, and the escaped path of the
+callback request.
+The completion page validates that local path and uses it to preserve the original
+redirect destination for accepted relative references. The existing Web shell serves
+that page over GET/HEAD; other methods are rejected. Only the configured callback
+path is routed; there is no fixed-path alias or authentication-disable mode. The two HTTP exceptions control different origins and do not imply each
 other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
 no-store policy, 405/Allow response and request logging. Its public static guide mounts
 outside the browser authentication flow and makes no API requests.

@@ -745,6 +745,7 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 |---|---|
 | `GET /{$}` | 精确根路径，返回 index 并显示公开推广页；`GET /` 不能替代精确匹配 |
 | `GET /login` | 返回同一个 index，由现有认证生命周期显示独立登录页 |
+| `GET /auth/complete` | 返回同一个 index，由完成页确认并发布账户后返回原目标 |
 | `GET /projects`、`GET /teams/{teamId}`、`GET /shared-projects` | 返回同一个 index，认证后显示对应范围的项目列表 |
 | `GET /workers`、`GET /workers/{workerId}` | 返回同一个 index，认证后显示账号级 Worker 列表或详情 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |

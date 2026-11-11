@@ -10,7 +10,7 @@
 图与统计约定继续有效；任务字段写入包含下述状态、自动执行许可、暂停解除、平台、负责人和强制撤回操作。项目任务页在可见时每 15 秒通过 task-sync 增量合并 IndexedDB 摘要并发布完整本地图，详情按摘要业务版本与恢复需要读取，成功同步 receipt 独立更新时钟，刷新保留浏览、焦点和附件操作状态；具体时序与错误语义见下文。[任务缓存需求](daynight-task-sync.md)拥有水位、原子存储、身份准入及详情缓存行为。
 
 [鉴权需求](daynight-auth.md)拥有登录、CLI 设备授权、私有项目、成员管理、邀请和访问令牌界面。
-生产 `Application` 在常驻 LocaleProvider 下区分公开首页、公开指南与认证应用。
+生产 `Application` 在常驻 LocaleProvider 下区分公开首页、公开指南、登录完成页与认证应用；登录完成页在确认并发布账户后返回原目标。
 `AuthenticatedApp` 及其 API 客户端拥有 `/login` 和认证后的工作空间；
 [推广页要求](daynight-landing.md)拥有公开介绍、演示与入口，[鉴权架构](../design/daynight-auth.md)拥有私有生命周期。登录方式来自后端
 真实 UniAuth App discovery，项目列表仅包含当前用户有权访问且符合当前范围的项目。登录、账户、

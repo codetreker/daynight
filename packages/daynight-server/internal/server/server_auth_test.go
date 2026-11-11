@@ -618,7 +618,7 @@ func (integration *identityIntegration) completeFor(t *testing.T, browser *http.
 	integration.plan.consume(callback.Query().Get("state"), identityCookie(t, browser, integration.server.URL, identityHTTPBinding(callback.Query().Get("state"))), true)
 	integration.plan.complete(persona)
 	response, _ := identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/projects?view=tasks" {
+	if response.Header.Get("Location") != "/auth/complete?"+(url.Values{"callbackPath": {integration.callbackPath}, "returnPath": {"/projects?view=tasks"}}).Encode() {
 		t.Fatal("successful login did not retain its main-site return path")
 	}
 	for _, cookie := range response.Cookies() {

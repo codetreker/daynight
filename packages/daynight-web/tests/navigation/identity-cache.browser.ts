@@ -138,9 +138,9 @@ test('login completion publishes to another same-origin page before replacing a 
     await senderGate.promise;
     await route.fulfill({ json: user(bob), headers: { 'Daynight-User-ID': bob } });
   });
-  const receiverURL = `/auth/complete?returnPath=${encodeURIComponent('/login')}`;
+  const receiverURL = `/auth/complete?returnPath=${encodeURIComponent('/login')}&callbackPath=%2Fauth%2Fcallback`;
   const target = '/?from=login%26return#public';
-  const senderURL = `/auth/complete?returnPath=${encodeURIComponent(target)}`;
+  const senderURL = `/auth/complete?returnPath=${encodeURIComponent(target)}&callbackPath=%2Fauth%2Fcallback`;
   try {
     await receiver.goto(receiverURL);
     await expect.poll(() => receiverReads).toBe(1);
