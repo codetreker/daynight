@@ -48,13 +48,14 @@ import archiveFixture from "../../session/fixtures/v2/valid-archive.json" with {
 
 // Replace only the selected Git command with a real process that executes Git
 // and leaves its inherited output open. All other subprocesses remain native.
-const gitProcess = vi.hoisted(() => ({ wrapper: undefined as string | undefined, helper: undefined as string | undefined, child: undefined as ChildProcess | undefined, stopHelper: undefined as ChildProcess | undefined, stdoutClosed: false, stderrClosed: false, helperStdoutClosed: false }));
+const gitProcess = vi.hoisted(() => ({ wrapper: undefined as string | undefined, helper: undefined as string | undefined, child: undefined as ChildProcess | undefined, stopHelper: undefined as ChildProcess | undefined, childClosed: false, stdoutClosed: false, stderrClosed: false, helperClosed: false, helperStdoutClosed: false }));
 vi.mock("node:child_process", async importOriginal => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const spawn = ((...args: Parameters<typeof actual.spawn>) => {
     if (args[0] === "git" && gitProcess.wrapper !== undefined && Array.isArray(args[1]) && args[1].includes("worktree") && args[1].includes("remove")) {
       const child = actual.spawn(process.execPath, [gitProcess.wrapper, ...args[1]], args[2]);
       gitProcess.child = child;
+      child.once("close", () => { gitProcess.childClosed = true; });
       child.stdout?.once("close", () => { gitProcess.stdoutClosed = true; });
       child.stderr?.once("close", () => { gitProcess.stderrClosed = true; });
       return child;
@@ -62,6 +63,7 @@ vi.mock("node:child_process", async importOriginal => {
     if (typeof args[0] === "string" && /[\\/]System32[\\/]taskkill\.exe$/i.test(args[0]) && gitProcess.helper !== undefined) {
       const helper = actual.spawn(process.execPath, [gitProcess.helper, String((args[1] as string[])[1])], args[2]);
       gitProcess.stopHelper = helper;
+      helper.once("close", () => { gitProcess.helperClosed = true; });
       helper.stdout?.once("close", () => { gitProcess.helperStdoutClosed = true; });
       return helper;
     }
@@ -86,7 +88,7 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
-  polling.onSchedule = undefined; polling.requested.length = 0; gitProcess.wrapper = undefined; gitProcess.helper = undefined; gitProcess.child = undefined; gitProcess.stopHelper = undefined; gitProcess.stdoutClosed = false; gitProcess.stderrClosed = false; gitProcess.helperStdoutClosed = false;
+  polling.onSchedule = undefined; polling.requested.length = 0; gitProcess.wrapper = undefined; gitProcess.helper = undefined; gitProcess.child = undefined; gitProcess.stopHelper = undefined; gitProcess.childClosed = false; gitProcess.stdoutClosed = false; gitProcess.stderrClosed = false; gitProcess.helperClosed = false; gitProcess.helperStdoutClosed = false;
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -755,7 +757,12 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
     if (stream === "child" || stream === "helper") {
       await vi.waitFor(() => { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }, { timeout: 12_000, interval: 20 });
     } else {
-      await vi.waitFor(() => expect(gitProcess.child?.exitCode).toBe(0), { timeout: 12_000, interval: 20 });
+      await vi.waitFor(() => {
+        expect(gitProcess.child?.exitCode).toBe(0);
+        expect(stream === "stdout" ? gitProcess.stderrClosed : gitProcess.stdoutClosed).toBe(true);
+      }, { timeout: 12_000, interval: 20 });
+      expect(stream === "stdout" ? gitProcess.stdoutClosed : gitProcess.stderrClosed).toBe(false);
+      expect(gitProcess.childClosed).toBe(false);
     }
     interrupt.abort(new Error("controlled mutation cancellation"));
     await vi.waitFor(() => expect(pending).toBeDefined(), { timeout: 15_000, interval: 20 });
@@ -772,6 +779,7 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
         expect(gitProcess.stopHelper?.exitCode).toBe(0);
       }, { timeout: 12_000, interval: 20 });
       expect(gitProcess.helperStdoutClosed).toBe(false);
+      expect(gitProcess.helperClosed).toBe(false);
     }
     await expect(access(f.bind(owner).worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(f.store.getTask(original)?.status).toBe("active");
@@ -789,9 +797,15 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
       await writeFile(release, "release");
       const settlement = await joined.promise;
       expect(settlement.kind).toBe("local-closed");
+      expect(gitProcess.childClosed).toBe(true);
+      expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
+      if (stream === "helper") { expect(gitProcess.helperClosed).toBe(true); expect(gitProcess.helperStdoutClosed).toBe(true); }
       await shutdown;
     } else {
       await writeFile(release, "release");
+      expect((await joined.promise).kind).toBe("local-closed");
+      expect(gitProcess.childClosed).toBe(true);
+      expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
       await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
       f.clock(1_000_000);
       await coordinator.tick();
