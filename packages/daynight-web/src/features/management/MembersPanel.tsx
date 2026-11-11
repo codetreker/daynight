@@ -122,6 +122,11 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     try { return access.session.revalidate(); }
     finally { internalAccessRead.current = false; }
   };
+  const checkAccessAfterMutation = () => {
+    internalAccessRead.current = true;
+    try { return access.session.revalidateAfterMutation(); }
+    finally { internalAccessRead.current = false; }
+  };
 
   const readMembers = async (lifetime: AbortSignal, background: boolean): Promise<MembersRead | undefined> => {
     readController.current?.abort();
@@ -217,7 +222,7 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
     return result;
   };
   const retireRead = () => {
-    ++generation.current; readController.current?.abort(); readController.current = null; setLoading(false);
+    ++generation.current; readController.current?.abort(); readController.current = null; refreshQueued.current = false; setLoading(false);
   };
   const load = (lifetime: AbortSignal, requireInvitations = false, background = false): Promise<boolean> =>
     startRead(lifetime, background).then((observed) => observed !== undefined && (!requireInvitations || observed.invitations));
@@ -279,7 +284,7 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
         if (signal.aborted || access.session.scope.isInvalidated || !activeRef.current || !route.current.onRoute || route.current.generation !== routeAtRequest || dialogRef.current !== dialogAtRequest || heldInvitation.current !== held || operation !== operationGeneration.current) return;
         heldInvitation.current = null; setHasHeldInvitation(false);
         setDialog({ kind: 'secret', secret: held.result.link });
-        await abortable(access.session.revalidate(), signal);
+        await abortable(checkAccessForRead(), signal);
         const current = await abortable(access.session.waitForFreshAccess(signal), signal);
         if (!signal.aborted && activeRef.current && current?.effectiveRole === 'admin') await abortable(load(signal), signal);
       } catch (failure) {
@@ -336,7 +341,7 @@ const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershi
         const held = heldGrant.current;
         if (held === null) return;
         if (held.receipt.lostAccess) access.session.scope.suspendProject(projectId);
-        await abortable(access.session.revalidateAfterMutation(), signal);
+        await abortable(checkAccessAfterMutation(), signal);
         const current = await abortable(access.session.waitForFreshAccess(signal), signal);
         if (signal.aborted || !activeRef.current) return;
         if (held.selfLoss) {
