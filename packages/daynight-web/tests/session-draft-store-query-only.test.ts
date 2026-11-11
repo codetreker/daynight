@@ -178,3 +178,37 @@ it.each(['same', 'later'] as const)('retains explicit cancellation of a prepared
   expect(await db.readRecoverableSubmissions(current.owner.identity)).toEqual([]);
   const after = await db.read(current.owner); expect(after.executionBlocked).toBe(false); expect(after.editable).toEqual(current.editable);
 });
+
+it('reconciles an admitted scope without creating a current owner or invalidating an existing recovery handle', async () => {
+  const { db, command, operation } = await retained();
+  const authorizer = store(); expect(await authorizer.reconcileAuthorizedOwner(currentIdentity)).toBeNull();
+  expect(await db.reconcileAuthorizedOwner(currentIdentity)).toBeNull();
+  expect(await db.readExisting(currentIdentity)).toBeNull();
+  const historical = (await db.readRecoverableSubmissions(currentIdentity))[0]!;
+  const peer = store(); expect(await peer.reconcileAuthorizedOwner(currentIdentity)).toBeNull();
+  const repeated = (await db.readRecoverableSubmissions(currentIdentity))[0]!;
+  expect(repeated.owner).toEqual(historical.owner);
+  await db.observeSubmission(historical.owner, command.operationId, operation('unknown'));
+  expect(await db.readExisting(currentIdentity)).toBeNull();
+});
+
+it.each(['cleanup', 'transaction'] as const)('does not restore access after admission is lost during %s reconciliation', async boundary => {
+  const { db, original } = await retained(); let admitted = true;
+  if (boundary === 'cleanup') {
+    const cleanup = db.retryBlockedCleanup.bind(db), entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const held = vi.spyOn(db, 'retryBlockedCleanup').mockImplementationOnce(async (...args) => { await cleanup(...args); entered.resolve(); await finish.promise; });
+    const reconcile = db.reconcileAuthorizedOwner(currentIdentity, () => admitted); await entered.promise;
+    admitted = false; finish.resolve(); await expect(reconcile).rejects.toMatchObject({ code: 'blocked' }); held.mockRestore();
+  } else {
+    const remove = IDBObjectStore.prototype.delete;
+    const fault = vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['delete']>) {
+      const request = remove.apply(this, args);
+      if (this.name === 'owners') request.addEventListener('success', () => { admitted = false; }, { once: true });
+      return request;
+    });
+    await expect(db.reconcileAuthorizedOwner(currentIdentity, () => admitted)).rejects.toMatchObject({ code: 'blocked' }); fault.mockRestore();
+  }
+  await expect(db.readExisting(currentIdentity)).rejects.toMatchObject({ code: 'blocked' });
+  await expect(db.read(original.owner)).rejects.toMatchObject({ code: 'blocked' });
+  const peer = store(); await expect(peer.readRecoverableSubmissions(currentIdentity)).rejects.toMatchObject({ code: 'blocked' });
+});

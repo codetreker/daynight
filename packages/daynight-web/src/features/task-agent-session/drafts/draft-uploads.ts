@@ -1,6 +1,7 @@
 import { IMAGE_LIMITS, type ImageUploadReceipt } from '../../../../../daynight/src/session/image-values';
 import type { SessionResourceClient } from '../../../../../daynight/src/session/resource-client';
 import type { SessionDraftStore } from './draft-store';
+import { isValidatedDraftBlob } from './draft-types';
 import type { DraftBlobInput, DraftHandle, DraftUpload, DraftUploadAction } from './draft-types';
 import { underDraftLock } from './draft-send';
 import { assertDraftUploadReceipt } from './draft-validation';
@@ -24,6 +25,7 @@ export class DraftUploader {
   }
   async run(handle: DraftHandle, uploadId: string, original: DraftBlobInput | null, observe = false, retryOriginalPrepare = false): Promise<void> {
     const o = this.options;
+    if (original && !isValidatedDraftBlob(original)) throw new Error('image_bytes_invalid');
     await underDraftLock(o.locks, handle.ownerKey, `upload:${uploadId}`, async () => {
       this.live();
       let upload = (await o.store.read(handle)).uploads.find(value => value.uploadId === uploadId);

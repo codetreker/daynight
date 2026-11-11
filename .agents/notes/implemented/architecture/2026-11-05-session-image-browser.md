@@ -24,6 +24,15 @@ with CAS protect concurrent tabs. Web Locks coordinate network mutations, while
 a durable single transition grants dispatch ownership. Unknown results retain
 the original operation and block another send.
 
+Selected originals enter the same transaction as their ordered pending items,
+before asynchronous image validation. The Blob record distinguishes an
+unvalidated original from verified image metadata; storing bytes never grants
+upload or send eligibility. Validation promotes only the original owner, access
+epoch, item incarnation and byte identity. A native identity change can release
+the old decoder without losing an unrecoverable clipboard image. Reopening its
+authorized owner, or explicitly moving the draft, resumes validation from stored
+bytes. No background decoder needs authority to publish into a detached target.
+
 Within one draft controller, content writes and upload identity allocation share
 a local persistence queue through their version readback, including readback
 triggered by network receipts. Queue ownership follows the current draft owner
@@ -87,7 +96,15 @@ all images keeps the persistent draft and its submission barrier.
 
 Account cleanup first commits an access tombstone, then removes sensitive draft
 content. Unknown operations retain only the original identity needed for later
-authorized observation. Renewed access discovers those tombstones across execution
+authorized observation. Formal Session authorization reconciles eligible
+historical tombstones on every draft load and send preflight, independently of
+the current owner's existence or read result. Regaining edit permission also
+reconciles an unchanged owner and authorization generation. Admission is checked
+at transaction start and before commit, so a detached or revoked controller
+cannot reopen access using an earlier permission snapshot. Account cleanup may already have
+finished when another Session was opened first. Reconciliation remains
+idempotent, preserves existing recovery access epochs and does not create an
+image owner for untouched text. Renewed access discovers those tombstones across execution
 generations no newer than the verified execution, within the same actor, origin,
 resolver, actual Session and original claim or test execution. Storage enforces
 `recovery_only` access: dispatched or unknown intent permits original-operation
@@ -103,12 +120,15 @@ Session cannot be reopened through this mechanism. Cleanup failures remain
 visible and retryable. Local adapters have no fabricated
 service resource and use the shared preview store and decoder budgets.
 
-IndexedDB schema version 2 preserves version 1 records while excluding old
-clients from the new recovery access model. Earlier code can treat any renewable
+IndexedDB schema version 3 preserves version 1 and 2 records while excluding old
+clients from the recovery access model and pending-original representation.
+Version 1 code can treat any renewable
 blocked owner as eligible for a new editable draft, including during local
 offline editing. A truthy recovery marker alone cannot prevent that old
-reauthorization path. Version change closes older connections; reopening with
-version 1 fails instead of granting writes. Blocked upgrades and unknown future
+reauthorization path. Version 2 code assumes every Blob has validated image
+metadata and can mark a pending original invalid during restoration. Version
+change closes older connections; reopening with version 1 or 2 fails instead of
+granting obsolete reads and writes. Blocked upgrades and unknown future
 versions remain visible storage failures without destructive reconstruction.
 
 Saved-image scopes bind origin, actor, authorization generation and the actual
@@ -134,6 +154,12 @@ independent text/image writes can lose bytes or submission identity, and Base64
 increases storage pressure. Atomic Blob and reference storage makes failures
 observable before dispatch.
 
+**Retain pending Files only in detached validation jobs.** This can survive an
+in-page target switch but loses the original on reload or page closure. It also
+adds a second owner lifecycle for decoder cancellation and late results. Persisting
+unvalidated originals lets the existing draft recovery and quota rules own their
+lifetime without fabricating a hash, format or image dimensions.
+
 **Edit the frozen submission in place.** This changes operation intent or requires
 ambiguous three-way reconciliation. A separate explicit successor preserves both
 submitted content and later editing without introducing an automatic queue.
@@ -152,6 +178,12 @@ generation is necessary for new commands, but restricting recovery to that
 generation strands earlier unresolved operations after account cleanup. Verified
 recovery scope permits observation of the original intent without restoring its
 private content or widening current command admission.
+
+**Reconcile historical access only after a blocked current-owner read.** Opening
+another Session can finish account cleanup before the original Session is
+visited. Its new current owner may be absent or readable, leaving old operations
+hidden indefinitely. Reconciliation belongs to formal Session authorization,
+not an exceptional result from reading the current draft.
 
 **Add a recovery marker without changing the database version.** Older bundles
 can ignore a new flag or reinterpret a blocked marker through their existing

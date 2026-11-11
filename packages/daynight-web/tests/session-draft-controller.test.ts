@@ -37,10 +37,91 @@ function fixture(lockManager: LockManager | null = locks()) {
   const query = vi.fn(async (_fence: unknown, id: string) => operation(commands.find(command => command.operationId === id)!, 'accepted'));
   const createAsset = (_blob: Blob, id: string) => ({ key: id, resource: null, release() {}, validate: async () => { if (_blob.type === 'image/bad') throw new Error('invalid image'); return { byteLength: _blob.size, mediaType: 'image/png' as const, sha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', await _blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join(''), width: 1, height: 1, frameCount: 1 }; } }) as unknown as LocalImageAssetAdapter;
   const create = (overrides: Partial<ConstructorParameters<typeof ImageDraftController>[0]> = {}) => { const controller = new ImageDraftController({ store, locks: lockManager, getContext: () => context, dispatch, query, createAsset, ...overrides }); active.push(controller); return controller; };
-  return { store, create, resources, uploads, mutations, commands, dispatch, query, context: () => context!, setContext: (next: ImageDraftContext | null) => { context = next; }, operation };
+  return { store, create, createAsset, resources, uploads, mutations, commands, dispatch, query, context: () => context!, setContext: (next: ImageDraftContext | null) => { context = next; }, operation };
 }
 
 describe('durable Session image coordination', () => {
+  it.each(['absent', 'readable'] as const)('reconciles an authorized scope after another Session cleared the account marker with a %s current owner', async current => {
+    const f = fixture(null), controller = f.create();
+    await f.store.importLegacy(identity, { text: 'original message', revision: '1', submission: null });
+    await controller.sync(); await controller.send(); const original = f.commands[0]!;
+    await controller.close(); await f.store.blockAccount(target.serverOrigin, target.actorUserId);
+    const otherTarget = { ...target, fence: { executionGeneration: '1', sessionId: 'other-session', claimId: 'other-claim' } };
+    await f.store.reauthorizeOwner({ target: otherTarget, resolver: { ...identity.resolver, taskId: 'other-task' } });
+    const nextTarget = { ...target, expectedNativeSessionId: 'next-native' }, nextIdentity = { ...identity, target: nextTarget };
+    if (current === 'readable') await f.store.importLegacy(nextIdentity, { text: 'current message', revision: '1', submission: null });
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    f.query.mockResolvedValue(f.operation(original, 'accepted'));
+    const reopened = f.create(); await reopened.sync();
+    expect(reopened.getSnapshot().recoveries[0]).toMatchObject({ ref: { operationId: original.operationId }, currentOwner: false, canCheck: true });
+    expect(reopened.getSnapshot().executionBlocked).toBe(true);
+    expect(f.query).toHaveBeenLastCalledWith(target.fence, original.operationId, expect.any(AbortSignal));
+    await expect(f.store.readExisting(identity)).rejects.toMatchObject({ code: 'blocked' });
+    f.query.mockResolvedValue(f.operation(original, 'provider_accepted')); await reopened.checkStatus();
+    expect(reopened.getSnapshot()).toMatchObject({ text: current === 'readable' ? 'current message' : '', recoveries: [], executionBlocked: false });
+    expect(f.commands).toHaveLength(1);
+  });
+  it('reconciles historical recovery when a previously read-only scope receives edit admission', async () => {
+    const f = fixture(null), controller = f.create();
+    await f.store.importLegacy(identity, { text: 'original message', revision: '1', submission: null });
+    await controller.sync(); await controller.send(); const original = f.commands[0]!; await controller.close();
+    await f.store.blockAccount(target.serverOrigin, target.actorUserId);
+    await f.store.reauthorizeOwner({ target: { ...target, fence: { sessionId: 'other', claimId: 'other', executionGeneration: '1' } }, resolver: { kind: 'task', projectId: 'project', taskId: 'other' } });
+    const nextTarget = { ...target, expectedNativeSessionId: 'native' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget, canEdit: false, active: false });
+    const reopened = f.create(); await reopened.sync(); expect(reopened.getSnapshot().recoveries).toEqual([]);
+    f.setContext({ ...f.context(), canEdit: true, active: true }); await reopened.sync();
+    expect(reopened.getSnapshot().recoveries[0]).toMatchObject({ ref: { operationId: original.operationId }, canCheck: true });
+    expect(reopened.getSnapshot().executionBlocked).toBe(true);
+  });
+  it.each(['native', 'generation'] as const)('persists an unvalidated original before a %s change and restores it after close', async change => {
+    const f = fixture(null), entered = Promise.withResolvers<void>();
+    const controller = f.create({ createAsset: (blob, id) => ({ ...f.createAsset(blob, id), validate: async (signal?: AbortSignal) => {
+      entered.resolve(); await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => reject(new DOMException('interrupted', 'AbortError')), { once: true }));
+      throw new Error('unreachable');
+    } } as unknown as LocalImageAssetAdapter) });
+    const adding = controller.addFiles([file()], 'clipboard original'); await entered.promise;
+    const original = (await f.store.readExisting(identity))!, item = original.editable!.items[0]!;
+    expect(item.blobId).not.toBeNull();
+    expect(await (await f.store.readBlob(original.owner, item.blobId!))!.blob.text()).toBe('image');
+    const nextTarget = change === 'native' ? { ...target, expectedNativeSessionId: 'native' } : { ...target, fence: { ...target.fence, executionGeneration: '2' } };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget });
+    await controller.sync(); await adding; await controller.close();
+    const reopened = f.create(); await reopened.sync();
+    expect(reopened.getSnapshot().text).toBe(''); expect(f.commands).toEqual([]);
+    await reopened.restoreDetached(reopened.getSnapshot().detachedDrafts[0]!.ref);
+    const restored = (await f.store.readExisting({ ...identity, target: nextTarget }))!;
+    expect(restored.editable!.items[0]).toMatchObject({ validation: 'valid', uploadId: null });
+    expect(await (await f.store.readBlob(restored.owner, restored.editable!.items[0]!.blobId!))!.blob.text()).toBe('image');
+    expect(f.commands).toEqual([]);
+  });
+  it('retains failed raw persistence under the original owner when the native session changes', async () => {
+    const f = fixture(null), decoder = vi.fn(f.createAsset), controller = f.create({ createAsset: decoder });
+    await f.store.openOwner(identity); await controller.sync();
+    vi.spyOn(f.store, 'saveDraft').mockRejectedValueOnce(new DraftStoreError('quota', 'Storage is full.'));
+    await controller.addFiles([file()], '');
+    expect(decoder).not.toHaveBeenCalled(); expect(controller.getSnapshot().canSend).toBe(false);
+    expect(controller.getSnapshot().items[0]).toMatchObject({ validation: 'pending' });
+    const nextTarget = { ...target, expectedNativeSessionId: 'native' };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget });
+    await controller.sync(); await controller.close();
+    const original = (await f.store.readExisting(identity))!, item = original.editable!.items[0]!;
+    expect(await (await f.store.readBlob(original.owner, item.blobId!))!.blob.text()).toBe('image');
+    const reopened = f.create(); await reopened.sync(); await reopened.restoreDetached(reopened.getSnapshot().detachedDrafts[0]!.ref);
+    expect(reopened.getSnapshot().items[0]!.validation).toBe('valid'); expect(f.commands).toEqual([]);
+  });
+  it.each(['revoked', 'account_changed', 'deleted'] as const)('does not resurrect a pending original when validation completes after %s', async reason => {
+    const f = fixture(null), entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const controller = f.create({ createAsset: (blob, id) => ({ ...f.createAsset(blob, id), validate: async () => { entered.resolve(); await finish.promise; return f.createAsset(blob, id).validate(new AbortController().signal); } }) as LocalImageAssetAdapter });
+    const adding = controller.addFiles([file()], 'private'); await entered.promise;
+    const original = (await f.store.readExisting(identity))!;
+    await controller.revoke(reason); finish.resolve(); await adding;
+    await expect(f.store.read(original.owner)).rejects.toMatchObject({ code: 'blocked' });
+    expect(controller.getSnapshot().items).toEqual([]); expect(f.mutations).toEqual([]);
+    if (reason !== 'deleted') {
+      const restored = await f.store.reauthorizeOwner(identity); expect(restored.editable!.items).toEqual([]); expect(restored.owner.allocatedBytes).toBe(0);
+    }
+  });
   it('explicitly moves a detached old-native draft into an empty current owner with fresh image identities', async () => {
     const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'old native text'); const original = (await f.store.readExisting(identity))!;
     const nativeTarget = { ...target, expectedNativeSessionId: 'native' }, nextIdentity = { ...identity, target: nativeTarget };
@@ -240,8 +321,8 @@ describe('durable Session image coordination', () => {
   it('allocates each upload once when concurrent selections resume the same validation', async () => {
     const f = fixture(), controller = f.create(), first = file('first.png');
     const held = Promise.withResolvers<ArrayBuffer>(), entered = Promise.withResolvers<void>();
-    const original = await first.arrayBuffer();
-    vi.spyOn(first, 'arrayBuffer').mockImplementationOnce(() => { entered.resolve(); return held.promise; });
+    const original = await first.arrayBuffer(), read = f.store.readBlob.bind(f.store);
+    vi.spyOn(f.store, 'readBlob').mockImplementationOnce(async (...args) => { const saved = await read(...args); vi.spyOn(saved!.blob, 'arrayBuffer').mockImplementationOnce(() => { entered.resolve(); return held.promise; }); return saved; });
     const createUpload = vi.spyOn(f.store, 'createUpload');
     const firstSelection = controller.addFiles([first], 'ordered selection'); await entered.promise;
     const secondSelection = controller.addFiles([file('second.png')], 'ordered selection');
@@ -386,7 +467,7 @@ describe('durable Session image coordination', () => {
     const frozen = await f.store.freeze(saved.owner, { draftId: saved.editable!.draftId, expectedStoreVersion: saved.editable!.storeVersion, command });
     let release!: (value: typeof frozen) => void;
     const delayed = new Promise<typeof frozen>(resolve => { release = resolve; });
-    const read = vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(delayed), controller = f.create(), initial = controller.sync();
+    const read = vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockReturnValueOnce(delayed), controller = f.create(), initial = controller.sync();
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
     const admitted = f.context();
     if (change === 'temporary context loss') { f.setContext(null); await controller.sync(); }
@@ -403,7 +484,7 @@ describe('durable Session image coordination', () => {
     const f = fixture(null), saved = await f.store.openOwner(identity), controller = f.create();
     let release!: (value: typeof saved) => void;
     const delayed = new Promise<typeof saved>(resolve => { release = resolve; });
-    const read = vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(delayed), initial = controller.sync();
+    const read = vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockReturnValueOnce(delayed), initial = controller.sync();
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
     f.setContext({ ...f.context(), canEdit: false, active: false }); release(saved); await initial;
     expect(controller.getSnapshot().readOnly).toBe(true);
@@ -413,7 +494,7 @@ describe('durable Session image coordination', () => {
   it('reports a shared load failure without rejecting repeated host sync calls', async () => {
     const f = fixture(), controller = f.create(); let reject!: (error: Error) => void;
     const loading = new Promise<null>((_resolve, fail) => { reject = fail; });
-    vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(loading);
+    vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockReturnValueOnce(loading);
     const first = controller.sync(), second = controller.sync();
     const results = Promise.allSettled([first, second]); reject(new Error('database closed while loading'));
     expect((await results).map(result => result.status)).toEqual(['fulfilled', 'fulfilled']);
@@ -423,7 +504,7 @@ describe('durable Session image coordination', () => {
   it('drains a pending load when closed and never resumes storage work after losing its owner', async () => {
     const f = fixture(), controller = f.create(); let resolve!: (value: null) => void;
     const loading = new Promise<null>(done => { resolve = done; });
-    vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(loading); const readOriginals = vi.spyOn(f.store, 'readRecoverableSubmissions');
+    vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockReturnValueOnce(loading); const readOriginals = vi.spyOn(f.store, 'readRecoverableSubmissions');
     const opened = controller.sync(); let finished = false;
     const closed = controller.close().then(() => { finished = true; }); f.setContext(null);
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
@@ -455,7 +536,7 @@ describe('durable Session image coordination', () => {
     await controller.sync(); expect((await f.store.readExisting(identity))?.editable?.text).toBe('old owner last keystroke'); expect(controller.getSnapshot().text).toBe('');
   });
   it('keeps independent text available in browsers without IndexedDB', async () => {
-    const f = fixture(), controller = f.create(); vi.stubGlobal('indexedDB', undefined); const read = vi.spyOn(f.store, 'readExisting');
+    const f = fixture(), controller = f.create(); vi.stubGlobal('indexedDB', undefined); const read = vi.spyOn(f.store, 'reconcileAuthorizedOwner');
     await controller.sync(); expect(controller.getSnapshot().active).toBe(false); expect(controller.getSnapshot().readOnly).toBe(false); expect(read).not.toHaveBeenCalled();
   });
   it('pauses document-hidden network work while saving local text and resumes on visibilitychange', async () => {
@@ -490,11 +571,9 @@ describe('durable Session image coordination', () => {
     let controller = f.create({ createAsset }), release!: (bytes: ArrayBuffer) => void, entered!: () => void;
     const pending = new Promise<ArrayBuffer>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
     let bytes = await original.arrayBuffer();
-    if (mode === 'restoration') {
-      await controller.addFiles([original], 'keep this original'); await controller.close(); controller = f.create({ createAsset });
-      const read = f.store.readBlob.bind(f.store);
-      vi.spyOn(f.store, 'readBlob').mockImplementationOnce(async (...args) => { const stored = await read(...args); bytes = await stored!.blob.arrayBuffer(); vi.spyOn(stored!.blob, 'arrayBuffer').mockImplementationOnce(() => { entered(); return pending; }); return stored; });
-    } else vi.spyOn(original, 'arrayBuffer').mockImplementationOnce(() => { entered(); return pending; });
+    if (mode === 'restoration') { await controller.addFiles([original], 'keep this original'); await controller.close(); controller = f.create({ createAsset }); }
+    const read = f.store.readBlob.bind(f.store);
+    vi.spyOn(f.store, 'readBlob').mockImplementationOnce(async (...args) => { const stored = await read(...args); bytes = await stored!.blob.arrayBuffer(); vi.spyOn(stored!.blob, 'arrayBuffer').mockImplementationOnce(() => { entered(); return pending; }); return stored; });
     const work = mode === 'restoration' ? controller.sync() : controller.addFiles([original], 'keep this original');
     try {
       await started; f.setContext({ ...f.context(), canEdit: false, active: false }); await controller.sync(); release(bytes); await work;
@@ -535,8 +614,8 @@ describe('durable Session image coordination', () => {
     const other = new SessionDraftStore(); stores.push(other);
     let release!: () => void, entered!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
-    const read = f.store.readExisting.bind(f.store);
-    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered(); await waiting; return read(...args); });
+    const read = f.store.reconcileAuthorizedOwner.bind(f.store);
+    vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockImplementationOnce(async (...args) => { entered(); await waiting; return read(...args); });
     const refreshing = controller.refreshForSend().catch(error => error); await started;
     controller.setText('new local edit');
     const remote = (await other.readExisting(identity))!;
@@ -548,8 +627,8 @@ describe('durable Session image coordination', () => {
   });
   it.each(['native', 'authorization'] as const)('starts a new %s persistence queue without abandoning the superseded read during close', async change => {
     const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'original text', revision: '1', submission: null }); await controller.sync();
-    const read = f.store.readExisting.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const read = f.store.reconcileAuthorizedOwner.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
     const original = controller.refreshForSend().catch(error => error); await entered.promise;
     const nextTarget = change === 'native' ? { ...target, expectedNativeSessionId: 'native-next' } : target;
     f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget, authorizationGeneration: '2' });
@@ -564,8 +643,8 @@ describe('durable Session image coordination', () => {
   });
   it('keeps a retiring local draft visible and refuses to move its older saved content until the final write finishes', async () => {
     const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'saved text', revision: '1', submission: null }); await controller.sync();
-    const read = f.store.readExisting.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const read = f.store.reconcileAuthorizedOwner.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'reconcileAuthorizedOwner').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
     const preflight = controller.refreshForSend().catch(error => error); await entered.promise; controller.setText('latest retiring text');
     const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }; f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget });
     let restored = false; const restoring = controller.sync().then(() => { restored = true; });
@@ -776,11 +855,11 @@ describe('durable Session image coordination', () => {
     f.query.mockResolvedValue(f.operation(f.commands[0]!, 'confirmed')); await controller.checkStatus();
     expect(controller.getSnapshot().submission).toBeNull(); expect(f.commands).toHaveLength(1);
   });
-  it('retains and validates the selected original in memory when saving initially aborts', async () => {
+  it('retains the selected original in memory without validating until saving succeeds', async () => {
     const f = fixture(), controller = f.create(); await controller.sync();
     const save = vi.spyOn(f.store, 'saveDraft').mockRejectedValue(new Error('storage unavailable'));
     await controller.addFiles([file()], '');
-    expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.asset).not.toBeNull(); expect(controller.getSnapshot().error).not.toBeNull(); expect(f.mutations).toEqual([]);
+    expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.asset).toBeNull(); expect(controller.getSnapshot().items[0]?.validation).toBe('pending'); expect(controller.getSnapshot().error).not.toBeNull(); expect(f.mutations).toEqual([]);
     save.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true);
   });
   it('queries a lost upload response using its original identity before continuing', async () => {
@@ -792,7 +871,7 @@ describe('durable Session image coordination', () => {
   });
   it('keeps new selection and text in memory while IndexedDB cannot be opened', async () => {
     const f = fixture(), controller = f.create(); const open = vi.spyOn(f.store, 'openOwner').mockRejectedValue(new Error('database unavailable'));
-    await controller.addFiles([file()], 'retain me'); expect(controller.getSnapshot().text).toBe('retain me'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.asset).not.toBeNull();
+    await controller.addFiles([file()], 'retain me'); expect(controller.getSnapshot().text).toBe('retain me'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.validation).toBe('pending');
     open.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true); expect((await f.store.readExisting(identity))?.editable?.text).toBe('retain me');
   });
   it('can send a text successor after every image is explicitly removed without Web Locks', async () => {

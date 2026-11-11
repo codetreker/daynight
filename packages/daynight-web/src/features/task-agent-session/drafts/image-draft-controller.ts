@@ -2,7 +2,8 @@ import { SESSION_PROTOCOL, type ImageCapabilities, type ImageTarget, type Sessio
 import type { SessionResourceClient } from '../../../../../daynight/src/session/resource-client';
 import type { LocalImageAssetAdapter, LocalImageMetadata } from '../images/image-store';
 import { DraftStoreError, SessionDraftStore, draftDetachedRef, draftOwnerKey, draftRecoveryRef } from './draft-store';
-import type { DraftBlobInput, DraftDetachedRef, DraftDetachedSnapshot, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
+import { isValidatedDraftBlob } from './draft-types';
+import type { PendingDraftBlobInput, StoredDraftBlobInput, DraftBlobInput, DraftDetachedRef, DraftDetachedSnapshot, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
 import { DraftSender } from './draft-send';
 import { DraftUploader } from './draft-uploads';
 import { imageSetIssue, safeImageLabel, sameImageTarget } from './draft-validation';
@@ -67,7 +68,7 @@ const message = (error: unknown): string => {
 const recoveryKey = (ref: Pick<ImageDraftRecoveryRef, 'ownerKey' | 'operationId'>): string => JSON.stringify([ref.ownerKey, ref.operationId]);
 const itemKey = (item: Pick<DraftImageItem, 'draftImageId' | 'byteRevision'>): string => JSON.stringify([item.draftImageId, item.byteRevision]);
 const sameProfile = (a: ImageCapabilities | null, b: ImageCapabilities | null): boolean => !!a && !!b && a.expectedNativeSessionId === b.expectedNativeSessionId && a.modelId === b.modelId && a.controlsRevision === b.controlsRevision;
-type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void>; readonly conflicted: boolean; observed: DraftSnapshot };
+type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly StoredDraftBlobInput[]; readonly preceding: Promise<void>; readonly conflicted: boolean; observed: DraftSnapshot };
 
 /** One durable image draft owner inside the existing Session client. */
 export class ImageDraftController {
@@ -79,6 +80,7 @@ export class ImageDraftController {
   private local: DraftRecord | null = null;
   private scopeKey: string | null = null;
   private authGeneration: string | null = null;
+  private editAdmission = false;
   private epoch = 0;
   private lifetime = new AbortController();
   private network = new AbortController();
@@ -109,7 +111,7 @@ export class ImageDraftController {
   private fingerprint = '';
   private readonly blobs = new Map<string, DraftBlobInput>();
   private readonly assets = new Map<string, LocalImageAssetAdapter>();
-  private readonly pendingFiles = new Map<string, { readonly item: DraftImageItem; readonly file: File }>();
+  private readonly pendingOriginals = new Map<string, PendingDraftBlobInput>();
   private validationPaused = false;
   private readonly uploadFlights = new Map<string, Promise<void>>();
   private originals: readonly DraftRecoverySnapshot[] = [];
@@ -271,20 +273,26 @@ export class ImageDraftController {
     else if (this.local && snapshot.editable?.draftId === this.local.draftId) this.local = { ...this.local, storeVersion: snapshot.editable.storeVersion, revision: snapshot.editable.revision, items: this.local.items.map(item => ({ ...item, uploadId: snapshot.editable!.items.find(saved => saved.draftImageId === item.draftImageId)?.uploadId ?? item.uploadId })) };
     const retained = new Set([...(snapshot.editable?.items ?? []), ...(snapshot.frozen?.items ?? []), ...(this.local?.items ?? [])].map(itemKey));
     for (const [key, asset] of this.assets) if (!retained.has(key)) { asset.release(); this.assets.delete(key); }
-    for (const key of this.pendingFiles.keys()) if (!retained.has(key)) this.pendingFiles.delete(key);
     const referencedBlobs = new Set([...(snapshot.editable?.items ?? []), ...(snapshot.frozen?.items ?? []), ...(this.local?.items ?? [])].map(item => item.blobId));
     for (const key of this.blobs.keys()) if (!referencedBlobs.has(key)) this.blobs.delete(key);
+    for (const key of this.pendingOriginals.keys()) if (!referencedBlobs.has(key)) this.pendingOriginals.delete(key);
     this.publish();
   }
-  private clearAssets(): void { for (const asset of this.assets.values()) asset.release(); this.assets.clear(); this.blobs.clear(); this.pendingFiles.clear(); this.validationPaused = false; }
+  private clearAssets(): void { for (const asset of this.assets.values()) asset.release(); this.assets.clear(); this.blobs.clear(); this.pendingOriginals.clear(); this.validationPaused = false; }
   private validationInterrupted(error: unknown): boolean {
     return !this.options.getContext()?.canEdit || error instanceof Error && error.name === 'AbortError' || !!error && typeof error === 'object' && 'code' in error && ['access_pending', 'access_revoked'].includes(String(error.code));
+  }
+  private originalsFor(draft: DraftRecord): StoredDraftBlobInput[] {
+    return draft.items.flatMap(item => {
+      const blob = item.blobId ? this.blobs.get(item.blobId) ?? this.pendingOriginals.get(item.blobId) : undefined;
+      return blob ? [blob] : [];
+    });
   }
   /** Capture only content whose local write admission was already established. */
   private capturePendingWrite(): PendingDraftWrite | null {
     const context = this.options.getContext(), base = this.saved?.editable;
     if (!this.dirty || !base || !this.local || this.local.draftId !== base.draftId || !context?.canEdit || context.target.actorUserId !== this.saved!.owner.identity.target.actorUserId || context.target.serverOrigin !== this.saved!.owner.identity.target.serverOrigin) return null;
-    return { writeId: crypto.randomUUID(), owner: this.saved!.owner, base, draft: this.local, blobs: this.local.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []), preceding: this.writes, conflicted: this.conflict, observed: this.saved! };
+    return { writeId: crypto.randomUUID(), owner: this.saved!.owner, base, draft: this.local, blobs: this.originalsFor(this.local), preceding: this.writes, conflicted: this.conflict, observed: this.saved! };
   }
   private retireWrite(captured: PendingDraftWrite | null, action?: { readonly context: ImageDraftContext; readonly epoch: number }): Promise<void> {
     if (!captured) return Promise.resolve();
@@ -338,7 +346,8 @@ export class ImageDraftController {
   private syncOwner = async (): Promise<void> => {
     if (this.closed) return;
     const c = this.options.getContext();
-    if (!c) { if (!this.lifetime.signal.aborted) { this.resetWrites(); this.epoch++; } this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
+    if (!c) { this.editAdmission = false; if (!this.lifetime.signal.aborted) { this.resetWrites(); this.epoch++; } this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
+    const admitted = c.canEdit && !this.editAdmission; this.editAdmission = c.canEdit;
     const key = draftOwnerKey(c.identity), fingerprint = JSON.stringify([key, c.authorizationGeneration, c.active, c.canEdit, c.canSend, c.mode, c.expectedTurnId, c.capabilities]);
     if (fingerprint === this.fingerprint && (this.restoreComplete || this.loadFailed || this.loading || !c.canEdit)) { if (this.loading) await this.loading; await this.resumeValidation(); this.publish(); return; }
     this.fingerprint = fingerprint;
@@ -352,11 +361,15 @@ export class ImageDraftController {
       await this.startLoad(c, this.epoch);
       return;
     }
-    if (this.authGeneration !== c.authorizationGeneration) { this.resetWrites(); this.epoch++; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; if (!this.restoreComplete) this.loadFailed = false; }
+    if (this.authGeneration !== c.authorizationGeneration || admitted) { this.resetWrites(); this.epoch++; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; this.restoreComplete = false; this.loadFailed = false; }
     if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
     if (!this.networkAllowed()) this.network.abort();
     else if (this.network.signal.aborted) this.network = new AbortController();
-    if (!this.restoreComplete && !this.loadFailed && (!this.loading || this.loadingEpoch !== this.epoch)) { await this.startLoad(c, this.epoch); return; }
+    if (!this.restoreComplete && !this.loadFailed && (!this.loading || this.loadingEpoch !== this.epoch)) {
+      await this.startLoad(c, this.epoch);
+      if (c.canEdit && this.saved && this.dirty && !this.conflict && !this.loadFailed) await this.flush();
+      return;
+    }
     this.publish();
     await this.resumeValidation();
     if (c.canEdit && this.saved && this.dirty && !this.conflict) await this.flush();
@@ -379,12 +392,7 @@ export class ImageDraftController {
     let deferred = false;
     const readback = this.writes.catch(() => {}).then(async () => {
       if (!this.current(epoch)) return;
-      let snapshot: DraftSnapshot | null;
-      try { snapshot = await this.store.readExisting(c.identity); }
-      catch (error) {
-        if (!this.current(epoch) || !c.canEdit || !(error instanceof DraftStoreError) || error.code !== 'blocked') throw error;
-        snapshot = await this.store.reauthorizeOwner(c.identity);
-      }
+      let snapshot = c.canEdit ? await this.store.reconcileAuthorizedOwner(c.identity, () => this.current(epoch) && this.sameActionOwner(c)) : await this.store.readExisting(c.identity);
       if (!this.current(epoch)) return;
       this.loadFailed = false;
       if (this.options.getContext()?.canEdit) await this.store.collectRecoveryResources(c.identity);
@@ -416,7 +424,7 @@ export class ImageDraftController {
       }
       const retired = this.retiringDrafts.get(snapshot.owner.ownerKey);
       if (retired) {
-        this.local = retired.draft; for (const blob of retired.blobs) this.blobs.set(blob.blobId, blob);
+        this.local = retired.draft; for (const blob of retired.blobs) { if (isValidatedDraftBlob(blob)) this.blobs.set(blob.blobId, blob); else this.pendingOriginals.set(blob.blobId, blob); }
         this.dirty = true; this.error = 'image_draft_unsaved'; this.conflict = snapshot.editable?.revision !== retired.base.revision; this.publish();
       }
     });
@@ -476,7 +484,7 @@ export class ImageDraftController {
       if (!this.local || !this.saved?.editable) throw new Error('image_draft_unavailable');
       const epoch = this.epoch, version = this.writeVersion, draft = this.local, before = this.saved.editable;
       const input = { draftId: draft.draftId, expectedStoreVersion: before.storeVersion, text: draft.text, items: draft.items, rejectedCandidates: draft.rejectedCandidates, overflowRejectedCount: draft.overflowRejectedCount,
-        blobs: draft.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []) };
+        blobs: this.originalsFor(draft) };
       let snapshot: DraftSnapshot;
       try { snapshot = await this.store.saveDraft(this.saved.owner, input); }
       catch (error) {
@@ -518,7 +526,7 @@ export class ImageDraftController {
       if (!saved.editable) { this.conflict = true; this.error = 'image_submission_pending'; this.publish(); return; }
       this.local = { ...this.local, draftId: saved.editable.draftId, storeVersion: saved.editable.storeVersion };
     }
-    await this.resumeValidation(); await this.flush(); await this.prepareUploads();
+    await this.flush(); await this.restore(this.epoch); await this.prepareUploads();
   };
 
   addFiles = async (files: readonly File[], text: string): Promise<void> => {
@@ -534,52 +542,23 @@ export class ImageDraftController {
       for (const file of files) {
         const id = crypto.randomUUID(), label = safeImageLabel(file.name, id);
         if (items.length >= 8) { if (rejected.length < 32) rejected.push({ candidateId: id, label, reason: 'image_count_limit' }); else overflow++; continue; }
-        const item: DraftImageItem = { draftImageId: id, imageId: crypto.randomUUID(), byteRevision: '1', label, blobId: null, validation: 'pending', error: null, uploadId: null };
-        items.push(item); this.pendingFiles.set(itemKey(item), { item, file });
+        const validSize = file.size > 0 && file.size <= 10 * 1024 * 1024;
+        const item: DraftImageItem = { draftImageId: id, imageId: crypto.randomUUID(), byteRevision: '1', label, blobId: validSize ? crypto.randomUUID() : null, validation: validSize ? 'pending' : 'bytes_invalid', error: validSize ? null : 'image_byte_limit', uploadId: null };
+        items.push(item);
+        if (item.blobId) this.pendingOriginals.set(item.blobId, { blobId: item.blobId, blob: file, byteLength: file.size, byteRevision: item.byteRevision, validation: 'pending' });
       }
       this.edit({ ...this.local, items, rejectedCandidates: rejected, overflowRejectedCount: overflow });
-      await this.flush().catch(() => {});
-      if (!this.current(epoch)) return;
-      await this.validatePendingFiles();
+      await this.flush();
+      if (!this.current(epoch) || this.dirty) return;
+      await this.restore(epoch);
       if (this.current(epoch)) await this.prepareUploads();
     } catch (error) { if (this.sameActionOwner(original)) this.fail(error); }
   };
-  private validatePendingFiles(): Promise<void> {
-    const epoch = this.epoch;
-    const validate = async () => {
-      for (const [key, candidate] of [...this.pendingFiles]) {
-          if (!this.current(epoch) || !this.options.getContext()?.canEdit) return;
-          if (!this.local?.items.some(item => itemKey(item) === key)) { this.pendingFiles.delete(key); continue; }
-          let asset: LocalImageAssetAdapter | null = null;
-          try {
-            if (candidate.file.size < 1 || candidate.file.size > 10 * 1024 * 1024) throw new Error('image_byte_limit');
-            this.assets.get(key)?.release();
-            asset = this.options.createAsset(candidate.file, candidate.item.draftImageId, candidate.item.byteRevision); this.assets.set(key, asset); this.publish();
-            const metadata = await asset.validate(this.lifetime.signal);
-            if (!this.current(epoch) || !this.local?.items.some(item => itemKey(item) === key)) { asset.release(); if (this.assets.get(key) === asset) this.assets.delete(key); continue; }
-            const original: DraftBlobInput = { ...metadata, blobId: crypto.randomUUID(), blob: candidate.file, byteRevision: candidate.item.byteRevision };
-            this.blobs.set(original.blobId, original);
-            this.edit({ ...this.local, items: this.local.items.map(item => item.draftImageId === candidate.item.draftImageId ? { ...item, blobId: original.blobId, label: safeImageLabel(candidate.file.name, item.draftImageId, metadata.mediaType), validation: 'valid', error: null } : item) });
-            this.pendingFiles.delete(key);
-          } catch (error) {
-            asset?.release(); if (this.assets.get(key) === asset) this.assets.delete(key);
-            if (!this.current(epoch) || !this.local) return;
-            if (this.validationInterrupted(error)) { this.publish(); return; }
-            this.pendingFiles.delete(key);
-            this.edit({ ...this.local, items: this.local.items.map(item => item.draftImageId === candidate.item.draftImageId ? { ...item, validation: 'bytes_invalid', error: message(error) } : item) });
-          }
-          await this.flush().catch(() => {});
-      }
-    };
-    const validation = this.validations.catch(() => {}).then(validate); this.validations = validation;
-    return validation;
-  }
   private async resumeValidation(): Promise<void> {
-    if (!this.options.getContext()?.canEdit || !this.current(this.epoch) || !this.pendingFiles.size && !this.validationPaused) return;
-    if (this.pendingFiles.size) await this.validatePendingFiles();
-    if (this.validationPaused) await this.restore(this.epoch);
-    if (this.saved && this.dirty && !this.conflict) await this.flush();
-    await this.prepareUploads();
+    if (!this.options.getContext()?.canEdit || !this.current(this.epoch) || !this.pendingOriginals.size && !this.validationPaused) return;
+    if (this.dirty) await this.flush();
+    if (this.dirty) return;
+    await this.restore(this.epoch); await this.prepareUploads();
   }
   private restore(epoch: number): Promise<void> {
     const validation = this.validations.catch(() => {}).then(() => this.restoreItems(epoch)); this.validations = validation;
@@ -591,25 +570,31 @@ export class ImageDraftController {
     const items = [...(this.saved?.editable?.items ?? []), ...(this.saved?.frozen?.items ?? [])];
     for (const item of items) {
       if (!item.blobId || this.assets.has(itemKey(item)) && this.blobs.has(item.blobId) && item.validation === 'valid') continue;
-      const original = await this.store.readBlob(this.saved!.owner, item.blobId);
+      const owner = this.saved!.owner, draftId = this.saved!.editable?.draftId;
+      const original = await this.store.readBlob(owner, item.blobId);
       if (!this.current(epoch)) return;
       if (!original) continue;
       let asset: LocalImageAssetAdapter | null = null, validationChanged = false;
       try {
         this.assets.get(itemKey(item))?.release();
-        asset = this.options.createAsset(original.blob, item.draftImageId, item.byteRevision, original); this.assets.set(itemKey(item), asset);
+        asset = this.options.createAsset(original.blob, item.draftImageId, item.byteRevision, isValidatedDraftBlob(original) ? original : undefined); this.assets.set(itemKey(item), asset);
         const metadata = await asset.validate(this.lifetime.signal);
         if (!this.current(epoch)) { asset.release(); if (this.assets.get(itemKey(item)) === asset) this.assets.delete(itemKey(item)); return; }
-        if (metadata.byteLength !== original.byteLength || metadata.sha256 !== original.sha256 || metadata.mediaType !== original.mediaType || metadata.width !== original.width || metadata.height !== original.height || metadata.frameCount !== original.frameCount) throw new Error('image_bytes_invalid');
-        this.blobs.set(original.blobId, original);
+        if (!this.options.getContext()?.canEdit) { asset.release(); this.assets.delete(itemKey(item)); this.validationPaused = true; return; }
+        if (metadata.byteLength !== original.byteLength || isValidatedDraftBlob(original) && (metadata.sha256 !== original.sha256 || metadata.mediaType !== original.mediaType || metadata.width !== original.width || metadata.height !== original.height || metadata.frameCount !== original.frameCount)) throw new Error('image_bytes_invalid');
+        const verified = isValidatedDraftBlob(original) ? original : await this.store.validateBlob(owner, { draftId: draftId!, draftImageId: item.draftImageId, itemIncarnation: item.incarnation!, blobId: original.blobId, byteRevision: item.byteRevision, originalId: original.originalId! }, metadata);
+        if (!this.current(epoch)) { asset.release(); if (this.assets.get(itemKey(item)) === asset) this.assets.delete(itemKey(item)); return; }
+        this.blobs.set(original.blobId, verified); this.pendingOriginals.delete(original.blobId);
         if (this.local?.items.some(candidate => itemKey(candidate) === itemKey(item) && (candidate.validation !== 'valid' || candidate.error))) {
-          this.edit({ ...this.local, items: this.local.items.map(candidate => itemKey(candidate) === itemKey(item) ? { ...candidate, validation: 'valid', error: null } : candidate) });
+          this.edit({ ...this.local, items: this.local.items.map(candidate => itemKey(candidate) === itemKey(item) ? { ...candidate, label: safeImageLabel(candidate.label, candidate.draftImageId, metadata.mediaType), validation: 'valid', error: null } : candidate) });
           validationChanged = true;
         }
       } catch (error) {
         asset?.release(); if (this.assets.get(itemKey(item)) === asset) this.assets.delete(itemKey(item));
         if (!this.current(epoch)) return;
         if (this.validationInterrupted(error)) { this.validationPaused = true; this.publish(); return; }
+        if (error instanceof DraftStoreError) { this.fail(error); return; }
+        this.pendingOriginals.delete(original.blobId);
         if (this.local?.items.some(candidate => candidate.draftImageId === item.draftImageId)) { this.edit({ ...this.local, items: this.local.items.map(candidate => candidate.draftImageId === item.draftImageId ? { ...candidate, validation: 'bytes_invalid', error: message(error) } : candidate) }); await this.flush(); }
         else this.error = message(error);
       }

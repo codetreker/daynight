@@ -25,7 +25,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 
 本地图片使用 `pageImageStore.createLocalAsset`，明确没有服务 `SessionResource`，与已保存图片共享字节检查、解码和页面预算。草稿仅在首次加入图片时从旧文字路径激活；已有持久 owner 在当前真实身份确认后恢复。移除最后一张图片不会丢失已激活 owner 的文字或原发送屏障。
 
-数据流为：用户添加 → 保留有序本地项 → 有界字节/解码验证 → 原子保存 Blob 和草稿 → 创建上传身份并保存 → 按服务确认偏移上传 → complete 匹配 → 显式 Send → 原子冻结操作和引用 → 一次命令派发 → 原生接受结算。存储、上传与消息是三个结果；一个成功不推导另两个成功。
+数据流为：用户添加 → 原子保存未校验原件和有序草稿项 → 有界字节/解码验证 → 按原 owner 和字节版本保存已校验元数据 → 创建上传身份并保存 → 按服务确认偏移上传 → complete 匹配 → 显式 Send → 原子冻结操作和引用 → 一次命令派发 → 原生接受结算。保存原件不代表图片有效或允许上传；存储、上传与消息是三个结果，一个成功不推导另两个成功。
 
 ## 身份、版本与持久模型
 
@@ -41,17 +41,19 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 
 ### IndexedDB 数据
 
-数据库 `daynight-session-drafts` 当前 schemaVersion=2，以下为浏览器内部数据，不扩展 wire DTO。版本 1 升级保留已有 owner、草稿、原件、上传和提交记录。版本升级要求旧连接处理 versionchange 后关闭；旧版程序再以版本 1 打开时被拒绝，不能把新的 `recovery_only` 访问状态误当作普通撤权后重新建立可写草稿。升级被其他连接阻塞或遇到更高未知版本时保留数据并拒绝草稿读取和发送，不删除数据库或降级重建。
+数据库 `daynight-session-drafts` 当前 schemaVersion=3，以下为浏览器内部数据，不扩展 wire DTO。版本 1、2 升级保留已有 owner、草稿、原件、上传和提交记录。版本升级要求旧连接处理 versionchange 后关闭；旧版程序再以版本 1 或 2 打开时被拒绝。版本 1 不能把新的 `recovery_only` 访问状态误当作普通撤权后重新建立可写草稿；版本 2 不能把未校验原件当作完整图片元数据读写。升级被其他连接阻塞或遇到更高未知版本时保留数据并拒绝草稿读取和发送，不删除数据库或降级重建。
 
 | store | key、值与不变量 |
 | --- | --- |
 | `owners` | ownerKey → accessEpoch、当前 editableDraftId、unresolvedSubmissionId、blocked 原因、持久 recoveryOnly 历史访问限制、已分配本地字节计数。accessEpoch 是本地失效代次，不是权限令牌；真正授权始终来自现有身份入口。 |
 | `drafts` | ownerKey+draftId → 正 Decimal revision、text、有序 items、保存时间、editable/frozen/detached 状态、未确认放弃的 rejectedCandidates（稳定候选ID/安全label/原因）及超额拒绝数量。一个 owner 最多一个 editable 和一个未结算 frozen 提交；不会建立自动发送队列。 |
-| `blobs` | ownerKey+blobId → 不可变原始 Blob、长度/摘要/真实 MIME/尺寸、byteRevision 及引用集合。仅同 owner 可共享本地字节；SHA 不是授权或全局 key。 |
+| `blobs` | ownerKey+blobId → 不可变原始 Blob、长度、byteRevision 及引用集合，明确区分未校验原件与带摘要/真实 MIME/尺寸的已校验图片。未校验记录不编造图片元数据。仅同 owner 可共享本地字节；SHA 不是授权或全局 key。 |
 | `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent。没有公共 receipt revision，自有顺序不写回服务。 |
 | `submissions` | ownerKey+operationId → 完整不可变 command intent、原 ImageTarget、draftId/revision、提交文本/有序附件快照、相关 blob/upload 引用、dispatch 状态、最后观察 operation。草稿清除不能删除 unresolved 操作。 |
 
 每项附件有稳定本地 `draftImageId`、本地字节版本、label、blobId 或显式 null、校验状态、uploadId 或 null。wire imageId 是该条待发送图片出现身份，重新准备同一次未发送附件可保留 imageId、更换 uploadId；已发送后的新消息必须新 imageId。选择相同 bytes 两次也是两个有序项，按两份长度计入消息限制。
+
+接纳的新候选在开始异步校验前分配稳定 blobId，并把原 File 的字节和 pending 项作为同一内容提交。原件持有与图片验证资格分开：刷新、关闭重开或切换 native 目标不会只留下无字节的 pending 名称。校验仍在事务外完成；结果只能提升原 owner、访问代次、草稿项及同一 blobId/byteRevision 对应的原件，不能复活已移除或替换的项。未校验记录不能用于上传身份分配或冻结发送。恢复时从原件重新校验；切换目标不要求旧身份继续后台解码，回到有权访问的原 owner 或明确移动到当前草稿后再恢复校验。显式移动保持 pending 状态并清除旧上传资格，由新目标完整验证后重新准备。
 
 revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准备等用户内容变更加一；上传进度、保存提示、查询和能力刷新不增加内容 revision。draft、upload、owner 各自有独立 storeVersion 用于 CAS；进度只推进所属 upload.storeVersion，不推进 draft.storeVersion，不引发文字冲突。owner.storeVersion只在指针/屏障/资格改变时推进；不能把 upload progress 当草稿内容版本。达到 int64 上限时只允许在无冻结提交条件下新建 draftId，不绕回旧 revision。
 
@@ -67,7 +69,7 @@ revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准
 
 QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均保留当前内存和最后成功版本。禁用含图上传/发送，允许编辑、预览、移除及重试保存；不能声称持久成功或悄悄退成纯文字。独立纯文字且未进入新图片草稿时保留旧文字路径；浏览器根本不支持 IndexedDB 时仍提供纯文字输入。具有 IndexedDB 的浏览器恢复失败时，不能证明原 owner 没有图片或未知提交，因此阻止该 owner 发送并保留错误和重试入口，不能把读取失败当成空草稿后发送纯文字。高版本库禁止破坏式降级，versionchange 关闭连接，重新打开迁移后才能继续。
 
-恢复读取尚未完成时，正文输入、建议填入与公开 setDraft 入口均不接受新的文字修改；完成后再按当前草稿权限开放。恢复先确认账户和 owner 读取资格，再读元数据与按需 Blob；逐项重新检查长度/hash/格式、字节引用和 target，complete 凭证也需 GET 当前状态后才获发送资格。缺 Blob、长度/hash 不符则 `bytes_missing`/`bytes_invalid` 本地状态，显示原顺序/名称并禁发，提供重新选择或移除，不以服务 receipt 冒充已恢复本地图。重新选择创建新的字节版本及上传身份；任何旧请求结果不得发布。网络离线且当前页面身份仍有效时本地预览/编辑可用；新页面还不能确认登录身份时先保持私有内容隐藏，联网确认后恢复，不凭 IDB 自报账户解锁。
+恢复读取尚未完成时，正文输入、建议填入与公开 setDraft 入口均不接受新的文字修改；完成后再按当前草稿权限开放。恢复先确认账户和 owner 读取资格，再读元数据与按需 Blob；未校验原件执行完整验证，已校验原件逐项重新检查长度/hash/格式、字节引用和 target，complete 凭证也需 GET 当前状态后才获发送资格。缺 Blob、长度/hash 不符则 `bytes_missing`/`bytes_invalid` 本地状态，显示原顺序/名称并禁发，提供重新选择或移除，不以服务 receipt 冒充已恢复本地图。重新选择创建新的字节版本及上传身份；任何旧请求结果不得发布。网络离线且当前页面身份仍有效时本地预览/编辑可用；新页面还不能确认登录身份时先保持私有内容隐藏，联网确认后恢复，不凭 IDB 自报账户解锁。
 
 ### 旧文字草稿兼容
 
@@ -155,6 +157,8 @@ unknown 时保留完整 intent、快照、bytes、引用和原操作入口；前
 将 owner accessEpoch 递增/blocked tombstone 与删除相关 drafts/blobs 的事务序列化；旧异步写回必须检查 epoch，不能在清理后重建。账户切换只清前账户私有内容，不枚举或显示给新账户；新的 tab 对另一账户只能经正式身份确认打开对应 owner。广播仅加速其它已打开 tab失效，各 tab网络响应 principal检查/focus复核仍执行。已提交请求与撤权的先后由服务决定，浏览器 abort 不声称撤回 Provider 已接受数据。
 
 对 unresolved 操作，换账户/撤权可以删除敏感正文和 Blob，但保留不含正文、图片label/摘要/凭证的最小 owner+operationId+fence关联 tombstone。原账户正式重新获权且清理完成后，按相同 origin、actor、resolver、实际 Session 及原 claimId/testExecutionId，将合法历史记录开放为 `recovery_only`，仅纳入不高于当前已验证代次的记录。已经领取派发或结果未知的操作只查询原 fence 和 operationId 并按原回执结算；prepared 记录不查询、不派发，只能按原操作明确取消，避免其永久占用同一执行的发送屏障。当前 executionGeneration 或 native 目标变化不应使这些原操作永久消失。
+
+每次正式确认 Session 操作权限后的草稿加载和发送前复核，都先幂等协调该恢复范围的历史 tombstone，再发现原操作和执行屏障。同 owner 从只读恢复操作权也重新执行协调，不要求授权代次一定变化；事务开始和提交前均复核原 controller、owner、授权代次和当前操作权，期间失效便回滚，不能用早先捕获的权限清除后来建立的撤权屏障。此步骤不依赖当前 owner 是否存在、是否可读或是否抛出 blocked，也不依赖账户级清理标记仍然存在；登录后先打开其他 Session 不能隐藏本 Session 的原操作。重复协调不推进已开放历史记录的 accessEpoch，不使其他标签页持有的原查询身份失效。当前 owner 不存在时仍返回空记录，不为未激活的纯文字路径创建图片草稿。
 
 `recovery_only` 由存储层统一限制：保留原操作身份和执行归属，不开放普通 owner 读取、编辑、上传、冻结或领取派发；查询结算或取消也不建立旧 owner 的新 editable。这一历史访问限制独立于后续撤权原因保存；操作结清、再次注销或重新验证均不能使旧 owner 重新变成可编辑身份。它不恢复已清除的正文、图片或上传凭证，不把旧代次重新授权为发送目标。其他账户、服务、Session、resolver 或 claim/testExecution 不共享此恢复资格。服务 unknown引用仍按公共协议保留。若所属 Session 被正式删除，停止后续查询并清本地 tombstone，重新验证也不能解除删除屏障；不能据此声称原生从未执行。IDB 清理失败保持 blocked 并报告本地清理未完成，后续打开先完成清理，不先渲染；不得用“已删除”掩盖失败。
 

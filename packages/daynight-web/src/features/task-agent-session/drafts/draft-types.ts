@@ -20,6 +20,7 @@ export type DraftOwner = DraftHandle & {
   readonly legacyImported: boolean;
 };
 export type DraftImageItem = {
+  readonly incarnation?: string;
   readonly draftImageId: string;
   readonly imageId: string;
   readonly byteRevision: string;
@@ -43,6 +44,7 @@ export type DraftRecord = {
   readonly savedAt: number;
 };
 export type DraftBlobInput = {
+  readonly validation?: 'verified';
   readonly blobId: string;
   readonly blob: Blob;
   readonly byteLength: number;
@@ -53,7 +55,12 @@ export type DraftBlobInput = {
   readonly frameCount: number;
   readonly byteRevision: string;
 };
-export type DraftBlob = DraftBlobInput & { readonly ownerKey: string; readonly references: readonly string[] };
+export type PendingDraftBlobInput = Pick<DraftBlobInput, 'blobId' | 'blob' | 'byteLength' | 'byteRevision'> & { readonly validation: 'pending' };
+export type StoredDraftBlobInput = DraftBlobInput | PendingDraftBlobInput;
+export type DraftBlob = StoredDraftBlobInput & { readonly ownerKey: string; readonly references: readonly string[]; readonly originalId?: string };
+export type DraftBlobValidationRef = { readonly draftId: string; readonly draftImageId: string; readonly itemIncarnation: string; readonly blobId: string; readonly byteRevision: string; readonly originalId: string };
+export type DraftImageMetadata = Pick<DraftBlobInput, 'byteLength' | 'sha256' | 'mediaType' | 'width' | 'height' | 'frameCount'>;
+export const isValidatedDraftBlob = (blob: StoredDraftBlobInput): blob is DraftBlobInput => blob.validation !== 'pending';
 export type DraftUploadAction =
   | { readonly kind: 'prepare' | 'complete' | 'query' | 'release' }
   | { readonly kind: 'chunk'; readonly offset: string; readonly length: number; readonly sha256: string };
@@ -111,7 +118,7 @@ export type DraftWrite = {
   readonly items: readonly DraftImageItem[];
   readonly rejectedCandidates: readonly RejectedDraftCandidate[];
   readonly overflowRejectedCount: number;
-  readonly blobs?: readonly DraftBlobInput[];
+  readonly blobs?: readonly StoredDraftBlobInput[];
 };
 export type DraftFreeze = {
   readonly draftId: string;
