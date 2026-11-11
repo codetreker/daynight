@@ -3,6 +3,7 @@ import { nearestOverlayOwner } from '../../app/overlay';
 import { browserNavigation, type DraftScope } from '../../app/navigation';
 import { parseRoute } from '../../app/router';
 import { readResourceHistory } from '../../app/page-history';
+import { isRetiredResourceEntry } from '../../app/use-page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { TaskConfirmation } from './TaskConfirmation';
@@ -27,7 +28,7 @@ export const ResourceChildDraftHost = ({ children }: { readonly children: ReactN
   return <ResourceHostContext.Provider value={value}>{children}</ResourceHostContext.Provider>;
 };
 
-type DraftContext = { readonly scope: DraftScope; readonly signal: AbortSignal; readonly survives: (url: URL, view?: unknown) => boolean };
+type DraftContext = { readonly scope: DraftScope; readonly signal: AbortSignal; readonly survives: (url: URL, view?: unknown, entryId?: string) => boolean };
 const Context = createContext<DraftContext | null>(null);
 
 export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
@@ -37,7 +38,7 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
   const host = useContext(ResourceHostContext);
   const value = useMemo<DraftContext>(() => ({
     scope: { identity, projectId, taskId }, signal: identity.signal,
-    survives: (url, view) => {
+    survives: (url, view, entryId) => {
       const target = parseRoute(url.pathname, url.search);
       const samePage = (target.kind === 'task' || target.kind === 'attachment') && target.projectId === projectId;
       if (host === null) return page && samePage && target.taskId === taskId;
@@ -48,6 +49,7 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
       try {
         const selection = readResourceHistory(view, identity.userId, projectId, host.rootId);
         if (selection === null) return false;
+        if (entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
         if (host.kind === 'root-child') return selection.goalChildren?.task?.id === taskId;
         const external = selection.externalGoal;
         if (external === null || external.id !== host.parentId) return false;

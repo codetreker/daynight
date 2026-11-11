@@ -257,7 +257,7 @@ describe('window navigation admission', () => {
     owner.setView(tokens);
     const registration = draft({ survives: vi.fn((_url, view) => view === tokens) }); owner.register(registration);
     arrival(source, '/account');
-    expect(registration.survives).toHaveBeenCalledWith(expect.any(URL), profile);
+    expect(registration.survives).toHaveBeenCalledWith(expect.any(URL), profile, source.__daynightNavigation.entryId);
     expect(owner.snapshot().view).toEqual(tokens);
     expect(owner.decision()).not.toBeNull();
     owner.confirm();

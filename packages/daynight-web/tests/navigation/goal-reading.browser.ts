@@ -27,6 +27,7 @@ async function expectHit(target: Locator) {
 async function install(page: Page) {
   let details = all;
   let currentGraph = graph;
+  let epoch = taskSyncEpoch(projectId);
   let forbiddenGoal = false;
   let goalReads = 0;
   const statusWrites: { status: string; version: number }[] = [];
@@ -48,7 +49,7 @@ async function install(page: Page) {
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status` && route.request().method() === 'PUT') {
       if (rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-2' } }, 403);
       const request = route.request().postDataJSON() as { status: 'todo' | 'in_progress' | 'done' | 'cancelled'; version: number };
@@ -82,7 +83,7 @@ async function install(page: Page) {
         if (failGoalRead) { failedGoalReads++; return route.abort('failed'); }
         if (forbiddenGoal) return send({ error: { code: 'forbidden', message: 'Forbidden', requestId: '00000000-0000-4000-8000-000000000099' } }, 403);
       }
-      return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+      return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
     }
     if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path.endsWith('/attachments')) return send({ items: [{ path: 'notes.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }], nextCursor: null });
@@ -91,7 +92,7 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, addActiveChain: () => {
+  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addActiveChain: () => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
@@ -584,6 +585,37 @@ test('standalone Goal child keeps its draft across tab and file history and prot
   await expect(child).toBeVisible();
   await child.getByRole('tab', { name: 'Steps', exact: true }).click();
   await expect(draft).toHaveValue('Retained child draft');
+});
+
+test('a new child draft is protected from a retired same-child history entry', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  const child = page.getByRole('dialog', { name: 'Standalone task' });
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  fixture.advanceEpoch();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(child).toHaveCount(0);
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await child.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('New draft after recovery');
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await page.goBack();
+  await expect(draft).toHaveValue('New draft after recovery');
+  const entry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  await page.evaluate(() => history.go(-3));
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(entry);
+  await expect(draft).toHaveValue('New draft after recovery');
+  await page.evaluate(() => history.go(-3));
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0);
 });
 
 test('standalone Goal restores the external Goal dialog and its reading selection', async ({ page }) => {

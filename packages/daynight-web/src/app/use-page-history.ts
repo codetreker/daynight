@@ -24,6 +24,12 @@ const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence 
   return fence;
 };
 
+/** A numbered entry may carry a selection from a retired project history. */
+export const isRetiredResourceEntry = (scope: TaskCacheScope, projectId: string, entryId: string): boolean => {
+  const fence = resourceFence(scope, projectId);
+  return fence.entries.get(entryId) !== fence.generation;
+};
+
 /** The active account page consumes only admitted, identity-bound selections. */
 export function useAccountHistory(userId: string, active: boolean) {
   const location = useBrowserLocation();
@@ -76,7 +82,7 @@ export function useResourceHistory(userId: string, projectId: string, taskId: st
     catch { error = true; }
   }
   const readSelection = selected;
-  const retired = fence !== null && location.entryId !== null && selected !== null && fence.entries.get(location.entryId) !== generation;
+  const retired = scope !== undefined && location.entryId !== null && selected !== null && isRetiredResourceEntry(scope, projectId, location.entryId);
   if (retired) selected = null;
   // URL navigation creates an unpopulated controlled entry. Carry the current
   // nested selection only within the same active resource, then save it there.

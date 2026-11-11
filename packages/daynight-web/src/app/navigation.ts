@@ -8,7 +8,7 @@ export type DirtyDraft = {
   readonly scope: DraftScope;
   readonly isDirty: () => boolean;
   readonly discard: () => void;
-  readonly survives: (destination: URL, view?: unknown) => boolean;
+  readonly survives: (destination: URL, view?: unknown, entryId?: string) => boolean;
   readonly signal?: AbortSignal;
 };
 type Entry = { readonly url: URL; readonly index: number | null; readonly entryId: string | null; readonly view: unknown };
@@ -107,8 +107,9 @@ export class BrowserNavigation {
     this.location = this.toLocation(entry);
     for (const listener of this.listeners) listener();
   }
-  private blockers(destination?: URL, view?: unknown): DirtyDraft[] {
-    return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined || !draft.survives(destination, view)));
+  private blockers(destination?: URL, view?: unknown, entryId?: string): DirtyDraft[] {
+    return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined ||
+      !(entryId === undefined ? draft.survives(destination, view) : draft.survives(destination, view, entryId))));
   }
   /** Register live readers; unregistering releases ownership and never decides to discard. */
   register(draft: DirtyDraft): () => void {
@@ -237,7 +238,7 @@ export class BrowserNavigation {
       this.adopt(entry);
       return;
     }
-    const drafts = this.blockers(entry.url, entry.view);
+    const drafts = this.blockers(entry.url, entry.view, entry.entryId ?? undefined);
     if (drafts.length === 0) {
       this.pending = null;
       this.notifyDecision();
