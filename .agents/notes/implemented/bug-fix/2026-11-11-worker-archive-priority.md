@@ -13,7 +13,11 @@ from starting after its predecessor has stopped.
 ## Decision
 
 The Worker defers historical backfill while cleanup remains outstanding or its
-latest capacity observation is full. Cleanup retains its original ownership and
+latest capacity observation is full. The independent maintenance owner checks
+that condition again immediately before starting an attempt; it never interrupts
+an upload already in progress. Its nonblocking ownership and shutdown behavior
+remain as described in the [maintenance decision](../architecture/2026-11-11-worker-archive-maintenance.md).
+Cleanup retains its original ownership and
 capacity until archival and worktree removal are confirmed. The scheduling and
 request rules are owned by the [Worker design](../../../../docs/design/daynight-worker.md).
 

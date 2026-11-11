@@ -15,7 +15,7 @@ import { parseSessionResource, sessionBinding, type SessionResource } from "../.
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
 import type { PendingContent, ControlledResourceLease } from "../pending-content.js";
-import { writeDurableJson } from "../pending-content.js";
+import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { NativeInput, NativeImagePart } from "../providers/types.js";
 import { bundledImageDecoder, type ImageDecoder } from "./image-decoder.js";
 

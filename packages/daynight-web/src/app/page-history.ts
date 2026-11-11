@@ -1,12 +1,20 @@
 import { canonicalId } from '../api/validation';
 
 export type AccountTab = 'profile' | 'tokens' | 'prompt';
-export type PageHistoryState = {
+export type WorkerSection = 'overview' | 'configuration';
+type AccountHistoryState = {
   readonly version: 1;
   readonly userId: string;
   readonly pageKey: 'account';
   readonly selection: { readonly tab: AccountTab };
 };
+type WorkerHistoryState = {
+  readonly version: 1;
+  readonly userId: string;
+  readonly pageKey: `worker:${string}`;
+  readonly selection: { readonly workerId: string; readonly section: WorkerSection };
+};
+export type PageHistoryState = AccountHistoryState | WorkerHistoryState;
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -22,3 +30,14 @@ export function readAccountHistory(value: unknown, userId: string): AccountTab |
 }
 
 export const accountHistory = (userId: string, tab: AccountTab): PageHistoryState => ({ version: 1, userId, pageKey: 'account', selection: { tab } });
+
+export function readWorkerHistory(value: unknown, userId: string, workerId: string): WorkerSection | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== `worker:${workerId}`) return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration')) throw new Error('Invalid worker navigation state.');
+  return selection.section;
+}
+
+export const workerHistory = (userId: string, workerId: string, section: WorkerSection): PageHistoryState => ({ version: 1, userId, pageKey: `worker:${workerId}`, selection: { workerId, section } });

@@ -4,6 +4,7 @@ import type { Project } from '../src/api/types';
 import type { WorkerConfigurationKey, WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
 import { ConfigurationProjectsDialog } from '../src/features/workers/configuration/ConfigurationDialogs';
+import { browserNavigation } from '../src/app/navigation';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheError } from '../src/features/task-cache/database';
@@ -330,11 +331,13 @@ describe('Worker configuration form', () => {
 });
 
 describe('Worker detail configuration integration', () => {
+  beforeEach(() => { browserNavigation().dispose(); history.replaceState(null, '', `/workers/${workerId(1)}`); });
+  afterEach(() => browserNavigation().dispose());
   it.each([['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']] as const)('labels the %s Worker using its reported platform in both languages', async (platform, name) => {
     const detail = workerDetail(); detail.worker.platform = platform; detail.worker.telemetry.platform = platform;
     vi.stubGlobal('navigator', { ...navigator, platform: 'a different browser platform' });
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
-    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    const view = renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: `Prefer ${name} tasks` })).toBeInTheDocument();
     view.setLocale('zh-CN');
@@ -345,10 +348,11 @@ describe('Worker detail configuration integration', () => {
     const first = workerDetail(1); first.worker.platform = 'macos'; first.worker.telemetry.platform = 'macos';
     const next = workerDetail(2); next.worker.platform = 'windows'; next.worker.telemetry.platform = 'windows';
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : url.endsWith(workerId(2)) ? second.promise : workerResponse(first));
-    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    const view = renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: 'Prefer macOS tasks' })).toBeInTheDocument();
-    view.rerender(<WorkerDetailPage workerId={workerId(2)} readEnabled />);
+    act(() => browserNavigation().navigate(`/workers/${workerId(2)}`));
+    view.rerender(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(2)} readEnabled />);
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
     second.resolve(workerResponse(next)); await flush();
@@ -356,7 +360,7 @@ describe('Worker detail configuration integration', () => {
   });
   it('keeps configuration available after telemetry404 and preserves its mounted draft across keyboard tabs', async () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerError(404));
-    renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
@@ -373,7 +377,7 @@ describe('Worker detail configuration integration', () => {
       if (url.endsWith('/configuration')) return ++configReads > 1 ? configRead.promise : configurationResponse(configurationResource());
       return workerError(404);
     }));
-    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    const view = renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     change('Startup arguments', '[invalid'); const args = input('Startup arguments');
     fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
@@ -381,10 +385,10 @@ describe('Worker detail configuration integration', () => {
     fireEvent.click(within(dialog).getByRole('checkbox', { name: /Project 4/ }));
     const search = within(dialog).getByRole('searchbox') as HTMLInputElement;
     fireEvent.change(search, { target: { value: 'Project 4' } }); search.focus(); search.setSelectionRange(2, 6);
-    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled={false} />);
+    view.rerender(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled={false} />);
     expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(search.selectionStart).toBe(2); expect(search.selectionEnd).toBe(6);
     expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked(); expect(args).toHaveValue('[invalid');
-    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled />); await flush();
+    view.rerender(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />); await flush();
     expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(within(dialog).queryByRole('status')).toBeNull();
     projectsRead.resolve(projectPage([project(3), project(4)])); configRead.resolve(configurationResponse(configurationResource())); await flush();
     expect(search).toHaveValue('Project 4'); expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked();
@@ -393,7 +397,7 @@ describe('Worker detail configuration integration', () => {
   });
   it('preserves existing Task links while displaying a separate configuration panel', async () => {
     const detail = workerDetail(); install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
-    renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     const taskLink = screen.getByRole('link', { name: 'Snapshot task' }), href = taskLink.getAttribute('href');
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByText('Snapshot task')).toBe(taskLink); expect(taskLink.getAttribute('href')).toBe(href); expect(taskLink).not.toBeVisible();

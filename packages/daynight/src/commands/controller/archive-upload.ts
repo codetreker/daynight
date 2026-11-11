@@ -10,7 +10,8 @@ import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journa
 import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { finalizePendingMigration, reconcilePendingContent, openPendingContent, writeDurableJson } from "./pending-content.js";
+import { finalizePendingMigration, reconcilePendingContent, openPendingContent } from "./pending-content.js";
+import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
 
 const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket): ControllerSnapshot => {
