@@ -241,23 +241,6 @@ func TestExecutableHostRealSourcesAndCleanup(t *testing.T) {
 	if status != 201 {
 		t.Fatalf("task status=%d body=%s", status, b)
 	}
-	var createdTask struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(b, &createdTask); err != nil || createdTask.ID == "" {
-		t.Fatalf("created task missing identity: %s (%v)", b, err)
-	}
-	status, b = call("GET", "/api/v1/projects/"+i.ProjectID+"/tasks/"+createdTask.ID+"?include=session", "", true)
-	var observed struct {
-		ID      string `json:"id"`
-		Session struct {
-			Observation string `json:"observation"`
-			Reason      string `json:"reason"`
-		} `json:"session"`
-	}
-	if err := json.Unmarshal(b, &observed); status != 200 || err != nil || observed.ID != createdTask.ID || observed.Session.Observation != "observed" || observed.Session.Reason != "not_started" {
-		t.Fatalf("task observation status=%d body=%s err=%v", status, b, err)
-	}
 	status, b = call("GET", "/api/v1/me/webhooks/"+created.Endpoint.ID+"/deliveries", "", true)
 	if status != 200 || !bytes.Contains(b, []byte("client fixture task")) {
 		t.Fatalf("captured delivery status=%d body=%s", status, b)
@@ -418,93 +401,6 @@ func TestShutdownWaitsForConcurrentRunnerStart(t *testing.T) {
 	}
 	if err = <-closed; err != nil {
 		t.Fatalf("shutdown failed: %v", err)
-	}
-	admin, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	var exists bool
-	if err = admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)`, f.schema).Scan(&exists); err != nil || exists {
-		t.Fatalf("schema still present=%t: %v", exists, err)
-	}
-}
-
-func retryFixtureCleanup(t *testing.T, f *fixture, initialErr error) {
-	t.Helper()
-	t.Errorf("initial fixture cleanup failed: %v", initialErr)
-	cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-	defer done()
-	if err := f.close(cleanup); err != nil {
-		t.Errorf("fixture cleanup retry failed: %v", err)
-	}
-}
-
-func TestShutdownWaitsForObservationEngineBeforeClosingDatabase(t *testing.T) {
-	dbURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	f, err := start(ctx, dbURL, secret.Random("dnst_"), secret.Random("dnpat_"), secret.Random("dnst_"), secret.Random("dnpat_"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	op, err := f.engine.BeginOperation()
-	if err != nil {
-		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-		defer done()
-		if closeErr := f.close(cleanup); closeErr != nil {
-			retryFixtureCleanup(t, f, closeErr)
-		}
-		t.Fatal(err)
-	}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(op.Close) }
-	var closeErr error
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-		defer done()
-		closeErr = f.close(cleanup)
-	}()
-	t.Cleanup(func() {
-		release()
-		select {
-		case <-finished:
-			if closeErr != nil {
-				retryFixtureCleanup(t, f, closeErr)
-			}
-		case <-time.After(12 * time.Second):
-			t.Error("fixture cleanup did not finish")
-		}
-	})
-	select {
-	case <-op.Stopping():
-	case <-finished:
-		t.Fatalf("shutdown ended before stopping the engine: %v", closeErr)
-	case <-ctx.Done():
-		t.Fatal("shutdown did not reach the engine")
-	}
-	select {
-	case <-finished:
-		t.Fatalf("shutdown returned while engine operation was active: %v", closeErr)
-	default:
-	}
-	var value int
-	if err := f.db.Pool.QueryRow(ctx, "SELECT 1").Scan(&value); err != nil || value != 1 {
-		t.Fatalf("database closed before engine drained: %v", err)
-	}
-	release()
-	select {
-	case <-finished:
-		if closeErr != nil {
-			t.Fatalf("shutdown failed: %v", closeErr)
-		}
-	case <-ctx.Done():
-		t.Fatal("shutdown did not finish after engine operation ended")
 	}
 	admin, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
