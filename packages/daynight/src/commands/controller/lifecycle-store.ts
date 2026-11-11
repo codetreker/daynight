@@ -185,13 +185,20 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     pendingContent.saveEntry(durableEntry);
     return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
   });
-  const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): void => atomic(() => {
+  const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
     const operation = getOperation(operationId);
-    if (operation?.kind !== "send_message" || !operation.payload || typeof operation.payload !== "object" || !("origin" in operation.payload)) return;
+    if (operation?.kind !== "send_message" || !operation.payload || typeof operation.payload !== "object" || !("origin" in operation.payload)) return entryId;
     const origin = operation.payload.origin;
     if (origin !== "user" && origin !== "daynight") throw new Error("Invalid persisted input origin.");
     if (nativeSessionId !== getSnapshot().nativeSessionId || !/^[a-f0-9-]{36}$/.test(entryId)) throw new Error("Native message identity differs from its original input.");
     if (!["dispatching", "unknown", "provider_accepted", "confirmed"].includes(operation.state)) throw new Error("Native message has no dispatched original input.");
+    // Native history can rebuild raw item IDs while retaining the original
+    // operation identity. Provenance and projection must reuse one durable row.
+    const original = db.prepare("SELECT entry_id,origin FROM input_message_origins WHERE operation_id=?").get(operationId) as { entry_id: string; origin: string } | undefined;
+    if (original) {
+      if (original.origin !== origin) throw new Error("Native message origin conflicts with its original input.");
+      entryId = original.entry_id;
+    }
     const existing = db.prepare("SELECT operation_id,origin FROM input_message_origins WHERE entry_id=?").get(entryId) as { operation_id: string; origin: string } | undefined;
     if (existing && (existing.operation_id !== operationId || existing.origin !== origin)) throw new Error("Native message origin conflicts with its original input.");
     const current = pendingContent.getEntry(entryId);
@@ -201,6 +208,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       db.prepare("INSERT INTO input_message_origins VALUES(?,?,?)").run(entryId, operationId, origin);
     }
     if (current) projectTimeline(current);
+    return entryId;
   });
   const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
     const current = pendingContent.getEntry(entry.entryId);

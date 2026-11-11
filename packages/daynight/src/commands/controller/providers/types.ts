@@ -66,8 +66,8 @@ export type ProviderOptions = {
   /** Join source writers after invalidation, before changing native permissions. */
   drainNativeReadPolicy?(): Promise<void>;
   onControlConfirmed?(operationId: string): void;
-  /** Associate presentation provenance using the original input and exact native message identity. */
-  onInputMessage?(operationId: string, nativeSessionId: string, entryId: string): void;
+  /** Associate provenance and return the original durable entry identity for native history replay. */
+  onInputMessage?(operationId: string, nativeSessionId: string, entryId: string): string | void;
   /** Only true confirms durable image evidence; legacy text callbacks ignore the result. */
   onInputObserved?(observation: string | InputObservation): unknown;
   /** Registration is durable; capture must wait until the original position is acknowledged. */

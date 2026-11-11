@@ -19,8 +19,11 @@ owns its wire and persistence behavior.
 
 Submission identity distinguishes Daynight notifications from ordinary input.
 The Controller preserves the association between the submitted operation and its
-native user message across reconstruction. History and archives carry the same
-field. Both display modes render a Daynight notification as an expandable row,
+native user message across reconstruction. Codex may rebuild raw item IDs while
+retaining the input client ID, so the operation association also owns the durable
+timeline entry ID. Both origin attribution and text projection reuse that ID;
+image inputs retain the existing publication identity. History and archives carry
+the same field. Both display modes render a Daynight notification as an expandable row,
 retaining access to its full content and resources.
 
 ## Alternatives

@@ -144,6 +144,17 @@ test("a lost Markdown publication acknowledgement defers source work until the c
   } finally { journal.close(); }
 });
 
+test("image publication cannot replace an operation's original message owner", async () => {
+  const f = await fixture({}, 1, "question", "daynight");
+  try {
+    const { operationId, nativeSessionId, entryId } = f.request.identity;
+    f.journal.associateInputMessage(operationId, nativeSessionId, randomUUID());
+    expect(f.journal.publishNativeInputAssociation(f.request)).toMatchObject({ state: "not_committed", error: { code: "publication_conflict" } });
+    expect(f.journal.getTimelineEntry(entryId)).toBeUndefined();
+    expect(f.journal.queryNativeInputAssociation(f.request.identity).state).toBe("absent");
+  } finally { f.journal.close(); }
+});
+
 test("a late input association commits its original reference, occurrence and real revision without replacing the native slot", async () => {
   const f = await fixture();
   try {

@@ -51,7 +51,8 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
 };
 
 test("pure and mixed image inputs use one native request each, preserve order and reuse original resources", async () => {
-  const f = await fixture(), provider = await openCodexProvider(f.options);
+  const f = await fixture(), onInputMessage = vi.fn();
+  const provider = await openCodexProvider({ ...f.options, onInputMessage });
   try {
     const first = await f.image(), second = await f.image(), pure = f.input([first]);
     expect(await provider.send(pure.value, pure.operationId, null)).toEqual({ disposition: "started", turnId: "image-turn" });
@@ -64,6 +65,7 @@ test("pure and mixed image inputs use one native request each, preserve order an
     expect(f.captures.map(capture => capture.locator.kind)).toEqual(["resource", "resource", "resource"]);
     expect(f.options.stageImageCapture).not.toHaveBeenCalled();
     expect(f.observations.every(item => typeof item !== "string" && item.nativeSessionId === "images-thread" && item.nativeMessageId === item.operationId)).toBe(true);
+    expect(onInputMessage).not.toHaveBeenCalled();
     expect(JSON.stringify(f.entries)).not.toContain(first.localPath); expect(JSON.stringify(f.entries)).not.toContain(second.localPath);
   } finally { await provider.close(); expect(f.child()!.exitCode !== null || f.child()!.signalCode !== null).toBe(true); await f.cleanup(); }
 });

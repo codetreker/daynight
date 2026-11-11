@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false, interruptUser = null, pendingSteer = null;
 const interruptCase = process.env.CODEX_TEST_INTERRUPT;
+const userItemId = process.env.CODEX_TEST_USER_ITEM_ID ?? 'user';
 const interruptedHistory = id => ({ id, status: 'interrupted', error: null, items: [], itemsView: 'full', rootTurnId: id, startedAt: 1, completedAt: 2, durationMs: 1000 });
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
 const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
@@ -40,7 +41,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if(process.env.CODEX_TEST_MARKDOWN_HISTORY_STATUS) {out({id:m.id,result:{data:[{turnId:'markdown-history',item:{type:'agentMessage',id:'history-body',text:'![image](local)'},completedAtMs:null}],nextCursor:null}});continue;}
   if(interruptCase) {
    if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
-   const user={type:'userMessage',id:'user',clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
+   const user={type:'userMessage',id:userItemId,clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
    let data=['missing-user','history-delayed'].includes(interruptCase)||interruptCase==='paged-history'&&m.params.turnId==='first-turn'?[]:[user];
    let nextCursor=null;
    if(interruptCase==='large-history') {
@@ -58,7 +59,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if(interruptCase==='history-delayed'){setTimeout(()=>out({id:m.id,result:{data:[{...interruptedHistory('native-turn'),items:[]}],nextCursor:null}}),200);continue;}
   if(!interruptCase){out({id:m.id,error:{code:-32601,message:'Method unavailable'}});continue;}
   const turn = interruptedHistory('native-turn');
-  const user = { type: 'userMessage', id: 'user', clientId: interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111', content: [{type: 'text', text: 'cancel'}] };
+  const user = { type: 'userMessage', id: userItemId, clientId: interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111', content: [{type: 'text', text: 'cancel'}] };
   if(interruptCase==='paged-history') {
    const next = m.params.cursor !== null;
    out({id:m.id,result:{data:[{...interruptedHistory(next ? 'second-turn' : 'first-turn'),items:next?[user]:[]}],nextCursor:next?null:'second',backwardsCursor:null}});
@@ -86,7 +87,7 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
-  interruptUser={id:'user',type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
+  interruptUser={id:userItemId,type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
   if(!['missing-user','completion-items','history-user','history-read-failure','history-delayed'].includes(interruptCase)) out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:interruptUser}});
   const approvalCase=JSON.parse(process.env.CODEX_TEST_APPROVAL_CASES ?? '{}')[text];
   if(approvalCase){
