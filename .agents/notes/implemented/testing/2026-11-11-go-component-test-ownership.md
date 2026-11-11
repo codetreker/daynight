@@ -22,6 +22,11 @@ authentication protocol and lifecycle mechanisms remain real when they are the
 subject. Mocks do not establish persistence or replace parsing, encoding or the
 mechanism under test.
 
+Task HTTP reads, writes and sync run with their real Task components and
+narrowly controlled snapshot and project-write capabilities. Task deletion
+retains a Root cross-route tombstone proof. The Task assignee stress sample
+retains the real application, SQL capture and query plans at the Task adapter.
+
 Go tests live in the package and directory of the tested object, normally in
 `xxx_test.go` for `xxx.go`. Files over about 1000 lines may be split by cohesive
 responsibility, and small related helpers are consolidated. Before removing a

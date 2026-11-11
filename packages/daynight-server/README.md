@@ -1356,17 +1356,21 @@ must fail immediately. Selections designed without a database must execute
 without `DAYNIGHT_TEST_DATABASE_URL`; real database mechanisms use an isolated
 PostgreSQL instance.
 
-The regular `internal/server/task` suite uses direct Task, Step and Thread
-service mocks plus Search and Sync operations. It exercises production routing,
-HTTP parsing, credential middleware, DTO conversion, error mapping and the
-server-owned encoder or response writer. Configured mock calls are required;
+The regular `internal/server/task` suite exercises production routing, HTTP
+parsing, credential middleware, DTO conversion, error mapping and the server-owned
+encoder or response writer. Task reads, writes, observations and sync also run
+with real Task components over narrowly controlled snapshot and project-write
+capabilities. Other scenarios use direct Task, Step, Thread, Search or Sync
+operation mocks where precise results are needed. Configured calls are required;
 extra or unconfigured calls fail. Project/Task facts and principals are synthetic
 inputs, without an in-memory business state machine or full-application startup.
 The package's `!stress` TestMain clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before every regular suite execution, including
 the complete module coverage check. The other package binaries still receive
 their required infrastructure; an accidental Task HTTP fixture dependency fails
-rather than borrowing it. The separate stress suite excludes this TestMain.
+rather than borrowing it. The separate stress suite excludes this TestMain. Its Task assignee sample uses
+the real application and isolated PostgreSQL to observe HTTP timing, the actual
+production queries and their plans.
 `RequestAuthentication` supplies the real Bearer, cookie and Origin policy with a
 controlled credential operation; account and login routes retain the complete
 `Authentication` adapter. From this module, run:
@@ -1588,7 +1592,7 @@ until snapshot completion, whose failures suppress partial pages and refusals.
 Pure `SelectList` planning and `ProjectList` encoding execute normally, including
 actual cursor encoding errors. Core owns the original three assignment functions,
 with all 360 combinations, complete returned Task data, pagination, Worker
-inventory, historical assignment and version-2 cursor scope. Shared platform and
+inventory, historical assignment and version-3 cursor scope. Shared platform and
 agent-permission service fixtures retain their DAO-based List scope.
 
 The Create, Update and SetStatus preparation-failure witnesses control project
@@ -1767,11 +1771,12 @@ Domain packages own their HTTP adapters. Project and Team organization scenarios
 use their real registrars, authentication parser, Service and Core with narrow
 controlled DAO facts. Root retains actual `New` fallback, health and cross-route
 projection proofs; supplied query results and completion do not prove persistence.
-Task and Session HTTP unit tests
-control directly called service/use-case results while retaining actual
-credential middleware, HTTP encoding, response loss and socket/resource
-handling. Their [Task](#business-rules-and-dao-mocks) and
-[Session](#session-http-tests) guides identify those boundaries. Attachment
+Task HTTP tests use real Task components or controlled operations as each
+scenario requires; Session HTTP tests control directly called service/use-case
+results. Both retain actual credential middleware, HTTP encoding, response loss
+and socket/resource handling where those mechanisms are under test. Their
+[Task](#business-rules-and-dao-mocks) and [Session](#session-http-tests) guides
+identify those boundaries. Attachment
 fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
 Normal assembled API flows run separately in `cmd/integration_tests`, including
 `TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
@@ -2640,8 +2645,12 @@ Applied historical migrations are immutable. A subsequent migration admits propo
 Migration 028_task_assignment.sql adds nullable assigned_to and a partial
 project/assignee/keyset index for undeleted tasks. All existing and soft-deleted
 tasks receive NULL without changes to versions, business timestamps, properties
-or execution identity. Task, summary and graph responses always emit assignedTo
-as null or a canonical local user UUID.
+or execution identity. Migration 063 adds a full index with the same keys for
+assignment reads through `task_resource_rows` and retains the partial index.
+The full index includes deleted rows; queries still enforce effective deletion.
+It adds storage and write maintenance, and its transactional build blocks Task
+writes for a duration that depends on table size. Task, summary and graph
+responses always emit assignedTo as null or a canonical local user UUID.
 
 Migration 013_task_required_platform.sql adds nullable required_platform with its
 enum CHECK, preserving old versions, timestamps and other fields. Full tasks and
@@ -2667,7 +2676,7 @@ remain significant. Readiness changes do not advance dependent task revisions.
 
 Expected refusals are returned only after the lock-only transaction succeeds;
 transaction/cleanup failures preserve operational errors. Reads use an RR snapshot.
-Task cursors use version 2 and bind project, the resolved
+Task cursors use version 3 and bind project, type, parent, the resolved
 all/unassigned/user:UUID assignee selection and optional
 status/ready/allowAgents/compatiblePlatform filters, retaining absent/false and
 absent/each-enum distinctions. Optional UUID
@@ -2678,7 +2687,7 @@ before collecting the final limit+1 matches; complete properties are batch-loade
 for selected tasks. Assignee equality/IS NULL applies before this worker
 matching and final pagination. No bounded output page hides later matches, and
 opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
-cursors stay at version 1; old version-1 task cursors are refused.
+cursors stay at version 1; older task cursor versions are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task observation
@@ -3136,10 +3145,13 @@ and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
-Task lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
-`compatiblePlatform`, `assignedTo` and UUID `workerId`, once each.
-Both boolean filters accept literal `true` or `false`; compatibility accepts
-`windows`, `linux` or `macos` and includes null requirements and exact matches.
+Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
+`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo` and UUID
+`workerId`, once each. Type defaults to `task` and can select `goal`; parentId
+accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
+cannot select a nonempty parent. The ready, allowAgents and platformSpecific
+filters accept literal `true` or `false`; compatibility accepts `windows`,
+`linux` or `macos` and includes null requirements and exact matches.
 assignedTo accepts a UUID, `me` or `unassigned`; omission means all assignments.
 `me` resolves to the admitted principal before cursor checking, while unassigned
 matches native NULL. A former assignee UUID remains a valid filter.
@@ -3150,13 +3162,13 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
-Task cursor version 2 includes the resolved assignee scope; me and its concrete
+Task cursor version 3 includes type, parent and the resolved assignee scope; me and its concrete
 UUID may share that scope, but another account's me cannot. Account-owned Worker
 list cursors remain version 1.
 
 The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
 as non-null arrays. With no query it enumerates current members and assignees
-retained by undeleted tasks. Repeated `userId` query arguments select a bounded
+retained by effectively visible tasks. Repeated `userId` query arguments select a bounded
 resolution mode: 1–100 distinct canonical UUIDs, with no empty, duplicate,
 malformed or unknown parameters. Both arrays are sorted; in resolution mode
 they are disjoint and cover the requested IDs exactly. The complete catalogue

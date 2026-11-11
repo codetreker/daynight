@@ -163,7 +163,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 - project 按 `(created_at, id)` 列表；
 - task 按 `(project_id, created_at, id)` 列表及按状态筛选；
 - 类型和直接父资源分别按 `(project_id, type, created_at, id)` 与 `(project_id, parent_id, created_at, id)` 排序；
-- 未删除 task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 索引；
+- task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 完整索引，并保留未删除行的部分索引；
 - 依赖按 `(project_id, task_id)` 查询前置任务；
 - 依赖按 `(project_id, depends_on_task_id)` 查询直接下游任务。
 
@@ -184,6 +184,8 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 `061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
 
 `062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
+
+`063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。
@@ -402,16 +404,16 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+Task cursor 版本3绑定 type、parent、解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本3。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
-校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
+校验格式和范围，拒绝旧版本任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
 cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维持同一数据库快照；新增
 或更新后的任务可能影响后续页中按筛选条件可见的集合。
 
@@ -420,7 +422,7 @@ cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维�
 `ready` 筛选在数据库中使用同一状态条件，`allowAgents`、`requiredPlatform` 和 `assignedTo` 使用 task 同行值；不能取一页后在应用中删掉 blocked、许可不匹配或平台不兼容的任务。
 分页边界应用于筛选后的结果，`nextCursor` 根据该结果中是否还有记录产生。仅 workerId 筛选的全部项目/页成功汇总后，调用者才可按自有 claim 清单缺席对账；带额外条件（包括 assignedTo）或部分页不是完整归属集合。
 
-人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与未删除任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
+人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与有效可见任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
 
 ## 错误与诊断
 

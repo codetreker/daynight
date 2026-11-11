@@ -1,6 +1,6 @@
 //go:build stress
 
-package server
+package task_test
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +58,7 @@ func (r *assigneeQueryRecorder) selected(t *testing.T, directory bool) assigneeM
 	for _, query := range r.queries {
 		matches := strings.Contains(query.SQL, "FROM candidate_ids candidate") || strings.Contains(query.SQL, "FROM unnest($2::uuid[]) requested")
 		if !directory {
-			matches = strings.Contains(query.SQL, "FROM tasks t") && strings.Contains(query.SQL, "ORDER BY t.created_at, t.id LIMIT")
+			matches = strings.Contains(query.SQL, "FROM task_resource_rows t") && strings.Contains(query.SQL, "ORDER BY t.created_at, t.id LIMIT")
 		}
 		if matches {
 			found = append(found, query)
@@ -99,8 +100,8 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	database := &postgres.Store{Pool: pool}
-	handler := projectDatabaseTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
+	handler := projectTestHandler(t, database, io.Discard)
+	project := decodeResponse[api.Project](t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Task project", RepoURL: "https://github.com/example/tasks", ExpectedUserID: handler.principal.UserID})), http.StatusCreated)
 	ids := []string{handler.principal.UserID}
 	for len(ids) < 100 {
 		ids = append(ids, uuid.NewString())
@@ -131,6 +132,14 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `ANALYZE tasks; ANALYZE users; ANALYZE project_grants; ANALYZE task_properties; ANALYZE task_dependencies`); err != nil {
+		t.Fatal(err)
+	}
+	var taskCount, deletedCount, unassignedCount, oldIndexBytes, newIndexBytes int64
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE deleted_at IS NOT NULL),
+		count(*) FILTER (WHERE assigned_to IS NULL),
+		pg_relation_size('tasks_project_assigned_to_created_id'),
+		pg_relation_size('tasks_project_assigned_to_created_id_all')
+		FROM tasks WHERE project_id=$1`, project.ID).Scan(&taskCount, &deletedCount, &unassignedCount, &oldIndexBytes, &newIndexBytes); err != nil {
 		t.Fatal(err)
 	}
 	query := url.Values{}
@@ -174,7 +183,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		indexes := map[string]bool{}
 		assigneePlanIndexes(parsed, indexes)
 		if sample.name == "named" || strings.HasPrefix(sample.name, "resolve-") {
-			if !indexes["tasks_project_assigned_to_created_id"] {
+			if !indexes["tasks_project_assigned_to_created_id_all"] {
 				t.Fatalf("sample %s did not use the native project/assignment index: %s", sample.name, plan)
 			}
 		}
@@ -184,10 +193,11 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 			"queryPlan": json.RawMessage(plan), "indexes": indexes,
 		})
 	}
-	repository, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
+	repository := strings.TrimSpace(string(root))
 	source := func(arguments ...string) string {
 		t.Helper()
 		command := exec.Command("git", arguments...)
@@ -200,8 +210,10 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	}
 	evidence := map[string]any{
 		"tasks": 10000, "people": 100, "scope": "isolated PostgreSQL, actual HTTP resources and traced production SQL",
-		"sourceGitSha": source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
-		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim.",
+		"sampleDistribution": map[string]any{"tasks": taskCount, "deleted": deletedCount, "unassigned": unassignedCount},
+		"indexBytes":         map[string]any{"tasks_project_assigned_to_created_id": oldIndexBytes, "tasks_project_assigned_to_created_id_all": newIndexBytes},
+		"sourceGitSha":       source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
+		"measurements": measurements, "limit": "Source-bound sample; no latency threshold, production capacity, or write cost claim.",
 	}
 	data, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
