@@ -1,0 +1,48 @@
+# Agent Note: Standalone Resource Reading History
+
+Status: implemented
+
+## Problem
+
+A standalone Goal can open a graph, a child Task and another Goal while retaining
+its root URL. Those reading choices were local, so browser Back and Forward could
+not retrace them. Child editors and attachment readers must remain usable when a
+reading selection changes without leaving their actual resource and host.
+
+## Decision
+
+The standalone resource page records lightweight, identity- and root-bound
+reading selections with the existing navigation owner. The root tab and file
+remain in the URL; Goal graph, child Task, and external Goal dialog selections
+are held in the page history. Typed resource loading still determines which
+surface is eligible. Shared Goal and detail components accept controlled
+selections, while Project-page callers retain local selection. Ordinary reading
+changes push; closing a layer replaces the current entry after the existing draft
+admission. Same-resource editors are identified by their resource, host and
+presentation, not the history entry.
+
+The [inspection design](../../../../docs/design/daynight-task-inspection.md#独立完整任务详情)
+owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
+owns indexed and native-history boundaries. This extends the shared entry model
+in the [account reading-history decision](2026-11-11-account-reading-history.md)
+and partially supersedes the dialog-local history boundary in the archived
+[standalone detail decision](../../archived/architecture/2026-10-24-standalone-task-detail.md).
+The original URL, shared surface and modal focus rationale remain applicable.
+
+## Alternatives
+
+**Encode every nested selection in the URL.** This would change sharing and cold
+entry behavior and require an additional encoding and authentication handoff;
+the root resource already has an established URL contract.
+
+**Keep child selections only in the component.** This retains local state but
+cannot restore the browser's sequence of nested reading choices.
+
+## Consequences
+
+Back and Forward restore reading choices without replaying business operations.
+The state contains no business response, draft, permissions or DOM; existing
+resource, identity and access lifecycles continue to own admission and cleanup.
+Closing does not skip older entries. Nested selections are not a cross-refresh
+or shareable-link contract, and native unnumbered entries retain the existing
+navigation limits. Project-page reading remains local.

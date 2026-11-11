@@ -15,9 +15,12 @@ The Web classifies the complete ordinary graph before selecting a Parent scope.
 Lists count and render each scoped Task once while retaining the complete chain
 representative and witness for graph navigation. A typed detail loader selects
 the Goal or ordinary Task surface before mounting execution controllers. The
-Goal owns its Tasks, attachment and discussion state for the lifetime of that
-view; shared overlay ownership isolates nested graph and Task portals. Cross-scope
-navigation uses the target's actual Parent and locates its Task in the destination.
+Goal retains its Tasks, attachment and discussion controllers for the lifetime
+of that view; shared overlay ownership isolates nested graph and Task portals.
+The [standalone reading-history decision](2026-11-11-standalone-resource-reading-history.md)
+places standalone Goal child selections in the page history while preserving
+those owners. Cross-scope navigation uses the target's actual Parent and
+locates its Task in the destination.
 The [Web design](../../../../docs/design/daynight-web.md) describes the current
 presentation and lifecycle.
 
