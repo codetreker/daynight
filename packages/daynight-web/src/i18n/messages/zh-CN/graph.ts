@@ -9,6 +9,7 @@ export const graph: GraphMessages = {
   chainList: '任务链列表',
   progress: ({ done, cancelled, total }) => cancelled === 0 ? `${number(done)}/${number(total)} 已完成` : `${number(done + cancelled)}/${number(total)} 已结束 · ${number(done)} 完成 · ${number(cancelled)} 取消`,
   chainTitle: '任务链',
+  automaticExecutionActive: '自动执行中',
   noMachineRecord: '暂无执行机器记录',
   claimMachine: ({ name }) => `认领机器：${name}`,
   recordedMachine: ({ name }) => `执行机器记录：${name}`,
