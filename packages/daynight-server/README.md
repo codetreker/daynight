@@ -1211,10 +1211,19 @@ capability identity, login consumption before upstream retrieval, shared
 user/Personal Team/session scope, partial login results, secret suppression,
 completion precedence, device rate scopes and known-rollback collision retries.
 Actual SDK parsing, response errors, cancellation, provider discovery and profile
-encoding remain with the service adapter. Core Identity and Personal Team tests
-own business admission, credentials, expiry and device decisions; PostgreSQL
-Identity tests own SQL, current-row locks, uniqueness, persisted fields and
-cross-DAO rollback. Controlled completion does not prove persistence.
+encoding remain with the service adapter. Microsoft identities in either
+`microsoft:<tid>:<oid>` or `msft:<oid>@<tid>` form reach user persistence as
+`msft:<oid>@<tid>`. Core Identity tests own the conversion, separator validation,
+identity distinction and idempotence; service tests verify canonical keys reach
+persistence and malformed keys fail before the user transaction. Core Identity
+and Personal Team tests also own business admission, credentials, expiry and
+device decisions. PostgreSQL Identity tests own SQL, current-row locks,
+uniqueness, persisted fields and cross-DAO rollback. Migration 064 tests retain
+actual old identity keys, account credentials and ownership, verify both input
+formats reuse the migrated account, and prove malformed or colliding keys leave
+users and the migration ledger unchanged. Controlled completion does not prove
+persistence. The [authentication design](../../docs/design/daynight-auth.md#uniauth-一次性交接)
+owns the receiver-first upgrade order and identity migration behavior.
 
 ```bash
 source scripts/env.sh
