@@ -64,10 +64,20 @@ import { browseWorkerDirectory } from "./read-only/directory.js";
 import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModelInput } from "./read-only/models.js";
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
-import { createWorkerGitManager } from "./worktrees.js";
+import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
 import { createNativeSelectionVerifier } from "./native-selection.js";
+
+const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
+  emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
+    ...(pending.owner === undefined ? {} : { identity: pending.owner }), component: "git", phase: pending.command, attemptId: pending.attemptId, error: pending.error });
+};
+const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Parameters<typeof createWorkerGitManager>[0]["reportSettled"]> => (pending, settlement) => {
+  emit({ kind: "git-local-closed", message: `Git ${pending.command} local resources closed.`, projectId: pending.projectId,
+    ...(pending.owner === undefined ? {} : { identity: pending.owner }), component: "git", phase: pending.command, attemptId: pending.attemptId,
+    ...(settlement.cleanupErrors.length === 0 ? {} : { error: new AggregateError(settlement.cleanupErrors, "Repository Git local cleanup reported errors.", { cause: pending.error }) }) });
+};
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
   if (platform !== "macos") return false;
@@ -290,7 +300,7 @@ export const runWorker = async (options: {
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
-    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
+    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit) })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
     const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
       unobservedLocalMappings.add(binding.projectId);
@@ -991,7 +1001,7 @@ export const runWorkerControl = async (options: {
     const userId = await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit) });
     const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
@@ -1147,7 +1157,10 @@ export const runWorkerResources = async (options: {
     store = openWorkerStore(paths.databaseFile);
     const project = store.getProject(request);
     if (!project || path.join(project.localPath, ".worktrees", "daynight", request.taskId) !== resource.worktreePath) throw new Error("The original worktree path has no matching project binding.");
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory,
+      reportPending: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local cleanup remains pending for project ${pending.projectId}; waiting for local close.\n`),
+      reportSettled: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local resources closed for project ${pending.projectId}.\n`),
+    });
     const result = await archive.dispose(request, operation, async () => {
       operation.check();
       const fresh = archive.resources().find(value => value.sessionId === request.sessionId);

@@ -7,7 +7,7 @@ import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
 
-export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent };
+export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent };
 
 const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   migrationId: event.migrationId, database: event.database, file: event.file,
@@ -56,6 +56,7 @@ export const createWorkerDiagnostics = async (options: {
       kind: event.kind, message: redact(event.message),
       ...(event.sqlite === undefined ? {} : { sqlite: sqliteMetadata(event.sqlite) }),
       ...(identity === undefined ? {} : { projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }),
+      ...(identity === undefined && event.projectId !== undefined ? { projectId: event.projectId } : {}),
       ...(event.identity?.worktreeId === undefined ? {} : { worktreeId: event.identity.worktreeId }),
       ...(task === undefined ? {} : { status: task.status, agent: task.agent, sessionId: task.sessionId }),
       ...(event.component === undefined ? {} : { component: event.component }),

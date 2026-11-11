@@ -1,7 +1,6 @@
 import path from "node:path";
-import { inspect } from "node:util";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import { cpSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,9 +8,27 @@ import { createOperation } from "../../../src/api/operation.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { runRepositoryGit } from "../../../src/repository/git.js";
+import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSettlement, type OwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import * as directoryIdentity from "../../../src/platform/directory-identity.js";
 import type { ResourceOwner, WorkerProject } from "../../../src/commands/worker/types.js";
+
+// The selected mutation runs in a real subprocess with one inherited pipe held
+// by a real descendant. Other Git calls still use the actual executable.
+const controlledGit = vi.hoisted(() => ({ command: "", script: undefined as string | undefined, child: undefined as ChildProcess | undefined }));
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const spawn = ((...args: Parameters<typeof actual.spawn>) => {
+    const words = Array.isArray(args[1]) ? args[1] : [];
+    if (args[0] === "git" && controlledGit.script !== undefined && words.includes(controlledGit.command)) {
+      const child = actual.spawn(process.execPath, [controlledGit.script], args[2]);
+      controlledGit.child = child;
+      return child;
+    }
+    return Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+  }) as typeof actual.spawn;
+  return { ...actual, spawn };
+});
 
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-git-tests");
 type RefFormat = "files" | "reftable";
@@ -32,6 +49,16 @@ const operation = (): Operation => { const result = createOperation(); operation
 const manager = (root: string, options: Partial<Parameters<typeof createWorkerGitManager>[0]> = {}) => {
   const result = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), ...options }); managers.push(result); return result;
 };
+// Legacy fault-injection cases control the command result after the bounded test runner settles.
+// Separate lifecycle tests below exercise the actual owned Git port.
+const ownedRunner = (runner: typeof runRepositoryGit): typeof startOwnedRepositoryGit => (cwd, args, op, options) => {
+  const result = Promise.resolve().then(() => runner(cwd, args, op, options));
+  const joined: OwnedRepositoryGit["joined"] = result.then(() => ({ kind: "local-closed", cleanupErrors: [] }), () => ({ kind: "local-closed", cleanupErrors: [] }));
+  return { outcome: result.then(value => ({ kind: "success", result: value }), error => ({ kind: "failure", error, settlement: "joined" })), joined, requestStop: () => {} };
+};
+const errorText = (value: unknown): string => value instanceof Error
+  ? [value.message, value.cause === undefined ? "" : errorText(value.cause), ...(value instanceof AggregateError ? value.errors.map(errorText) : [])].join(" ")
+  : String(value);
 const remote = "https://example.com/organization/repository.git";
 const ids = { projectId: "11111111-1111-4111-8111-111111111111", taskId: "22222222-2222-4222-8222-222222222222", claimId: "33333333-3333-4333-8333-333333333333", workerId: "44444444-4444-4444-8444-444444444444", worktreeId: "55555555-5555-4555-8555-555555555555" };
 const prepareSeed = async (refFormat: RefFormat): Promise<string> => {
@@ -79,6 +106,7 @@ afterAll(async () => {
   if (seedRoot !== undefined) await rm(seedRoot, { recursive: true, force: true });
 });
 afterEach(async () => {
+  controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined;
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -760,30 +788,30 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(f.repository, "untracked.txt"), "utf8")).toBe("retained\n");
   });
 
-  it("clones a missing repository using the bounded runner and empty template", async () => {
+  it("clones a missing repository using the owned runner and empty template", async () => {
     const f = await fixture(); const destination = path.join(f.root, "clone"); let cloneTimeout = 0;
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
       expect(args.some((value) => value.startsWith("--template="))).toBe(true); cloneTimeout = options?.timeoutMs ?? 0;
       const rewritten = args.map((value) => value === remote ? f.repository : value);
       const result = await runRepositoryGit(cwd, rewritten, op, options);
       git(destination, ["remote", "set-url", "origin", remote]);
       return result;
-    } });
+    }) });
     const result = await adapter.prepareRepository({ ...f.project, localPath: destination }, operation());
     expect(result.root).toBe(destination); expect(cloneTimeout).toBe(120_000); expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
   it("refreshes the remote default again after cloning a missing repository", async () => {
     const f = await fixture(); const destination = path.join(f.root, "clone"); let latest = "";
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
       const result = await runRepositoryGit(cwd, args.map(value => value === remote ? f.bare : value), op, options);
       git(destination, ["remote", "set-url", "origin", remote]);
       git(destination, ["config", `url.${f.bare}.insteadOf`, remote]);
       latest = commitForOrigin(f.repository, f.bare, "main", "advanced after clone");
       return result;
-    } });
+    }) });
     const clone = { ...f.project, localPath: destination };
     await adapter.prepareRepository(clone, operation());
     const binding = await adapter.prepareWorktree(clone, f.owner, operation());
@@ -793,7 +821,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("retries empty failed clone reservations and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
     const f = await fixture(); const failed = new Error("controlled clone failure"); let attempts = 0;
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("clone")) { attempts += 1; throw failed; } return runRepositoryGit(cwd, args, op, options); } });
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { if (args.includes("clone")) { attempts += 1; throw failed; } return runRepositoryGit(cwd, args, op, options); }) });
     const destination = path.join(f.root, "failed clone");
     await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
     await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
@@ -807,11 +835,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("retains nonempty failed clone output", async () => {
     const f = await fixture(); const destination = path.join(f.root, "partial clone"), failed = new Error("clone failed");
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
       await writeFile(path.join(destination, "retained"), "user data");
       throw failed;
-    } });
+    }) });
     await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
     expect(await readFile(path.join(destination, "retained"), "utf8")).toBe("user data");
   });
@@ -885,11 +913,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("preserves both creation and private-ref cleanup failures", async () => {
     const f = await fixture(); const creation = new Error("controlled worktree failure"), cleanup = new Error("controlled ref cleanup failure");
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (args.includes("worktree") && args.includes("add")) throw creation;
       if (args.includes("update-ref") && args.includes("-d")) throw cleanup;
       return runRepositoryGit(cwd, args, op, options);
-    } });
+    }) });
     const failure = await adapter.prepareWorktree(f.project, f.owner, operation()).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(AggregateError);
     expect(failure).toMatchObject({ cause: creation, errors: [creation, cleanup] });
@@ -921,11 +949,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     let fetched!: () => void; const firstFetched = new Promise<void>(resolve => { fetched = resolve; });
     let release!: () => void; const firstMayContinue = new Promise<void>(resolve => { release = resolve; });
     let fetches = 0;
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       const result = await runRepositoryGit(cwd, args, op, options);
       if (args.includes("fetch") && ++fetches === 1) { fetched(); await firstMayContinue; }
       return result;
-    } });
+    }) });
     const otherOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", worktreeId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
     const first = reservation(adapter.prepareWorktree(f.project, f.owner, operation()));
     try {
@@ -947,12 +975,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(); const blocker = path.join(f.root, "block-fetch.cjs");
     await writeFile(blocker, "setInterval(() => {}, 1000);\n");
     git(f.repository, ["config", "remote.origin.uploadpack", `\"${process.execPath}\" \"${blocker}\"`]);
-    const adapter = manager(f.root, { runGit: (cwd, args, op, options) => runRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
-    const prepared = adapter.prepareWorktree(f.project, f.owner, operation()).catch((error: unknown) => {
-      if (error instanceof AggregateError) console.error("Fetch timeout cleanup evidence:", inspect(error, { depth: null }));
-      throw error;
-    });
-    await expect(prepared).rejects.toThrow("deadline exceeded");
+    const adapter = manager(f.root, { startOwnedGit: (cwd, args, op, options) => startOwnedRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
+    const failure = await adapter.prepareWorktree(f.project, f.owner, operation()).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(errorText(failure)).toContain("deadline exceeded");
     expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
     expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
   });
@@ -960,14 +986,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it("does not create a branch when cancellation interrupts the refresh", async () => {
     const f = await fixture(); const controller = new AbortController(); const cancelled = new Error("refresh cancelled");
     let fetching!: () => void; const started = new Promise<void>(resolve => { fetching = resolve; });
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (args.includes("fetch")) {
         fetching();
         await new Promise<void>(resolve => op.signal.addEventListener("abort", () => resolve(), { once: true }));
         op.check();
       }
       return runRepositoryGit(cwd, args, op, options);
-    } });
+    }) });
     const op = createOperation({ signal: controller.signal }); operations.push(op);
     const pending = reservation(adapter.prepareWorktree(f.project, f.owner, op));
     await started; controller.abort(cancelled);
@@ -987,7 +1013,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("recovers an add whose successful result was lost without resetting dirty work", async () => {
     const f = await fixture(); const lost = new Error("lost add response"); let added = false;
-    const first = manager(f.root, { runGit: async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("add") && args.includes("worktree")) { added = true; throw lost; } return result; } });
+    const first = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("add") && args.includes("worktree")) { added = true; throw lost; } return result; }) });
     await expect(first.prepareWorktree(f.project, f.owner, operation())).rejects.toBe(lost); expect(added).toBe(true);
     const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId); await writeFile(path.join(target, "tracked.txt"), "changed\n"); await writeFile(path.join(target, "untracked"), "kept\n");
     const second = manager(f.root); const binding = await second.prepareWorktree(f.project, f.owner, operation());
@@ -1035,10 +1061,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("recovers an interrupted reservation before Git created its branch or registration", async () => {
     const f = await fixture(); const failed = new Error("interrupted before Git worktree add");
-    const first = manager(f.root, { runGit: async (cwd, args, op, options) => {
+    const first = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       if (args.includes("worktree") && args.includes("add")) throw failed;
       return runRepositoryGit(cwd, args, op, options);
-    } });
+    }) });
     await expect(first.prepareWorktree(f.project, f.owner, operation())).rejects.toBe(failed);
     const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
     expect(await readdir(target)).toEqual([]);
@@ -1051,7 +1077,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("removes dirty terminal worktree with the cleanup Git budget while preserving branches and unrelated work", async () => {
     const f = await fixture(); const timeouts: (number | undefined)[] = [];
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { timeouts.push(options?.timeoutMs); return runRepositoryGit(cwd, args, op, options); } });
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { timeouts.push(options?.timeoutMs); return runRepositoryGit(cwd, args, op, options); }, startOwnedGit: (cwd, args, op, options) => { timeouts.push(options?.timeoutMs); return startOwnedRepositoryGit(cwd, args, op, options); } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     expect(timeouts).toContain(120_000); expect(timeouts.every(timeout => timeout === 30_000 || timeout === 120_000)).toBe(true);
     timeouts.length = 0;
@@ -1157,7 +1183,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("retains delete-and-recreate replacements after leaf deletion but before administrative cleanup", async () => {
     const f = await fixture(); const interrupted = new Error("interrupted before administrative removal");
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("worktree") && args.includes("remove")) throw interrupted; return runRepositoryGit(cwd, args, op, options); } });
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { if (args.includes("worktree") && args.includes("remove")) throw interrupted; return runRepositoryGit(cwd, args, op, options); }) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(interrupted); await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive inode reuse\n");
@@ -1178,7 +1204,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("reconciles a lost successful administrative removal and rejects a new claim at the old path", async () => {
     const f = await fixture(); const lost = new Error("lost remove response");
-    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("worktree") && args.includes("remove")) throw lost; return result; } });
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("worktree") && args.includes("remove")) throw lost; return result; }) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); await adapter.removeWorktree(f.project, f.owner, operation());
     const second = manager(f.root); await second.removeWorktree(f.project, f.owner, operation());
     const next = changedClaim(f.owner); const fresh = await second.prepareWorktree(f.project, next, operation()); expect(fresh.worktreePath).toBe(binding.worktreePath);
@@ -1247,6 +1273,115 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const other = path.join(f.root, "unrelated worktree"); git(f.repository, ["worktree", "add", "--detach", "--lock", "--reason", "unrelated", other, "HEAD"]);
     await rm(binding.worktreePath, { recursive: true }); await rm(path.dirname(binding.worktreePath), { recursive: true });
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).toContain(path.normalize(other)); expect(await readFile(path.join(other, "tracked.txt"), "utf8")).toBe("original\n");
+  });
+
+  it.each([
+    { command: "clone", stream: "stdout" },
+    { command: "fetch", stream: "stderr" },
+    { command: "add", stream: "stdout" },
+    { command: "update-ref", stream: "stderr" },
+  ])("retains $command cancellation until its real $stream closes", async ({ command, stream }) => {
+    const f = await fixture(), ready = path.join(f.root, "held-ready"), release = path.join(f.root, "held-release");
+    const leaf = path.join(f.root, "held-leaf.mjs"), wrapper = path.join(f.root, "held-command.mjs");
+    await writeFile(leaf, `import { existsSync, writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(ready)}, 'ready');\nconst poll = setInterval(() => { if (existsSync(${JSON.stringify(release)})) { clearInterval(poll); process.exit(0); } }, 20);\nsetTimeout(() => process.exit(1), 30000).unref();\n`);
+    await writeFile(wrapper, `import { spawn } from 'node:child_process';\nconst leaf = spawn(process.execPath, [${JSON.stringify(leaf)}], { detached: true, stdio: ['ignore', ${stream === "stdout" ? "'inherit'" : "'ignore'"}, ${stream === "stderr" ? "'inherit'" : "'ignore'"}], windowsHide: true });\nleaf.unref();\n`);
+    const observed = Promise.withResolvers<import("../../../src/commands/worker/worktrees.js").WorkerGitPending>();
+    const signal = new AbortController();
+    const op = createOperation({ signal: signal.signal }); operations.push(op);
+    const adapter = manager(f.root, { reportPending: event => { if (event.command === (command === "add" ? "worktree-add" : command)) observed.resolve(event); } });
+    controlledGit.command = command; controlledGit.script = wrapper;
+    const project = command === "clone" ? { ...f.project, localPath: path.join(f.root, "cloned") } : f.project;
+    const result = (command === "clone" ? adapter.prepareRepository(project, op) : adapter.prepareWorktree(project, f.owner, op)).then(() => null, error => error);
+    const contains = (value: unknown, target: unknown): boolean => value === target || value instanceof Error && (contains(value.cause, target) || value instanceof AggregateError && value.errors.some((entry: unknown) => contains(entry, target)));
+    try {
+      await vi.waitFor(async () => { expect(controlledGit.child).toBeDefined(); expect(await readFile(ready, "utf8")).toBe("ready"); }, { timeout: 12000, interval: 10 });
+      const child = controlledGit.child!;
+      await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), { timeout: 12000, interval: 10 });
+      const cancellation = new Error(`cancel ${command}`); signal.abort(cancellation);
+      const event = await Promise.race([observed.promise, result.then(error => { throw error ?? new Error("Mutation completed before reporting pending cleanup."); })]);
+      expect(event).toMatchObject({ projectId: f.project.projectId, command: command === "add" ? "worktree-add" : command, error: { code: "repository_git_cleanup_pending" } });
+      if (command !== "clone") expect(event.owner).toEqual(f.owner);
+      expect(contains(event.error, op.signal.reason)).toBe(true);
+      let finished = false; void result.then(() => { finished = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(finished).toBe(false);
+      expect((await readdir(path.join(f.root, "temporary"))).filter(name => name.startsWith("git-hooks-"))).toHaveLength(1);
+      await writeFile(release, "release");
+      const error = await result;
+      expect(contains(error, op.signal.reason)).toBe(true);
+      expect(contains(error, cancellation)).toBe(true);
+    } finally {
+      signal.abort(new Error("fixture cleanup"));
+      await writeFile(release, "release");
+      await result;
+      controlledGit.script = undefined;
+    }
+  }, 45_000);
+
+  it("waits for preparation before deleting hooks even when no owned command has started", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let scopedSignal: AbortSignal | undefined;
+    const start = vi.fn<typeof startOwnedRepositoryGit>(startOwnedRepositoryGit);
+    const adapter = manager(f.root, { startOwnedGit: start, runGit: async (cwd, args, op, options) => {
+      if (args.includes("--is-bare-repository")) {
+        scopedSignal = op.signal; entered.resolve(); await release.promise; op.check();
+      }
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    const preparation = adapter.prepareRepository(f.project, operation()).then(() => null, error => error);
+    try {
+      await entered.promise;
+      expect(start).not.toHaveBeenCalled();
+      const closing = adapter.dispose(); let closed = false; void closing.then(() => { closed = true; });
+      expect(scopedSignal?.aborted).toBe(true);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(closed).toBe(false);
+      expect((await readdir(path.join(f.root, "temporary"))).filter(name => name.startsWith("git-hooks-"))).toHaveLength(1);
+      await expect(adapter.prepareRepository(f.project, operation())).rejects.toThrow("closing");
+      release.resolve();
+      expect(await preparation).toMatchObject({ message: "Worker Git manager is closing." });
+      await closing;
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+    } finally { release.resolve(); await preparation; await adapter.dispose(); }
+  });
+
+  it("joins pending mutations and retains command, cleanup and reporting errors on disposal", async () => {
+    const f = await fixture();
+    const original = new Error("original command failure"), late = new Error("late cleanup failure"), reporting = new Error("pending report failed"), settledReporting = new Error("settled report failed");
+    const pendingError = new RepositoryGitCleanupPendingError([], original);
+    const settlement = Promise.withResolvers<GitSettlement>(), reported = Promise.withResolvers<void>();
+    const requestStop = vi.fn();
+    const pendingEvents: Parameters<NonNullable<Parameters<typeof createWorkerGitManager>[0]["reportPending"]>>[0][] = [];
+    const settledEvents: typeof pendingEvents = [];
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("fetch")) return startOwnedRepositoryGit(cwd, args, op, options);
+        return { outcome: Promise.resolve({ kind: "cleanup-pending", error: pendingError }), joined: settlement.promise, requestStop };
+      },
+      reportPending: event => { pendingEvents.push(event); reported.resolve(); throw reporting; },
+      reportSettled: event => { settledEvents.push(event); throw settledReporting; },
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).then(() => null, error => error);
+    try {
+      await reported.promise;
+      expect(pendingEvents).toHaveLength(1);
+      expect(pendingEvents[0]).toMatchObject({ projectId: f.project.projectId, owner: f.owner, command: "fetch", error: pendingError, attemptId: expect.any(String) });
+      const closing = adapter.dispose(); let closed = false, returned = false;
+      void closing.then(() => { closed = true; }); void preparation.then(() => { returned = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(requestStop).toHaveBeenCalledOnce();
+      expect(closed).toBe(false); expect(returned).toBe(false);
+      expect((await readdir(path.join(f.root, "temporary"))).filter(name => name.startsWith("git-hooks-"))).toHaveLength(1);
+      settlement.resolve({ kind: "local-closed", cleanupErrors: [late] });
+      const error = await preparation;
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error).toMatchObject({ cause: pendingError, errors: expect.arrayContaining([pendingError, late, reporting, settledReporting]) });
+      expect(pendingError.cause).toBe(original);
+      expect(settledEvents).toEqual(pendingEvents);
+      await closing;
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+    } finally { settlement.resolve({ kind: "local-closed", cleanupErrors: [] }); await preparation; await adapter.dispose(); }
   });
 
   it("uses one private hooks directory across concurrent tasks and disposes it", async () => {

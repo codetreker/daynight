@@ -10,6 +10,7 @@ import type { WebExecutionStore } from "../../../src/commands/worker/backends/we
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { access, mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
@@ -21,7 +22,8 @@ import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/work
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
-import { WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
+import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
+import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
@@ -44,6 +46,31 @@ import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import { parseSessionV2Archive } from "../../../src/session/v2/archive.js";
 import archiveFixture from "../../session/fixtures/v2/valid-archive.json" with { type: "json" };
 
+// Replace only the selected Git command with a real process that executes Git
+// and leaves its inherited output open. All other subprocesses remain native.
+const gitProcess = vi.hoisted(() => ({ wrapper: undefined as string | undefined, helper: undefined as string | undefined, child: undefined as ChildProcess | undefined, stopHelper: undefined as ChildProcess | undefined, childClosed: false, stdoutClosed: false, stderrClosed: false, helperClosed: false, helperStdoutClosed: false }));
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const spawn = ((...args: Parameters<typeof actual.spawn>) => {
+    if (args[0] === "git" && gitProcess.wrapper !== undefined && Array.isArray(args[1]) && args[1].includes("worktree") && args[1].includes("remove")) {
+      const child = actual.spawn(process.execPath, [gitProcess.wrapper, ...args[1]], args[2]);
+      gitProcess.child = child;
+      child.once("close", () => { gitProcess.childClosed = true; });
+      child.stdout?.once("close", () => { gitProcess.stdoutClosed = true; });
+      child.stderr?.once("close", () => { gitProcess.stderrClosed = true; });
+      return child;
+    }
+    if (typeof args[0] === "string" && /[\\/]System32[\\/]taskkill\.exe$/i.test(args[0]) && gitProcess.helper !== undefined) {
+      const helper = actual.spawn(process.execPath, [gitProcess.helper, String((args[1] as string[])[1])], args[2]);
+      gitProcess.stopHelper = helper;
+      helper.once("close", () => { gitProcess.helperClosed = true; });
+      helper.stdout?.once("close", () => { gitProcess.helperStdoutClosed = true; });
+      return helper;
+    }
+    return Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+  }) as typeof actual.spawn;
+  return { ...actual, spawn };
+});
 const polling = vi.hoisted(() => ({ requested: [] as number[], onSchedule: undefined as ((milliseconds: number) => void) | undefined }));
 vi.mock("node:timers/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:timers/promises")>();
@@ -61,7 +88,7 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
-  polling.onSchedule = undefined; polling.requested.length = 0;
+  polling.onSchedule = undefined; polling.requested.length = 0; gitProcess.wrapper = undefined; gitProcess.helper = undefined; gitProcess.child = undefined; gitProcess.stopHelper = undefined; gitProcess.childClosed = false; gitProcess.stdoutClosed = false; gitProcess.stderrClosed = false; gitProcess.helperClosed = false; gitProcess.helperStdoutClosed = false;
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -669,6 +696,136 @@ it("releases a stopped execution while its worktree remains held, without admitt
     expect(f.store.getTask(original)?.status).toBe("active");
   } finally { release(); await coordinator.shutdown(); }
 });
+
+it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdown" }, { stream: "child", mode: "shutdown" }, ...(process.platform === "win32" ? [{ stream: "helper", mode: "shutdown" }] : [])])("holds the original task gate through $stream closure and $mode", async ({ stream, mode }) => {
+  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10_000 });
+  git(f.project.localPath, "init", "--initial-branch=main");
+  git(f.project.localPath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+  git(f.project.localPath, "remote", "add", "origin", f.project.repoUrl);
+  const bare = path.join(f.root, "origin.git");
+  git(f.root, "clone", "--bare", f.project.localPath, bare);
+  git(f.project.localPath, "config", `url.${bare}.insteadOf`, f.project.repoUrl);
+  const ready = path.join(f.root, "pipe-ready"), rootReady = path.join(f.root, "root-ready"), release = path.join(f.root, "pipe-release");
+  const leaf = path.join(f.root, "pipe-holder.mjs"), wrapper = path.join(f.root, "git-wrapper.mjs");
+  await writeFile(leaf, `import { existsSync, writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(ready)}, 'ready');\nconst poll = setInterval(() => { if (existsSync(${JSON.stringify(release)})) { clearInterval(poll); process.exit(0); } }, 20);\nsetTimeout(() => process.exit(1), 30000).unref();\n`);
+  const childWait = `import { closeSync, existsSync, writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(stream === "helper" ? rootReady : ready)}, 'ready');\ncloseSync(1); closeSync(2);\nconst poll = setInterval(() => { if (existsSync(${JSON.stringify(release)})) { clearInterval(poll); process.exit(0); } }, 20);\nsetTimeout(() => process.exit(1), 30000).unref();\n`;
+  const pipeWait = `import { spawn } from 'node:child_process';\nconst leaf = spawn(process.execPath, [${JSON.stringify(leaf)}], { detached: true, stdio: ['ignore', ${stream === "stdout" ? "'inherit'" : "'ignore'"}, ${stream === "stderr" ? "'inherit'" : "'ignore'"}], windowsHide: true });\nleaf.unref();\n`;
+  await writeFile(wrapper, `import { spawnSync } from 'node:child_process';\nconst result = spawnSync('git', process.argv.slice(2), { stdio: 'inherit', windowsHide: true });\nif (result.status !== 0) process.exit(result.status ?? 1);\n${stream === "child" || stream === "helper" ? childWait : pipeWait}`);
+  if (stream === "child") {
+    const helper = path.join(f.root, "stop-helper.mjs"); await writeFile(helper, "process.exit(0);\n");
+    gitProcess.helper = helper;
+    const kill = process.kill.bind(process);
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => pid === -(gitProcess.child?.pid ?? 0) ? true : kill(pid, signal));
+  }
+  if (stream === "helper") {
+    const helper = path.join(f.root, "stop-helper.mjs");
+    const taskkill = path.win32.join(process.env.SystemRoot!, "System32", "taskkill.exe");
+    await writeFile(helper, `import { spawn, spawnSync } from 'node:child_process';\nconst stopped = spawnSync(${JSON.stringify(taskkill)}, ['/PID', process.argv[2], '/T', '/F'], { stdio: 'ignore', windowsHide: true });\nif (stopped.status !== 0) process.exit(stopped.status ?? 1);\nconst leaf = spawn(process.execPath, [${JSON.stringify(leaf)}], { detached: true, stdio: ['ignore', 'inherit', 'ignore'], windowsHide: true });\nleaf.unref();\n`);
+    gitProcess.helper = helper;
+  }
+  let pending: import("../../../src/commands/worker/worktrees.js").WorkerGitPending | undefined;
+  const joined = Promise.withResolvers<import("../../../src/repository/git-owned.js").GitSettlement>();
+  const interrupt = new AbortController();
+  let originalSignal: AbortSignal | undefined; let ownedSignal: AbortSignal | undefined; let shutdown: Promise<boolean> | undefined;
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"),
+    startOwnedGit: (cwd, args, op, options) => {
+      const remove = args.includes("worktree") && args.includes("remove");
+      if (!remove) return startOwnedRepositoryGit(cwd, args, op, options);
+      originalSignal = op.signal;
+      const ownedOperation = createOperation({ signal: AbortSignal.any([op.signal, interrupt.signal]), limits: op.limits });
+      ownedSignal = ownedOperation.signal;
+      const command = startOwnedRepositoryGit(cwd, args, ownedOperation, options);
+      void command.joined.then(() => ownedOperation.dispose());
+      return command;
+    },
+    reportPending: (event) => { if (event.command === "worktree-remove") pending = event; },
+    reportSettled: (event, settlement) => { if (event.command === "worktree-remove") joined.resolve(settlement); },
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, monitoring });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const original = f.store.listTasks()[0]!;
+    const owner = f.resources.get(original.claimId)!.owner;
+    gitProcess.wrapper = wrapper;
+    f.grants.clear();
+    await coordinator.tick();
+    const started = stream === "helper" ? rootReady : ready;
+    await vi.waitFor(async () => { await expect(access(started)).resolves.toBeUndefined(); }, { timeout: 15_000, interval: 20 });
+    if (stream === "child" && process.platform !== "win32") {
+      await vi.waitFor(() => { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }, { timeout: 12_000, interval: 20 });
+    } else if (stream === "stdout" || stream === "stderr") {
+      await vi.waitFor(() => {
+        expect(gitProcess.child?.exitCode).toBe(0);
+        expect(stream === "stdout" ? gitProcess.stderrClosed : gitProcess.stdoutClosed).toBe(true);
+      }, { timeout: 12_000, interval: 20 });
+      expect(stream === "stdout" ? gitProcess.stdoutClosed : gitProcess.stderrClosed).toBe(false);
+      expect(gitProcess.childClosed).toBe(false);
+    }
+    interrupt.abort(new Error("controlled mutation cancellation"));
+    await vi.waitFor(() => expect(pending).toBeDefined(), { timeout: 15_000, interval: 20 });
+    expect(pending).toMatchObject({ projectId: f.project.projectId, owner, command: "worktree-remove", error: { code: "repository_git_cleanup_pending" } });
+    const contains = (error: unknown, target: unknown): boolean => error === target || error instanceof Error && (contains(error.cause, target) || error instanceof AggregateError && error.errors.some((entry: unknown) => contains(entry, target)));
+    expect(contains(pending?.error, ownedSignal!.reason)).toBe(true);
+    await vi.waitFor(async () => { await expect(access(ready)).resolves.toBeUndefined(); }, { timeout: 12_000, interval: 20 });
+    if (stream === "child") {
+      expect(gitProcess.child?.exitCode).toBeNull();
+      expect(gitProcess.child?.signalCode).toBeNull();
+      expect(gitProcess.childClosed).toBe(false);
+      if (process.platform !== "win32") { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }
+    }
+    if (stream === "helper") {
+      await vi.waitFor(() => {
+        expect(gitProcess.child).toBeDefined();
+        expect(gitProcess.child!.exitCode !== null || gitProcess.child!.signalCode !== null).toBe(true);
+        expect(gitProcess.childClosed).toBe(true);
+        expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
+        expect(gitProcess.stopHelper?.exitCode).toBe(0);
+      }, { timeout: 12_000, interval: 20 });
+      expect(gitProcess.helperStdoutClosed).toBe(false);
+      expect(gitProcess.helperClosed).toBe(false);
+    }
+    await expect(access(f.bind(owner).worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.store.getTask(original)?.status).toBe("active");
+    expect(monitoring.capture("1").capacity).toMatchObject({ occupied: 0, available: 1 });
+    await coordinator.tick();
+    await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
+    expect([...f.grants.values()].some(value => value.id === original.taskId)).toBe(false);
+    expect(f.store.getTask(original)?.status).toBe("active");
+    if (mode === "shutdown") {
+      shutdown = coordinator.shutdown(); let stopped = false; void shutdown.then(() => { stopped = true; });
+      expect(originalSignal?.aborted).toBe(true);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      expect(f.store.getTask(original)?.status).toBe("active");
+      await writeFile(release, "release");
+      const settlement = await joined.promise;
+      expect(settlement.kind).toBe("local-closed");
+      expect(gitProcess.childClosed).toBe(true);
+      expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
+      if (stream === "helper") { expect(gitProcess.helperClosed).toBe(true); expect(gitProcess.helperStdoutClosed).toBe(true); }
+      await shutdown;
+    } else {
+      await writeFile(release, "release");
+      expect((await joined.promise).kind).toBe("local-closed");
+      expect(gitProcess.childClosed).toBe(true);
+      expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
+      await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
+      f.clock(1_000_000);
+      await coordinator.tick();
+      await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
+      expect(f.store.getCleanupSchedule(original)).toBeNull();
+    }
+  } finally {
+    interrupt.abort(new Error("fixture cleanup"));
+    await writeFile(release, "release");
+    gitProcess.wrapper = undefined;
+    await (shutdown ?? coordinator.shutdown());
+    await manager.dispose();
+  }
+}, 45_000);
 
 it("retains unknown execution capacity across file cleanup and a SQLite restart", async () => {
   const f = await fixture();
