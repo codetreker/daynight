@@ -349,6 +349,7 @@ def setup(directory, port_value, urls):
     state = {"schemaVersion": 1, **names(directory), "runId": os.environ["GITHUB_RUN_ID"],
              "uid": uid, "gid": gid, "servicePort": port, "sourceURLs": urls,
              "sourceIPv4": source_addresses, "protectedCidrs": protected, "protectedDomains": domains,
+             "createdResolverRoot": not Path("/etc/netns").exists(),
              "originalForward": command("sysctl", "-n", "net.ipv4.ip_forward").stdout.strip()}
     existing_names = command("ip", "netns", "list").stdout
     if any(state[key] in existing_names for key in ("namespace", "sinkNamespace")):
@@ -361,7 +362,8 @@ def setup(directory, port_value, urls):
         raise RuntimeError("A proposed rules table already exists; ownership is unknown.")
     if any(ipaddress.ip_network(route["dst"], strict=False).overlaps(ipaddress.ip_network("198.18.0.0/29"))
            for route in host_routes if route.get("dst", "default") != "default"
-           and ipaddress.ip_network(route["dst"], strict=False).version == 4):
+           and ipaddress.ip_network(route["dst"], strict=False).version == 4
+           and ipaddress.ip_network(route["dst"], strict=False).prefixlen > 0):
         raise RuntimeError("The owned probe network overlaps an existing host route.")
     directory.mkdir(parents=True, mode=0o755, exist_ok=True)
     document(directory / "ownership.json", state, private=True)
@@ -387,7 +389,7 @@ def setup(directory, port_value, urls):
             command("ip", "-n", namespace, "link", "set", "lo", "up")
             command("ip", "-n", namespace, "route", "add", "default", "via", host_ip)
         resolver = Path("/etc/netns") / state["namespace"]
-        resolver.mkdir(mode=0o755)
+        resolver.mkdir(parents=True, mode=0o755)
         (resolver / "resolv.conf").write_text("".join(f"nameserver {ip}\n" for ip in DNS))
         text = rules(state)
         (directory / "policy.nft").write_text(text)
@@ -549,6 +551,8 @@ def cleanup(directory, state):
     if resolver.exists():
         (resolver / "resolv.conf").unlink(missing_ok=True)
         resolver.rmdir()
+    if state.get("createdResolverRoot") and resolver.parent.exists() and not any(resolver.parent.iterdir()):
+        resolver.parent.rmdir()
     live_names = command("ip", "netns", "list").stdout
     for namespace in (state["namespace"], state["sinkNamespace"]):
         if namespace in live_names:
