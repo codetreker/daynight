@@ -4,6 +4,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import * as api from '../src/api/bots';
 import { ApiError } from '../src/api/client';
 import { BotCreateDialog } from '../src/features/bots/BotCreateDialog';
+import { useTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { rememberBotCreation } from '../src/features/bots/pending-creation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { assistantCreateSubmit, assistantNameInput, expandAssistantAdvancedSettings, pressAssistantEscape } from './helpers/assistant-ui';
 
@@ -21,7 +23,9 @@ const flush = () => act(async () => { for (let n = 0; n < 30; n++) await Promise
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
 const onCreated = vi.fn(), onClose = vi.fn();
 function Harness({ initiallyOpen = true }: { initiallyOpen?: boolean }) {
-  const [unresolvedRequest, onUnresolvedRequestChange] = useState<api.CreateBotInput | null>(null);
+  const scope = useTaskCacheScope();
+  const [unresolvedRequest, setUnresolved] = useState<api.CreateBotInput | null>(null);
+  const onUnresolvedRequestChange = (request: api.CreateBotInput | null) => { rememberBotCreation(scope, request); setUnresolved(request); };
   const [open, setOpen] = useState(initiallyOpen);
   return <><button onClick={() => setOpen(true)}>Open form</button>{open && <BotCreateDialog unresolvedRequest={unresolvedRequest} onUnresolvedRequestChange={onUnresolvedRequestChange} onClose={() => { onClose(); setOpen(false); }} onCreated={onCreated} />}</>;
 }
@@ -261,4 +265,98 @@ it('keeps composition Escape inside the form without cancelling the draft', asyn
   expect(api.createBot).not.toHaveBeenCalled();
   pressAssistantEscape(input); await flush();
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+it('settles a confirmed creation during a pause and protects later edits on resume', async () => {
+  const pending = deferred<api.BotDefinition>();
+  vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); });
+  pending.resolve(bot); await flush();
+  expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
+  expect(assistantNameInput()).toHaveValue('Helper');
+  expect(assistantNameInput()).toBeEnabled();
+  expect(onCreated).not.toHaveBeenCalled();
+  name('New draft');
+  act(() => resume()); await flush();
+  expect(assistantNameInput()).toHaveValue('New draft');
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(api.createBot).toHaveBeenCalledOnce(); expect(api.getBot).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Open assistant' }));
+  expect(onCreated).toHaveBeenCalledWith(bot);
+});
+
+it('retains the original ID when a dispatched creation is cancelled without a receipt', async () => {
+  let reject!: (cause: unknown) => void;
+  vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => new Promise((_resolve, fail) => {
+    admission.onDispatch?.(); reject = fail;
+  }));
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  const input = vi.mocked(api.createBot).mock.calls[0]![0];
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); });
+  reject(new api.BotCreationUnknown(input.id, new DOMException('Aborted', 'AbortError'))); await flush();
+  expect(screen.getByText(input.id)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Close' })).toBeEnabled();
+  expect(api.createBot).toHaveBeenCalledOnce(); expect(api.getBot).not.toHaveBeenCalled();
+  act(() => resume()); await flush();
+  expect(api.createBot).toHaveBeenCalledOnce(); expect(api.getBot).not.toHaveBeenCalled();
+});
+
+it('cancels a creation waiting before dispatch without retaining a false unknown', async () => {
+  vi.mocked(api.createBot).mockImplementationOnce((_input, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }));
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); }); await flush();
+  expect(assistantNameInput()).toHaveValue('Helper');
+  expect(assistantNameInput()).toBeEnabled();
+  expect(screen.queryByRole('button', { name: 'Check creation' })).toBeNull();
+  act(() => resume()); await flush();
+  expect(api.createBot).toHaveBeenCalledOnce(); expect(api.getBot).not.toHaveBeenCalled();
+});
+
+it('retains a trusted check result when pause cancels its owner at the receipt boundary', async () => {
+  vi.mocked(api.createBot).mockImplementationOnce(async input => { throw new api.BotCreationUnknown(input.id, new ApiError('network')); });
+  const pending = deferred<api.BotDefinition>(); vi.mocked(api.getBot).mockReturnValueOnce(pending.promise);
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  fireEvent.click(screen.getByRole('button', { name: 'Check creation' })); await flush();
+  let resume!: () => void;
+  act(() => { pending.resolve(bot); resume = pauseAuthRequests(); }); await flush();
+  expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Check creation' })).toBeNull();
+  expect(onCreated).not.toHaveBeenCalled();
+  act(() => resume()); await flush();
+  expect(api.getBot).toHaveBeenCalledOnce(); expect(onCreated).not.toHaveBeenCalled();
+});
+
+it('does not navigate or read automatically when an unchanged confirmed draft resumes', async () => {
+  const pending = deferred<api.BotDefinition>();
+  vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); });
+  pending.resolve(bot); await flush();
+  act(() => resume()); await flush();
+  expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
+  expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
+});
+
+it('does not navigate when a dispatched response arrives after a temporary pause has ended', async () => {
+  const pending = deferred<api.BotDefinition>();
+  vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); resume(); });
+  pending.resolve(bot); await flush();
+  expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
+  expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
 });
