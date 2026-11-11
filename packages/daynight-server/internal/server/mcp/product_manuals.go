@@ -41,13 +41,18 @@ type manualManifestEntry struct {
 // The manifest is explicit: public identifiers and metadata do not derive from
 // a request URI or the contents of the embedded directory.
 var productManualManifest = []manualManifestEntry{
-	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Product concepts", Description: "Objects, account and Project context, repository resolution, and host responsibilities.", MIMEType: "text/markdown", Size: 18435}},
-	{"manuals/queries-and-lifecycle.md", sdk.Resource{URI: "daynight://manuals/queries-and-lifecycle.md", Name: "queries-and-lifecycle", Title: "Queries and lifecycle", Description: "Choose Task and related reads, understand projections, pagination, statuses and properties.", MIMEType: "text/markdown", Size: 31431}},
-	{"manuals/dependencies.md", sdk.Resource{URI: "daynight://manuals/dependencies.md", Name: "dependencies", Title: "Dependency management", Description: "Read and replace ordinary and external prerequisites, reduce redundant edges and verify the graph.", MIMEType: "text/markdown", Size: 16389}},
-	{"manuals/write-safety.md", sdk.Resource{URI: "daynight://manuals/write-safety.md", Name: "write-safety", Title: "Write safety", Description: "Bind decisions to exact versions and distinguish confirmed, rejected and unknown write outcomes.", MIMEType: "text/markdown", Size: 19473}},
-	{"manuals/materials.md", sdk.Resource{URI: "daynight://manuals/materials.md", Name: "materials", Title: "Organizing task materials", Description: "Choose the owner of requirements, results, discussion, Steps and execution context.", MIMEType: "text/markdown", Size: 17927}},
-	{"manuals/files-and-references.md", sdk.Resource{URI: "daynight://manuals/files-and-references.md", Name: "files-and-references", Title: "Files and references", Description: "Read and upload complete attachments, preserve references and interpret transfer outcomes.", MIMEType: "text/markdown", Size: 20399}},
-	{"manuals/operation-boundaries.md", sdk.Resource{URI: "daynight://manuals/operation-boundaries.md", Name: "operation-boundaries", Title: "Operation boundaries", Description: "Distinguish access, authorization, confirmation, handoff, execution and Worker assignments.", MIMEType: "text/markdown", Size: 18710}},
+	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Account, Project and product context", Description: "Establish Account and Project identity, resolve a repository, and distinguish product objects, Team kinds and host capabilities.", MIMEType: "text/markdown", Size: 7287}},
+	{"manuals/tasks.md", sdk.Resource{URI: "daynight://manuals/tasks.md", Name: "tasks", Title: "Task and Goal reads and lifecycle", Description: "Choose Task and Goal projections, create ordinary Tasks, list ready work, and change lifecycle or properties alongside write-safety.", MIMEType: "text/markdown", Size: 12792}},
+	{"manuals/dependencies.md", sdk.Resource{URI: "daynight://manuals/dependencies.md", Name: "dependencies", Title: "Dependency graphs and replacement", Description: "Read ordinary and external prerequisites, replace the complete dependency sets with write-safety, and verify or reduce graph edges.", MIMEType: "text/markdown", Size: 9581}},
+	{"manuals/write-safety.md", sdk.Resource{URI: "daynight://manuals/write-safety.md", Name: "write-safety", Title: "Shared write safety", Description: "Read for every write alongside its operation topic: authorization, exact versions, conflict reassessment and confirmed/not_committed/unknown outcomes.", MIMEType: "text/markdown", Size: 8196}},
+	{"manuals/materials.md", sdk.Resource{URI: "daynight://manuals/materials.md", Name: "materials", Title: "Task material ownership", Description: "Choose the owner of requirements, results, discussion and execution context, preserve complete formal material and readable shared references.", MIMEType: "text/markdown", Size: 7204}},
+	{"manuals/steps.md", sdk.Resource{URI: "daynight://manuals/steps.md", Name: "steps", Title: "Step reads and writes", Description: "Read complete ordered Step collections and use parent Task versions and stable Step IDs for writes alongside write-safety.", MIMEType: "text/markdown", Size: 5719}},
+	{"manuals/threads.md", sdk.Resource{URI: "daynight://manuals/threads.md", Name: "threads", Title: "Thread reading and posting", Description: "Read complete discussion pages without skipping unread messages; post and investigate uncertain results alongside write-safety.", MIMEType: "text/markdown", Size: 4550}},
+	{"manuals/attachment-reads.md", sdk.Resource{URI: "daynight://manuals/attachment-reads.md", Name: "attachment-reads", Title: "Attachment paths and complete reads", Description: "Resolve file references, inspect metadata, read inline content or assemble and close one immutable download snapshot.", MIMEType: "text/markdown", Size: 7602}},
+	{"manuals/attachment-writes.md", sdk.Resource{URI: "daynight://manuals/attachment-writes.md", Name: "attachment-writes", Title: "Attachment upload and removal", Description: "Upload inline or retain a chunked upload lifecycle, remove files and verify publication alongside write-safety; read attachment-reads for unknown path rules.", MIMEType: "text/markdown", Size: 7812}},
+	{"manuals/session-reads.md", sdk.Resource{URI: "daynight://manuals/session-reads.md", Name: "session-reads", Title: "Session observations, work groups and history", Description: "Interpret ephemeral Task Session observations, page task_work_list groups, locate exact Sessions and read complete history or large entries.", MIMEType: "text/markdown", Size: 11368}},
+	{"manuals/session-messages.md", sdk.Resource{URI: "daynight://manuals/session-messages.md", Name: "session-messages", Title: "Session messages and original operation recovery", Description: "Send with retained Session/execution identity and intent or query the original operation alongside write-safety; use session-reads when target identity is unknown.", MIMEType: "text/markdown", Size: 5665}},
+	{"manuals/worker-operations.md", sdk.Resource{URI: "daynight://manuals/worker-operations.md", Name: "worker-operations", Title: "Worker assignment and claim completion", Description: "Distinguish handoff, explicit assignment, owned claim completion and host process control; complete claims alongside write-safety.", MIMEType: "text/markdown", Size: 6429}},
 }
 
 var manualURIReference = regexp.MustCompile(`daynight://manuals/[^\s\]\[()<>"` + "`" + `]+`)
@@ -57,11 +62,14 @@ func loadProductManuals(source fs.FS) (productManuals, error) {
 }
 
 func loadManualManifest(source fs.FS, manifest []manualManifestEntry) (productManuals, error) {
-	if len(manifest) != 7 {
-		return productManuals{}, &manualLoadError{Key: "catalog", Err: fmt.Errorf("expected seven topics, got %d", len(manifest))}
+	if len(manifest) == 0 || len(manifest) != len(productManualManifest) {
+		return productManuals{}, &manualLoadError{Key: "catalog", Err: fmt.Errorf("expected %d topics, got %d", len(productManualManifest), len(manifest))}
 	}
-	uris, names := make(map[string]bool), make(map[string]bool)
-	expected := map[string]bool{"concepts": true, "queries-and-lifecycle": true, "dependencies": true, "write-safety": true, "materials": true, "files-and-references": true, "operation-boundaries": true}
+	expected := make(map[string]bool, len(productManualManifest))
+	for _, entry := range productManualManifest {
+		expected[entry.Resource.Name] = true
+	}
+	uris, names := make(map[string]bool, len(manifest)), make(map[string]bool, len(manifest))
 	for _, item := range manifest {
 		r := item.Resource
 		if !expected[r.Name] || r.URI != "daynight://manuals/"+r.Name+".md" || item.Path != "manuals/"+r.Name+".md" || !fs.ValidPath(item.Path) || strings.ContainsAny(r.Name, "/\\") || strings.TrimSpace(r.Title) == "" || strings.TrimSpace(r.Description) == "" || r.MIMEType != "text/markdown" || r.Size <= 0 {
@@ -76,6 +84,9 @@ func loadManualManifest(source fs.FS, manifest []manualManifestEntry) (productMa
 	if err != nil {
 		return productManuals{}, err
 	}
+	if err := validateManualReferences(instructions, "instructions", uris, names); err != nil {
+		return productManuals{}, err
+	}
 	result := productManuals{Instructions: instructions, Documents: make([]manualDocument, 0, len(manifest))}
 	for _, item := range manifest {
 		r := item.Resource
@@ -86,29 +97,26 @@ func loadManualManifest(source fs.FS, manifest []manualManifestEntry) (productMa
 		if int64(len(body)) != r.Size {
 			return productManuals{}, &manualLoadError{Key: r.Name, Err: fmt.Errorf("size mismatch: got %d, want %d", len(body), r.Size)}
 		}
-		for _, uri := range manualURIReference.FindAllString(body, -1) {
-			if !uris[uri] {
-				return productManuals{}, &manualLoadError{Key: r.Name, Err: fmt.Errorf("unknown product reference %q", uri)}
-			}
-		}
-		for _, target := range manifest {
-			if strings.Contains(body, "]("+target.Resource.Name+".md)") {
-				return productManuals{}, &manualLoadError{Key: r.Name, Err: fmt.Errorf("relative product reference to %q", target.Resource.Name)}
-			}
+		if err := validateManualReferences(body, r.Name, uris, names); err != nil {
+			return productManuals{}, err
 		}
 		result.Documents = append(result.Documents, manualDocument{Resource: r, Text: body})
 	}
-	for _, target := range manifest {
-		if strings.Contains(instructions, "]("+target.Resource.Name+".md)") {
-			return productManuals{}, &manualLoadError{Key: "instructions", Err: fmt.Errorf("relative product reference to %q", target.Resource.Name)}
-		}
-	}
-	for _, uri := range manualURIReference.FindAllString(instructions, -1) {
-		if !uris[uri] {
-			return productManuals{}, &manualLoadError{Key: "instructions", Err: fmt.Errorf("unknown product reference %q", uri)}
-		}
-	}
 	return result, nil
+}
+
+func validateManualReferences(text, key string, uris, names map[string]bool) error {
+	for _, uri := range manualURIReference.FindAllString(text, -1) {
+		if !uris[uri] {
+			return &manualLoadError{Key: key, Err: fmt.Errorf("unknown product reference %q", uri)}
+		}
+	}
+	for name := range names {
+		if strings.Contains(text, "]("+name+".md)") {
+			return &manualLoadError{Key: key, Err: fmt.Errorf("relative product reference to %q", name)}
+		}
+	}
+	return nil
 }
 
 func readManualText(source fs.FS, path, key string) (string, error) {

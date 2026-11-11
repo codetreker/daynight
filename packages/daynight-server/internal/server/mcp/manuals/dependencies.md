@@ -1,277 +1,113 @@
-# Dependency management
+# Dependencies and graph reads
 
-A Task dependency says that one Task is a prerequisite of another. Use dependencies for real work prerequisites. A reference to a document or another Task identifies an input; it does not, by itself, require an execution dependency.
+Read this topic to interpret a selected graph or create/replace prerequisites. Writes also require [Write safety](daynight://manuals/write-safety.md); [Tasks](daynight://manuals/tasks.md) owns creation/lifecycle/projections and [Materials](daynight://manuals/materials.md) owns shared input references. Examples are MCP `tools/call` parameters with fictional IDs/versions. Use actual observations and current `tools/list` schemas.
 
-This manual explains dependency meaning, the MCP read and write formats, and how to verify changes. See [Queries and lifecycle](daynight://manuals/queries-and-lifecycle.md) for Task discovery and statuses, [Write safety](daynight://manuals/write-safety.md) for decision versions and uncertain writes, and [Materials](daynight://manuals/materials.md) for input ownership.
+## Meaning and direction
 
-## Prerequisites, dependents and arrow direction
-
-If B depends on A, A is B's prerequisite and B is A's dependent. In diagrams in this manual, an arrow points from prerequisite to dependent:
+If B depends on A, A is the prerequisite and B the dependent. Diagrams point prerequisite → dependent:
 
 ```text
 A → B → C
 ```
 
-B declares A as a direct prerequisite. C declares B. C does not need another direct declaration of A merely to retain the same scheduling path.
+Ordinary dependencies connect work in one ordinary chain; external dependencies provide prerequisites without joining chains. Both are within the **same Project**, affect blocking and participate in cycle checks. An ordinary chain is the connected component of ordinary edges treated as undirected, including branches/joins and all statuses; a standalone Task forms its own chain. Goal parent ownership is a different relationship.
 
-Tasks and dependencies are identified by canonical UUIDs. Display names, title similarity and the order of dependency IDs do not determine their meaning. Dependency collections are unordered sets; reads normalize their identifiers and order.
+Classify from responsibility/input relationships, not terminal status, display layout or similar titles. UUIDs identify tasks; dependency collections are unordered sets with normalized identities/order. A source citation alone is not a scheduling edge.
 
-## Ordinary and external dependencies
+Done/cancelled prerequisites satisfy scheduling; proposed/todo/in-progress do not. Starting/completing requires all direct prerequisites terminal; adding unfinished prerequisites to in-progress/done work is refused. Cancellation needs no terminal-prerequisite gate. Terminal state can alter a dependent's readiness without changing its version or proving required material was delivered; cancelled inputs in particular may have no output. Read actual needed sources before proceeding.
 
-Both kinds are prerequisites within the same Project:
+## Different read and write partitions
 
-| Kind | Scheduling effect | Task-chain effect |
-| --- | --- | --- |
-| Ordinary | Blocks starting or completing the dependent until the prerequisite is terminal | Connects the Tasks into the same ordinary task chain |
-| External | Has the same blocking effect | Refers to a prerequisite outside the dependent's ordinary chain without joining the two chains |
+In returned Task/graph nodes, `dependsOn` (D) contains **all** direct prerequisites; `externalDependsOn` (E) is its external subset. Ordinary prerequisites are D minus E.
 
-An external dependency is not a cross-Project dependency. Choose its classification from the actual responsibility and input relationship. A prerequisite being done, a convenient graph layout, or the Tasks having similar titles does not determine the classification.
+In `task_create` and `task_update` inputs, `dependsOn` is the **ordinary-only** collection and `externalDependsOn` the **external-only** collection. They must be disjoint, with each normalized UUID occurring once across both. Copying the returned D/E arrays directly into a mutation duplicates external IDs.
 
-An ordinary task chain is the connected component formed by treating ordinary dependency edges as undirected. It can contain branches, joins and Tasks in any status. A standalone Task is its own chain. There is no ordering significance to the first dependency in an array.
+For C with ordinary A and external X, read D={A,X}, E={X}; write ordinary={A}, external={X}. Each prerequisite must exist in the same Project, no self dependency is allowed, and the full directed graph must stay acyclic. The shared direct-prerequisite limit is 15 across both classifications.
 
-### Scheduling and content are separate
-
-`done` and `cancelled` satisfy dependency scheduling. `todo` and `in_progress` do not. Both ordinary and external prerequisites participate in blocking and cycle checks.
-
-Entering `in_progress` or `done` requires every direct prerequisite to be `done` or `cancelled`. A dependency update must also satisfy the existing Task's state constraints: adding an unfinished prerequisite to an `in_progress` or `done` Task is refused. Cancellation itself does not require the unfinished prerequisites to become terminal first, although cancellation and active Worker execution have their own rules.
-
-Terminal status does not establish that a prerequisite's required document or implementation exists. In particular, `cancelled` does not mean that its planned output was delivered. Read and assess the actual required materials before proceeding. A dependency becoming terminal can change a dependent's readiness without changing the dependent's Task version.
-
-`ready` is a scheduling fact, not authorization to choose, execute or hand off work. See [Operation boundaries](daynight://manuals/operation-boundaries.md).
-
-## Read format: the complete set and its external subset
-
-A Task read returns two related collections:
-
-- `dependsOn`, denoted D, contains **all** direct prerequisites.
-- `externalDependsOn`, denoted E, contains the external subset of D.
-- The ordinary prerequisites are D minus E.
-
-For example, the following excerpt describes C with ordinary prerequisite A and external prerequisite X:
-
-```json
-{
-  "id": "44444444-4444-4444-8444-444444444444",
-  "version": "12",
-  "dependsOn": [
-    "22222222-2222-4222-8222-222222222222",
-    "55555555-5555-4555-8555-555555555555"
-  ],
-  "externalDependsOn": [
-    "55555555-5555-4555-8555-555555555555"
-  ]
-}
-```
-
-Here D is `{A, X}`, E is `{X}`, and the ordinary set is `{A}`. Do not copy both returned arrays directly into an MCP dependency update: MCP writes use a different partition.
-
-## MCP write format: two disjoint complete collections
-
-For `task_create` and `task_update`, the input arrays mean:
-
-- `dependsOn`: ordinary prerequisites only.
-- `externalDependsOn`: external prerequisites only.
-
-The arrays must be disjoint. A UUID may occur once across both arrays, including after UUID normalization. Each prerequisite must identify an existing Task in the same Project. A Task cannot depend on itself, and the complete dependency graph must remain acyclic. The current limit is 15 direct prerequisites in total, shared by ordinary and external prerequisites.
-
-### Replacement, omission and empty arrays
-
-Dependency input is a replacement, not an append operation:
-
-| Input to `task_update` | Resulting relationship set |
+| `task_update` input | Result |
 | --- | --- |
-| Omit both arrays | Preserve every existing dependency and classification |
-| Supply only `dependsOn` | Replace all dependencies with that ordinary set; remove existing external dependencies |
-| Supply only `externalDependsOn` | Replace all dependencies with that external set; remove existing ordinary dependencies |
-| Supply both arrays | Replace all dependencies with exactly those ordinary and external sets |
-| Supply either array as `[]`, with the other omitted | Clear all dependencies |
-| Supply both arrays as `[]` | Clear all dependencies |
+| Omit both arrays | Preserve all existing relationships/classifications |
+| Supply only dependsOn | Replace all with that ordinary set; remove existing external relationships |
+| Supply only externalDependsOn | Replace all with that external set; remove existing ordinary relationships |
+| Supply both | Replace all with exactly those two sets |
+| Either `[]` with other omitted, or both `[]` | Clear all prerequisites |
 
-`null` is not a dependency-clearing value. Use arrays. On creation, omitting both arrays creates a Task with no prerequisites.
+Null is not a clearing value. Creation omission yields no prerequisites. To change one ordinary edge while keeping external edges, submit both complete desired sets. Successive updates do not accumulate portions of a large set; each replaces the whole relationship set.
 
-To remove one ordinary prerequisite while retaining an external prerequisite, send the complete remaining ordinary set **and** the complete external set. Sending only the changed ordinary collection would also remove the external relationships.
+## Observe, replace and verify
 
-The precise parameter schema for the connected service is discoverable through `tools/list`. Do not substitute REST patches or CLI flags for the MCP input contract.
-
-## Read, decide, replace and verify
-
-The JSON examples below are the `params` passed to MCP `tools/call`, not complete JSON-RPC requests. The Project and Task UUIDs are fictional. Use the actual IDs and the exact version returned by the reads on which the decision is based.
-
-Suppose the Project is P, the dependent is C, and the decision is to replace C's ordinary prerequisite A with B while retaining external prerequisite X:
-
-| Label | Example UUID |
-| --- | --- |
-| P | `11111111-1111-4111-8111-111111111111` |
-| A | `22222222-2222-4222-8222-222222222222` |
-| B | `33333333-3333-4333-8333-333333333333` |
-| C | `44444444-4444-4444-8444-444444444444` |
-| X | `55555555-5555-4555-8555-555555555555` |
-
-### 1. Read the dependent and its relevant inputs
-
-Read C's complete definition, current version, status and D/E collections:
+Suppose C replaces ordinary A with B while retaining external X. Read C's full definition/version/state and relevant A/B/X material or paths. Graph nodes provide no mutation version; use Task show for the exact decision version.
 
 ```json
-{
-  "name": "task_show",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "44444444-4444-4444-8444-444444444444",
-    "view": "full"
-  }
-}
+{"name":"task_show","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"44444444-4444-4444-8444-444444444444","view":"full"}}
 ```
 
-Read A, B, X and their materials or dependency paths as needed to establish that the proposed relationships have the intended meaning. Checking Task IDs alone does not establish that their required outputs are sufficient.
-
-Keep the version used for the decision as an exact decimal string. Graph nodes do not provide a Task mutation version; use a Task detail read for that purpose. A later automatic version read cannot protect an earlier decision.
-
-### 2. Submit the full replacement
-
-If the preceding observation returned C at version `"12"`, use that exact version:
+If the observation yields `"12"`, the complete replacement is:
 
 ```json
-{
-  "name": "task_update",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "44444444-4444-4444-8444-444444444444",
-    "ifVersion": "12",
-    "dependsOn": [
-      "33333333-3333-4333-8333-333333333333"
-    ],
-    "externalDependsOn": [
-      "55555555-5555-4555-8555-555555555555"
-    ],
-    "returnView": "full"
-  }
-}
+{"name":"task_update","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"44444444-4444-4444-8444-444444444444","ifVersion":"12","dependsOn":["33333333-3333-4333-8333-333333333333"],"externalDependsOn":["55555555-5555-4555-8555-555555555555"],"returnView":"full"}}
 ```
 
-A successful resulting Task has D `{B, X}` and E `{X}`. Its read representation therefore includes X in both returned collections, even though X occurred only in `externalDependsOn` in the write input.
-
-Inspect the structured result and its write outcome. Do not infer completion from the text `Completed.` alone. Version conflict, failed validation and unknown submission results require different responses; see [Write safety](daynight://manuals/write-safety.md).
-
-### 3. Read the actual graph
-
-After creating, replacing or clearing dependencies, read the graph for the affected Task:
+The returned Task has D={B,X}, E={X}; X appears in both **returned** arrays. Inspect structured business/completion facts rather than the short Completed text. Re-read the resulting graph after creating/replacing/clearing relationships:
 
 ```json
-{
-  "name": "task_graph",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "44444444-4444-4444-8444-444444444444",
-    "dependsOnly": true
-  }
-}
+{"name":"task_graph","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"44444444-4444-4444-8444-444444444444","dependsOnly":true}}
 ```
 
-The result is a structured object, not a bare node array. Its `structuredContent.data.tasks` contains nodes such as this excerpt:
+Compare complete D/E sets, paths and classification. If a change splits an ordinary chain, read every affected component using a surviving Task in it. One graph cannot verify disconnected components or paths beyond its direct external context.
+
+Creation uses the same disjoint partition. This registers confirmed work explicitly:
 
 ```json
-{
-  "id": "44444444-4444-4444-8444-444444444444",
-  "dependsOn": [
-    "33333333-3333-4333-8333-333333333333",
-    "55555555-5555-4555-8555-555555555555"
-  ],
-  "externalDependsOn": [
-    "55555555-5555-4555-8555-555555555555"
-  ]
-}
+{"name":"task_create","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","title":"Verify the assembled result","description":"Verify B's supplied result against X's required input.","status":"todo","dependsOn":["33333333-3333-4333-8333-333333333333"],"externalDependsOn":["55555555-5555-4555-8555-555555555555"],"returnView":"full"}}
 ```
 
-Compare the complete D/E sets with the decision. Verify required paths, classification and removable shortcuts. If a change splits one ordinary chain into multiple components, read each affected component, using a surviving Task in that component as the root. One graph read cannot verify disconnected components.
+Automatic execution remains disabled; unfinished prerequisites block execution/completion rather than registration. [Tasks](daynight://manuals/tasks.md) owns creation defaults. Preserve the confirmed new ID and verify its graph. Unknown creation requires original-context reconciliation, not a duplicate based on title matching.
 
-Read any additional paths needed beyond the graph's direct external context. A successful write response or an expected Task field is not a substitute for checking the resulting relationships.
+## Reduce only valid shortcuts
 
-## Creating a Task with prerequisites
+Reduce within the authorized relationships being created/changed, preserving necessary paths and surviving classifications. Discovering an unrelated shortcut does not authorize editing it.
 
-Creation uses the same disjoint input partition. For example, a new Task with ordinary prerequisite B and external prerequisite X can be submitted as follows:
-
-```json
-{
-  "name": "task_create",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "title": "Verify the assembled result",
-    "description": "Verify the result supplied by B against the required input supplied by X.",
-    "dependsOn": [
-      "33333333-3333-4333-8333-333333333333"
-    ],
-    "externalDependsOn": [
-      "55555555-5555-4555-8555-555555555555"
-    ],
-    "returnView": "full"
-  }
-}
-```
-
-A new Task begins in `todo` with automatic execution disabled. Its prerequisite Tasks can still be unfinished: the relationships block starting and completion, not registration. Preserve the returned new Task ID and read its actual graph. If the creation result is unknown, reconcile the original operation before deciding on another creation; a matching title alone cannot identify the original result.
-
-## Reducing redundant direct dependencies
-
-Keep the necessary prerequisite paths while avoiding duplicate direct edges. Perform reduction only within the relationships being created or changed; discovering an unrelated shortcut does not authorize editing it.
-
-### Ordinary shortcuts require an all-ordinary alternative
-
-For an all-ordinary chain:
+An ordinary shortcut may be removed only when an **all-ordinary** alternative path remains:
 
 ```text
 A ─ordinary→ B ─ordinary→ C
 └────────ordinary────────→ C
 ```
 
-The direct A-to-C edge is redundant. C needs only B as its ordinary prerequisite because the retained all-ordinary path already provides A.
+The direct A→C ordinary edge is redundant. If A→B is external, however, the direct ordinary A→C still contributes ordinary-chain membership; scheduling reachability through that mixed path does not justify removal.
 
-Do not remove an ordinary edge using an alternative path that contains an external edge:
-
-```text
-A ─external→ B ─ordinary→ C
-└────────ordinary────────→ C
-```
-
-The direct ordinary A-to-C edge also contributes ordinary-chain membership. Removing it merely because A still precedes C through an external edge would change that membership. The scheduling reachability alone does not justify the removal.
-
-### External shortcuts may use either kind of alternative edge
-
-For an external shortcut, a retained alternative prerequisite path may contain ordinary edges, external edges, or both:
+An external shortcut may use an alternative path containing either/both edge kinds:
 
 ```text
 A ─external→ B ─ordinary→ C
 └────────external────────→ C
 ```
 
-The direct external A-to-C edge is redundant if the retained path already supplies that prerequisite. Removing the external shortcut does not remove an ordinary-chain connection.
+The external A→C can be removed while the path remains. Compute the complete intended collections, submit one replacement and verify actual graphs; visual placement cannot reclassify an edge.
 
-In every case, compute the complete desired direct collections, retain each surviving edge's classification, submit one replacement and verify the actual graph. Do not use a graph's visual placement to reclassify an edge.
+## Graph scope and projections
 
-## What the graph contains
+`task_graph` returns the selected Task's entire bidirectionally connected ordinary component, plus one layer of external prerequisites directly declared by its members. It includes all undeleted statuses. It does not expand context Tasks' own chains/prerequisites recursively, or include another chain merely because it depends externally on a member. There is no continuation cursor.
 
-`task_graph` is scoped to the selected Task, not to the whole Project. It returns:
+The result is an object at `structuredContent.data`, not a bare node array. It includes `project`, `observedAt`, `summary`, `projection`, `tasks`, `returnedNodes` and `totalNodes`. Counts describe this selected scope, not Project size or recursive closure.
 
-1. The selected Task's entire ordinary connected component, including branches, joins and all undeleted Task statuses.
-2. Each external prerequisite directly declared by any member of that component.
+`dependsOnly: true` restricts nodes to ID, full D and E. Normal nodes add type=task, nullable Goal parentId, marked title previews, status, blocking/readiness, assignment, platform, permission and times; they still omit Task version, description and properties. Read Task show separately for those. [Session reads](daynight://manuals/session-reads.md) owns normal graph Session projections; dependency-only has none.
 
-The external prerequisites in the second group are context nodes. Their own prerequisites and ordinary chains are not recursively expanded. Tasks in other chains that externally depend on a member are not selected. A standalone Task produces its own component plus any directly declared external prerequisites.
+Nodes retain their actual full dependency/blocking references even when an ID points outside returned rows. Preserve those IDs: absence of a row proves neither missing/deleted/terminal state nor lack of an alternative path. Query additional relevant Tasks/graphs to verify paths.
 
-Every returned node retains its actual full `dependsOn`, `externalDependsOn` and, when requested in the normal graph view, `blockedBy` references. Some IDs can refer to Tasks whose rows are intentionally absent from this projection. Preserve those IDs. Absence of a row does not establish that a prerequisite is missing, deleted, terminal, unnecessary or part of no alternative path.
-
-`dependsOnly: true` restricts each node to its ID and dependency collections. Without it, graph nodes include compact title previews, status, readiness and other graph metadata; they do not contain descriptions or full Task content. The graph result includes `projection`, `project`, `observedAt`, `summary`, `tasks`, `returnedNodes` and `totalNodes`. The node counts describe this selected projection, not the Project's Task count or a recursive dependency closure. Graph reads have no continuation cursor.
-
-The graph is read within one observation. `observedAt` is its UTC observation timestamp, not a content hash, Task version or lock. Separate Task, graph and material reads are not a shared cross-request snapshot. Other operations can change prerequisites or inputs between reads; the service rechecks the applicable constraints when a mutation is submitted.
+One graph is read within one observation. UTC observedAt is not a hash, Task version or lock. Separate graph, Task and material reads do not share a snapshot; submitted mutations recheck their applicable current constraints.
 
 ## Refusals and uncertain results
 
-| Condition | Required response |
+| Failure | Required response |
 | --- | --- |
-| Malformed, duplicate, self or out-of-Project prerequisite | Correct the proposed identities and full collections after reading the relevant facts. Do not guess another Task from a matching title. |
-| More than 15 total direct prerequisites | Reconsider the actual direct relationships and apply valid reduction. Do not split one intended dependency set across successive updates: each update replaces it. |
-| `dependency_cycle` | Reassess the complete directed paths and remove the proposed cycle from the authorized change. External classification does not bypass cycle checking. |
-| `dependency_unsatisfied` | Read the unmet prerequisite IDs and current statuses. Satisfying the scheduling gate and obtaining required outputs are separate conditions. |
-| `version_conflict` | Read the current Task again and reconsider the decision, content, status and authorization. Do not merely substitute the new version and replay the old replacement. |
-| Permission or visibility failure | Report the actual access failure. Do not reinterpret it as evidence that a Task does not exist. |
-| Lost or malformed response, cancellation or another unknown write outcome | Preserve the original Project, Task, request context and proposed collections. Read current facts before deciding again, without automatically replaying the mutation or claiming that current matching fields prove the original write succeeded. |
+| Invalid/duplicate/self/out-of-Project identity | Reassess actual IDs and full sets; do not guess a Task from title similarity. |
+| Over 15 total direct prerequisites | Reconsider direct relationships and valid reduction; successive replacement calls cannot bypass the limit. |
+| dependency_cycle | Reassess complete directed paths; external classification does not bypass cycle checking. |
+| dependency_unsatisfied | Read unmet IDs/statuses; scheduling and required deliverables are separate. |
+| version_conflict | Reread current content/state/relationships and make a new decision, not a latest-version replay. |
+| Permission/visibility failure | Preserve actual access failure rather than infer absence. |
+| Unknown write/transport outcome | Retain original scope, decision version and proposed sets; inspect current facts without automatic replay or historical attribution from matching arrays. |
 
-Deleting a prerequisite is different from canceling it. Cancellation preserves a readable Task and its relationships while satisfying scheduling. Deletion is refused while undeleted Tasks still depend on the target unless removal of those references is explicitly requested and authorized. Such removal can change dependent Task versions and make work ready. See [Queries and lifecycle](daynight://manuals/queries-and-lifecycle.md) and [Operation boundaries](daynight://manuals/operation-boundaries.md) before choosing either action.
+Cancellation preserves readable relationships and satisfies scheduling. Deletion is distinct; removing incoming references is an additional consequential change, affecting versions/readiness, that needs its own covered scope. [Tasks](daynight://manuals/tasks.md) owns cancellation/deletion boundaries and [Write safety](daynight://manuals/write-safety.md) owns completion attribution.

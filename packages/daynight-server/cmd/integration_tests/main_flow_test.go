@@ -60,14 +60,17 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const uri = "daynight://manuals/concepts.md"
+		const (
+			uri                 = "daynight://manuals/concepts.md"
+			expectedManualCount = 12
+		)
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {
 			if resource.URI == uri {
 				manual = resource
 			}
 		}
-		if len(listing.Resources) != 7 || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
+		if len(listing.Resources) != expectedManualCount || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
 			t.Fatalf("manual discovery differs: %+v", listing)
 		}
 		read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: manual.URI})
