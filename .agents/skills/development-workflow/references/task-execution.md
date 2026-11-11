@@ -7,7 +7,7 @@ Managed execution must also meet its [complete delivery standard](delivery.md#wo
 ## Inputs and readiness
 
 Read the complete task, actually required references, and existing results under the [task content standard](task-content.md).
-For Goal tasks, also apply the [stage protocol](goal.md) and check responsibilities, stage inputs, and the architecture index.
+For Goal child Tasks, also apply the [stage protocol](goal.md), verify the actual Parent, and check producing responsibilities, Goal-owned shared inputs, and the architecture index.
 Inspect required prototypes with their assets and actually interact with them.
 
 Verify status and all direct prerequisites under [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries), and apply [authorization and scope](authorization.md).
@@ -24,7 +24,7 @@ Follow [task management](../../../../packages/daynight/src/commands/skill/skills
 When creating a PR, its description must clearly explain the problem being solved and how the change addresses it.
 If the PR is associated with a Daynight task, include the task's ID and title.
 
-Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep session execution steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
+Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in their owning resource: Goal-wide shared material on the Goal and Task-specific material on the Task; keep session execution steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
 
 ## Maintain Steps
 

@@ -30,8 +30,10 @@ take precedence.
   plan does not make them Daynight tasks or task material.
   All solution, architecture, and design reviews must use the owning Daynight
   task. Before requesting user review of such a discussion, save the complete
-  current material in that task's description or
-  attachments, read it back, and provide the task and resource reference.
+  current material in its owning resource, read it back, and provide the
+  discussion task and resource reference. For a Goal, shared requirements,
+  architecture, whole-Goal acceptance, and the overall Thread belong to the
+  Goal; the producing task identifies the Goal ID and exact paths.
   Synchronize the current requirements, design, and resulting decisions there;
   discussion methods, review process, and operational authorization stay in the
   session. Chat summaries and repository or PR links supplement the saved
@@ -43,15 +45,20 @@ take precedence.
   document owners. Use the `using-daynight` manual for Daynight product operations; follow the
   [development workflow](.agents/skills/development-workflow/SKILL.md) for
   repository work and its applicable task procedures.
-- For a Goal, first create or reuse only its requirements-discussion task and
-  enter `in_progress` when the user requests that discussion. After the user
-  confirms the complete uploaded `spec.md` and asks to proceed, create or reuse
-  and read back the solution or architecture discussion task with an ordinary
-  dependency on the still-in-progress requirements task. Complete and verify the
-  requirements task before starting that successor discussion. Create the actual
-  delivery subtasks and their dependencies only after the user confirms the
-  solution. A request to start or advance a discussion authorizes setting that
-  discussion task to `in_progress`; it grants no delivery-task execution permission. Discussion completion follows the confirmed Daynight material and
+- For a Goal, first create or reuse the `type=goal` container, then create or
+  reuse only its ordinary requirements-discussion task with that Goal as Parent.
+  Create a new internal discussion task explicitly as `todo`; do not automatically
+  accept a reused `proposed` task. Enter `in_progress` when the user requests that
+  discussion under the ordinary execution rules. After the user confirms the
+  complete uploaded `spec.md` and asks to proceed, create or reuse
+  and read back the ordinary solution or architecture discussion task under the
+  same Parent, with an ordinary dependency on the still-in-progress requirements
+  task. Complete and verify the requirements task before starting that successor
+  discussion. Create the actual delivery subtasks and their dependencies only after the user confirms the
+  solution; delivery and acceptance tasks are also direct children of the Goal.
+  A request to start or advance a discussion authorizes setting that
+  discussion task to `in_progress`; it grants no delivery-task execution
+  permission. Discussion completion follows the confirmed Daynight material and
   phase acceptance. Repository delivery retains its own PR and merge requirements.
 - Complete authorized work and its verification. Before marking a task done,
   verify both its own results and the actual registration of any required

@@ -6,7 +6,7 @@ Follow the target repository's documentation and language rules.
 
 ## Task, Thread and Session boundary
 
-Task descriptions and attachments store effective requirements, solutions and formal results.
+Task and Goal descriptions and attachments store effective requirements, solutions and formal results. For a Goal, shared requirements, architecture and whole-Goal acceptance belong to the Goal; producing Tasks identify the Goal ID and exact paths. Task-specific work and results remain with their Tasks.
 Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
 Apply these responsibilities to descriptions, attachments and referenced material.
 Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#threads) to read, post and reply without changing task metadata or triggering execution.
@@ -58,7 +58,7 @@ Provide the detail the actual work needs without inventing interfaces or empty s
 These content requirements do not mandate a separate plan file, line-by-line code instructions, or Task Steps resources.
 When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
-The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
+The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment on the Goal, produced by the requirements Task, even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
 The [complete delivery standard](delivery.md#worker-delivery-results) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
 Generic questions, unexplained links, unreadable sources, or "see the previous discussion" are insufficient.
 
@@ -78,10 +78,10 @@ Preserve case and actual resource paths, and do not escape the task root.
 Upload and read back resources before adding links.
 Preserve valid relative locations for prototype HTML, CSS, JavaScript, images, and other resources, and follow the [prototype requirements](create-task.md#prepare-content).
 
-Keep shared inputs in their owning tasks and cite the owning task ID and source location: identify the description and applicable sections for inline content, the full path for actual attachments, and the exact path and required, verified immutable revision reference for repository sources.
+Keep shared inputs in their owning resource and cite its ID and source location: identify the description and applicable sections for inline content, the full path for actual attachments, and the exact path and required, verified immutable revision reference for repository sources.
 Read source descriptions with `task show --json` and read attachments separately.
 The whole description may be referenced when no section restriction is needed.
-Do not invent attachments, cross-task relative links, URL schemes, or fixed service hosts, or copy or move content merely to satisfy formatting requirements.
+Do not invent attachments, cross-resource relative links, URL schemes, or fixed service hosts, or copy or move content merely to satisfy formatting requirements. Goal delivery Tasks directly identify both the architecture-producing Task and the Goal owning the shared sources, including indirect successors.
 
 Read further references genuinely needed by the current task, tracking resources already read to avoid cycles.
 Reference cycles without substantive content cannot pass checks; resolve substantive conflicts between sources before declaring inputs sufficient.
