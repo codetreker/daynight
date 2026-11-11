@@ -5,7 +5,7 @@ import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSe
 import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import { GoalCreate } from '../src/features/goal-detail/GoalCreate';
-import { ApiError, createTask } from '../src/api/client';
+import { ApiError, createTask, pauseAuthRequests } from '../src/api/client';
 import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
@@ -59,6 +59,35 @@ it('keeps a non-ApiError outcome unknown inside the editor after checking state'
   expect(within(editor).getByRole('textbox', { name: 'Name' })).toHaveValue('Draft title');
   expect(within(editor).getByRole('textbox', { name: 'Description' })).toHaveValue('Draft body');
   expect(write).toHaveBeenCalledTimes(1); expect(check).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a newer Goal draft when a locally confirmed edit is published after a pause', () => {
+  const operation = { action: 'editGoal' as const, title: 'Submitted', description: 'Original', version: detail.version };
+  const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
+  const surface = (mutation: TaskMutationState, current = detail) => {
+    const task = { detail: current, mutation, historyGeneration: 1, canEditGoal: true, canDisplayStatus: true, canSetStatus: true,
+      canDisplayAssignee: true, canSetAssignedTo: true, canDisplayDelete: true, canDelete: true, assignmentUncertain: false,
+      editGoal: write, reconcile: check } as unknown as ReturnType<typeof useTaskDetail>;
+    return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={current} resourceState={task} snapshot={null} presentation="dialog"
+      fullscreen={{ active: false, onChange: () => {} }} onSelectTask={() => {}} onClose={() => {}} onRefreshGraph={() => {}} />;
+  };
+  const view = renderWithLocale(surface(idle), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+  const editor = screen.getByRole('alertdialog', { name: 'Edit Goal' });
+  const title = within(editor).getByRole('textbox', { name: 'Name' });
+  fireEvent.change(title, { target: { value: 'Submitted' } });
+  fireEvent.click(within(editor).getByRole('button', { name: 'Save' }));
+  const pending: TaskMutationState = { ...idle, operation, phase: 'confirmed', publicationPending: true };
+  const resume = pauseAuthRequests();
+  try {
+    view.rerender(surface(pending));
+    expect(title).toBeEnabled();
+    fireEvent.change(title, { target: { value: 'Newer draft' } });
+    resume();
+    view.rerender(surface({ ...pending, publicationPending: false }, { ...detail, title: 'Submitted', version: detail.version + 1n }));
+    expect(within(screen.getByRole('alertdialog', { name: 'Edit Goal' })).getByRole('textbox', { name: 'Name' })).toHaveValue('Newer draft');
+    expect(write).toHaveBeenCalledOnce();
+  } finally { resume(); }
 });
 
 it('shows the unknown outcome after checking even when the error object is cleared', () => {

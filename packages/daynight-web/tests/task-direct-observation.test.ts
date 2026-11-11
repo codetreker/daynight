@@ -745,7 +745,8 @@ it.each([
     if (fastResume) resume();
     else {
       await waitFor(() => expect(rejected).toBe(true));
-      expect(sessions.snapshot(project, task).mutation.phase).toBe("pending");
+      expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : status === 409 ? "conflict" : "unknown", reconciling: false, publicationPending: true });
+      expect(sessions.snapshot(project, task).detail?.version).toBe(1n);
       expect(writes).toBe(1);
     }
   } finally { resume(); }
@@ -796,7 +797,7 @@ it.each([200, 409] as const)("holds HTTP %s outcome when identity pauses just af
     return current;
   });
   sessions.setStatus(project, task, "in_progress", 1n); await paused.promise;
-  try { expect(sessions.snapshot(project, task).mutation.phase).toBe("pending"); expect(writes).toBe(1); }
+  try { expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : "conflict", reconciling: false, publicationPending: true }); expect(sessions.snapshot(project, task).detail?.version).toBe(1n); expect(writes).toBe(1); }
   finally { (resume as (() => void) | null)?.(); }
   await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : "conflict", reconciling: false }));
   expect(writes).toBe(1);

@@ -68,6 +68,21 @@ describe('Task Goal control', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('The Task changed');
     expect(screen.getByRole('button', { name: 'Save Goal membership' })).toBeDisabled();
   });
+  it('keeps a later choice when a locally confirmed move is published after a pause', () => {
+    const operation = { action: 'parent' as const, parentId: 'b', version: detail.version };
+    const pending: TaskMutationState = { ...idle, operation, phase: 'confirmed', publicationPending: true };
+    const onSelect = vi.fn();
+    const view = renderWithLocale(<TaskParentControl detail={detail} snapshot={snapshot} disabled={false} mutation={idle} onSelect={onSelect} onReconcile={vi.fn()} />, { locale: 'en' });
+    const choice = screen.getByRole('combobox', { name: 'Current Goal' });
+    fireEvent.change(choice, { target: { value: 'b' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Goal membership' }));
+    view.rerender(<TaskParentControl detail={detail} snapshot={snapshot} disabled mutation={pending} onSelect={onSelect} onReconcile={vi.fn()} />);
+    fireEvent.change(choice, { target: { value: '' } });
+    view.rerender(<TaskParentControl detail={{ ...detail, parentId: 'b', version: detail.version + 1n }} snapshot={snapshot} disabled={false} mutation={{ ...pending, publicationPending: false }} onSelect={onSelect} onReconcile={vi.fn()} />);
+    expect(choice).toHaveValue('');
+    expect(screen.getByRole('alert')).toHaveTextContent('The Task changed');
+    expect(onSelect).toHaveBeenCalledOnce();
+  });
   it('requires a new review if the selected Task changes Goal or version before submission', () => {
     const setParent = vi.fn();
     const source = { ...detail, title: 'Selected Task', parentId: 'a' };
@@ -84,6 +99,25 @@ describe('Task Goal control', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review current Task' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add to Goal' }));
     expect(setParent).toHaveBeenCalledExactlyOnceWith('target', source.version + 1n);
+    hook.mockRestore();
+  });
+  it('does not close a re-reviewed selection on a delayed confirmed move', () => {
+    const setParent = vi.fn(); const onClose = vi.fn();
+    const source = { ...detail, title: 'Selected Task', parentId: 'a' };
+    const state = { detail: source, canSetParent: true, mutation: idle, error: null, status: 'ready', setParent, retry: vi.fn() } as unknown as ReturnType<typeof taskDetailHook.useTaskDetail>;
+    const hook = vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
+    const selection = () => <ExistingSelection projectId="project" taskId="task" goalId="target" snapshot={snapshot} onClose={onClose} />;
+    const view = renderWithLocale(selection(), { locale: 'en' });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Goal' }));
+    const pending: TaskMutationState = { ...idle, operation: { action: 'parent', parentId: 'target', version: source.version }, phase: 'confirmed', publicationPending: true };
+    hook.mockReturnValue({ ...state, detail: { ...source, version: source.version + 1n }, mutation: pending });
+    view.rerender(selection());
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current Task' }));
+    hook.mockReturnValue({ ...state, detail: { ...source, version: source.version + 1n }, mutation: { ...pending, publicationPending: false } });
+    view.rerender(selection());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(setParent).toHaveBeenCalledOnce();
     hook.mockRestore();
   });
 });

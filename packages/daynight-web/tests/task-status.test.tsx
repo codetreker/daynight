@@ -288,7 +288,7 @@ describe('status in shared production task details', () => {
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
-    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, standalone, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, standalone, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
   });
 
   it.each(['in_progress', 'done'] as const)('retains the status receipt when a later detail read reaches %s', async (status) => {
@@ -338,7 +338,7 @@ describe('status in shared production task details', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     dialog = await openChild();
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeDisabled();
-    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, child, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, child, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(getTask).toHaveBeenCalledTimes(1);
     await act(async () => { mutation.resolve(commit()); });
     await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));

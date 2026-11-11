@@ -94,7 +94,7 @@ describe('confirmed automatic execution header control', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Attachments' })); const draft = screen.getByRole('textbox', { name: 'Attachment draft' });
     fireEvent.change(draft, { target: { value: 'Retained' } });
     fireEvent.click(screen.getByRole('switch')); fireEvent.click(screen.getByRole('button', { name: 'Enable automatic execution' }));
-    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onDispatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(screen.getByRole('switch')).toBeDisabled(); expect(screen.getByRole('switch')).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'To do' })).toBeDisabled();
     await act(async () => pending.resolve({ ...detail, allowAgents: true, version: detail.version + 1n }));

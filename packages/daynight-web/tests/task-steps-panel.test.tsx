@@ -156,6 +156,26 @@ describe("adding a Step", () => {
     read.mutation = { operation: { action: "stepAdd", stepId, requestId }, phase, error, reconciling: false, reconciliationError: null };
   };
 
+  it("retains newer local edits when a confirmed receipt is published after a pause", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    setAddMutation(stepId, "confirmed");
+    Object.assign(read.mutation, { publicationPending: true });
+    const resume = pauseAuthRequests();
+    try {
+      view.rerender(panel()); publish();
+      expect(title()).toHaveValue("  Review 第 2 轮  ");
+      expect(title()).toBeEnabled();
+      fireEvent.change(title(), { target: { value: "A newer draft" } });
+      resume();
+      Object.assign(read.mutation, { publicationPending: false });
+      read.resource = { ...resource([...read.resource!.steps, { ...steps[0]!, id: stepId, title: "  Review 第 2 轮  " }]), version: 4n };
+      view.rerender(panel()); publish();
+      expect(title()).toHaveValue("A newer draft");
+      expect(read.add).toHaveBeenCalledOnce();
+    } finally { resume(); }
+  });
+
   it("validates the title, previews the same Markdown, and submits unmodified fields with a reserved short ID", () => {
     renderWithLocale(panel(), { locale: "en" });
     open(); expect(title()).toHaveFocus();
