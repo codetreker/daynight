@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import { lstat, open, readFile, readdir, realpath, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
@@ -9,19 +10,36 @@ import { runRepositoryGit } from "../../../repository/git.js";
 import { startOwnedRepositoryGit } from "../../../repository/git-owned.js";
 import { decodeStrictSessionJson } from "../../../session/v2/values.js";
 import { sameResourceOwner } from "../resource-owner.js";
+import { parseWebTaskV1 } from "../backends/web-record.js";
+import type { LocalTask as WebTask } from "../backends/web-types.js";
+import { isHerdrNeverStarted, parseHerdrLifecycleRecord } from "../herdr/lifecycle-store.js";
+import type { HerdrLifecycleRecord } from "../herdr/lifecycle-types.js";
+import type { HerdrRetainedResource } from "../herdr/resource-types.js";
+import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { readRegistrationIndex } from "../worktree-scan.js";
 import { ambiguousMissingGitTargets, resolveGitDirectory, resolveGitFile } from "../worktree-paths.js";
-import type { ResourceOwner, WorktreeBinding } from "../types.js";
+import type { ResourceOwner } from "../types.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./manifest.js";
 import { canonicalWorktreeId, managedNamespace } from "./paths.js";
 
 export type MigrationSources = {
   /** Complete schedules belonging to this repository, including retained claims. */
   listSchedules(): Promise<readonly ResourceOwner[]> | readonly ResourceOwner[];
-  /** Complete Web worktree bindings, including completed executions, for this repository. */
-  listWebBindings(): Promise<readonly { owner: ResourceOwner; binding: WorktreeBinding }[]> | readonly { owner: ResourceOwner; binding: WorktreeBinding }[];
-  /** Complete original Herdr lifecycle bindings for this repository. */
+  /** Complete validated Web records from both unfinished and completed store listings. */
+  listWebTasks(): Promise<readonly WebTask[]> | readonly WebTask[];
+  /** Complete original Herdr lifecycles from the lifecycle store. */
+  listHerdrLifecycles(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
+  /**
+   * Bindings from every workspace pane in tasks.listResources(operation) and
+   * every pendingStops().context.cwd. An unavailable or partial observation,
+   * workspace without panes, missing cwd, or inconsistent cwd must throw. An
+   * adapter's error fallback to an empty list is not a complete observation.
+   */
   listHerdrBindings(): Promise<readonly { owner: ResourceOwner; cwd: string }[]> | readonly { owner: ResourceOwner; cwd: string }[];
+  /** Verified never-started retirements from the same lifecycle store's listRetired(). */
+  listHerdrRetired(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
+  /** Complete retained-resource projections from the original Herdr archive. */
+  listHerdrResources(): Promise<readonly HerdrRetainedResource[]> | readonly HerdrRetainedResource[];
 };
 export type MigrationCheckpoint = "manifest-published" | "unlocked" | "sidecar-removed" | "format-published";
 export type MigrationOptions = {
@@ -122,7 +140,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     || await realpath(await gitRead(["rev-parse", "--path-format=absolute", "--git-common-dir"])) !== canonicalCommon) throw new Error("Migration repository root and Git common directory do not match.");
   const namespace = managedNamespace(root), parent = path.join(common, "daynight"), manifestDir = path.join(parent, "worktrees"), format = path.join(manifestDir, "format.json");
   const store = createWorktreeManifestStore(common);
-  if (await directory(parent) !== null) await directory(manifestDir);
+  const namespaceExists = await directory(parent) !== null && await directory(manifestDir) !== null;
   const readFormat = (durable: boolean): boolean => {
     let before;
     try { before = lstatSync(format); } catch (error) { if (missing(error)) return false; throw error; }
@@ -138,7 +156,20 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     if (durable) syncDurableDirectory(manifestDir);
     return true;
   };
-  if (readFormat(false)) {
+  const activeFormat = readFormat(false);
+  if (namespaceExists) {
+    // The durable writer may be interrupted before rename. Only its private,
+    // single-link format temporaries can be retired; they are not owner evidence.
+    const temporary = (await readdir(manifestDir)).filter(name => /^format\.json\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/.test(name));
+    for (const name of temporary) {
+      const stat = await lstat(path.join(manifestDir, name), { bigint: true });
+      if (!stat.isFile() || stat.nlink !== 1n || (process.platform !== "win32" && (typeof process.getuid !== "function" || stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o7777n) !== 0o600n))) throw new Error("Worktree format temporary is not a private ordinary file.");
+    }
+    for (const name of temporary) await unlink(path.join(manifestDir, name));
+    // Also retry the barrier when a prior unlink succeeded but its sync failed.
+    syncDurableDirectory(manifestDir);
+  }
+  if (activeFormat) {
     ensureDurableDirectory(parent); ensureDurableDirectory(manifestDir);
     readFormat(true);
     return store.list();
@@ -152,12 +183,48 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     if (original.path !== expected.path || ambiguousMissingGitTargets(original, expected)) throw new Error("Original worktree path is outside the managed namespace.");
     return name;
   };
+  // A retired path may already belong to a successor. Validate its stored
+  // location without opening or resolving the historical checkout.
+  const sameDirectory = async (left: string, right: string): Promise<boolean> => {
+    if (left === right) return true;
+    await resolveGitDirectory(".", left); await resolveGitDirectory(".", right);
+    const leftIdentity = await directory(left), rightIdentity = await directory(right);
+    return leftIdentity !== null && leftIdentity === rightIdentity;
+  };
+  const historicalName = async (cwd: string, verifiedRoot?: string): Promise<string> => {
+    if (typeof cwd !== "string" || !path.isAbsolute(cwd) || /[\r\n\0]/.test(cwd) || cwd.split(/[\\/]/).some(part => part === "." || part === "..")) throw new Error("Invalid retired worktree path.");
+    const name = canonicalWorktreeId(path.basename(cwd));
+    const knownRoots = [options.repositoryPath, ...(verifiedRoot === undefined ? [] : [verifiedRoot])].filter(candidate => !candidate.split(/[\\/]/).some(part => part === "." || part === ".."));
+    if (path.dirname(cwd) !== namespace && !knownRoots.some(candidate => path.dirname(cwd) === managedNamespace(candidate))
+      && !await sameDirectory(path.dirname(cwd), namespace)) throw new Error("Retired worktree path is outside the managed namespace.");
+    return name;
+  };
   const collect = async () => {
     operation.check();
-    const [schedules, web, herdr] = await Promise.all([sources.listSchedules(), sources.listWebBindings(), sources.listHerdrBindings()]);
+    const [schedules, rawWeb, rawHerdr, legacyHerdr, rawRetired, resources] = await Promise.all([
+      sources.listSchedules(), sources.listWebTasks(), sources.listHerdrLifecycles(), sources.listHerdrBindings(), sources.listHerdrRetired(), sources.listHerdrResources(),
+    ]);
     const values: WorktreeManifest[] = [];
+    const identities = new Map<string, ResourceOwner>(), worktreeIds = new Map<string, ResourceOwner>();
+    const observe = (input: ResourceOwner): ResourceOwner => {
+      const owner = ownerOf(input), priorClaim = identities.get(claim(owner)), priorId = worktreeIds.get(owner.worktreeId);
+      if (priorClaim && !sameResourceOwner(priorClaim, owner) || priorId && !sameResourceOwner(priorId, owner)) throw new Error("Conflicting worktree owners.");
+      identities.set(claim(owner), owner); worktreeIds.set(owner.worktreeId, owner);
+      return owner;
+    };
+    const retiredOwners = new Map<string, { owner: ResourceOwner; directoryName: string | null }>();
+    const backendClaims = new Set<string>();
+    const recordBackend = (owner: ResourceOwner): void => {
+      if (backendClaims.has(claim(owner))) throw new Error("Conflicting original execution sources.");
+      backendClaims.add(claim(owner));
+    };
+    const retire = async (owner: ResourceOwner, cwd: string | null, verifiedRoot?: string): Promise<void> => {
+      const directoryName = cwd === null ? null : await historicalName(cwd, verifiedRoot);
+      retiredOwners.set(claim(owner), { owner, directoryName });
+    };
     const add = (input: ResourceOwner, name: string | null): void => {
-      const owner = ownerOf(input);
+      const owner = observe(input);
+      if (retiredOwners.has(claim(owner))) throw new Error("Retired execution still has a worktree ownership source.");
       const old = values.find(item => item.worktreeId === owner.worktreeId || claim(item) === claim(owner));
       if (old) {
         if (!sameResourceOwner(old, owner) || (name !== null && old.directoryName !== name)) throw new Error("Conflicting worktree owners or locations.");
@@ -168,16 +235,70 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       if (values.some(item => item.directoryName === directoryName)) throw new Error("Conflicting worktree locations.");
       values.push({ schemaVersion: 1, ...owner, directoryName });
     };
-    for (const value of store.list()) add(value, value.directoryName);
-    for (const { owner: input, binding } of web) {
-      const owner = ownerOf(input);
-      if (!path.isAbsolute(binding.repositoryPath) || !path.isAbsolute(binding.commonDirectory)
-        || await resolveGitDirectory(root, binding.repositoryPath) !== canonicalRoot
-        || await resolveGitDirectory(common, binding.commonDirectory) !== canonicalCommon
-        || binding.branch !== `daynight/${owner.taskId}`) throw new Error("Web worktree binding conflicts with its repository or owner.");
-      add(owner, await targetName(binding.worktreePath));
+    const web = rawWeb.map(task => parseWebTaskV1(structuredClone(task)));
+    const herdr = rawHerdr.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
+    const retired = rawRetired.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
+    const lifecycleOwners = new Map<string, { owner: ResourceOwner; record: HerdrLifecycleRecord }>();
+    for (const task of web) {
+      const owner = observe(task); recordBackend(owner);
+      const binding = task.resources.worktree;
+      if (binding === null) {
+        if (task.status === "done") {
+          if (task.cleanup?.kind !== "terminal") throw new Error("Completed Web execution has no confirmed terminal cleanup.");
+          if (!await sameDirectory(root, task.repositoryPath)) throw new Error("Retired Web execution belongs to another repository.");
+          await retire(owner, null);
+        }
+        continue;
+      }
+      if (binding.branch !== `daynight/${owner.taskId}` || !path.isAbsolute(task.repositoryPath) || !path.isAbsolute(binding.repositoryPath) || !path.isAbsolute(binding.commonDirectory)) throw new Error("Web worktree binding conflicts with its repository or owner.");
+      if (task.status === "done") {
+        if (task.cleanup?.kind !== "terminal") throw new Error("Completed Web worktree has no confirmed terminal cleanup.");
+        if (!await sameDirectory(task.repositoryPath, binding.repositoryPath)
+          || !await sameDirectory(root, binding.repositoryPath)
+          || !await sameDirectory(common, binding.commonDirectory)) throw new Error("Retired Web binding belongs to another repository.");
+        await retire(owner, binding.worktreePath, binding.repositoryPath);
+      } else {
+        if (await resolveGitDirectory(root, task.repositoryPath) !== canonicalRoot || await resolveGitDirectory(root, binding.repositoryPath) !== canonicalRoot
+          || await resolveGitDirectory(common, binding.commonDirectory) !== canonicalCommon) throw new Error("Web worktree binding conflicts with its repository or owner.");
+        add(owner, await targetName(binding.worktreePath));
+      }
     }
-    for (const { owner, cwd } of herdr) add(owner, await targetName(cwd));
+    for (const record of herdr) {
+      const owner = observe({ ...record.owner, claimId: record.claimId });
+      canonicalWorktreeId(record.sessionId); recordBackend(owner);
+      lifecycleOwners.set(claim(owner), { owner, record });
+    }
+    const retiredKeys = new Set<string>();
+    for (const evidence of retired) {
+      const owner = observe({ ...evidence.owner, claimId: evidence.claimId }), original = lifecycleOwners.get(claim(owner));
+      if (!original || !sameResourceOwner(original.owner, owner) || !isDeepStrictEqual(original.record, evidence) || !isHerdrNeverStarted(evidence) || retiredKeys.has(claim(owner))) throw new Error("Herdr retirement does not match the original lifecycle.");
+      retiredKeys.add(claim(owner));
+    }
+    const resourceKeys = new Set<string>();
+    for (const resource of resources) {
+      const owner = observe(resource.owner), original = lifecycleOwners.get(claim(owner));
+      canonicalWorktreeId(resource.sessionId);
+      if (!original || !sameResourceOwner(original.owner, owner) || resource.sessionId !== original.record.sessionId || resource.worktreePath !== original.record.cwd || resourceKeys.has(claim(owner))) throw new Error("Herdr resource does not match its original lifecycle.");
+      if (retiredKeys.has(claim(owner))) throw new Error("Never-started retirement conflicts with a retained Herdr resource.");
+      resourceKeys.add(claim(owner));
+      if (resource.worktreeDeleted) {
+        if (!hasConfirmedHerdrResourceDeletion(resource)) throw new Error("Herdr resource deletion lacks confirmed original evidence.");
+        retiredKeys.add(claim(owner));
+      }
+    }
+    for (const { owner, record } of lifecycleOwners.values()) {
+      if (retiredKeys.has(claim(owner))) await retire(owner, record.cwd);
+      else add(owner, await targetName(record.cwd));
+    }
+    const legacy = new Map<string, { owner: ResourceOwner; cwd: string }>();
+    for (const binding of legacyHerdr) {
+      const owner = observe(binding.owner), original = lifecycleOwners.get(claim(owner)), prior = legacy.get(claim(owner));
+      if (retiredOwners.has(claim(owner)) || backendClaims.has(claim(owner)) && !original
+        || original && original.record.cwd !== binding.cwd || prior && (!sameResourceOwner(prior.owner, owner) || prior.cwd !== binding.cwd)) throw new Error("Legacy Herdr binding conflicts with original execution evidence.");
+      legacy.set(claim(owner), { owner, cwd: binding.cwd });
+      add(owner, await targetName(binding.cwd));
+    }
+    for (const value of store.list()) add(value, value.directoryName);
     const index = await readRegistrationIndex(repo, readers, operation);
     for (const entry of index.entries) {
       if (entry.errors.length) throw entry.errors[0];
@@ -188,7 +309,8 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       add(entry.owner, entry.owner.taskId);
     }
     for (const input of schedules) {
-      const owner = ownerOf(input);
+      const owner = observe(input);
+      if (retiredOwners.has(claim(owner))) continue;
       const found = values.find(value => value.worktreeId === owner.worktreeId || claim(value) === claim(owner));
       if (!found) throw new Error("Cleanup schedule has no worktree location evidence.");
       add(owner, null);
@@ -234,7 +356,12 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
         if (head !== `ref: refs/heads/daynight/${manifest.taskId}`) throw new Error("Worktree registration has an unexpected branch.");
         if (leafIdentity !== null) {
           const reverse = await ordinaryFile(path.join(leaf, ".git"));
-          if (reverse === null || !reverse.startsWith("gitdir: ") || await resolveGitDirectory(leaf, reverse.slice(8)) !== await realpath(entry.directory)) throw new Error("Worktree reverse Git pointer does not match its registration.");
+          if (reverse === null) {
+            const published = store.read(manifest.worktreeId);
+            const owned = entry.managed && entry.owner !== null && sameResourceOwner(entry.owner, manifest)
+              || entry.marker === null && published !== null && sameManifest(published, manifest);
+            if (!owned || (await readdir(leaf)).length !== 0) throw new Error("Worktree reverse Git pointer does not match its registration.");
+          } else if (!reverse.startsWith("gitdir: ") || await resolveGitDirectory(leaf, reverse.slice(8)) !== await realpath(entry.directory)) throw new Error("Worktree reverse Git pointer does not match its registration.");
         }
         await inspectSidecar(entry.directory, manifest, entry.marker);
       }

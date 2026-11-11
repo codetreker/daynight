@@ -25,6 +25,12 @@ use the legacy format until all consumers switch together. The caller must hold
 the existing instance ownership and repository gate, stop the old Worker, and
 provide complete backend and schedule inventories.
 
+Completed Web cleanup and verified Herdr retirement evidence distinguish
+historical bindings from owners that still require a manifest. Historical cwd
+records remain unchanged when a later claim reuses the same task directory.
+Retirement evidence does not authorize inspecting or deleting that path as the
+old owner's resource, and conflicting ownership evidence remains an error.
+
 ## Alternatives
 
 **Move old checkouts to their new identifiers.** Moving them would invalidate
