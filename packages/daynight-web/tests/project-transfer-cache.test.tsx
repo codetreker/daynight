@@ -177,11 +177,55 @@ it("retains a closed transfer until its confirmed receipt is published, then rel
     await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1));
     act(() => { resume = pauseAuthRequests(); });
     await act(async () => write.resolve(json({ projectId, changed: true, sourceTeam: source, ownerTeam: target, ownership: { teamId: target.id, version: 2n }, actorAccess: { ...access, ownerTeam: target, ownership: { teamId: target.id, version: 2n } } })));
-    const cancel = within(dialog).getByRole("button", { name: "Cancel" }); await waitFor(() => expect(cancel).toBeEnabled()); fireEvent.click(cancel);
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" }); await waitFor(() => expect(cancel).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    expect(retention).toHaveBeenLastCalledWith(true);
+    fireEvent.click(cancel);
     expect(retention).toHaveBeenLastCalledWith(true); expect(transferred).not.toHaveBeenCalled();
     act(() => resume?.()); resume = undefined; await waitFor(() => expect(transferred).toHaveBeenCalledOnce());
     expect(retention).toHaveBeenLastCalledWith(false);
   } finally { resume?.(); scope.dispose(); }
+});
+
+it("offers cleanup retry after the confirmed transfer dialog was closed and access withdrawn", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const write = Promise.withResolvers<Response>(), transferred = vi.fn(), retention = vi.fn();
+  const revoked: unknown[] = [];
+  const unsubscribe = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) revoked.push(event); });
+  const put = IDBObjectStore.prototype.put; let injectFailure = false, failures = 0;
+  const storageFailure = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (injectFailure && this.name === "projects" && (args[0] as { state?: string }).state === "invalidated") {
+      injectFailure = false; failures++; throw new DOMException("Injected cleanup failure", "QuotaExceededError");
+    }
+    return put.apply(this, args);
+  });
+  const fetcher = vi.fn(async (url: string) => {
+    if (url === `/api/v1/projects/${projectId}/access`) return json(access);
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return json({ sourceTeam: source, targetTeam: { ...target, version: 1n }, ownership: access.ownership, actorRole: null });
+    if (url === `/api/v1/projects/${projectId}/transfer`) return write.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); let resume: (() => void) | undefined;
+  try {
+    createLocaleRender("en")(<ProjectAccessBoundary projectId={projectId} initialRead><ProjectOwnership projectId={projectId} projectName="Project" active onTransferred={transferred} onRetentionChange={retention} /></ProjectAccessBoundary>, { taskCache: { scope } });
+    const opener = await screen.findByRole("button", { name: "Transfer project" }); await waitFor(() => expect(opener).toBeEnabled()); fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+    fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target.id } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" }); await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1));
+    act(() => { resume = pauseAuthRequests(); });
+    await act(async () => write.resolve(json({ projectId, changed: true, sourceTeam: source, ownerTeam: target, ownership: { teamId: target.id, version: 2n }, actorAccess: null })));
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" }); await waitFor(() => expect(cancel).toBeEnabled()); fireEvent.click(cancel);
+    injectFailure = true; act(() => resume?.()); resume = undefined;
+    const error = await screen.findByText(/transfer succeeded, but project cache cleanup failed/i);
+    expect(error).toBeVisible(); expect(failures).toBe(1); expect(transferred).not.toHaveBeenCalled();
+    expect(revoked.length).toBeGreaterThan(0); expect(retention).toHaveBeenLastCalledWith(true);
+    const retry = within(error.closest('[role="alert"]') as HTMLElement).getByRole("button", { name: "Retry" });
+    fireEvent.click(retry); fireEvent.click(retry);
+    await waitFor(() => expect(transferred).toHaveBeenCalledOnce());
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+  } finally { resume?.(); storageFailure.mockRestore(); unsubscribe(); scope.dispose(); }
 });
 
 it("withdraws an open Task and its persisted cache after a confirmed transfer without actor access", async () => {

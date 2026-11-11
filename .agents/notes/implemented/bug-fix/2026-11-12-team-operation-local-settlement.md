@@ -38,8 +38,10 @@ The [Team form decision](2026-11-11-team-late-presentation.md),
 [transfer decision](../feature/2026-11-05-web-project-transfer.md) retain their
 presentation ownership and the reasons for those checks. Transfer preparation
 uses the operation cancellation signal for scope, cache and access waits; confirmed
-receipt cleanup has a separate owner and cancellation lifetime, and a cleanup
-failure can be retried without resubmitting the transfer.
+receipt cleanup has a separate owner and cancellation lifetime. Previewing a new
+target does not release an owner awaiting publication. A cleanup failure remains
+visible and retryable after closing the dialog or losing Project access; retries
+are serialized and never resubmit the transfer.
 
 ## Alternatives
 

@@ -54,6 +54,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const preserveRevokedDraft = useRef(false), retainedPresentation = useRef(false);
   const gate = useRef<AbortController | null>(null);
   const cleanupController = useRef<AbortController | null>(null);
+  const cleanupInFlight = useRef(false);
   const transferOwner = useRef<symbol | null>(null);
   const releaseTransfer = (owner: symbol) => {
     if (transferOwner.current !== owner) return;
@@ -71,7 +72,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
     if (!preserveDraft) setTarget("");
     setPreview(null); setReading(false);
     setReadError(null); setInvalid(false); setConflict(false); setObserved(false);
-    if (!preserveDraft && !operation.current.guarded() && operation.current.result === null && cleanup.current === null) {
+    if (!preserveDraft && !operation.current.guarded() && !operation.current.publishing() && operation.current.result === null && cleanup.current === null) {
       setDialog(false);
       if (retainedPresentation.current) { retainedPresentation.current = false; onRetentionChange?.(false); }
     }
@@ -98,7 +99,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const change = (value: string) => { revision.current++; read.current?.abort(); read.current = null; setReading(false); setTarget(value); setPreview(null); setInvalid(false); setReadError(null); setConflict(false); };
   const inspect = async () => {
     if (!active || op.guarded()) return;
-    op.clear(); if (cleanup.current === null && !retainedPresentation.current) onRetentionChange?.(false);
+    op.clear(); if (cleanup.current === null && !op.publishing() && !retainedPresentation.current) onRetentionChange?.(false);
     const id = parseTransferTarget(target, window.location.origin);
     if (id === null) { setInvalid(true); setPreview(null); return; }
     if (id === access.access?.ownership.teamId) { setInvalid(true); setPreview(null); return; }
@@ -214,6 +215,8 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
         if (mounted.current) setCleanupPaused(false);
       };
       const finish = async () => {
+        if (cleanupInFlight.current) return;
+        cleanupInFlight.current = true;
         let withdrawn = false;
         setCleanupError(null);
         try {
@@ -245,7 +248,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
         } catch (error) {
           if (cleanupSignal.aborted) return;
           if (!scope.isInvalidated) setCleanupError(error);
-        }
+        } finally { cleanupInFlight.current = false; }
       };
       cleanup.current = finish; void finish();
     }, (error) => {
@@ -265,6 +268,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const changedOwner = preview !== null && access.ready && (access.access!.ownership.teamId !== preview.ownership.teamId || access.access!.ownership.version !== preview.ownership.version);
   return <>
     {!dialog && <OperationPublicationError operation={op} zh={locale === "zh-CN"} />}
+    {!dialog && !scope.isInvalidated && cleanupError !== null && <div className="notice error" role="alert"><p>{m.cleanup}</p><button className="button" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button></div>}
     {owner && <section className="panel project-ownership-panel" aria-labelledby="project-ownership-title"><div className="panel-heading"><div><h2 id="project-ownership-title">{m.title}</h2><p>{m.description}</p></div></div><div className="panel-body"><p><strong>{teamName(owner, m.personal)}</strong> <code>{owner.id}</code></p>{access.access?.canTransfer ? <button className="button" type="button" disabled={access.status !== "ready" || unknown || (op.pending || waiting)} onClick={open}>{m.transfer}</button> : <p className="hint">{m.restricted}</p>}</div></section>}
     {!scope.isInvalidated && unknown && !dialog && <div className="notice warning" role="alert"><p>{m.unknown}</p><button className="button" type="button" onClick={() => setDialog(true)}>{m.check}</button></div>}
     {dialog && <ManagementDialog title={m.transfer} suspended={!active || scope.isInvalidated || !privateAvailable && !safeResult} busy={(op.pending || waiting) || cleanupBusy} onClose={close} footer={<><button className="button" type="button" disabled={(op.pending || waiting) || cleanupBusy} onClick={close}>{unknown ? m.close : m.cancel}</button>{cleanupError !== null ? <button className="button primary" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button> : unknown ? <button className="button" type="button" disabled={reading} onClick={check}>{m.check}</button> : <button className="button danger" type="button" disabled={(op.pending || waiting) || cleanup.current !== null || op.publicationError !== null || reading || preview === null || guard?.isBlocked("transfer") || access.status !== "ready" || !access.access?.canTransfer || access.access.ownership.teamId !== preview.ownership.teamId || access.access.ownership.version !== preview.ownership.version} onClick={submit}>{(op.pending || waiting) ? m.busy : m.confirm}</button>}</>}>
