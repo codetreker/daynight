@@ -211,6 +211,59 @@ describe('prompt editor lifecycle', () => {
     expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false); expect(result.current.conflict).toBe(true);
     expect(result.current.draft).toBe('mine'); expect(fetch).toHaveBeenCalledTimes(1); resume();
   });
+  it('keeps a verified resource denial across paused saves and visibility changes', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(value('1', 'old'))); vi.stubGlobal('fetch', fetch);
+    let resume!: () => void;
+    vi.spyOn(promptApi, 'saveWorkerPrompt').mockImplementationOnce(async (_target, _input, _signal, admission) => {
+      admission.onDispatch?.(); const failure = new ApiError('server', 404, 'not_found'); admission.onRejection?.(failure);
+      resume = pauseAuthRequests(); throw failure;
+    });
+    const { result, rerender } = renderHook(({ enabled }) => useWorkerPrompt(target, { readEnabled: enabled }), { wrapper: wrapper(scope()), initialProps: { enabled: true } });
+    await flush(); act(() => result.current.edit('mine')); await act(async () => result.current.save()); await flush();
+    act(() => result.current.edit('newer')); await act(async () => result.current.save());
+    rerender({ enabled: false }); rerender({ enabled: true }); await flush();
+    expect(result.current.resource?.text).toBe('old'); expect(result.current.draft).toBe('newer'); expect(fetch).toHaveBeenCalledTimes(1);
+    resume(); await flush(); expect(result.current.unavailable).toBe(true); expect(result.current.resource).toBeNull();
+  });
+  it('does not clear a draft after a stale project admission denial is superseded', async () => {
+    let calls = 0, current = { status: 'ready', refreshing: false }, resume!: () => void;
+    const listeners = new Set<() => void>();
+    project.current = { snapshot: () => current, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, waitForFreshAccess: async () => {
+      if (++calls === 3) { current = { status: 'unavailable', refreshing: false }; resume = pauseAuthRequests(); return null; } return {};
+    } };
+    const fetch = vi.fn().mockResolvedValue(response(value('1', 'old', 'project'))); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => { result.current.edit('mine'); result.current.refresh(); }); await flush();
+    expect(result.current.draft).toBe('mine');
+    act(() => { current = { status: 'ready', refreshing: false }; for (const notify of listeners) notify(); });
+    resume(); await flush(); expect(result.current.unavailable).toBe(false); expect(result.current.draft).toBe('mine'); expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('distinguishes a successful GET from a later superseded access denial', async () => {
+    let calls = 0, current = { status: 'ready', refreshing: false }, resume!: () => void;
+    const listeners = new Set<() => void>();
+    project.current = { snapshot: () => current, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, waitForFreshAccess: async () => {
+      if (++calls === 4) { current = { status: 'unavailable', refreshing: false }; resume = pauseAuthRequests(); return null; } return {};
+    } };
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old', 'project'))).mockResolvedValueOnce(response(value('2', 'server', 'project'))); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => { result.current.edit('mine'); result.current.refresh(); }); await flush();
+    expect(fetch).toHaveBeenCalledTimes(2); expect(result.current.resource?.text).toBe('old');
+    act(() => { current = { status: 'ready', refreshing: false }; for (const notify of listeners) notify(); });
+    resume(); await flush(); expect(result.current.unavailable).toBe(false); expect(result.current.draft).toBe('mine');
+  });
+  it('rechecks identity at the final read publication boundary', async () => {
+    let calls = 0, resume: (() => void) | null = null;
+    project.current = { snapshot: () => {
+      if (calls === 4 && resume === null) resume = pauseAuthRequests();
+      return { status: 'ready', refreshing: false };
+    }, subscribe: () => () => {}, waitForFreshAccess: async () => { ++calls; return {}; } };
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old', 'project'))).mockResolvedValueOnce(response(value('2', 'server', 'project'))); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => result.current.refresh()); await flush();
+    expect(resume).not.toBeNull(); expect(result.current.resource?.text).toBe('old');
+    act(() => result.current.edit('newer')); (resume as unknown as () => void)(); await flush();
+    expect(result.current.resource?.text).toBe('server'); expect(result.current.draft).toBe('newer');
+  });
   it('cancels a confirmed publication when its resource owner changes', async () => {
     const gate = deferred<object | null>(); let calls = 0;
     project.current = { snapshot: () => ({ status: 'ready', refreshing: false }), subscribe: () => () => {}, waitForFreshAccess: async () => ++calls === 4 ? gate.promise : {} };
@@ -225,6 +278,25 @@ describe('prompt editor lifecycle', () => {
     gate.reject(new Error('retired admission')); await flush();
     expect(result.current.resource?.scope).toBe('user'); expect(result.current.draft).toBe('user');
     unmount();
+  });
+  it.each([true, false])('retains the editor through paused access withdrawal, restored=%s', async restored => {
+    const gate = deferred<object | null>(); let calls = 0;
+    let current = { status: 'ready', refreshing: false };
+    const listeners = new Set<() => void>();
+    project.current = { snapshot: () => current, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, waitForFreshAccess: async () => ++calls === 4 ? gate.promise : current.status === 'ready' ? {} : null };
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old', 'project'))).mockResolvedValueOnce(response(value('2', 'saved', 'project')));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(scope()) });
+    await flush(); act(() => result.current.edit('saved')); await act(async () => result.current.save()); await flush();
+    expect(result.current.write).toBe('confirmed');
+    let resume!: () => void;
+    act(() => { resume = pauseAuthRequests(); result.current.edit('newer'); current = { status: 'unavailable', refreshing: false }; for (const notify of listeners) notify(); });
+    await flush(); expect(result.current.resource?.text).toBe('old'); expect(result.current.draft).toBe('newer'); expect(result.current.write).toBe('confirmed');
+    if (restored) act(() => { current = { status: 'ready', refreshing: false }; for (const notify of listeners) notify(); });
+    gate.resolve(restored ? {} : null); await flush(); expect(fetch).toHaveBeenCalledTimes(2);
+    resume(); await flush();
+    if (restored) { expect(result.current.resource?.text).toBe('saved'); expect(result.current.draft).toBe('newer'); }
+    else { expect(result.current.unavailable).toBe(true); expect(result.current.resource).toBeNull(); }
   });
   it('fences a late read when authenticated scope is invalidated', async () => {
     const later = deferred<Response>();
