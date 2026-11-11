@@ -28,6 +28,43 @@ describe('attachment preview', () => {
     expect(screen.getByText('<script>alert(1)</script>')).toBeVisible();
   });
 
+  it('retains loaded native previews and blocks pending or new native sources while paused', () => {
+    const image = attachment('image.png', 'image/png');
+    const props = { attachment: image, preview: ready, url: `${root}image.png`, previewRoot: root, onRetry: vi.fn() };
+    const view = render(<AttachmentPreview {...props} />);
+    const element = screen.getByRole('img');
+    fireEvent.load(element);
+    view.rerender(<AttachmentPreview {...props} paused />);
+    expect(screen.getByRole('img')).toBe(element);
+    expect(element).toHaveAttribute('src', `${root}image.png`);
+    const frame = attachment('site.html', 'text/html');
+    const frameProps = { ...props, attachment: frame, url: `${root}site.html` };
+    view.rerender(<AttachmentPreview {...frameProps} paused />);
+    expect(screen.queryByTitle('HTML 预览：site.html')).toBeNull();
+    view.rerender(<AttachmentPreview {...frameProps} />);
+    const loadedFrame = screen.getByTitle('HTML 预览：site.html');
+    fireEvent.load(loadedFrame);
+    view.rerender(<AttachmentPreview {...frameProps} paused />);
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(loadedFrame);
+  });
+
+  it('removes markdown link addresses and blocks unloaded images without replacing loaded images', () => {
+    const markdown = attachment('guide.md', 'text/markdown');
+    const props = { attachment: markdown, preview: { ...ready, text: '[Link](other.txt) [Local](#section) ![Loaded](a.png) ![Pending](b.png)' }, url: `${root}guide.md`, previewRoot: root, onRetry: vi.fn() };
+    const view = render(<AttachmentPreview {...props} />);
+    const loaded = screen.getByRole('img', { name: 'Loaded' });
+    fireEvent.load(loaded);
+    view.rerender(<AttachmentPreview {...props} paused />);
+    expect(screen.getByText('Link')).not.toHaveAttribute('href');
+    expect(screen.getByText('Link')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('link', { name: 'Local' })).toHaveAttribute('href', '#section');
+    expect(screen.getByRole('img', { name: 'Loaded' })).toBe(loaded);
+    expect(loaded).toHaveAttribute('src', `${root}a.png`);
+    expect(screen.getByRole('img', { name: 'Pending' })).not.toHaveAttribute('src');
+    view.rerender(<AttachmentPreview {...props} />);
+    expect(screen.getByRole('img', { name: 'Pending' })).toHaveAttribute('src', `${root}b.png`);
+  });
+
   it('exposes loading, retry, and idle states without displaying private errors', () => {
     const retry = vi.fn();
     const props = { attachment: attachment('a.txt', 'text/plain'), preview: { ...ready, status: 'loading' as const }, url: `${root}a.txt`, previewRoot: root, onRetry: retry };

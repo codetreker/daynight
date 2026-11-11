@@ -22,13 +22,14 @@ export type AttachmentKeyboardOwner = {
 type AttachmentPreviewProps = {
   readonly attachment: Attachment;
   readonly preview: AttachmentPreviewState;
+  readonly paused?: boolean;
   readonly url: string;
   readonly previewRoot: string;
   readonly onRetry: () => void;
   readonly keyboardOwner?: AttachmentKeyboardOwner;
 };
 
-const TrustedFrame = ({ url, title, keyboardOwner }: { readonly url: string; readonly title: string; readonly keyboardOwner: AttachmentKeyboardOwner | undefined }) => {
+const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: string; readonly title: string; readonly keyboardOwner: AttachmentKeyboardOwner | undefined; readonly paused: boolean }) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -92,8 +93,8 @@ const TrustedFrame = ({ url, title, keyboardOwner }: { readonly url: string; rea
   };
 
   return <div className="attachment-native">
-    {!loadedFrame && <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>}
-    <iframe className="attachment-frame" ref={frameRef} src={url} title={title} tabIndex={0} onLoad={loaded} />
+    {!loadedFrame && !paused && <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>}
+    {(!paused || loadedFrame) && <iframe className="attachment-frame" ref={frameRef} src={url} title={title} tabIndex={0} onLoad={loaded} />}
   </div>;
 };
 
@@ -105,13 +106,13 @@ const NativeStatus = ({ status, onRetry }: { readonly status: 'loading' | 'ready
     : <div className="attachment-state attachment-native-state attachment-error" role="alert"><p>{m.previewLoadError}</p><button className="button" type="button" onClick={onRetry}>{m.retryPreview}</button></div>;
 };
 
-const ImagePreview = ({ url, path }: { readonly url: string; readonly path: string }) => {
+const ImagePreview = ({ url, path, paused }: { readonly url: string; readonly path: string; readonly paused: boolean }) => {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [revision, setRevision] = useState(0);
-  return <div><NativeStatus status={status} onRetry={() => { setStatus('loading'); setRevision((value) => value + 1); }} />{status !== 'error' && <img key={revision} className="attachment-image" src={url} alt={path} onLoad={() => setStatus('ready')} onError={() => setStatus('error')} />}</div>;
+  return <div>{(!paused || status === 'ready') && <NativeStatus status={status} onRetry={() => { if (!paused) { setStatus('loading'); setRevision((value) => value + 1); } }} />}{status !== 'error' && (!paused || status === 'ready') && <img key={revision} className="attachment-image" src={url} alt={path} onLoad={() => setStatus('ready')} onError={() => setStatus('error')} />}</div>;
 };
 
-const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboardOwner }: AttachmentPreviewProps) => {
+const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboardOwner, paused = false }: AttachmentPreviewProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const kind = attachmentKind(attachment);
@@ -120,16 +121,16 @@ const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboa
     <div className="attachment-state attachment-error" role="alert">
       <p>{m.previewReadError}</p>
       {preview.error instanceof ApiError && preview.error.requestId !== null && <p className="request-id">{messages.common.requestId}{' '}<code>{preview.error.requestId}</code></p>}
-      <button className="button" type="button" onClick={onRetry}>{m.retryPreview}</button>
+      <button className="button" type="button" disabled={paused} onClick={onRetry}>{m.retryPreview}</button>
     </div>
   );
   if (preview.status !== 'ready') return null;
   if (kind === 'markdown') return (
-    <MarkdownContent className="attachment-markdown" text={preview.text!} resolveUrl={(value) => resolveAttachmentUrl(value, attachment.path, previewRoot)} />
+    <MarkdownContent className="attachment-markdown" remotePaused={paused} text={preview.text!} resolveUrl={(value) => resolveAttachmentUrl(value, attachment.path, previewRoot)} />
   );
   if (kind === 'text') return <pre className="attachment-text">{preview.text}</pre>;
-  if (kind === 'image') return <ImagePreview key={url} url={url} path={attachment.path} />;
-  if (kind === 'pdf' || kind === 'html') return <TrustedFrame key={url} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} keyboardOwner={keyboardOwner} />;
+  if (kind === 'image') return <ImagePreview key={url} url={url} path={attachment.path} paused={paused} />;
+  if (kind === 'pdf' || kind === 'html') return <TrustedFrame key={url} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} keyboardOwner={keyboardOwner} paused={paused} />;
   return <p className="attachment-state">{m.unsupportedPreview}</p>;
 };
 
