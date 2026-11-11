@@ -318,7 +318,7 @@ describe('status in shared production task details', () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     await mount();
     await openGraph();
-    const inspected = await screen.findByRole('button', { name: 'Task 2, To do' });
+    const inspected = await screen.findByRole('button', { name: 'Task 2, To do, No Goal' });
     fireEvent.click(inspected);
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
     const inspection = () => [...document.querySelectorAll<HTMLElement>('.task-node,.task-dependency-edge')].map((node) => [node.closest<HTMLElement>('.react-flow__node')?.dataset.id ?? node.dataset.id, node.dataset.inspection]);
