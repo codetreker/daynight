@@ -11,8 +11,13 @@ const en = {
   cancelPrepared: 'Cancel the pending message and keep its draft', retryPrepare: 'Retry the original upload',
   rejected: 'Images not added', discardRejected: 'Discard these images', moreRejected: 'Additional images not added',
   pending: 'Awaiting the original message result', continueEditing: 'Continue editing', frozen: 'Submitted draft',
+  prepared: 'Saved and not sent',
   failedChoice: 'Choose which draft to keep', keepCurrent: 'Keep later edits and discard failed draft', restoreFailed: 'Restore failed draft and discard later edits',
   previousMessage: 'Earlier message', successor: 'Later edits to that draft', imageCount: 'Images',
+  previousDraft: 'Earlier draft', savedContent: 'Retained content', moveDraft: 'Move to current draft',
+  retrySavedDraft: 'Retry saving this draft', savedInAnotherWindow: 'Saved in another window',
+  keepSavedVersion: 'Keep saved version and discard unsaved changes', keepLocalVersion: 'Replace saved version with retained changes',
+  moveDraftConfirm: 'Move this saved text and images to the current input. Images will be prepared again. This does not send the message.',
   confirm: 'Confirm', cancel: 'Cancel', upload: 'Upload progress', unknown: 'Unable to confirm the upload. Check its status.',
 };
 type Messages = { readonly [K in keyof typeof en]: string };
@@ -26,8 +31,13 @@ const zh: Messages = {
   cancelPrepared: '取消待发消息并保留原草稿', retryPrepare: '重试原上传',
   rejected: '未加入的图片', discardRejected: '放弃这些图片', moreRejected: '其他未加入的图片数量',
   pending: '等待原消息发送结果', continueEditing: '继续编辑', frozen: '已提交草稿', failedChoice: '选择要保留的草稿',
+  prepared: '已保存，尚未发送',
   keepCurrent: '保留后续编辑，放弃失败稿', restoreFailed: '恢复失败稿，放弃后续编辑', confirm: '确认', cancel: '取消',
   previousMessage: '先前的消息', successor: '该草稿的后续编辑', imageCount: '图片数量',
+  previousDraft: '先前的草稿', savedContent: '保留的内容', moveDraft: '移到当前草稿',
+  retrySavedDraft: '重试保存此草稿', savedInAnotherWindow: '另一窗口已保存的内容',
+  keepSavedVersion: '保留已保存版本，放弃未保存修改', keepLocalVersion: '用保留的修改替换已保存版本',
+  moveDraftConfirm: '将保存的文字和图片移到当前输入，图片会重新准备。此操作不会发送消息。',
   upload: '上传进度', unknown: '无法确认上传结果，请检查状态。',
 };
 const issues: Readonly<Record<string, readonly [string, string]>> = {
@@ -48,6 +58,8 @@ const issues: Readonly<Record<string, readonly [string, string]>> = {
   image_draft_empty: ['Add a message or an image.', '请输入消息或添加图片。'],
   image_draft_loading: ['Wait for the saved draft to finish loading.', '请等待已保存草稿读取完成。'],
   image_draft_restored: ['A saved draft was found. Review it before sending.', '已找到保存的草稿，请检查内容后再发送。'],
+  image_restore_requires_empty: ['Send or clear the current draft before moving this saved draft.', '请先发送或清空当前草稿，再移入此保存的草稿。'],
+  image_command_unavailable: ['The command changed or is unavailable. Refresh the commands before trying again.', '命令已变化或当前不可用，请刷新命令后重试。'],
   image_locks_unavailable: ['This browser cannot safely coordinate image uploads. Remove images to send text, or use a browser with Web Locks support.', '此浏览器无法安全协调图片上传。可移除图片后发送文字，或使用支持 Web Locks 的浏览器。'],
   image_another_window_busy: ['Another window is working on this draft. Try again when it finishes.', '另一窗口正在处理此草稿，请等待完成后重试。'],
   image_validation_incomplete: ['Wait for image checks, or remove and select failed images again.', '请等待图片检查完成；失败的图片可移除后重新选择。'],

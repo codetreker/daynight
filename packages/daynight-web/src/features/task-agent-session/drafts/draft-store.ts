@@ -1,7 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction } from 'idb';
 import type { ImageUploadReceipt, SessionOperation } from '../../../../../daynight/src/session/protocol';
 import { canonicalDraftOrigin, draftAccountKey, draftExecutionKey, draftOwnerKey, sameDraftFence, sameDraftRecoveryScope, sameDraftTarget } from './draft-store-identity';
-import type { DraftBlob, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
+import type { DraftBlob, DraftDetachedRef, DraftDetachedSnapshot, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
 export { draftExecutionKey, draftOwnerKey } from './draft-store-identity';
 export const SESSION_DRAFT_DATABASE = 'daynight-session-drafts';
 export const SESSION_DRAFT_SCHEMA = 1;
@@ -32,12 +32,19 @@ const newDraft = (ownerKey: string): DraftRecord => ({ ownerKey, draftId: crypto
 const increment = (version: number): number => { if (!Number.isSafeInteger(version) || version >= Number.MAX_SAFE_INTEGER) return fail('invalid', 'Draft storage version is exhausted.'); return version + 1; };
 const revision = (value: string): string => { if (!/^[1-9][0-9]*$/.test(value) || BigInt(value) >= MAX_REVISION) return fail('revision_exhausted', 'Create a new draft before editing this revision.'); return String(BigInt(value) + 1n); };
 const immutable = <T>(value: T): T => structuredClone(value);
+const hasContent = (draft: DraftRecord): boolean => !!(draft.text.length || draft.items.length || draft.rejectedCandidates.length || draft.overflowRejectedCount);
 
 export function draftRecoveryRef(snapshot: Pick<DraftSnapshot, 'owner' | 'submission' | 'frozen' | 'editable'>): DraftRecoveryRef | null {
   if (!snapshot.submission) return null;
   const version = (draft: DraftRecord | null) => draft ? [draft.draftId, draft.revision, draft.storeVersion] : null;
   return { ownerKey: snapshot.owner.ownerKey, operationId: snapshot.submission.operationId,
     choiceRevision: JSON.stringify([snapshot.owner.accessEpoch, snapshot.submission.state, version(snapshot.frozen), version(snapshot.editable)]) };
+}
+
+export function draftDetachedRef(snapshot: Pick<DraftSnapshot, 'owner' | 'submission' | 'editable'>): DraftDetachedRef | null {
+  const draft = snapshot.editable;
+  if (snapshot.submission || !draft || draft.state !== 'editable' || !hasContent(draft)) return null;
+  return { ownerKey: snapshot.owner.ownerKey, accessEpoch: snapshot.owner.accessEpoch, draftId: draft.draftId, revision: draft.revision, storeVersion: draft.storeVersion };
 }
 
 export class SessionDraftStore {
@@ -149,6 +156,70 @@ export class SessionDraftStore {
       return results;
     });
   }
+  async readDetachedDrafts(identity: DraftOwnerIdentity): Promise<readonly DraftDetachedSnapshot[]> {
+    return this.transaction('readonly', async (tx) => {
+      await this.assertIdentityAvailable(tx, identity);
+      const currentKey = draftOwnerKey(identity), current = await this.readOwner(tx, currentKey);
+      if (current) await this.owner(tx, current);
+      const results: DraftDetachedSnapshot[] = [];
+      for (const owner of (await tx.objectStore('owners').index('account').getAll(draftAccountKey(identity))).filter(isOwner)) {
+        if (owner.ownerKey === currentKey || owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || owner.unresolvedSubmissionId || !sameDraftRecoveryScope(owner.identity, identity)) continue;
+        const snapshot = await this.snapshot(tx, await this.owner(tx, owner));
+        if (snapshot.editable?.state === 'editable' && hasContent(snapshot.editable) && !snapshot.submission) results.push({ ...snapshot, editable: snapshot.editable, submission: null });
+      }
+      return results;
+    });
+  }
+  async collectRecoveryResources(identity: DraftOwnerIdentity): Promise<void> {
+    await this.transaction('readwrite', async (tx) => {
+      await this.assertIdentityAvailable(tx, identity);
+      const current = await this.readOwner(tx, draftOwnerKey(identity));
+      if (current) await this.owner(tx, current);
+      for (const owner of (await tx.objectStore('owners').index('account').getAll(draftAccountKey(identity))).filter(isOwner)) {
+        if (owner.blocked || owner.cleanupPending || this.revoked.has(owner.ownerKey) || !sameDraftRecoveryScope(owner.identity, identity)) continue;
+        await this.collect(tx, await this.owner(tx, owner));
+      }
+    });
+  }
+  async restoreDetachedDraft(handle: DraftHandle, source: DraftDetachedRef, target: Pick<DraftWrite, 'draftId' | 'expectedStoreVersion'>): Promise<DraftSnapshot> {
+    const ref = immutable(source), expected = immutable(target);
+    return this.transaction('readwrite', async (tx) => {
+      let owner = await this.owner(tx, handle), previous = await this.owner(tx, ref);
+      if (previous.ownerKey === owner.ownerKey || !sameDraftRecoveryScope(previous.identity, owner.identity)) return fail('invalid', 'The retained draft does not belong to this recovery scope.');
+      if (previous.cleanupPending || owner.cleanupPending) return fail('blocked', 'Draft cleanup must finish before restoring content.');
+      for (const key of new Set([previous.executionKey, owner.executionKey])) {
+        if ((await tx.objectStore('owners').index('execution').getAll(key)).filter(isOwner).some(candidate => candidate.unresolvedSubmissionId)) return fail('execution_blocked', 'An original submission still needs reconciliation.');
+      }
+      const old = await tx.objectStore('drafts').get([previous.ownerKey, ref.draftId]);
+      const current = await tx.objectStore('drafts').get([owner.ownerKey, expected.draftId]);
+      if (!old || old.state !== 'editable' || previous.editableDraftId !== old.draftId || old.revision !== ref.revision || old.storeVersion !== ref.storeVersion || !hasContent(old)) return fail('conflict', 'The retained draft changed after it was displayed.');
+      if (!current || current.state !== 'editable' || owner.editableDraftId !== current.draftId || current.storeVersion !== expected.expectedStoreVersion || hasContent(current)) return fail('conflict', 'The current draft must still be empty before restoring content.');
+      const blobs = new Map<string, DraftBlob | null>(), items: DraftImageItem[] = [];
+      for (const item of old.items) {
+        let copied: DraftBlob | null = null;
+        if (item.blobId) {
+          if (!blobs.has(item.blobId)) {
+            const original = await tx.objectStore('blobs').get([previous.ownerKey, item.blobId]);
+            const next = original ? { ...original, ownerKey: owner.ownerKey, blobId: crypto.randomUUID(), references: [] } : null;
+            if (next) await tx.objectStore('blobs').add(next);
+            blobs.set(item.blobId, next);
+          }
+          copied = blobs.get(item.blobId)!;
+        }
+        const valid = copied && copied.byteRevision === item.byteRevision && copied.byteLength === copied.blob.size;
+        items.push({ ...item, draftImageId: crypto.randomUUID(), imageId: crypto.randomUUID(), blobId: copied?.blobId ?? null, uploadId: null,
+          validation: !copied ? 'bytes_missing' : valid ? 'pending' : 'bytes_invalid', error: !copied ? 'bytes_missing' : valid ? null : 'bytes_invalid' });
+      }
+      const moved: DraftRecord = { ...newDraft(owner.ownerKey), text: old.text, items, rejectedCandidates: old.rejectedCandidates, overflowRejectedCount: old.overflowRejectedCount };
+      const empty = newDraft(previous.ownerKey);
+      await tx.objectStore('drafts').add(moved); await tx.objectStore('drafts').add(empty);
+      await this.releaseRemoved(tx, previous.ownerKey, old, null);
+      await tx.objectStore('drafts').delete([previous.ownerKey, old.draftId]); await tx.objectStore('drafts').delete([owner.ownerKey, current.draftId]);
+      previous = await this.collect(tx, { ...previous, editableDraftId: empty.draftId, storeVersion: increment(previous.storeVersion) });
+      owner = await this.collect(tx, { ...owner, editableDraftId: moved.draftId, storeVersion: increment(owner.storeVersion) });
+      await this.budget(tx, owner); return this.snapshot(tx, owner);
+    }, true);
+  }
   async read(handle: DraftHandle): Promise<DraftSnapshot> { return this.transaction('readonly', async (tx) => this.snapshot(tx, await this.owner(tx, handle))); }
   async readBlob(handle: DraftHandle, blobId: string): Promise<DraftBlob | null> { return this.transaction('readonly', async (tx) => { await this.owner(tx, handle); return await tx.objectStore('blobs').get([handle.ownerKey, blobId]) ?? null; }); }
   private async collect(tx: Tx, owner: DraftOwner): Promise<DraftOwner> {
@@ -156,7 +227,6 @@ export class SessionDraftStore {
     const refer = (id: string | null, reference: string) => { if (id) references.set(id, [...references.get(id) ?? [], reference]); };
     for (const draft of await tx.objectStore('drafts').index('owner').getAll(owner.ownerKey)) for (const item of draft.items) refer(item.blobId, `draft:${draft.draftId}:${item.draftImageId}`);
     for (const submission of await tx.objectStore('submissions').index('owner').getAll(owner.ownerKey)) if (pending(submission)) for (const id of submission.blobIds) refer(id, `submission:${submission.operationId}`);
-    for (const upload of await tx.objectStore('uploads').index('owner').getAll(owner.ownerKey)) if (upload.releaseIntent && !['released', 'expired', 'failed'].includes(upload.receipt?.state ?? '')) refer(upload.blobId, `release:${upload.uploadId}`);
     let allocatedBytes = 0;
     for (const blob of await tx.objectStore('blobs').index('owner').getAll(owner.ownerKey)) {
       const refs = references.get(blob.blobId) ?? [];
@@ -303,19 +373,24 @@ export class SessionDraftStore {
       if (!draft || draft.state !== 'editable' || owner.editableDraftId !== draft.draftId || draft.storeVersion !== frozenInput.expectedStoreVersion) return fail('conflict', 'The draft changed before freezing.');
       if (draft.rejectedCandidates.length || draft.overflowRejectedCount || draft.items.some((item) => item.validation !== 'valid' || !item.blobId)) return fail('invalid', 'Every selected image must be saved and valid.');
       const command = frozenInput.command;
-      if (command.kind !== 'send_message' || !sameDraftFence(command, owner.identity.target.fence)) return fail('invalid', 'The command does not belong to this draft.');
-      if (draft.items.length && (!command.payload.target || !sameDraftTarget(command.payload.target, owner.identity.target) || command.payload.draftId !== draft.draftId || command.payload.draftRevision !== draft.revision)) return fail('invalid', 'The command does not identify this frozen image draft.');
-      const imageParts = command.payload.content.filter((part) => part.type === 'image');
-      if (imageParts.length !== draft.items.length) return fail('invalid', 'The command must contain the complete image set.');
-      const text = command.payload.content.filter((part) => part.type === 'text').map((part) => part.text);
-      if (draft.text.trim() ? text.length !== 1 || text[0] !== draft.text : text.length !== 0) return fail('invalid', 'The command text does not match the saved draft.');
-      for (let i = 0; i < draft.items.length; i++) {
-        const item = draft.items[i]!; const blob = await tx.objectStore('blobs').get([owner.ownerKey, item.blobId!]);
-        if (!blob) return fail('bytes_missing', 'Original image bytes are missing.');
-        if (blob.byteRevision !== item.byteRevision || blob.byteLength !== blob.blob.size) return fail('bytes_invalid', 'Original image bytes changed.');
-        const upload = item.uploadId ? await tx.objectStore('uploads').get([owner.ownerKey, item.uploadId]) : undefined; const part = imageParts[i]!;
-        if (!upload || upload.releaseIntent || upload.outcomeUnknown || upload.pendingAction || upload.receipt?.state !== 'complete' || !sameDraftTarget(upload.spec.target, owner.identity.target) || part.imageId !== item.imageId || part.uploadId !== upload.uploadId || part.resourceId !== upload.receipt.resource?.resourceId || part.sha256 !== blob.sha256 || part.byteLength !== String(blob.byteLength)) return fail('invalid', 'An image upload is not ready for this exact submission.');
-      }
+      if (!sameDraftFence(command, owner.identity.target.fence)) return fail('invalid', 'The command does not belong to this draft.');
+      if (command.kind === 'execute_command') {
+        const proof = frozenInput.commandDraft, parsed = /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(draft.text.trimStart());
+        if (draft.items.length || !proof || proof.text !== draft.text || !parsed || parsed[1] !== proof.commandName || (parsed[2] ?? '') !== command.payload.arguments) return fail('invalid', 'The command must consume the exact saved slash-command text.');
+      } else if (command.kind === 'send_message') {
+        if (draft.items.length && (!command.payload.target || !sameDraftTarget(command.payload.target, owner.identity.target) || command.payload.draftId !== draft.draftId || command.payload.draftRevision !== draft.revision)) return fail('invalid', 'The command does not identify this frozen image draft.');
+        const imageParts = command.payload.content.filter((part) => part.type === 'image');
+        if (imageParts.length !== draft.items.length) return fail('invalid', 'The command must contain the complete image set.');
+        const text = command.payload.content.filter((part) => part.type === 'text').map((part) => part.text);
+        if (draft.text.trim() ? text.length !== 1 || text[0] !== draft.text : text.length !== 0) return fail('invalid', 'The command text does not match the saved draft.');
+        for (let i = 0; i < draft.items.length; i++) {
+          const item = draft.items[i]!; const blob = await tx.objectStore('blobs').get([owner.ownerKey, item.blobId!]);
+          if (!blob) return fail('bytes_missing', 'Original image bytes are missing.');
+          if (blob.byteRevision !== item.byteRevision || blob.byteLength !== blob.blob.size) return fail('bytes_invalid', 'Original image bytes changed.');
+          const upload = item.uploadId ? await tx.objectStore('uploads').get([owner.ownerKey, item.uploadId]) : undefined; const part = imageParts[i]!;
+          if (!upload || upload.releaseIntent || upload.outcomeUnknown || upload.pendingAction || upload.receipt?.state !== 'complete' || !sameDraftTarget(upload.spec.target, owner.identity.target) || part.imageId !== item.imageId || part.uploadId !== upload.uploadId || part.resourceId !== upload.receipt.resource?.resourceId || part.sha256 !== blob.sha256 || part.byteLength !== String(blob.byteLength)) return fail('invalid', 'An image upload is not ready for this exact submission.');
+        }
+      } else return fail('invalid', 'Only message and command input can freeze a draft.');
       const snapshot: DraftRecord = { ...draft, state: 'frozen', storeVersion: increment(draft.storeVersion) };
       const submission: DraftSubmission = { ownerKey: owner.ownerKey, operationId: command.operationId, kind: command.kind, executionKey: owner.executionKey, target: owner.identity.target, fence: owner.identity.target.fence, draftId: draft.draftId, draftRevision: draft.revision, command, snapshot, blobIds: draft.items.flatMap((item) => item.blobId ? [item.blobId] : []), uploadIds: draft.items.flatMap((item) => item.uploadId ? [item.uploadId] : []), state: 'prepared', lastOperation: null, legacy: null, sensitiveCleared: false };
       await tx.objectStore('submissions').add(submission); await tx.objectStore('drafts').put(snapshot);

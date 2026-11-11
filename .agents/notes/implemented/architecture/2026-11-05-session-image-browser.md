@@ -26,29 +26,49 @@ the original operation and block another send.
 
 Within one draft controller, content writes and upload identity allocation share
 a local persistence queue through their version readback, including readback
-triggered by network receipts. Each queued allocation
+triggered by network receipts. Queue ownership follows the current draft owner
+and authorization generation. Detached reads cannot block a new owner; captured
+old-owner writes retain their original identity until they finish. Captured
+unsaved content remains visible even when the new owner has no saved draft.
+Failed saves can retry under the original identity; competing saved content
+requires a choice bound to both the captured write and displayed source version.
+Neither choice changes the current input. Each queued allocation
 rechecks the current owner, byte revision and upload identity. This prevents
 overlapping selection or recovery work from conflicting with its own CAS writes.
 Network transfers remain outside that queue so editing does not wait for them;
 successful content writes resume eligible uploads after temporary dirty-state
 admission pauses. Waiting upload work rechecks the latest state before resuming;
 unknown requests retain their explicit recovery rules, and
-cross-tab writes still require the database's version checks. Operation observation
-and settlement use the same content-conflict check: a new operation receipt cannot
-advance the write baseline of unsaved content over another tab's successor edit.
+cross-tab writes still require the database's version checks. Operation observation,
+settlement and send preflight use the same queued content-conflict check: a new
+operation receipt cannot advance the write baseline of unsaved content over
+another tab's successor edit.
 
 An explicit successor draft permits local editing without changing the frozen
 submission. Native acceptance settles only the original draft identity and
 revision. Text and attachments switch together when the owner changes; an old
-image draft cannot become a new target's text-only input. Native commands observe
-the same durable submission barrier as messages, including after a fresh tab
-receives no operation receipt. Historical intents remain discoverable for the
-same authenticated actor, resolver, actual Session and original claim or test
-execution across execution generations. They
-retain their original fence for observation without entering the new editable
+image draft cannot become a new target's text-only input. Native commands that
+consume an active persistent text draft freeze its exact revision through the
+same dispatch ownership and settlement mechanism as messages.
+Their command payload remains unchanged; controls that do not consume input leave
+the draft intact. Both paths observe the durable execution barrier, including
+after a fresh tab receives no operation receipt. Historical intents remain
+discoverable for the same authenticated actor, resolver, actual Session and
+original claim or test execution across execution generations. They retain their
+original fence for observation without entering the new editable
 draft. Failure recovery binds the original owner, operation and displayed draft
 versions; a competing edit invalidates confirmation before either draft is
-discarded. Scoped adapters provide verified leases to one preview host per real
+discarded. Retained editable drafts are discovered independently of unresolved
+operations, so acceptance or a failure choice cannot hide later edits. An explicit
+move into an empty current draft binds both displayed versions, changes ownership
+in one transaction, and revalidates the bytes with new image and upload identities.
+It neither rewrites an old operation nor overwrites current input.
+
+Remote upload release bookkeeping does not pin local originals. Once editable,
+frozen and unresolved submission references end, collection removes the local
+Blob and its quota charge while preserving the original release identity. Old
+native targets therefore do not need to become current again to reclaim local
+capacity. Scoped adapters provide verified leases to one preview host per real
 Session or read-only record. Bounded page caches remain separate from durable
 service references and browser draft storage. Preview lives inside the actual
 Session presentation root, with explicit coordination for higher authentication
@@ -99,6 +119,16 @@ submitted content and later editing without introducing an automatic queue.
 **Use last-writer-wins edits or a localStorage heartbeat lock.** Concurrent tabs can
 lose text or dispatch duplicate input. CAS exposes conflicts; Web Locks never
 steal a suspended tab's ownership, and persistent dispatch facts survive closure.
+
+**Discover retained drafts only through pending operations.** Acceptance and
+failure resolution can remove the last recovery entry while later edits still
+exist on disk. Independent discovery plus an explicit, version-bound move keeps
+those edits usable without automatically importing old-target content.
+
+**Retain local bytes until remote upload release completes.** A detached target
+may no longer have release permission, pinning accepted images against the browser
+quota. Remote bookkeeping needs its identity and receipt, not the original Blob;
+content references remain the authority for local byte retention.
 
 **Use an independent Blob and new browser tab for each card.** Collapse causes
 repeat reads, while revocation, Escape and focus lose a common owner. Shared

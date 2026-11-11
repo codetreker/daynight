@@ -1,5 +1,5 @@
 import { SESSION_DRAFT_DATABASE, SessionDraftStore, draftOwnerKey } from '../../src/features/task-agent-session/drafts/draft-store';
-import type { DraftOwnerIdentity } from '../../src/features/task-agent-session/drafts/draft-types';
+import type { DraftBlob, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftSubmission, DraftUpload } from '../../src/features/task-agent-session/drafts/draft-types';
 
 const names = ['owners', 'drafts', 'blobs', 'uploads', 'submissions'] as const;
 type Fault = 'abort' | 'quota';
@@ -40,6 +40,18 @@ export function createDraftStorageProbe(identity: () => DraftOwnerIdentity) {
   return {
     read: (actor?: string) => inspect(store => store.readExisting(scopedIdentity(actor))),
     readBlob: (blobId: string, actor?: string) => inspect(async store => { const saved = await store.readExisting(scopedIdentity(actor)); const blob = saved ? await store.readBlob(saved.owner, blobId) : null; return blob ? { blobId: blob.blobId, byteLength: blob.blob.size, sha256: blob.sha256 } : null; }),
+    inventory: async () => {
+      const database = await requestResult(indexedDB.open(SESSION_DRAFT_DATABASE));
+      try {
+        const transaction = database.transaction([...names], 'readonly'), done = transactionDone(transaction);
+        void done.catch(() => {});
+        const [owners, drafts, blobs, uploads, submissions] = await Promise.all(names.map(name => requestResult(transaction.objectStore(name).getAll())));
+        await done;
+        return { owners: owners as DraftOwner[], drafts: drafts as DraftRecord[], uploads: uploads as DraftUpload[], submissions: submissions as DraftSubmission[],
+          blobs: await Promise.all((blobs as DraftBlob[]).map(async value => ({ ownerKey: value.ownerKey, blobId: value.blobId, references: value.references, byteLength: value.blob.size, sha256: value.sha256,
+            actualSha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', await value.blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join('') }))) };
+      } finally { database.close(); }
+    },
     counts: async () => {
       await inspect(store => store.readExisting(identity()));
       const database = await requestResult(indexedDB.open(SESSION_DRAFT_DATABASE));

@@ -41,6 +41,42 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it('explicitly moves a detached old-native draft into an empty current owner with fresh image identities', async () => {
+    const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'old native text'); const original = (await f.store.readExisting(identity))!;
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }, nextIdentity = { ...identity, target: nativeTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nativeTarget }); await controller.sync();
+    expect(controller.getSnapshot().text).toBe('');
+    const detached = controller.getSnapshot().detachedDrafts[0]!; expect(detached).toMatchObject({ draft: { text: 'old native text' }, canRestore: true, disabledReason: null });
+    await controller.restoreDetached(detached.ref);
+    const next = (await f.store.readExisting(nextIdentity))!;
+    expect(controller.getSnapshot()).toMatchObject({ text: 'old native text', detachedDrafts: [] });
+    expect(next.editable?.draftId).not.toBe(original.editable?.draftId);
+    const item = next.editable!.items[0]!, old = original.editable!.items[0]!;
+    expect(item).toMatchObject({ validation: 'valid', uploadId: null }); expect(item.imageId).not.toBe(old.imageId); expect(item.blobId).not.toBe(old.blobId);
+    expect(await (await f.store.readBlob(next.owner, item.blobId!))!.blob.text()).toBe('image');
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe(''); expect(f.commands).toHaveLength(0);
+  });
+  it('rejects a detached confirmation after the empty target is edited and cleared again', async () => {
+    const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'old text', revision: '1', submission: null }); await controller.sync();
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }; f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget }); await controller.sync();
+    const ref = controller.getSnapshot().detachedDrafts[0]!.ref;
+    controller.setText('temporary edit'); await controller.flush(); controller.setText(''); await controller.flush();
+    await expect(controller.restoreDetached(ref)).rejects.toMatchObject({ code: 'conflict' });
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('old text'); expect(controller.getSnapshot().text).toBe('');
+  });
+  it('retains a new local edit as a conflict while a confirmed detached move finishes', async () => {
+    const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'old text', revision: '1', submission: null }); await controller.sync();
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }, nextIdentity = { ...identity, target: nativeTarget }; f.setContext({ ...f.context(), identity: nextIdentity, target: nativeTarget }); await controller.sync();
+    const ref = controller.getSnapshot().detachedDrafts[0]!.ref, restore = f.store.restoreDetachedDraft.bind(f.store);
+    let release!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(f.store, 'restoreDetachedDraft').mockImplementationOnce(async (...args) => { const result = await restore(...args); entered(); await waiting; return result; });
+    const moving = controller.restoreDetached(ref); await started; controller.setText('new local text'); release(); await moving;
+    expect(controller.getSnapshot()).toMatchObject({ text: 'new local text', conflict: true, error: 'image_draft_conflict' });
+    await expect(controller.flush()).rejects.toThrow('image_draft_conflict');
+    expect((await f.store.readExisting(nextIdentity))?.editable?.text).toBe('old text');
+    await controller.resolveConflict('saved'); expect(controller.getSnapshot().text).toBe('old text');
+  });
   it.each(['accepted', 'provider_accepted', 'rejected'] as const)('does not rebase unsaved successor content onto another window during %s observation', async state => {
     const f = fixture(null), controller = f.create();
     await f.store.importLegacy(identity, { text: 'original message', revision: '1', submission: null });
@@ -282,7 +318,8 @@ describe('durable Session image coordination', () => {
     f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-next' }, active: false });
     await controller.sync();
     const admittedWrite = Promise.withResolvers<void>();
-    const unsubscribe = controller.subscribe(() => { const draft = controller.getSnapshot(); if (draft.draftId && draft.saving && draft.text === 'new owner') admittedWrite.resolve(); });
+    const unsubscribe = controller.subscribe(() => { const draft = controller.getSnapshot(); if (draft.draftId && draft.saving && draft.text === 'new owner' && draft.items.some(item => item.label === 'new.png')) admittedWrite.resolve(); });
+    controller.setText('new owner');
     const newSelection = controller.addFiles([file('new.png')], 'new owner');
     await admittedWrite.promise; unsubscribe();
     release.resolve(); await Promise.all([oldSelection, newSelection]);
@@ -492,6 +529,179 @@ describe('durable Session image coordination', () => {
     await expect(controller.refreshForSend()).rejects.toThrow('image_draft_restored');
     expect(controller.getSnapshot().text).toBe('other window text'); expect(f.commands).toHaveLength(0);
     await controller.refreshForSend(); expect(controller.getSnapshot().text).toBe('other window text');
+  });
+  it('keeps the original content CAS baseline when another edit and window write race a send preflight read', async () => {
+    const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'initial', revision: '1', submission: null }); await controller.sync();
+    const other = new SessionDraftStore(); stores.push(other);
+    let release!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const read = f.store.readExisting.bind(f.store);
+    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered(); await waiting; return read(...args); });
+    const refreshing = controller.refreshForSend().catch(error => error); await started;
+    controller.setText('new local edit');
+    const remote = (await other.readExisting(identity))!;
+    await other.saveDraft(remote.owner, { draftId: remote.editable!.draftId, expectedStoreVersion: remote.editable!.storeVersion, text: 'other window winner', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    release(); await refreshing;
+    expect(controller.getSnapshot()).toMatchObject({ text: 'new local edit', conflict: true, error: 'image_draft_conflict' });
+    await expect(controller.flush()).rejects.toThrow('image_draft_conflict');
+    expect((await other.readExisting(identity))?.editable?.text).toBe('other window winner'); expect(f.commands).toHaveLength(0);
+  });
+  it.each(['native', 'authorization'] as const)('starts a new %s persistence queue without abandoning the superseded read during close', async change => {
+    const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'original text', revision: '1', submission: null }); await controller.sync();
+    const read = f.store.readExisting.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const original = controller.refreshForSend().catch(error => error); await entered.promise;
+    const nextTarget = change === 'native' ? { ...target, expectedNativeSessionId: 'native-next' } : target;
+    f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget, authorizationGeneration: '2' });
+    let restored = false, closed = false; const restoring = controller.sync().then(() => { restored = true; });
+    let closing: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(restored).toBe(true));
+      expect(controller.getSnapshot().text).toBe(change === 'native' ? '' : 'original text');
+      closing = controller.close().then(() => { closed = true; }); await Promise.resolve(); expect(closed).toBe(false);
+    } finally { release.resolve(); await Promise.all([original, restoring, closing]); }
+    expect(await original).toBeInstanceOf(Error); expect(closed).toBe(true); expect(f.commands).toHaveLength(0);
+  });
+  it('keeps a retiring local draft visible and refuses to move its older saved content until the final write finishes', async () => {
+    const f = fixture(null), controller = f.create(); await f.store.importLegacy(identity, { text: 'saved text', revision: '1', submission: null }); await controller.sync();
+    const read = f.store.readExisting.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'readExisting').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const preflight = controller.refreshForSend().catch(error => error); await entered.promise; controller.setText('latest retiring text');
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }; f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget });
+    let restored = false; const restoring = controller.sync().then(() => { restored = true; });
+    try {
+      await vi.waitFor(() => expect(restored).toBe(true));
+      const pending = controller.getSnapshot().detachedDrafts[0]!;
+      expect(pending).toMatchObject({ draft: { text: 'latest retiring text' }, canRestore: false, disabledReason: 'image_draft_unsaved' });
+      await expect(controller.restoreDetached(pending.ref)).rejects.toThrow('image_draft_unsaved');
+      expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved text');
+    } finally { release.resolve(); await Promise.all([preflight, restoring]); }
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ draft: { text: 'latest retiring text' }, canRestore: true }));
+    await controller.restoreDetached(controller.getSnapshot().detachedDrafts[0]!.ref);
+    expect(controller.getSnapshot().text).toBe('latest retiring text'); expect(f.commands).toHaveLength(0);
+  });
+  it.each(['committed', 'failed'] as const)('shows a %s retiring draft before the new owner has any durable content', async outcome => {
+    const f = fixture(null), controller = f.create(); await f.store.openOwner(identity); await controller.sync();
+    controller.setText('unsaved original owner text');
+    const read = f.store.read.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'read').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    if (outcome === 'failed') vi.spyOn(f.store, 'saveDraft').mockRejectedValueOnce(new DraftStoreError('quota', 'Storage is full.'));
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    const restoring = controller.sync(); await entered.promise;
+    try {
+      await restoring;
+      expect(controller.getSnapshot()).toMatchObject({ text: '', detachedDrafts: [{ draft: { text: 'unsaved original owner text' }, canRestore: false, canRetrySave: false, disabledReason: 'image_draft_unsaved' }] });
+    } finally { release.resolve(); await restoring; }
+    if (outcome === 'failed') {
+      await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ error: 'image_draft_quota', canRestore: false, canRetrySave: true }));
+      await controller.retryDetachedSave(controller.getSnapshot().detachedDrafts[0]!.ref);
+      expect((await f.store.readExisting(identity))?.editable?.text).toBe('unsaved original owner text');
+      expect((await f.store.readExisting(nextIdentity))?.editable?.text).toBe('');
+    }
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ draft: { text: 'unsaved original owner text' }, canRestore: true, canRetrySave: false, error: null }));
+    expect(controller.getSnapshot().text).toBe('');
+    await controller.restoreDetached(controller.getSnapshot().detachedDrafts[0]!.ref);
+    expect(controller.getSnapshot().text).toBe('unsaved original owner text'); expect(f.commands).toHaveLength(0);
+  });
+  it.each(['saved', 'local'] as const)('explicitly keeps the %s original-owner draft after a retiring write conflicts', async choice => {
+    const f = fixture(null), controller = f.create(); const original = await f.store.openOwner(identity); await controller.sync();
+    controller.setText('local original text');
+    const read = f.store.read.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'read').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    const restoring = controller.sync(); await entered.promise;
+    try {
+      await restoring;
+      await f.store.saveDraft(original.owner, { draftId: original.editable!.draftId, expectedStoreVersion: original.editable!.storeVersion, text: 'remote original text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    } finally { release.resolve(); await restoring; }
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ draft: { text: 'local original text' }, savedDraft: { text: 'remote original text' }, canRetrySave: false, canResolveConflict: true, error: 'image_draft_conflict' }));
+    const stale = controller.getSnapshot().detachedDrafts[0]!.ref, newer = (await f.store.readExisting(identity))!;
+    await f.store.saveDraft(newer.owner, { draftId: newer.editable!.draftId, expectedStoreVersion: newer.editable!.storeVersion, text: 'newer remote text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    await expect(controller.resolveDetachedConflict(stale, choice)).rejects.toMatchObject({ code: 'conflict' });
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('newer remote text');
+    const current = controller.getSnapshot().detachedDrafts[0]!;
+    expect(current).toMatchObject({ draft: { text: 'local original text' }, savedDraft: { text: 'newer remote text' }, canResolveConflict: true });
+    await controller.resolveDetachedConflict(current.ref, choice);
+    const expected = choice === 'local' ? 'local original text' : 'newer remote text';
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe(expected);
+    expect((await f.store.readExisting(nextIdentity))?.editable?.text).toBe('');
+    expect(controller.getSnapshot()).toMatchObject({ text: '', detachedDrafts: [{ draft: { text: expected }, canRestore: true, canResolveConflict: false, error: null }] });
+    expect(f.commands).toHaveLength(0);
+  });
+  it('preserves current-owner legacy text and later edits while the original owner finishes saving', async () => {
+    const f = fixture(null), imported = vi.fn();
+    const controller = f.create({ legacy: () => f.context().target.expectedNativeSessionId ? { text: 'current legacy text', revision: 'legacy-current', submission: null, onImported: imported } : null });
+    await f.store.openOwner(identity); await controller.sync(); controller.setText('original owner text');
+    const read = f.store.read.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'read').mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return read(...args); });
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    const restoring = controller.sync(); await entered.promise;
+    try {
+      await restoring;
+      expect(controller.getSnapshot().text).toBe('current legacy text'); expect(imported).toHaveBeenCalledOnce();
+      controller.setText('later current owner text'); await controller.flush();
+    } finally { release.resolve(); await restoring; }
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]).toMatchObject({ draft: { text: 'original owner text' }, disabledReason: 'image_restore_requires_empty' }));
+    expect(controller.getSnapshot().text).toBe('later current owner text');
+    expect((await f.store.readExisting(nextIdentity))?.editable?.text).toBe('later current owner text');
+  });
+  it.each(['access', 'authorization', 'owner'] as const)('stops an explicit original-owner save retry after its %s admission changes', async change => {
+    const f = fixture(null), controller = f.create(); await f.store.openOwner(identity); await controller.sync(); controller.setText('retained text');
+    vi.spyOn(f.store, 'saveDraft').mockRejectedValueOnce(new DraftStoreError('quota', 'Storage is full.'));
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget }); await controller.sync();
+    await vi.waitFor(() => expect(controller.getSnapshot().detachedDrafts[0]?.canRetrySave).toBe(true));
+    const read = f.store.read.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'read').mockImplementationOnce(async (...args) => { const result = await read(...args); entered.resolve(); await release.promise; return result; });
+    const retrying = controller.retryDetachedSave(controller.getSnapshot().detachedDrafts[0]!.ref); await entered.promise;
+    try {
+      const current = f.context();
+      if (change === 'access') f.setContext({ ...current, canEdit: false });
+      else if (change === 'authorization') f.setContext({ ...current, authorizationGeneration: '2' });
+      else { const laterTarget = { ...nextTarget, expectedNativeSessionId: 'native-later' }; f.setContext({ ...current, target: laterTarget, identity: { ...identity, target: laterTarget } }); }
+      await controller.sync();
+    } finally { release.resolve(); await retrying; }
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('');
+    expect(controller.getSnapshot().text).toBe(''); expect(f.commands).toHaveLength(0);
+  });
+  it('does not refresh the new owner from an old upload unknown callback', async () => {
+    const f = fixture(), controller = f.create(); vi.mocked(f.resources.prepareUpload).mockRejectedValueOnce(new Error('Lost upload response.'));
+    const mark = f.store.markUploadUnknown.bind(f.store), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    vi.spyOn(f.store, 'markUploadUnknown').mockImplementationOnce(async (...args) => { const result = await mark(...args); entered.resolve(); await release.promise; return result; });
+    const selecting = controller.addFiles([file()], 'original owner text');
+    try {
+      await entered.promise;
+      const nextTarget = { ...target, expectedNativeSessionId: 'native-next' };
+      f.setContext({ ...f.context(), identity: { ...identity, target: nextTarget }, target: nextTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-next' }, active: false });
+      await controller.sync(); const read = vi.spyOn(f.store, 'read');
+      release.resolve(); await selecting;
+      expect(read).not.toHaveBeenCalled(); expect(controller.getSnapshot().text).toBe('');
+    } finally { release.resolve(); await selecting; }
+  });
+  it('imports text edited after an inactive durable draft lookup when images activate it', async () => {
+    const f = fixture(null); let text = '';
+    const controller = f.create({ legacy: () => ({ text, revision: 'legacy', submission: null, onImported() {} }) });
+    await controller.sync(); text = 'typed after passive lookup';
+    await controller.addFiles([file()], text);
+    expect(controller.getSnapshot().text).toBe('typed after passive lookup');
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('typed after passive lookup');
+  });
+  it.each([false, true])('defers recovery target initialization when its discovery read loses access and resumes it later (legacy=%s)', async legacy => {
+    const f = fixture(null), imported = vi.fn(); await f.store.importLegacy(identity, { text: 'saved original text', revision: 'old', submission: null });
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    const controller = f.create({ legacy: () => legacy ? { text: 'current legacy text', revision: 'current', submission: null, onImported: imported } : null });
+    const read = f.store.readDetachedDrafts.bind(f.store);
+    vi.spyOn(f.store, 'readDetachedDrafts').mockImplementationOnce(async (...args) => { const result = await read(...args); f.setContext({ ...f.context(), canEdit: false }); return result; });
+    await controller.sync();
+    expect(await f.store.readExisting(nextIdentity)).toBeNull(); expect(imported).not.toHaveBeenCalled();
+    f.setContext({ ...f.context(), canEdit: true }); await controller.sync();
+    expect((await f.store.readExisting(nextIdentity))?.editable?.text).toBe(legacy ? 'current legacy text' : '');
+    expect(controller.getSnapshot().detachedDrafts[0]?.draft.text).toBe('saved original text');
+    expect(imported).toHaveBeenCalledTimes(legacy ? 1 : 0); expect(f.commands).toHaveLength(0);
   });
   it('retains the complete ordered candidate set and does not upload a valid subset', async () => {
     const f = fixture(), controller = f.create(); await controller.sync();

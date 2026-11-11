@@ -133,7 +133,7 @@ export class TaskSessionClient {
     this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true };
     this.imageDrafts = new ImageDraftController({
       getContext: this.imageDraftContext,
-      dispatch: command => this.dispatchFrozenImage(command),
+      dispatch: command => this.dispatchFrozenDraft(command),
       query: (fence, id, signal) => this.observeImageOperation(fence, id, signal),
       createAsset: (blob, id, byteRevision) => {
         const scope = this.imageScope();
@@ -141,6 +141,10 @@ export class TaskSessionClient {
         return pageImageStore.createLocalAsset(scope, { key: JSON.stringify([id, byteRevision]), blob });
       },
       isDefinitiveNotDispatched: imageCommandNotDispatched,
+      commandIssue: payload => {
+        const s = this.view.state.snapshot, command = s?.controls?.commands.find(candidate => candidate.id === payload.commandId);
+        return !this.canInteract() || !this.live() || !this.view.actionAdmitted || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== payload.expectedControlsRevision || s.currentTurnId !== payload.expectedTurnId || !command?.available ? 'image_command_unavailable' : null;
+      },
       legacy: () => {
         const key = this.draftKey, draft = this.view.draft;
         return key ? { ...draft, onImported: () => { this.options.storage?.removeItem(key); } } : null;
@@ -157,7 +161,7 @@ export class TaskSessionClient {
       }
       if (draft.active) {
         this.imageDraftProjected = true;
-        this.view = { ...this.view, draft: { text: draft.text, revision: draft.revision, submission: draft.submission ? { operationId: draft.submission.operationId, revision: draft.submission.draftRevision, kind: 'send_message' } : null } };
+        this.view = { ...this.view, draft: { text: draft.text, revision: draft.revision, submission: draft.submission ? { operationId: draft.submission.operationId, revision: draft.submission.draftRevision, kind: draft.submission.kind } : null } };
       } else if (this.imageDraftProjected) {
         this.imageDraftProjected = false;
         this.view = { ...this.view, draft: emptyDraft() };
@@ -417,6 +421,7 @@ export class TaskSessionClient {
     try { if (this.view.draft.text || this.view.draft.submission) this.options.storage?.setItem(this.draftKey, JSON.stringify(this.view.draft)); else this.options.storage?.removeItem(this.draftKey); } catch { /* Keep editable text in memory if storage is unavailable. */ }
   }
   setDraft = (text: string): void => {
+    if (this.imageDrafts.getSnapshot().loading) return;
     if (this.imageDrafts.getSnapshot().active) { this.imageDrafts.setText(text); return; }
     if (!this.canInteract() || this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
     this.publish({ draft: { ...this.view.draft, text, revision: crypto.randomUUID() } }); this.persistDraft();
@@ -861,6 +866,11 @@ export class TaskSessionClient {
     this.admitted();
     const s = this.view.state.snapshot, command = s?.controls?.commands.find(command => command.id === commandId);
     if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
+    if (images.active && draftText !== undefined) {
+      const parsed = /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(draftText.trimStart());
+      if (images.text !== draftText || parsed?.[1] !== command.name || (parsed[2] ?? '') !== args || s.controls.commands.filter(candidate => candidate.name === command.name).length !== 1) throw new Error('image_command_unavailable');
+      return this.imageDrafts.executeCommand({ commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId, draftText, commandName: command.name });
+    }
     return this.execute({ kind: 'execute_command', payload: { commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId } }, draftText);
   };
   refreshControls = (): Promise<void> => {
@@ -955,14 +965,20 @@ export class TaskSessionClient {
     }
   }
   /** Consumes the exact immutable command whose dispatch claim is already committed. */
-  private async dispatchFrozenImage(command: SessionCommand): Promise<SessionOperation> {
+  private async dispatchFrozenDraft(command: SessionCommand): Promise<SessionOperation> {
     const s = this.view.state.snapshot, context = this.imageDraftContext();
-    if (!s || !context || !context.canSend || command.kind !== 'send_message') throw new Error('Image sending is unavailable.');
+    if (!s || !context || !context.canEdit || !context.active || command.kind !== 'send_message' && command.kind !== 'execute_command') throw new Error('Image sending is unavailable.');
     assertSessionFence(command, sessionFence(s));
-    const target = command.payload.target;
-    if (command.payload.content.some(part => part.type === 'image') && (!target || !command.payload.draftId || !command.payload.draftRevision)) throw new Error('The saved image submission is incomplete.');
-    if (target && (target.serverOrigin !== context.target.serverOrigin || target.actorUserId !== context.target.actorUserId || target.expectedNativeSessionId !== s.identity.nativeSessionId || command.payload.expectedTurnId !== context.expectedTurnId)) throw new Error('The active image target changed.');
-    if (target) assertSessionFence(target.fence, sessionFence(s));
+    if (command.kind === 'send_message') {
+      if (!context.canSend) throw new Error('Image sending is unavailable.');
+      const target = command.payload.target;
+      if (command.payload.content.some(part => part.type === 'image') && (!target || !command.payload.draftId || !command.payload.draftRevision)) throw new Error('The saved image submission is incomplete.');
+      if (target && (target.serverOrigin !== context.target.serverOrigin || target.actorUserId !== context.target.actorUserId || target.expectedNativeSessionId !== s.identity.nativeSessionId || command.payload.expectedTurnId !== context.expectedTurnId)) throw new Error('The active image target changed.');
+      if (target) assertSessionFence(target.fence, sessionFence(s));
+    } else {
+      const native = s.controls?.commands.find(candidate => candidate.id === command.payload.commandId);
+      if (!sessionControlGate(this.view.state, this.view.connected) || !this.view.actionAdmitted || s.controls?.revision !== command.payload.expectedControlsRevision || s.currentTurnId !== command.payload.expectedTurnId || !native?.available) throw new Error('image_command_unavailable');
+    }
     this.imageOperationIds.add(command.operationId);
     this.beginOperationProgress(command.operationId);
     this.putOperation({ protocol: SESSION_PROTOCOL, ...sessionFence(s), operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null });

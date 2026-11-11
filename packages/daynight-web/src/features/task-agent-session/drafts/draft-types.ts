@@ -100,6 +100,8 @@ export type DraftSnapshot = {
 };
 export type DraftRecoveryRef = { readonly ownerKey: string; readonly operationId: string; readonly choiceRevision: string };
 export type DraftRecoverySnapshot = DraftSnapshot & { readonly submission: DraftSubmission };
+export type DraftDetachedRef = DraftHandle & { readonly draftId: string; readonly revision: string; readonly storeVersion: number };
+export type DraftDetachedSnapshot = DraftSnapshot & { readonly editable: DraftRecord; readonly submission: null };
 export type DraftWrite = {
   readonly draftId: string;
   readonly expectedStoreVersion: number;
@@ -109,7 +111,12 @@ export type DraftWrite = {
   readonly overflowRejectedCount: number;
   readonly blobs?: readonly DraftBlobInput[];
 };
-export type DraftFreeze = { readonly draftId: string; readonly expectedStoreVersion: number; readonly command: SessionCommand };
+export type DraftFreeze = {
+  readonly draftId: string;
+  readonly expectedStoreVersion: number;
+  readonly command: SessionCommand;
+  readonly commandDraft?: { readonly text: string; readonly commandName: string };
+};
 export type LegacyDraftImport = {
   readonly text: string;
   readonly revision: string;

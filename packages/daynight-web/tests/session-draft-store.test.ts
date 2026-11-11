@@ -97,7 +97,7 @@ it('retains the original upload spec and release intent after its draft item is 
   await db.markUploadUnknown(state.owner, upload.uploadId, started.requestSequence);
   state = await db.saveDraft(state.owner, { ...write(current, 'keep'), items: [] });
   expect(state.uploads[0]).toMatchObject({ releaseIntent: true, outcomeUnknown: true, spec: upload.spec });
-  expect((await db.readBlob(state.owner, 'blob'))?.references).toEqual(['release:upload']);
+  expect(await db.readBlob(state.owner, 'blob')).toBeNull(); expect(state.owner.allocatedBytes).toBe(0);
 });
 
 it('preserves both drafts on a proven rejection until the user chooses the one to keep', async () => {

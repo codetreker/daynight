@@ -40,8 +40,8 @@ describe('task session transport lifecycle', () => {
       expect(f.client.snapshot().draft.text).toBe('');
       await f.client.imageDrafts.sync();
       expect(projected.length).toBeGreaterThan(0); expect(projected.every(text => text === '')).toBe(true);
-      expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: false, items: [], rejectedCandidates: [] });
-      await expect(f.client.send(f.client.snapshot().draft.text)).rejects.toThrow();
+      expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: true, text: '', items: [], rejectedCandidates: [], canSend: false, detachedDrafts: [{ draft: { text: 'Keep with the original image' } }] });
+      await f.client.send(f.client.snapshot().draft.text);
       expect(f.api.command).not.toHaveBeenCalled();
       expect((await store.readExisting(identity))?.editable?.text).toBe('Keep with the original image');
       const reopened = fixture(null, userId, userId, next); await ready(reopened); reopened.client.setImageDraftAdmission(true, true); await reopened.client.imageDrafts.sync();
@@ -72,7 +72,7 @@ describe('task session transport lifecycle', () => {
       expect(f.client.snapshot().draft.text).toBe('');
       held.resolve(saved); await expect(pending).resolves.toMatchObject({ message: 'image_access_unavailable' }); await f.client.imageDrafts.sync();
       expect(f.client.snapshot().draft.text).toBe('');
-      expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: false, items: [] });
+      expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ active: true, text: '', items: [], detachedDrafts: [{ draft: { text: 'Original image text' } }] });
       expect(f.api.command).not.toHaveBeenCalled();
     } finally { held.resolve(null); await pending; f.client.close(); await f.client.imageDrafts.close(); store.close(); }
   });
@@ -96,6 +96,28 @@ describe('task session transport lifecycle', () => {
       expect(f.client.snapshot().draft.text).toBe('');
       expect(f.api.command).not.toHaveBeenCalled();
     } finally { f.client.close(); await f.client.imageDrafts.close(); store.close(); }
+  });
+  it('keeps recovery loading read-only through the public draft setter and resumes edits after restoration', async () => {
+    const f = fixture(window.sessionStorage), store = new SessionDraftStore();
+    const original = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: sessionFence(f.s), expectedNativeSessionId: 'native-earlier' }, resolver: { kind: 'task' as const, projectId: f.s.identity.projectId, taskId: f.s.identity.taskId } };
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let restoring: Promise<void> | undefined;
+    try {
+      await store.importLegacy(original, { text: 'Earlier draft', revision: 'earlier', submission: null });
+      await ready(f); f.client.setDraft('Text before restoration');
+      const read = SessionDraftStore.prototype.readDetachedDrafts;
+      vi.spyOn(SessionDraftStore.prototype, 'readDetachedDrafts').mockImplementationOnce(async function (this: SessionDraftStore, ...args) { const result = await read.apply(this, args); entered.resolve(); await release.promise; return result; });
+      f.client.setImageDraftAdmission(true, true); restoring = f.client.imageDrafts.sync(); await entered.promise;
+      expect(f.client.imageDrafts.getSnapshot()).toMatchObject({ loading: true, active: false });
+      f.client.setDraft('Late suggestion during restoration');
+      expect(f.client.snapshot().draft.text).toBe('Text before restoration');
+      release.resolve(); await restoring;
+      expect(f.client.snapshot().draft.text).toBe('Text before restoration');
+      f.client.setDraft('Editable after restoration'); await f.client.imageDrafts.flush();
+      const current = { ...original, target: { ...original.target, expectedNativeSessionId: f.s.identity.nativeSessionId } };
+      expect((await store.readExisting(current))?.editable?.text).toBe('Editable after restoration');
+      expect((await store.readExisting(original))?.editable?.text).toBe('Earlier draft');
+      expect(f.api.command).not.toHaveBeenCalled();
+    } finally { release.resolve(); await restoring; f.client.close(); await f.client.imageDrafts.close(); store.close(); }
   });
   it.each(['prepared', 'unknown', 'rejected'].flatMap(state => [false, true].flatMap(otherNative => [undefined, '/compact'].map(draftText => ({ state, otherNative, draftText })))) )('blocks commands behind a durable $state operation without session receipt storage (otherNative=$otherNative, draftText=$draftText)', async ({ state, otherNative, draftText }) => {
     const f = fixture(null, userId, userId, { controls: { revision: '1', settings: [], commands: [{ id: 'compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null } });
@@ -128,8 +150,10 @@ describe('task session transport lifecycle', () => {
       if (state === 'rejected') await f.client.imageDrafts.resolveFailure(f.client.imageDrafts.getSnapshot().recoveries.find(recovery => recovery.ref.operationId === command.operationId)!.ref, 'current');
       else await store.settleSubmission(saved.owner, { operationId: command.operationId, outcome: 'accepted', operation: { ...operation, state: 'provider_accepted' } });
       await f.client.imageDrafts.refreshForSend();
+      if (draftText !== undefined) { f.client.setDraft(draftText); await f.client.imageDrafts.flush(); }
       await f.client.executeCommand('compact', '', '1', draftText);
       expect(f.api.command).toHaveBeenCalledOnce();
+      expect(f.client.snapshot().draft.text).toBe(draftText === undefined ? otherNative ? 'Current native text' : 'Successor text' : '');
     } finally { f.client.close(); await f.client.imageDrafts.close(); store.close(); }
   });
   it('keeps historical recovery out of the current native command gate and operation ledger', async () => {

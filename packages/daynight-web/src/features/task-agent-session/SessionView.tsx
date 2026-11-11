@@ -42,6 +42,9 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     resolveFailure: (ref, choice) => client.imageDrafts.resolveFailure(ref, choice),
     resumePrepared: () => client.imageDrafts.resumePrepared(),
     cancelPrepared: ref => client.imageDrafts.cancelPrepared(ref),
+    restoreDetached: ref => client.imageDrafts.restoreDetached(ref),
+    retryDetachedSave: ref => client.imageDrafts.retryDetachedSave(ref),
+    resolveDetachedConflict: (ref, choice) => client.imageDrafts.resolveDetachedConflict(ref, choice),
   } : undefined;
   const m = useSessionMessages();
   const statusId = useId();
@@ -111,10 +114,10 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     <svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
     <span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
   </button> : <button className="button" disabled={view.authPaused} onClick={refresh}>{m.refresh}</button>;
-  const emptyReady = !hasContent && canInteract && available && view.status === 'ready' && active && current && runtimeReady && !readOnly && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
+  const emptyReady = !hasContent && canInteract && available && view.status === 'ready' && active && current && runtimeReady && !readOnly && !imageDraft?.loading && !(imageDraft?.active && imageDraft.readOnly) && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
   const empty = emptyReady && slots?.renderEmpty ? slots.renderEmpty({ draft: view.draft, setDraftAndFocus: text => {
-    const latest = client?.snapshot();
-    if (!mounted.current || !admission.current.active || !admission.current.current || admission.current.userId !== userId || !inputRef.current || !latest || latest.status !== 'ready' || !latest.state.snapshot || !s || sessionFenceKey(latest.state.snapshot) !== sessionFenceKey(s) || latest.state.snapshot.lifecycle !== 'active') return;
+    const latest = client?.snapshot(), latestDraft = client?.imageDrafts?.getSnapshot();
+    if (!mounted.current || !admission.current.active || !admission.current.current || admission.current.userId !== userId || !inputRef.current || latestDraft?.loading || latestDraft?.active && latestDraft.readOnly || !latest || latest.status !== 'ready' || !latest.state.snapshot || !s || sessionFenceKey(latest.state.snapshot) !== sessionFenceKey(s) || latest.state.snapshot.lifecycle !== 'active') return;
     client?.setDraft(text); inputRef.current?.focus({ preventScroll: true });
   } }) : null;
   const timelineAllowed = available && (!readOnly || view.archiveState === 'ready') || preview !== undefined || !readOnly && (slots?.renderPending !== undefined || slots?.variant === 'assistant' || client === null);

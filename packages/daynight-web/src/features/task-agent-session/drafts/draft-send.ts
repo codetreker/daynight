@@ -1,6 +1,6 @@
 import { assertSessionFence, parseSessionOperation, type SessionCommand, type SessionFence, type SessionOperation } from '../../../../../daynight/src/session/protocol';
 import type { SessionDraftStore } from './draft-store';
-import type { DraftHandle, DraftSnapshot, DraftSubmission } from './draft-types';
+import type { DraftFreeze, DraftHandle, DraftSnapshot, DraftSubmission } from './draft-types';
 
 export function draftOperationOutcome(operation: SessionOperation): 'accepted' | 'rejected' | 'pending' {
   if (operation.state === 'provider_accepted' || operation.state === 'confirmed') return 'accepted';
@@ -29,6 +29,7 @@ export type DraftSendOptions = {
   readonly isCurrent: () => boolean;
   readonly admit: (snapshot: DraftSnapshot, prepared?: DraftSubmission) => string | null;
   readonly command: (snapshot: DraftSnapshot) => SessionCommand;
+  readonly commandDraft?: DraftFreeze['commandDraft'];
   readonly dispatch: (command: SessionCommand) => Promise<SessionOperation>;
   readonly query: (fence: SessionFence, operationId: string, signal?: AbortSignal) => Promise<SessionOperation>;
   readonly signal?: AbortSignal;
@@ -61,7 +62,7 @@ export class DraftSender {
       }
       if (!submission) {
         const draft = snapshot.editable!;
-        snapshot = await o.store.freeze(handle, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, command: o.command(snapshot) });
+        snapshot = await o.store.freeze(handle, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, command: o.command(snapshot), ...(o.commandDraft ? { commandDraft: o.commandDraft } : {}) });
         this.live(); await o.changed(snapshot); submission = snapshot.submission!;
       }
       const claim = await o.store.claimDispatch(handle, submission.operationId);

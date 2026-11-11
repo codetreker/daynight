@@ -102,3 +102,14 @@ it('cancels a prepared original without borrowing the current owner', () => {
   expect(attachments.cancelPrepared).toHaveBeenCalledExactlyOnceWith(entry.ref);
   expect(attachments.resolveFailure).not.toHaveBeenCalled();
 });
+
+it('allows cancelling a current prepared command when its command is no longer available', () => {
+  const entry = recovery({ currentOwner: true, state: 'prepared', successor: null, canResolveFailure: false, canCancelPrepared: true });
+  const attachments = binding([entry]);
+  render(<ComposerAttachments binding={{ ...attachments, view: { ...attachments.view, frozen: true,
+    submission: { operationId: entry.ref.operationId }, canResumePrepared: false } }} active editable={false} canRecover />);
+  expect(screen.queryByRole('button', { name: 'Send this saved message' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Check status' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel the pending message and keep its draft' }));
+  expect(attachments.cancelPrepared).toHaveBeenCalledExactlyOnceWith(entry.ref);
+});

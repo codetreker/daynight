@@ -35,7 +35,7 @@ export function exactPng(byteLength: number): Buffer {
   prefix.writeUInt32BE(length); suffix.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
   return Buffer.concat([original.subarray(0, -12), prefix, payload, suffix, original.subarray(-12)]);
 }
-export async function installDraftAPI(context: BrowserContext, overrides: Partial<ImageCapabilities> = {}) {
+export async function installDraftAPI(context: BrowserContext, overrides: Partial<ImageCapabilities> = {}, options: { nativeCommands?: boolean; testSession?: boolean } = {}) {
   const capability: ImageCapabilities = { revision: '2', providerRevision: '1', expectedNativeSessionId: 'native-thread-1', modelId: 'vision', controlsRevision: '3', send: 'supported', steer: 'unsupported', reasonCode: null, inputMediaTypes: ['image/png', 'image/jpeg', 'image/webp'], maxImageBytes: '10485760', maxMessageImageBytes: '20971520', maxImagesPerMessage: 8, geometry: { version: 1, known: true, maxWidth: 16384, maxHeight: 16384, maxPixels: 33554432, maxFrames: 256 }, ...overrides };
   await context.addInitScript(capabilities => { window.sessionDraftOptions = { capabilities }; }, overrides);
   const uploads = new Map<string, { spec: ImageUploadSpec; receipt: ImageUploadReceipt; chunks: Buffer[] }>();
@@ -44,7 +44,9 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   let dispatchMode: 'confirmed' | 'held' | 'lost' | 'capability_changed' = 'confirmed', queryState: SessionOperation['state'] | '404' = 'unknown';
   const held: Route[] = [];
   const budget = { revision: '1', maxBytes: '1073741824', committedBytes: '0', reservedBytes: '0', maxResources: 1000, committedResources: 0, reservedResources: 0 };
-  const snapshot = { ...snapshotJson, contentRevision: 2, imageBudget: budget, capabilities: { ...snapshotJson.capabilities, images: capability }, lastEventSeq: '0', lastTimelineSeq: '0' };
+  const { claimId: _claimId, identity, ...independent } = snapshotJson;
+  const base: SessionSnapshot = options.testSession ? { ...independent, testExecutionId: '00000072-1111-4111-8111-111111111111', initialInputState: 'not_required', identity: { ownerUserId: userId, controllerId: identity.controllerId, controllerInstanceId: identity.controllerInstanceId, agentControlMode: identity.agentControlMode, provider: identity.provider, nativeSessionId: capability.expectedNativeSessionId } } : snapshotJson;
+  const snapshot = { ...base, identity: { ...base.identity, nativeSessionId: capability.expectedNativeSessionId }, contentRevision: 2, imageBudget: budget, capabilities: { ...base.capabilities, images: capability }, lastEventSeq: '0', lastTimelineSeq: '0', ...(options.nativeCommands ? { controls: { revision: '3', settings: [], commands: [{ id: 'compact', name: 'compact', description: 'Compact context', argumentHint: null, available: true }], settingsError: null, commandsError: null } } : {}) } satisfies SessionSnapshot;
   const publishSnapshots = new Set<() => void>();
   await context.routeWebSocket('**/api/v1/**/channel*', socket => {
     const publish = () => socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }));
@@ -56,6 +58,7 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
     const principal = new URL(request.frame().url()).searchParams.get('actor') ?? userId;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': principal } });
     if (path.endsWith('/sessions/current')) return send({ status: 'registered', session: snapshot });
+    if (/^\/api\/v1\/test-sessions\/[^/]+$/.test(path)) return send({ session: snapshot });
     if (path.endsWith('/timeline')) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (path.endsWith('/image-capabilities')) return send({ contentRevision: 2, capabilities: capability, budget });
     if (path === '/draft-fixture-api/dispatch' || path.endsWith('/commands')) {
@@ -72,7 +75,7 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
       const original = originalOperations.get(id);
       if (!command && !original) return send({ error: 'unknown operation' }, 404);
       const result = command ? operation(command, queryState) : { ...original!, state: queryState };
-      return send(path.includes('/operations/') ? { operation: result, currentBinding: true } : result);
+      return send(path.startsWith('/api/v1/test-sessions/') ? { operation: result } : path.includes('/operations/') ? { operation: result, currentBinding: true } : result);
     }
     const match = /\/image-uploads\/([^/]+)(?:\/(chunks|complete))?$/.exec(path);
     if (!match) { observations.errors.push(`${request.method()} ${path}`); return send({ error: 'unexpected request' }, 404); }
@@ -100,8 +103,16 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   };
   await context.route('**/draft-fixture-api/**', handle);
   await context.route('**/api/v1/projects/**/sessions/**', handle);
+  if (options.testSession) await context.route('**/api/v1/test-sessions/**', handle);
   return { observations, uploads, capability,
-    changeTarget: (nativeSessionId: string, executionGeneration = snapshot.executionGeneration) => {
+    changeCommandCatalog: (available: boolean) => {
+      if (!snapshot.controls) throw new Error('This fixture has no native command catalog.');
+      const revision = String(BigInt(snapshot.controls.revision) + 1n);
+      snapshot.controls = { ...snapshot.controls, revision, commands: snapshot.controls.commands.map(command => ({ ...command, available })) };
+      snapshot.sessionRevision = String(BigInt(snapshot.sessionRevision) + 1n);
+      publishSnapshots.forEach(publish => publish()); return revision;
+    },
+    changeTarget: (nativeSessionId: string | null, executionGeneration = snapshot.executionGeneration) => {
       snapshot.identity = { ...snapshot.identity, nativeSessionId }; snapshot.executionGeneration = executionGeneration;
       snapshot.sessionRevision = String(BigInt(snapshot.sessionRevision) + 1n);
       Object.assign(capability, { expectedNativeSessionId: nativeSessionId, revision: String(BigInt(capability.revision) + 1n) });

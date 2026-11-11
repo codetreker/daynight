@@ -1,11 +1,12 @@
 import { SESSION_PROTOCOL, type ImageCapabilities, type ImageTarget, type SessionCommand, type SessionFence, type SessionOperation } from '../../../../../daynight/src/session/protocol';
 import type { SessionResourceClient } from '../../../../../daynight/src/session/resource-client';
 import type { LocalImageAssetAdapter, LocalImageMetadata } from '../images/image-store';
-import { DraftStoreError, SessionDraftStore, draftOwnerKey, draftRecoveryRef } from './draft-store';
-import type { DraftBlobInput, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
+import { DraftStoreError, SessionDraftStore, draftDetachedRef, draftOwnerKey, draftRecoveryRef } from './draft-store';
+import type { DraftBlobInput, DraftDetachedRef, DraftDetachedSnapshot, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSnapshot, DraftSubmission, LegacyDraftImport } from './draft-types';
 import { DraftSender } from './draft-send';
 import { DraftUploader } from './draft-uploads';
 import { imageSetIssue, safeImageLabel, sameImageTarget } from './draft-validation';
+import { sameDraftRecoveryScope } from './draft-store-identity';
 
 export type ImageDraftContext = {
   readonly identity: DraftOwnerIdentity;
@@ -20,8 +21,17 @@ export type ImageDraftContext = {
   readonly authorizationGeneration: string;
 };
 export type ImageDraftItemView = DraftImageItem & { readonly asset: LocalImageAssetAdapter | null; readonly progress: number; readonly status: string; readonly canRetryPrepare: boolean };
+export type ImageDraftCommandPayload = Extract<SessionCommand, { readonly kind: 'execute_command' }>['payload'];
+export type ImageDraftNativeCommand = ImageDraftCommandPayload & { readonly draftText: string; readonly commandName: string };
 export type ImageDraftRecoveryRef = DraftRecoveryRef;
 export type ImageDraftRecoveryDraft = { readonly text: string; readonly items: readonly Pick<DraftImageItem, 'draftImageId' | 'label'>[] };
+export type ImageDraftDetachedRef = DraftDetachedRef & { readonly targetOwnerKey: string; readonly targetAccessEpoch: number; readonly targetDraftId: string; readonly targetRevision: string; readonly targetStoreVersion: number; readonly pendingWriteId: string | null };
+export type ImageDraftDetached = {
+  readonly ref: ImageDraftDetachedRef; readonly target: ImageTarget; readonly draft: ImageDraftRecoveryDraft;
+  readonly savedDraft: ImageDraftRecoveryDraft | null; readonly canRetrySave: boolean; readonly canResolveConflict: boolean;
+  readonly rejectedCandidates: readonly { readonly id: string; readonly label: string; readonly error: string }[]; readonly overflowRejectedCount: number;
+  readonly canRestore: boolean; readonly disabledReason: string | null; readonly error: string | null;
+};
 export type ImageDraftRecovery = {
   readonly ref: ImageDraftRecoveryRef; readonly state: DraftSubmission['state']; readonly error: string | null;
   readonly currentOwner: boolean; readonly currentExecution: boolean;
@@ -35,6 +45,7 @@ export type ImageDraftView = {
   readonly overflowRejectedCount: number; readonly saving: boolean; readonly error: string | null; readonly conflict: boolean;
   readonly frozen: boolean; readonly readOnly: boolean; readonly failureChoice: boolean; readonly submission: DraftSubmission | null;
   readonly recoveries: readonly ImageDraftRecovery[]; readonly executionBlocked: boolean;
+  readonly detachedDrafts: readonly ImageDraftDetached[];
   readonly canSend: boolean; readonly canResumePrepared: boolean; readonly canCancelPrepared: boolean; readonly disabledReason: string | null; readonly checking: boolean;
 };
 export type ImageDraftOptions = {
@@ -43,10 +54,11 @@ export type ImageDraftOptions = {
   readonly query: (fence: SessionFence, operationId: string, signal?: AbortSignal) => Promise<SessionOperation>;
   readonly createAsset: (blob: Blob, draftImageId: string, byteRevision: string, metadata?: LocalImageMetadata) => LocalImageAssetAdapter;
   readonly isDefinitiveNotDispatched?: (error: unknown) => boolean;
+  readonly commandIssue?: (payload: ImageDraftCommandPayload) => string | null;
   readonly store?: SessionDraftStore; readonly locks?: LockManager | null;
   readonly legacy?: () => (LegacyDraftImport & { readonly onImported: () => void }) | null;
 };
-const emptyView = (): ImageDraftView => ({ active: false, loading: false, text: '', revision: '1', draftId: null, items: [], frozenItems: [], rejectedCandidates: [], overflowRejectedCount: 0, saving: false, error: null, conflict: false, frozen: false, readOnly: false, failureChoice: false, submission: null, recoveries: [], executionBlocked: false, canSend: false, canResumePrepared: false, canCancelPrepared: false, disabledReason: null, checking: false });
+const emptyView = (): ImageDraftView => ({ active: false, loading: false, text: '', revision: '1', draftId: null, items: [], frozenItems: [], rejectedCandidates: [], overflowRejectedCount: 0, saving: false, error: null, conflict: false, frozen: false, readOnly: false, failureChoice: false, submission: null, recoveries: [], detachedDrafts: [], executionBlocked: false, canSend: false, canResumePrepared: false, canCancelPrepared: false, disabledReason: null, checking: false });
 const message = (error: unknown): string => {
   if (error instanceof DraftStoreError) return `image_draft_${error.code}`;
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return error.code;
@@ -55,7 +67,7 @@ const message = (error: unknown): string => {
 const recoveryKey = (ref: Pick<ImageDraftRecoveryRef, 'ownerKey' | 'operationId'>): string => JSON.stringify([ref.ownerKey, ref.operationId]);
 const itemKey = (item: Pick<DraftImageItem, 'draftImageId' | 'byteRevision'>): string => JSON.stringify([item.draftImageId, item.byteRevision]);
 const sameProfile = (a: ImageCapabilities | null, b: ImageCapabilities | null): boolean => !!a && !!b && a.expectedNativeSessionId === b.expectedNativeSessionId && a.modelId === b.modelId && a.controlsRevision === b.controlsRevision;
-type PendingDraftWrite = { readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void> };
+type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly DraftBlobInput[]; readonly preceding: Promise<void>; observed: DraftSnapshot };
 
 /** One durable image draft owner inside the existing Session client. */
 export class ImageDraftController {
@@ -75,6 +87,7 @@ export class ImageDraftController {
   private readonly background = new Set<Promise<void>>();
   private readonly contentCommits = new Map<string, DraftRecord>();
   private readonly retiringDrafts = new Map<string, PendingDraftWrite>();
+  private readonly retiringFlights = new Map<string, Promise<void>>();
   private loading: Promise<void> | null = null;
   private loadingEpoch: number | null = null;
   private restoreComplete = false;
@@ -100,7 +113,9 @@ export class ImageDraftController {
   private validationPaused = false;
   private readonly uploadFlights = new Map<string, Promise<void>>();
   private originals: readonly DraftRecoverySnapshot[] = [];
+  private detached: readonly DraftDetachedSnapshot[] = [];
   private readonly recoveryErrors = new Map<string, string>();
+  private readonly detachedErrors = new Map<string, string>();
   private freshCapability: ImageCapabilities | null = null;
   private capabilityBaseRevision: string | null = null;
   private channel: BroadcastChannel | null = null;
@@ -156,13 +171,21 @@ export class ImageDraftController {
         error: item.error ?? receipt?.error?.message ?? (upload?.outcomeUnknown ? 'image_upload_unknown' : null) };
     }) ?? [];
   }
-  private gate(snapshot: DraftSnapshot | null, prepared?: DraftSubmission): string | null {
+  private gate(snapshot: DraftSnapshot | null, prepared?: DraftSubmission, nativeCommand?: ImageDraftNativeCommand): string | null {
     const c = this.options.getContext(), draft = prepared?.snapshot ?? this.local ?? snapshot?.editable;
-    if (!c || !this.networkAllowed() || !c.canSend || !this.current(this.epoch)) return 'image_session_unavailable';
+    if (!c || !this.networkAllowed() || !this.current(this.epoch)) return 'image_session_unavailable';
+    const commandPayload = prepared?.command?.kind === 'execute_command' ? prepared.command.payload : nativeCommand;
+    if (commandPayload) { const issue = this.options.commandIssue ? this.options.commandIssue(commandPayload) : 'image_command_unavailable'; if (issue) return issue; }
+    else if (!c.canSend) return 'image_session_unavailable';
     if (!snapshot || !draft || this.loading || this.loadFailed || this.dirty || this.conflict) return 'image_draft_unsaved';
     if (!prepared && (snapshot.editable?.draftId !== this.local?.draftId || snapshot.editable?.storeVersion !== this.local?.storeVersion)) return 'image_draft_conflict';
     if (!prepared && (snapshot.executionBlocked || snapshot.submission)) return 'image_submission_pending';
     if (draft.rejectedCandidates.length || draft.overflowRejectedCount) return 'image_rejected_candidates';
+    if (commandPayload) {
+      if (draft.items.length || nativeCommand && draft.text !== nativeCommand.draftText) return 'image_command_unavailable';
+      if (prepared && !sameImageTarget(prepared.target, c.target)) return 'image_session_unavailable';
+      return null;
+    }
     if (!draft.items.length) return draft.text.trim() ? null : 'image_draft_empty';
     if (!this.locks) return 'image_locks_unavailable';
     if (draft.items.some(item => item.validation !== 'valid' || !item.blobId || !this.blobs.has(item.blobId))) return 'image_validation_incomplete';
@@ -179,6 +202,36 @@ export class ImageDraftController {
   private recoverySnapshots(): readonly DraftRecoverySnapshot[] {
     return [...(this.saved?.submission ? [{ ...this.saved, submission: this.saved.submission }] : []), ...this.originals];
   }
+  private detachedIssue(source: DraftDetachedSnapshot): string | null {
+    if (!this.networkAllowed() || !this.current(this.epoch)) return 'image_session_unavailable';
+    if (this.conflict) return 'image_draft_conflict';
+    if (this.loading || this.loadFailed || this.dirty || this.freezing || this.retiringDrafts.has(source.owner.ownerKey)) return 'image_draft_unsaved';
+    if (source.executionBlocked || this.saved?.executionBlocked || this.saved?.submission) return 'image_submission_pending';
+    const draft = this.local;
+    return !draft || draft.text.length || draft.items.length || draft.rejectedCandidates.length || draft.overflowRejectedCount ? 'image_restore_requires_empty' : null;
+  }
+  private detachedViews(): readonly ImageDraftDetached[] {
+    if (!this.current(this.epoch) || !this.saved) return [];
+    const target = this.saved, draft = target.editable;
+    const sources = new Map(this.detached.map(source => [source.owner.ownerKey, source]));
+    for (const pending of this.retiringDrafts.values()) {
+      if (pending.owner.ownerKey === this.scopeKey || !sameDraftRecoveryScope(pending.owner.identity, target.owner.identity)) continue;
+      const observed = pending.observed;
+      sources.set(pending.owner.ownerKey, { ...observed, editable: observed.editable ?? pending.base, submission: null, executionBlocked: observed.executionBlocked || !!observed.submission });
+    }
+    return [...sources.values()].map(source => {
+      const pending = this.retiringDrafts.get(source.owner.ownerKey), content = pending?.draft ?? source.editable;
+      const disabledReason = this.detachedIssue(source), error = this.detachedErrors.get(source.owner.ownerKey) ?? null;
+      const available = !!pending && this.networkAllowed() && !this.retiringFlights.has(source.owner.ownerKey);
+      const summary = (value: DraftRecord): ImageDraftRecoveryDraft => ({ text: value.text, items: value.items.map(({ draftImageId, label }) => ({ draftImageId, label })) });
+      const sourceRef = draftDetachedRef(source) ?? { ownerKey: source.owner.ownerKey, accessEpoch: source.owner.accessEpoch, draftId: source.editable.draftId, revision: source.editable.revision, storeVersion: source.editable.storeVersion };
+      return { ref: { ...sourceRef, targetOwnerKey: target.owner.ownerKey, targetAccessEpoch: target.owner.accessEpoch, targetDraftId: draft?.draftId ?? '', targetRevision: draft?.revision ?? '', targetStoreVersion: draft?.storeVersion ?? -1, pendingWriteId: pending?.writeId ?? null },
+        target: source.owner.identity.target, draft: summary(content), savedDraft: pending && error === 'image_draft_conflict' && pending.observed.editable ? summary(pending.observed.editable) : null,
+        rejectedCandidates: content.rejectedCandidates.map(item => ({ id: item.candidateId, label: item.label, error: item.reason })), overflowRejectedCount: content.overflowRejectedCount,
+        canRetrySave: available && !!error && error !== 'image_draft_conflict', canResolveConflict: available && error === 'image_draft_conflict' && !!pending?.observed.editable && !source.executionBlocked,
+        canRestore: disabledReason === null, disabledReason, error };
+    });
+  }
   private recoveryViews(): readonly ImageDraftRecovery[] {
     if (!this.current(this.epoch)) return [];
     const summary = (draft: DraftRecord | null): ImageDraftRecoveryDraft | null => draft && { text: draft.text, items: draft.items.map(({ draftImageId, label }) => ({ draftImageId, label })) };
@@ -188,7 +241,7 @@ export class ImageDraftController {
       return { ref: draftRecoveryRef(snapshot)!, state, error: this.recoveryErrors.get(recoveryKey(snapshot.submission)) ?? null, currentOwner, currentExecution: snapshot.owner.executionKey === this.saved?.owner.executionKey,
         frozen: summary(snapshot.frozen), successor: summary(snapshot.editable),
         canCheck: available && !['prepared', 'rejected', 'local_not_dispatched'].includes(state),
-        canCancelPrepared: available && !currentOwner && state === 'prepared',
+        canCancelPrepared: available && state === 'prepared',
         canResolveFailure: available && !!snapshot.frozen && !!snapshot.editable && ['rejected', 'local_not_dispatched'].includes(state) && (!currentOwner || !this.dirty && !this.conflict) };
     });
   }
@@ -204,8 +257,8 @@ export class ImageDraftController {
       items: this.items(draft), frozenItems: this.items(this.saved?.frozen ?? null), rejectedCandidates: draft?.rejectedCandidates.map(item => ({ id: item.candidateId, label: item.label, error: item.reason })) ?? [], overflowRejectedCount: draft?.overflowRejectedCount ?? 0,
       saving: this.dirty && !this.error, error: this.error, conflict: this.conflict, frozen: !!this.saved?.frozen && !this.local, readOnly,
       failureChoice: !!this.saved?.frozen && !!this.saved.editable && (this.saved.submission?.state === 'rejected' || this.saved.submission?.state === 'local_not_dispatched'), submission,
-      recoveries: this.recoveryViews(), executionBlocked: this.saved?.executionBlocked ?? false,
-      canSend: this.gate(this.saved) === null, canResumePrepared: this.saved?.submission?.state === 'prepared' && !this.loading && !!this.options.getContext()?.active && !!this.options.getContext()?.canSend && !this.dirty && !this.conflict,
+      recoveries: this.recoveryViews(), detachedDrafts: this.detachedViews(), executionBlocked: this.saved?.executionBlocked ?? false,
+      canSend: this.gate(this.saved) === null, canResumePrepared: this.saved?.submission?.state === 'prepared' && this.gate(this.saved, this.saved.submission) === null,
       canCancelPrepared: this.recoveryViews().some(entry => entry.canCancelPrepared),
       disabledReason: this.gate(this.saved), checking: this.checking };
     const comparable = (value: ImageDraftView) => JSON.stringify({ ...value, items: value.items.map(({ asset, ...item }) => ({ ...item, asset: asset?.key })), frozenItems: value.frozenItems.map(({ asset, ...item }) => ({ ...item, asset: asset?.key })) });
@@ -231,24 +284,51 @@ export class ImageDraftController {
   private capturePendingWrite(): PendingDraftWrite | null {
     const context = this.options.getContext(), base = this.saved?.editable;
     if (!this.dirty || this.conflict || !base || !this.local || this.local.draftId !== base.draftId || !context?.canEdit || context.target.actorUserId !== this.saved!.owner.identity.target.actorUserId || context.target.serverOrigin !== this.saved!.owner.identity.target.serverOrigin) return null;
-    return { owner: this.saved!.owner, base, draft: this.local, blobs: this.local.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []), preceding: this.writes };
+    return { writeId: crypto.randomUUID(), owner: this.saved!.owner, base, draft: this.local, blobs: this.local.items.flatMap(item => item.blobId && this.blobs.has(item.blobId) ? [this.blobs.get(item.blobId)!] : []), preceding: this.writes, observed: this.saved! };
   }
-  private retireWrite(captured: PendingDraftWrite | null): Promise<void> {
+  private retireWrite(captured: PendingDraftWrite | null, action?: { readonly context: ImageDraftContext; readonly epoch: number }): Promise<void> {
     if (!captured) return Promise.resolve();
+    const precedingRetirement = this.retiringFlights.get(captured.owner.ownerKey);
+    if (precedingRetirement && this.retiringDrafts.get(captured.owner.ownerKey) === captured) return precedingRetirement;
     this.retiringDrafts.set(captured.owner.ownerKey, captured);
+    this.detachedErrors.delete(captured.owner.ownerKey);
+    const admitted = () => {
+      if (action && (!this.current(action.epoch) || !this.sameActionOwner(action.context) || !this.networkAllowed())) throw new Error('image_access_unavailable');
+    };
     const save = async () => {
-      await captured.preceding.catch(() => {});
+      await Promise.allSettled([captured.preceding, precedingRetirement]);
+      admitted();
       const saved = await this.store.read(captured.owner), current = saved.editable;
+      admitted();
+      captured.observed = saved;
       const committed = this.contentCommits.get(captured.owner.ownerKey), known = committed?.draftId === captured.draft.draftId && BigInt(committed.revision) >= BigInt(captured.base.revision) ? committed : captured.base;
       if (!current || current.draftId !== captured.draft.draftId || current.revision !== known.revision) throw new DraftStoreError('conflict', 'The saved draft changed before the final local write.');
       const items = captured.draft.items.map(item => {
         const stored = current.items.find(candidate => candidate.draftImageId === item.draftImageId && candidate.byteRevision === item.byteRevision);
         return stored && item.uploadId === captured.base.items.find(candidate => candidate.draftImageId === item.draftImageId)?.uploadId ? { ...item, uploadId: stored.uploadId } : item;
       });
-      await this.store.saveDraft(captured.owner, { draftId: current.draftId, expectedStoreVersion: current.storeVersion, text: captured.draft.text, items, rejectedCandidates: captured.draft.rejectedCandidates, overflowRejectedCount: captured.draft.overflowRejectedCount, blobs: captured.blobs });
-      if (this.retiringDrafts.get(captured.owner.ownerKey) === captured) this.retiringDrafts.delete(captured.owner.ownerKey);
+      const committedSnapshot = await this.store.saveDraft(captured.owner, { draftId: current.draftId, expectedStoreVersion: current.storeVersion, text: captured.draft.text, items, rejectedCandidates: captured.draft.rejectedCandidates, overflowRejectedCount: captured.draft.overflowRejectedCount, blobs: captured.blobs });
+      if (committedSnapshot.editable) this.contentCommits.set(captured.owner.ownerKey, committedSnapshot.editable);
+      if (this.retiringDrafts.get(captured.owner.ownerKey) === captured) { this.retiringDrafts.delete(captured.owner.ownerKey); this.detachedErrors.delete(captured.owner.ownerKey); }
     };
-    return this.backgroundWork(save());
+    const writing = save().catch(async error => {
+      if (this.retiringDrafts.get(captured.owner.ownerKey) !== captured) return;
+      this.detachedErrors.set(captured.owner.ownerKey, message(error));
+      if (error instanceof DraftStoreError && error.code === 'conflict') captured.observed = await this.store.read(captured.owner).catch(() => captured.observed);
+    }).then(async () => {
+      if (this.retiringFlights.get(captured.owner.ownerKey) === writing) this.retiringFlights.delete(captured.owner.ownerKey);
+      const context = this.options.getContext(), epoch = this.epoch;
+      if (!context?.canEdit || !this.current(epoch) || !sameDraftRecoveryScope(captured.owner.identity, context.identity)) return;
+      await this.refreshRecoveries(epoch); this.publish();
+    });
+    this.retiringFlights.set(captured.owner.ownerKey, writing);
+    return this.backgroundWork(writing);
+  }
+  private resetWrites(): void {
+    const previous = this.writes; this.writes = Promise.resolve();
+    // Superseded work still belongs to this controller's close/drain lifetime,
+    // but cannot hold a new owner's or authorization generation's write queue.
+    void this.backgroundWork(previous, this.epoch);
   }
 
   /** Repeated calls from the host are inert unless its authenticated admission changes. */
@@ -256,20 +336,21 @@ export class ImageDraftController {
   private syncOwner = async (): Promise<void> => {
     if (this.closed) return;
     const c = this.options.getContext();
-    if (!c) { if (!this.lifetime.signal.aborted) this.epoch++; this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
+    if (!c) { if (!this.lifetime.signal.aborted) { this.resetWrites(); this.epoch++; } this.lifetime.abort(); this.network.abort(); this.fingerprint = ''; this.stopObserving(); this.publish(); return; }
     const key = draftOwnerKey(c.identity), fingerprint = JSON.stringify([key, c.authorizationGeneration, c.active, c.canEdit, c.canSend, c.mode, c.expectedTurnId, c.capabilities]);
-    if (fingerprint === this.fingerprint) { if (this.loading) await this.loading; await this.resumeValidation(); this.publish(); return; }
+    if (fingerprint === this.fingerprint && (this.restoreComplete || this.loadFailed || this.loading || !c.canEdit)) { if (this.loading) await this.loading; await this.resumeValidation(); this.publish(); return; }
     this.fingerprint = fingerprint;
     if (key !== this.scopeKey) {
-      const retired = this.retireWrite(this.capturePendingWrite());
+      const legacy = this.options.legacy?.() ?? null;
+      void this.retireWrite(this.capturePendingWrite()); this.resetWrites();
       this.epoch++; this.lifetime.abort(); this.network.abort(); this.lifetime = new AbortController(); this.network = new AbortController(); this.clearAssets();
-      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = null; this.view = emptyView();
+      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = legacy; this.view = emptyView();
       this.restoreComplete = false; this.loadFailed = false;
       if (typeof indexedDB === 'undefined') { this.restoreComplete = true; this.loading = null; this.publish(); return; }
-      await this.startLoad(c, this.epoch, retired);
+      await this.startLoad(c, this.epoch);
       return;
     }
-    if (this.authGeneration !== c.authorizationGeneration) { this.epoch++; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; if (!this.restoreComplete) this.loadFailed = false; }
+    if (this.authGeneration !== c.authorizationGeneration) { this.resetWrites(); this.epoch++; this.lifetime.abort(); this.network.abort(); this.authGeneration = c.authorizationGeneration; if (!this.restoreComplete) this.loadFailed = false; }
     if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
     if (!this.networkAllowed()) this.network.abort();
     else if (this.network.signal.aborted) this.network = new AbortController();
@@ -280,46 +361,74 @@ export class ImageDraftController {
     if (!this.networkAllowed()) this.stopObserving();
     else if (this.saved) { await this.prepareUploads(true); this.observeLater(true); }
   };
-  private startLoad(c: ImageDraftContext, epoch: number, preceding: Promise<void> = Promise.resolve()): Promise<void> {
+  private startLoad(c: ImageDraftContext, epoch: number): Promise<void> {
     this.restoreComplete = false; this.loadingEpoch = epoch;
-    const loading = preceding.then(async () => {
+    const loading = Promise.resolve().then(async () => {
       if (!this.current(epoch)) return;
-      await this.load(c, epoch);
-      if (this.current(epoch)) this.restoreComplete = true;
+      const restored = await this.load(c, epoch);
+      if (this.current(epoch)) this.restoreComplete = restored;
     }).catch(error => {
       if (!this.current(epoch)) return;
       this.loadFailed = true; this.view = { ...this.view, active: true, text: this.options.legacy?.()?.text ?? this.view.text }; this.fail(error);
     }).finally(() => { if (this.loading === loading) { this.loading = null; this.publish(); } });
     this.loading = loading; this.publish(); return loading;
   }
-  private async load(c: ImageDraftContext, epoch: number): Promise<void> {
-    let snapshot: DraftSnapshot | null;
-    try { snapshot = await this.store.readExisting(c.identity); }
-    catch (error) {
-      if (!this.current(epoch) || !c.canEdit || !(error instanceof DraftStoreError) || error.code !== 'blocked') throw error;
-      snapshot = await this.store.reauthorizeOwner(c.identity);
-    }
-    if (!this.current(epoch)) return;
-    this.loadFailed = false;
-    const originals = await this.store.readRecoverableSubmissions(c.identity);
-    if (!this.current(epoch)) return;
-    this.originals = originals.filter(entry => entry.owner.ownerKey !== this.scopeKey);
-    if (!snapshot && this.originals.length) snapshot = await this.store.openOwner(c.identity);
-    if (!this.current(epoch)) return;
-    if (!snapshot) { this.view = { ...emptyView(), text: this.view.text }; this.error = null; this.publish(); return; }
-    this.adopt(snapshot);
-    const retired = this.retiringDrafts.get(snapshot.owner.ownerKey);
-    if (retired) {
-      this.local = retired.draft; for (const blob of retired.blobs) this.blobs.set(blob.blobId, blob);
-      this.dirty = true; this.error = 'image_draft_unsaved'; this.conflict = snapshot.editable?.revision !== retired.base.revision; this.publish();
-    }
+  private async load(c: ImageDraftContext, epoch: number): Promise<boolean> {
+    let deferred = false;
+    const readback = this.writes.catch(() => {}).then(async () => {
+      if (!this.current(epoch)) return;
+      let snapshot: DraftSnapshot | null;
+      try { snapshot = await this.store.readExisting(c.identity); }
+      catch (error) {
+        if (!this.current(epoch) || !c.canEdit || !(error instanceof DraftStoreError) || error.code !== 'blocked') throw error;
+        snapshot = await this.store.reauthorizeOwner(c.identity);
+      }
+      if (!this.current(epoch)) return;
+      this.loadFailed = false;
+      if (this.options.getContext()?.canEdit) await this.store.collectRecoveryResources(c.identity);
+      if (!this.current(epoch)) return;
+      const originals = await this.store.readRecoverableSubmissions(c.identity);
+      if (!this.current(epoch)) return;
+      this.originals = originals.filter(entry => entry.owner.ownerKey !== this.scopeKey);
+      const detached = await this.store.readDetachedDrafts(c.identity);
+      if (!this.current(epoch)) return;
+      this.detached = detached;
+      const retained = [...this.retiringDrafts.values()].some(pending => sameDraftRecoveryScope(pending.owner.identity, c.identity));
+      let migration: { readonly legacy: NonNullable<ImageDraftController['pendingLegacy']>; readonly imported: boolean } | null = null;
+      if (!snapshot && (this.originals.length || this.detached.length || retained)) {
+        if (!this.options.getContext()?.canEdit) { deferred = true; return; }
+        const legacy = this.pendingLegacy ?? this.options.legacy?.() ?? null;
+        if (legacy && (legacy.text || legacy.submission)) {
+          this.pendingLegacy = legacy;
+          const result = await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission });
+          snapshot = result.snapshot; migration = { legacy, imported: result.imported };
+        } else snapshot = await this.store.openOwner(c.identity);
+      }
+      if (!this.current(epoch)) return;
+      if (!snapshot) { this.pendingLegacy = null; this.view = { ...emptyView(), text: this.view.text }; this.error = null; this.publish(); return; }
+      if (!migration) this.pendingLegacy = null;
+      this.adoptObserved(snapshot);
+      if (migration?.imported) { this.pendingLegacy = null; migration.legacy.onImported(); }
+      else if (migration && snapshot.editable?.text !== migration.legacy.text) {
+        this.local = { ...(snapshot.editable ?? snapshot.frozen)!, text: migration.legacy.text }; this.dirty = true; this.conflict = true; this.error = 'image_draft_conflict'; this.publish();
+      }
+      const retired = this.retiringDrafts.get(snapshot.owner.ownerKey);
+      if (retired) {
+        this.local = retired.draft; for (const blob of retired.blobs) this.blobs.set(blob.blobId, blob);
+        this.dirty = true; this.error = 'image_draft_unsaved'; this.conflict = snapshot.editable?.revision !== retired.base.revision; this.publish();
+      }
+    });
+    this.writes = readback; await readback;
+    if (!this.current(epoch)) return false;
+    if (!this.saved) return !deferred;
     await this.restore(epoch);
-    if (!this.current(epoch)) return;
+    if (!this.current(epoch)) return false;
     if (c.active) {
       await this.checkSubmissions();
       await this.prepareUploads(true);
       this.observeLater(true);
     }
+    return true;
   }
   private async activate(text: string, original: ImageDraftContext): Promise<number | null> {
     await this.sync(); if (!this.sameActionOwner(original)) return null;
@@ -479,17 +588,22 @@ export class ImageDraftController {
     this.validationPaused = false;
     const items = [...(this.saved?.editable?.items ?? []), ...(this.saved?.frozen?.items ?? [])];
     for (const item of items) {
-      if (!item.blobId || this.assets.has(itemKey(item))) continue;
+      if (!item.blobId || this.assets.has(itemKey(item)) && this.blobs.has(item.blobId) && item.validation === 'valid') continue;
       const original = await this.store.readBlob(this.saved!.owner, item.blobId);
       if (!this.current(epoch)) return;
       if (!original) continue;
-      let asset: LocalImageAssetAdapter | null = null;
+      let asset: LocalImageAssetAdapter | null = null, validationChanged = false;
       try {
+        this.assets.get(itemKey(item))?.release();
         asset = this.options.createAsset(original.blob, item.draftImageId, item.byteRevision, original); this.assets.set(itemKey(item), asset);
         const metadata = await asset.validate(this.lifetime.signal);
         if (!this.current(epoch)) { asset.release(); if (this.assets.get(itemKey(item)) === asset) this.assets.delete(itemKey(item)); return; }
         if (metadata.byteLength !== original.byteLength || metadata.sha256 !== original.sha256 || metadata.mediaType !== original.mediaType || metadata.width !== original.width || metadata.height !== original.height || metadata.frameCount !== original.frameCount) throw new Error('image_bytes_invalid');
         this.blobs.set(original.blobId, original);
+        if (this.local?.items.some(candidate => itemKey(candidate) === itemKey(item) && (candidate.validation !== 'valid' || candidate.error))) {
+          this.edit({ ...this.local, items: this.local.items.map(candidate => itemKey(candidate) === itemKey(item) ? { ...candidate, validation: 'valid', error: null } : candidate) });
+          validationChanged = true;
+        }
       } catch (error) {
         asset?.release(); if (this.assets.get(itemKey(item)) === asset) this.assets.delete(itemKey(item));
         if (!this.current(epoch)) return;
@@ -497,6 +611,7 @@ export class ImageDraftController {
         if (this.local?.items.some(candidate => candidate.draftImageId === item.draftImageId)) { this.edit({ ...this.local, items: this.local.items.map(candidate => candidate.draftImageId === item.draftImageId ? { ...candidate, validation: 'bytes_invalid', error: message(error) } : candidate) }); await this.flush(); }
         else this.error = message(error);
       }
+      if (validationChanged) await this.flush();
     }
     this.publish();
   }
@@ -510,7 +625,10 @@ export class ImageDraftController {
     if (!this.current(epoch) || !this.saved) return;
     const snapshot = await this.store.read(this.saved.owner);
     if (!this.current(epoch)) return;
-    const base = this.saved.editable;
+    this.adoptObserved(snapshot);
+  }
+  private adoptObserved(snapshot: DraftSnapshot): void {
+    const base = this.saved?.editable ?? null;
     if (this.dirty && (base?.draftId !== snapshot.editable?.draftId || base?.revision !== snapshot.editable?.revision)) {
       // Operation receipts may settle the frozen intent, but cannot grant an
       // unsaved successor the CAS version of another window's content.
@@ -536,6 +654,7 @@ export class ImageDraftController {
     const before = this.local ?? this.saved?.frozen;
     await this.startLoad(c, epoch);
     if (!this.current(epoch)) throw new Error('image_access_unavailable');
+    if (this.conflict) throw new DraftStoreError('conflict', 'The saved draft changed while checking the current input.');
     const after = this.local ?? this.saved?.frozen;
     if (before && (before.draftId !== after?.draftId || before.revision !== after?.revision)) throw new Error('image_draft_restored');
   };
@@ -574,7 +693,7 @@ export class ImageDraftController {
       if (!upload.releaseIntent && !observe && (!this.canPrepare() || upload.receipt?.state === 'complete' || upload.outcomeUnknown || upload.pendingAction)) continue;
       if (!upload.releaseIntent && upload.receipt && ['failed', 'expired', 'released'].includes(upload.receipt.state)) continue;
       if (upload.releaseIntent && upload.receipt?.state === 'released') continue;
-      const uploader = new DraftUploader({ store: this.store, locks: this.locks, resources: c.resources, signal: this.network.signal, isCurrent: () => this.current(epoch) && !!this.options.getContext()?.canEdit, canPrepare: () => this.canPrepare(), changed: async () => { if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } });
+      const uploader = new DraftUploader({ store: this.store, locks: this.locks, resources: c.resources, signal: this.network.signal, isCurrent: () => this.current(epoch) && !!this.options.getContext()?.canEdit, canPrepare: () => this.canPrepare(), changed: async () => { if (!this.current(epoch)) return; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } });
       const run = uploader.run(this.saved.owner, upload.uploadId, this.blobs.get(upload.blobId) ?? null, observe, retryPrepareId === upload.uploadId).catch(error => { if (this.current(epoch)) this.fail(error); });
       this.uploadFlights.set(upload.uploadId, run);
       try { await run; } finally { if (this.uploadFlights.get(upload.uploadId) === run) this.uploadFlights.delete(upload.uploadId); }
@@ -601,10 +720,12 @@ export class ImageDraftController {
     this.edit({ ...this.local!, items: this.local!.items.map(candidate => candidate === item ? { ...candidate, uploadId: null } : candidate) });
     await this.flush(); if (this.current(epoch)) await this.prepareUploads();
   };
-  private sender(epoch: number, owner = this.saved?.owner): DraftSender {
-    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared),
+  private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand): DraftSender {
+    return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
+      ...(nativeCommand ? { commandDraft: { text: nativeCommand.draftText, commandName: nativeCommand.commandName } } : {}),
       command: snapshot => {
         const c = this.context(), draft = snapshot.editable!;
+        if (nativeCommand) return { protocol: SESSION_PROTOCOL, ...c.target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'execute_command', payload: { commandId: nativeCommand.commandId, arguments: nativeCommand.arguments, expectedControlsRevision: nativeCommand.expectedControlsRevision, expectedTurnId: nativeCommand.expectedTurnId } };
         return { protocol: SESSION_PROTOCOL, ...c.target.fence, contentRevision: 2, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: {
           content: [...(draft.text.trim() ? [{ type: 'text' as const, text: draft.text }] : []), ...draft.items.map(item => { const upload = snapshot.uploads.find(upload => upload.uploadId === item.uploadId)!; return { type: 'image' as const, imageId: item.imageId, uploadId: upload.uploadId, resourceId: upload.receipt!.resource!.resourceId, sha256: upload.spec.sha256, byteLength: upload.spec.byteLength }; })], expectedTurnId: c.expectedTurnId,
           ...(draft.items.length ? { target: c.target, expectedImageCapabilityRevision: this.capability(c)!.revision, draftId: draft.draftId, draftRevision: draft.revision } : {}) } };
@@ -612,7 +733,9 @@ export class ImageDraftController {
       ...(this.options.isDefinitiveNotDispatched ? { isDefinitiveNotDispatched: this.options.isDefinitiveNotDispatched } : {}),
       changed: async snapshot => { if (owner?.ownerKey === this.scopeKey && this.current(epoch)) { if (snapshot.submission) this.freezing = false; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } } });
   }
-  send = async (): Promise<void> => {
+  send = (): Promise<void> => this.submit();
+  executeCommand = (command: ImageDraftNativeCommand): Promise<void> => this.submit(command);
+  private async submit(nativeCommand?: ImageDraftNativeCommand): Promise<void> {
     if (this.freezing) return;
     const epochAtStart = this.epoch;
     this.freezing = !!this.local; this.publish();
@@ -624,10 +747,10 @@ export class ImageDraftController {
         if (!this.current(epoch) || c.capabilities?.revision !== this.context().capabilities?.revision || !sameProfile(c.capabilities, this.context().capabilities) || !sameProfile(result.capabilities, this.context().capabilities)) throw new Error('image_capability_changed');
         this.freshCapability = result.capabilities; this.capabilityBaseRevision = c.capabilities!.revision;
       }
-      await this.sender(epoch).send(this.saved.owner); this.publish(); this.observeLater(true);
+      await this.sender(epoch, this.saved.owner, nativeCommand).send(this.saved.owner); this.publish(); this.observeLater(true);
     } catch (error) { if (this.current(epochAtStart)) this.fail(error); }
     finally { if (this.current(epochAtStart)) { this.freezing = false; this.publish(); } }
-  };
+  }
   resumePrepared = async (): Promise<void> => { if (this.saved?.submission?.state === 'prepared') await this.send(); };
   private async recovery(ref: ImageDraftRecoveryRef, epoch: number): Promise<DraftRecoverySnapshot> {
     if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
@@ -640,8 +763,75 @@ export class ImageDraftController {
   private async refreshRecoveries(epoch: number): Promise<void> {
     if (!this.current(epoch)) return;
     const entries = await this.store.readRecoverableSubmissions(this.context().identity);
-    if (this.current(epoch)) this.originals = entries.filter(entry => entry.owner.ownerKey !== this.scopeKey);
+    if (!this.current(epoch)) return;
+    this.originals = entries.filter(entry => entry.owner.ownerKey !== this.scopeKey);
+    const detached = await this.store.readDetachedDrafts(this.context().identity);
+    if (this.current(epoch)) this.detached = detached;
   }
+  private retainedDraft(ref: ImageDraftDetachedRef): PendingDraftWrite {
+    const context = this.context(), pending = this.retiringDrafts.get(ref.ownerKey), target = this.saved;
+    if (!this.networkAllowed() || !pending || pending.writeId !== ref.pendingWriteId || pending.owner.accessEpoch !== ref.accessEpoch || pending.owner.ownerKey === this.scopeKey || !sameDraftRecoveryScope(pending.owner.identity, context.identity) || !target || target.owner.ownerKey !== ref.targetOwnerKey || target.owner.accessEpoch !== ref.targetAccessEpoch) throw new DraftStoreError('conflict', 'The retained draft is no longer available for this owner.');
+    if (this.retiringFlights.has(ref.ownerKey)) throw new Error('image_draft_unsaved');
+    return pending;
+  }
+  retryDetachedSave = async (ref: ImageDraftDetachedRef): Promise<void> => {
+    const context = this.context(), epoch = this.epoch, pending = this.retainedDraft(ref);
+    if (this.detachedErrors.get(ref.ownerKey) === 'image_draft_conflict') throw new DraftStoreError('conflict', 'Choose the saved or retained original draft before saving.');
+    const saving = this.retireWrite(pending, { context, epoch }); this.publish(); await saving;
+  };
+  resolveDetachedConflict = async (ref: ImageDraftDetachedRef, choice: 'saved' | 'local'): Promise<void> => {
+    const original = this.context(), epoch = this.epoch, pending = this.retainedDraft(ref);
+    if (this.detachedErrors.get(ref.ownerKey) !== 'image_draft_conflict') throw new DraftStoreError('conflict', 'The original draft no longer requires a conflict choice.');
+    const resolve = async () => {
+      const current = await this.store.read(pending.owner);
+      if (!this.current(epoch) || !this.sameActionOwner(original) || !this.networkAllowed() || this.retiringDrafts.get(ref.ownerKey) !== pending) throw new Error('image_access_unavailable');
+      pending.observed = current;
+      const draft = current.editable;
+      if (!draft || current.submission || current.executionBlocked || draft.draftId !== ref.draftId || draft.revision !== ref.revision || draft.storeVersion !== ref.storeVersion) throw new DraftStoreError('conflict', 'The original draft changed after the conflict choice was displayed.');
+      if (choice === 'local') {
+        const saved = await this.store.saveDraft(pending.owner, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, text: pending.draft.text, items: pending.draft.items.map(item => ({ ...item, uploadId: null })), rejectedCandidates: pending.draft.rejectedCandidates, overflowRejectedCount: pending.draft.overflowRejectedCount, blobs: pending.blobs });
+        if (saved.editable) this.contentCommits.set(saved.owner.ownerKey, saved.editable);
+      }
+      if (this.retiringDrafts.get(ref.ownerKey) === pending) { this.retiringDrafts.delete(ref.ownerKey); this.detachedErrors.delete(ref.ownerKey); }
+    };
+    const resolving = resolve().catch(async error => {
+      if (this.retiringDrafts.get(ref.ownerKey) === pending) {
+        this.detachedErrors.set(ref.ownerKey, message(error));
+        if (error instanceof DraftStoreError && error.code === 'conflict') pending.observed = await this.store.read(pending.owner).catch(() => pending.observed);
+      }
+      throw error;
+    }).finally(async () => {
+      if (this.retiringFlights.get(ref.ownerKey) === resolving) this.retiringFlights.delete(ref.ownerKey);
+      if (this.current(epoch)) { await this.refreshRecoveries(epoch).catch(() => {}); this.publish(); }
+    });
+    this.retiringFlights.set(ref.ownerKey, resolving); this.publish();
+    void this.backgroundWork(resolving.catch(() => {}), epoch);
+    await resolving;
+  };
+  restoreDetached = async (ref: ImageDraftDetachedRef): Promise<void> => {
+    const original = this.context(), epoch = this.epoch;
+    const move = async () => {
+      if (!this.current(epoch) || !this.sameActionOwner(original) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+      const target = this.saved, editable = target?.editable;
+      if (ref.pendingWriteId) throw new Error('image_draft_unsaved');
+      if (!target || !editable || this.dirty || this.conflict || target.owner.ownerKey !== ref.targetOwnerKey || target.owner.accessEpoch !== ref.targetAccessEpoch || editable.draftId !== ref.targetDraftId || editable.revision !== ref.targetRevision || editable.storeVersion !== ref.targetStoreVersion) throw new DraftStoreError('conflict', 'The current draft changed after the restore confirmation.');
+      const source = (await this.store.readDetachedDrafts(original.identity)).find(candidate => candidate.owner.ownerKey === ref.ownerKey);
+      if (!this.current(epoch) || !this.sameActionOwner(original) || !this.networkAllowed()) throw new Error('image_access_unavailable');
+      if (!source) throw new DraftStoreError('conflict', 'The original draft is no longer available.');
+      const issue = this.detachedIssue(source); if (issue) throw new Error(issue);
+      await this.store.restoreDetachedDraft(target.owner, ref, { draftId: ref.targetDraftId, expectedStoreVersion: ref.targetStoreVersion });
+      if (!this.current(epoch)) return;
+      this.detachedErrors.delete(ref.ownerKey);
+      await this.adoptReadback(epoch); await this.refreshRecoveries(epoch);
+    };
+    const moving = this.writes.catch(() => {}).then(move); this.writes = moving;
+    try { await moving; }
+    catch (error) {
+      if (this.current(epoch)) { this.detachedErrors.set(ref.ownerKey, message(error)); await this.refreshRecoveries(epoch).catch(() => {}); this.publish(); }
+      throw error;
+    }
+    if (this.current(epoch)) { await this.restore(epoch); await this.prepareUploads(); this.publish(); }
+  };
   private async recoveryFailed(ref: ImageDraftRecoveryRef, epoch: number, error: unknown): Promise<void> {
     if (!this.current(epoch)) return;
     this.recoveryErrors.set(recoveryKey(ref), message(error));
@@ -658,7 +848,7 @@ export class ImageDraftController {
     try {
       const entry = await this.recovery(ref, epoch);
       if (!this.current(epoch) || !this.networkAllowed()) throw new Error('image_access_unavailable');
-      if (entry.owner.ownerKey === this.scopeKey || entry.submission.state !== 'prepared') throw new DraftStoreError('conflict', 'The original prepared operation is no longer available.');
+      if (entry.submission.state !== 'prepared') throw new DraftStoreError('conflict', 'The original prepared operation is no longer available.');
       await this.store.refusePrepared(entry.owner, entry.submission.operationId);
       if (!this.current(epoch)) return;
       this.recoveryErrors.delete(recoveryKey(ref));
@@ -724,7 +914,7 @@ export class ImageDraftController {
     await this.prepareUploads();
   };
   revoke = async (reason: 'revoked' | 'account_changed' | 'deleted' = 'revoked'): Promise<void> => {
-    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.saved = null; this.local = null; this.originals = []; this.recoveryErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
+    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.retiringDrafts.clear(); this.saved = null; this.local = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.detachedErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
     for (const listener of this.listeners) listener();
     if (owner) try { await this.store.blockOwner(owner, reason); } catch (error) { this.fail(error); }
   };

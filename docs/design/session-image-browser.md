@@ -37,7 +37,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 
 选择、发送及恢复读取均捕获开始时的 owner 和授权代次。异步结果先检查原身份仍有效，再更新当前状态；阻止旧结果发布不足以防止它先污染新 owner 的内存。发送准备返回后，调用方在进入发送路径的同一同步续段再次核对目标、能力与用户已查看的完整内容，身份检查之后不能跨过未校验的异步间隙。
 
-相同实际 Session 新代次或 native 初始化变化时，可提供明确“为当前会话重新准备”的操作，显示当前目标并由用户确认；这会创建新 draftId、imageId/uploadId 并重新校验字节和权限，旧 intent 永不改写。存在原发送 unknown 时此入口禁用，先查原 operation。其他输入先建立 native 身份时，旧 null 上传不能用于该新身份。只有公共协议明确归属于原首次 operation 的 null→native 接受结果能够结算原冻结草稿；不能用“当前已经有 native ID”猜归属。
+相同实际 Session 新代次或 native 初始化变化时，旧 owner 的非空 editable 独立于未决操作发现。原发送接受、失败选择完成或取消 prepared 后，保留的草稿仍能展开查看；当前输入不会自动继承它。用户可明确选择“移到当前草稿”，确认后重新准备图片。源草稿和目标空草稿的身份、内容版本及访问代次都绑定此次确认，单事务再次核对双方权限、版本、未决操作和当前执行屏障。目标已有文字、图片或拒绝候选时不覆盖，必须先处理当前草稿。成功时完整移入原文字、有序附件和拒绝候选，建立新的 draftId、imageId/blobId，清除旧 uploadId，再由当前 owner 重新校验字节、权限与图片资格并分配新上传；源 editable 只在同事务成功后移除，旧 intent 与查询身份永不改写。移动事务失败保留源稿；提交后的字节或上传校验失败保留新目标的完整草稿与具体错误，不退化为文字发送。存在原发送 unknown 时此入口禁用，先查原 operation。其他输入先建立 native 身份时，旧 null 上传不能用于该新身份。只有公共协议明确归属于原首次 operation 的 null→native 接受结果能够结算原冻结草稿；不能用“当前已经有 native ID”猜归属。
 
 ### IndexedDB 数据
 
@@ -57,13 +57,17 @@ revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准
 
 写入使用覆盖相关 stores 的短 readwrite 事务，按 observed storeVersion/accessEpoch 比较；Blob 和引用、草稿内容一起提交。hash/解码和网络在事务外，完成后再核对原 owner、byteRevision 和 observed revision。只以 transaction `complete` 确认保存，不以单次 put request 成功确认；关键冻结和清理请求 strict durability，仍不把浏览器存储当不可被用户删除的备份。[IndexedDB 标准](https://www.w3.org/TR/IndexedDB-3/#transaction-durability-hint)明确其耐久提示和完成语义。
 
-同一草稿 controller 的内容写入、上传身份分配及版本读回共用本地串行队列，包括上传回执触发的草稿读回。排队动作开始后重新核对 owner、附件字节版本和已有 uploadId，避免同时选图或恢复触发重复分配，也避免本地写入或回执读回使用自己刚推进前的旧 storeVersion。成功内容写入在队列外恢复当前草稿的上传准备，避免暂因未保存编辑退出的上传永久停留；等待已有上传后重新核对最新状态，未知请求仍沿原查询和显式恢复规则。网络上传在该队列外运行，用户编辑不等待上传完成；跨标签页竞争仍由实际 IDB CAS 决定。操作查询与结算的读回也经过同一内容冲突判定；远端操作状态推进不能把另一标签页已提交的 successor 版本授予本地旧内容。检测到竞争内容时，保留本地未保存版本及其原写入基线，显示冲突，直到用户明确选择。
+本地串行队列属于当前 owner 和授权代次；切换后旧读取或网络等待不能阻塞新 owner 的恢复与保存，已捕获的旧稿保存仍按原身份结束。旧任务的迟到回调不得接管新队列。切换时捕获的未保存文字和原件仍作为先前草稿可见，新目标尚无持久记录也不隐藏它。后台保存失败保留捕获内容及原归属的重试入口；若另一窗口已提交竞争版本，则展开两份内容，用户确认保留已保存版本或用本窗口保留的修改替换。选择绑定这份捕获内容的唯一身份与已展示的源持久版本，后者再次变化必须重新查看；放弃只释放该捕获内容，替换只写原 owner，均不改当前输入。
+
+同一草稿 controller 的内容写入、上传身份分配及版本读回共用该队列，包括上传回执触发的草稿读回。排队动作开始后重新核对 owner、附件字节版本和已有 uploadId，避免同时选图或恢复触发重复分配，也避免本地写入或回执读回使用自己刚推进前的旧 storeVersion。成功内容写入在队列外恢复当前草稿的上传准备，避免暂因未保存编辑退出的上传永久停留；等待已有上传后重新核对最新状态，未知请求仍沿原查询和显式恢复规则。网络上传在该队列外运行，用户编辑不等待上传完成；跨标签页竞争仍由实际 IDB CAS 决定。
+
+操作查询、结算及发送前检查的读回都经过同一本地串行队列和内容冲突判定；发送前等待 flush 期间产生的新编辑仍以原内容版本为写入基线。远端操作状态推进不能把另一标签页已提交的 successor 版本授予本地旧内容。检测到竞争内容时，保留本地未保存版本及其原写入基线，显示冲突，直到用户明确选择。
 
 正文输入立即更新本地显示，按每次 input 排序提交，合并尚未启动的连续文本写（最长 250ms）；IME 组合期间不改选区，保存原 text 值，compositionend 刷新。添加 Blob、Send、切换 owner、正常导航前 flush 已排队写；不依赖 unload/pagehide 最后一刻异步写保证恢复。尚未完成时是“正在保存”，失败时为“草稿未保存，刷新可能丢失”，提供“重试保存”。默认成功不显示常驻说明；只有所有最新内容提交才能撤销失败提示。
 
 QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均保留当前内存和最后成功版本。禁用含图上传/发送，允许编辑、预览、移除及重试保存；不能声称持久成功或悄悄退成纯文字。独立纯文字且未进入新图片草稿时保留旧文字路径；浏览器根本不支持 IndexedDB 时仍提供纯文字输入。具有 IndexedDB 的浏览器恢复失败时，不能证明原 owner 没有图片或未知提交，因此阻止该 owner 发送并保留错误和重试入口，不能把读取失败当成空草稿后发送纯文字。高版本库禁止破坏式降级，versionchange 关闭连接，重新打开迁移后才能继续。
 
-恢复先确认账户和 owner 读取资格，再读元数据与按需 Blob；逐项重新检查长度/hash/格式、字节引用和 target，complete 凭证也需 GET 当前状态后才获发送资格。缺 Blob、长度/hash 不符则 `bytes_missing`/`bytes_invalid` 本地状态，显示原顺序/名称并禁发，提供重新选择或移除，不以服务 receipt 冒充已恢复本地图。重新选择创建新的字节版本及上传身份；任何旧请求结果不得发布。网络离线且当前页面身份仍有效时本地预览/编辑可用；新页面还不能确认登录身份时先保持私有内容隐藏，联网确认后恢复，不凭 IDB 自报账户解锁。
+恢复读取尚未完成时，正文输入、建议填入与公开 setDraft 入口均不接受新的文字修改；完成后再按当前草稿权限开放。恢复先确认账户和 owner 读取资格，再读元数据与按需 Blob；逐项重新检查长度/hash/格式、字节引用和 target，complete 凭证也需 GET 当前状态后才获发送资格。缺 Blob、长度/hash 不符则 `bytes_missing`/`bytes_invalid` 本地状态，显示原顺序/名称并禁发，提供重新选择或移除，不以服务 receipt 冒充已恢复本地图。重新选择创建新的字节版本及上传身份；任何旧请求结果不得发布。网络离线且当前页面身份仍有效时本地预览/编辑可用；新页面还不能确认登录身份时先保持私有内容隐藏，联网确认后恢复，不凭 IDB 自报账户解锁。
 
 ### 旧文字草稿兼容
 
@@ -117,7 +121,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 能力变化先暂停新块并观察原 receipt，不释放仍有效 bytes；同 target 且仍 supported、原 MIME/长度合格可继续准备。更小集合上限不偷偷丢图，整组 Send 禁用；指出当前上限，由用户移除/替换。upload complete 不携带永久模型许可，最终始终用最新 image capability revision。过期显示以服务判定为准，客户端时间只作提前查询提示，不自行延长 expiresAt。
 
-移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束；upload_in_use 保留 operation 对账，不强删服务资源。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
+本地原件与远端上传账本分开保留。只有 editable、frozen 和未决 submission 的真实引用占用本地 Blob 及持久字节预算；单独的 release intent 不持有本地原件。最后一个本地内容引用移除后，在同一事务删除 Blob 并回收计量，但保留上传身份、请求未知状态及 release intent 供远端对账；旧 native owner 不再成为当前目标也不阻碍本地回收。同授权恢复范围在冷恢复时重新核对本地内容引用，回收旧版本曾仅因 release intent 保留的孤立 Blob；不修改远端账本，不越过当前访问权限或待清理屏障。移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束；upload_in_use 保留 operation 对账，不强删服务资源。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
 
 ## 发送事务、编辑和未知结果
 
@@ -125,10 +129,10 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 含图 Send 同时要求：原 sessionSendGate、当前 auth/active、无本地/跨 tab 未结算提交、持久保存最新内容、无拒绝候选/缺 bytes/失败图、完整有序集合≤8张/20 MiB及每图≤10 MiB（与原生更小上限取交集）、每图当前 complete、同 target、最新图片能力 idle send 或 working steer 为 supported。未知或不支持禁用，不推断默认模型 vision。控件 pending/recovery/initialInput 原门禁保持；上传可为工作回合后的 idle 准备，但不会扩展队列、取消回合或自动发送。
 
-纯图序列只有 ImageInputPart；图文为一个非空白 TextPart 后接有序图片，保留用户原文字值、不插入文件路径。纯文字走公共协议旧 payload 分支。含图 gate 失败不得删除图再试纯文字。下述动作是原子边界，不是跨网络事务：
+纯图序列只有 ImageInputPart；图文为一个非空白 TextPart 后接有序图片，保留用户原文字值、不插入文件路径。纯文字走公共协议旧 payload 分支。移除最后一张图片后，原草稿仍是持久草稿；消费其正文的原生命令也必须冻结精确 draftId/revision，取得唯一派发权并按原 operation 结算。命令保持 execute_command 的原参数，不改成普通消息或附加图片；工具栏等不消费正文的命令不清草稿。未知命令跨刷新只查原身份，接受只清原冻结版本，后续编辑继续保留。含图 gate 失败不得删除图再试纯文字。下述动作是原子边界，不是跨网络事务：
 
 1. Send 再 flush 文本/候选保存，在 exclusive send 锁内重读 owner、editable revision、最新资格和 operation 状态。IDB 事务验证 CAS，将完整不可变 command（新 operationId/requestId、target、capability revision、expectedTurnId、draftId/revision、有序 parts）与冻结快照和所有引用一并保存，建立 owner 发送屏障。失败则零网络派发。
-2. 单独短事务把 prepared 变为 dispatch_claimed，只有该次成功转换的调用持有一次 dispatch 权。事务结果未知时先读本地事实但不因此重复发送；重载看到 dispatch_claimed 一律查询原 operation。若在转换前可证明 prepared 未被领取，恢复也不自动发送，只提供用户再次确认原冻结提交的入口。原 native 目标已变化时，可显式取消仍未领取的待发消息并保留原目标 editable 草稿；取消事务必须再次确认 prepared，不能解除另一窗口已取得的 dispatch claim，也不把旧图片资格移给新目标。
+2. 单独短事务把 prepared 变为 dispatch_claimed，只有该次成功转换的调用持有一次 dispatch 权。事务结果未知时先读本地事实但不因此重复发送；重载看到 dispatch_claimed 一律查询原 operation。若在转换前可证明 prepared 未被领取，恢复也不自动发送，只提供用户再次确认原冻结提交的入口。当前命令目录或发送资格变化时，恢复派发可以禁用，但仍提供取消入口；当前或旧 native 目标中尚未领取的待发消息/命令均可显式取消并保留原目标 editable 草稿；取消事务必须再次确认 prepared，不能解除另一窗口已取得的 dispatch claim，也不把旧图片资格移给新目标。
 3. dispatch 权持有者在实际请求前再次核对当前账户/owner/target、能力和是否仍 live。若确定尚未调用请求就发现变化，可持久记录 local_not_dispatched 并解冻；否则只以原 command 调现有 client 一次。client新增接受已冻结 command 的内部派发入口，不调用会重新生成operationId的旧execute(input)；同一身份由冻结事务一路保留。发布后按下一项区分确认拒绝和未知，不自动重新编号或重发。
 4. accepted/offered/dispatching 只观察；provider_accepted/confirmed 才按原 owner+operationId+target+draftId/revision 结算。operation 读取先解析协议/fence/ID/kind，target 从不可变本地 intent 关联，而非假定 operation 回执新增 target 字段。可信的 rejected/failed/expired 未提交终态解冻保留内容。对首次提交的确定性拒绝，只有经认证/表示/严格错误解析、且公共协议服务分支保证 operation 未登记且未派发的响应，才能归为本地 definitive_not_dispatched，保存原拒绝并解除屏障。当前 `operation-error.ts` 只接受命令接纳端点经认证严格解析的 `409 capability_changed`：服务先返回已存在 operation 的原事实，再在新操作登记前检查该能力 revision。即使服务没有 operation 行，也允许用户修复后以新 operation 显式发送。不能简单按所有 4xx、任意同名 code 或错误 message 推断；operation_conflict、通用 401/403/404、预算拒绝、代理错误、解析失败、5xx、超时及响应丢失都不属于当前分类，只查原身份。扩展分类须先验证对应服务分支保证。公共操作恢复模块拥有确定拒绝分类的唯一语义，草稿发送模块消费内部分类，不向 wire error 私加字段。
 
