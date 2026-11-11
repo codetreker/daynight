@@ -507,7 +507,9 @@ service’s creation-time and Worker ID order within each group. Heartbeats do n
 change that relative order.
 
 The list also reads current monitoring summaries in batches of at most 100 loaded
-Worker IDs and presents their permission-filtered admission reasons. Detail shows scheduling and admission, actual capacity, parallel
+Worker IDs. Cards show the scheduling phase and capacity, including the capacity
+stale indicator, without admission reasons or monitoring timestamps and age.
+Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
 retry times are displayed without inventing external waits or deadlines.
@@ -519,7 +521,8 @@ distinct presentations; failed monitoring reads retain dated observations and
 leave host resources visible. Project withdrawal removes associated private
 details and invalidates list reason sets whose individual scopes are unavailable;
 late responses cannot restore them. Total Worker capacity remains visible, and
-reported identity-free reasons return on an admitted reread. Background checks retain page interaction and
+reported identity-free reasons return in the projection on an admitted reread.
+Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
