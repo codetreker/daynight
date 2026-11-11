@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { registerOverlay } from '../src/app/overlay';
 import { browserNavigation } from '../src/app/navigation';
+import { useBrowserLocation } from '../src/app/browser-location';
+import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
 import { navigate } from '../src/app/router';
-import { DraftNavigationConfirmation, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
+import { DraftNavigationConfirmation, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -139,4 +141,80 @@ it('guards only the closing child and uses one confirmation at the nearest activ
   expect(screen.getByLabelText('Goal', { selector: 'textarea' })).toHaveValue('goal draft');
   expect(screen.getByLabelText('Child', { selector: 'textarea' })).toHaveValue('');
   expect(close).toHaveBeenCalledTimes(2);
+});
+
+
+it.each(['summary', 'direct'] as const)('protects a Project %s draft when the same Task switches source', (source) => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const initial: ProjectReading = { section: 'tasks', view: 'standalone', projectGraphWitness: null,
+    detail: { id: taskId, source, insideProjectGraph: false, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+  const otherSource: 'summary' | 'direct' = source === 'summary' ? 'direct' : 'summary';
+  history.replaceState(null, '', `/projects/${projectId}`);
+  const navigation = browserNavigation();
+  navigation.setView(projectHistory(userId, projectId, initial), { replace: true });
+  const discard = vi.fn();
+  const Harness = () => {
+    const location = useBrowserLocation();
+    const selection = readProjectHistory(location.view, userId, projectId)!;
+    const detail = selection.detail!;
+    return <TaskCacheProvider scope={scope}><ProjectDraftHost projectId={projectId} taskId={taskId} source={detail.source} insideProjectGraph={false} graphWitness={null}>
+      <TaskDraftBoundary key={detail.source} projectId={projectId} taskId={taskId} page={false}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>
+    </ProjectDraftHost></TaskCacheProvider>;
+  };
+  renderWithLocale(<Harness />, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'keep this draft' } });
+  const same = { ...initial, detail: { ...initial.detail!, navigation: { tab: 'discussion' as const, path: null } } };
+  act(() => navigation.setView(projectHistory(userId, projectId, same)));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(screen.getByRole('textbox')).toBe(editor);
+  expect(editor).toHaveValue('keep this draft');
+  const next = { ...same, detail: { ...same.detail, source: otherSource } };
+  act(() => navigation.setView(projectHistory(userId, projectId, next)));
+  expect(screen.getByRole('alertdialog')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect(editor).toHaveValue('keep this draft');
+  expect(readProjectHistory(navigation.snapshot().view, userId, projectId)!.detail!.source).toBe(source);
+  act(() => navigation.setView(projectHistory(userId, projectId, next)));
+  fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+  expect(discard).toHaveBeenCalledOnce();
+  expect(readProjectHistory(navigation.snapshot().view, userId, projectId)!.detail!.source).toBe(otherSource);
+  expect(screen.getByRole('textbox')).not.toBe(editor);
+  expect(screen.getByRole('textbox')).toHaveValue('');
+});
+
+
+it.each([['goal', 'direct'], ['goal', 'summary'], ['child', 'direct'], ['child', 'summary']] as const)('keeps the Project %s draft when the same Goal changes from %s', (kind, source) => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const childId = 'b0000000-0000-0000-0000-000000000002';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const initial: ProjectReading = { section: 'tasks', view: 'goals', projectGraphWitness: null,
+    detail: { id: taskId, source, insideProjectGraph: false, navigation: { tab: 'overview', path: null },
+      goalChildren: { graphRootId: null, task: { id: childId, navigation: { tab: 'overview', path: null } } } } };
+  history.replaceState(null, '', `/projects/${projectId}`);
+  const navigation = browserNavigation();
+  navigation.setView(projectHistory(userId, projectId, initial), { replace: true });
+  const discard = vi.fn();
+  const Harness = () => {
+    const location = useBrowserLocation();
+    const selection = readProjectHistory(location.view, userId, projectId)!;
+    const content = <TaskDraftBoundary projectId={projectId} taskId={kind === 'goal' ? taskId : childId} page={false} projectSourceSensitive={kind !== 'goal'}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>;
+    return <TaskCacheProvider scope={scope}><ProjectDraftHost projectId={projectId} taskId={taskId} source={selection.detail!.source} insideProjectGraph={false} graphWitness={null}>
+      {kind === 'child' ? <ResourceChildDraftHost>{content}</ResourceChildDraftHost> : content}
+    </ProjectDraftHost></TaskCacheProvider>;
+  };
+  renderWithLocale(<Harness />, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'retained Goal draft' } });
+  const nextSource = source === 'summary' ? 'direct' as const : 'summary' as const;
+  const next = { ...initial, detail: { ...initial.detail!, source: nextSource } };
+  act(() => navigation.setView(projectHistory(userId, projectId, next)));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(readProjectHistory(navigation.snapshot().view, userId, projectId)!.detail!.source).toBe(nextSource);
+  expect(screen.getByRole('textbox')).toBe(editor);
+  expect(editor).toHaveValue('retained Goal draft');
+  expect(discard).not.toHaveBeenCalled();
 });

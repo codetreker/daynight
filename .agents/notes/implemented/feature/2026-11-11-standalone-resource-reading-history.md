@@ -20,7 +20,10 @@ selections. Project-page callers use those same controlled interfaces for their
 root detail and Goal children. Ordinary reading
 changes push; closing a layer replaces the current entry after the existing draft
 admission. Same-resource editors are identified by their resource, host and
-presentation, not the history entry.
+presentation, not the history entry. A Project root Task may change draft hosts
+when switching between `summary` and `direct` observations, so that transition
+requires departure admission even for the same Task ID. Goal roots and children
+are judged by their actual hosts rather than the root observation source.
 
 The [inspection design](../../../../docs/design/daynight-task-inspection.md#独立完整任务详情)
 owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
