@@ -30,6 +30,8 @@ type taskQueryObservations interface {
 
 type listInput struct {
 	ProjectID          string              `json:"projectId"`
+	Type               model.TaskType      `json:"type"`
+	ParentID           *string             `json:"parentId"`
 	Limit              int                 `json:"limit"`
 	Cursor             *string             `json:"cursor"`
 	All                bool                `json:"all"`
@@ -43,6 +45,7 @@ type listInput struct {
 
 type readyInput struct {
 	ProjectID          string              `json:"projectId"`
+	ParentID           *string             `json:"parentId"`
 	Limit              int                 `json:"limit"`
 	AllowAgents        *bool               `json:"allowAgents"`
 	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
@@ -91,6 +94,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 				}
+				in.ParentID = queryParent(raw, in.ParentID)
 				return listTool(ctx, actor, in, tasks)
 			})
 		case "task_ready":
@@ -99,6 +103,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 				}
+				in.ParentID = queryParent(raw, in.ParentID)
 				return readyTool(ctx, actor, in, tasks)
 			})
 		case "task_graph":
@@ -117,6 +122,17 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 		}
 	}
 	return nil
+}
+
+// A present null selects unparented tasks, while an omitted field selects all.
+func queryParent(raw json.RawMessage, parent *string) *string {
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &fields)
+	if _, present := fields["parentId"]; present && parent == nil {
+		none := "none"
+		return &none
+	}
+	return parent
 }
 
 // Full queries acquire the large-object permit before materializing task resources.
@@ -141,7 +157,7 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
+	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{Type: in.Type, Parent: in.ParentID, All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -180,7 +196,7 @@ func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks tas
 		in.Limit = 5
 	}
 	items, err := tasks.MCPReady(ctx, actor.Principal, in.ProjectID, taskcore.MCPReadyRequest{
-		Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
+		Parent: in.ParentID, Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
 	})
 	if err != nil {
 		return ToolResult{}, err

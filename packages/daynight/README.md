@@ -822,7 +822,7 @@ A positive exact full ID match ranks before a title match; fragments do not.
 Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
 `title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
-`--allow-agents`, and `--compatible-platform` intersect the expression; search
+`--allow-agents`, `--compatible-platform`, `--type`, and `--parent` intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
@@ -847,12 +847,17 @@ Implement OAuth sign-in for the web workspace. Deliver the callback flow and
 visible failure recovery; preserve the existing session and provider rules.
 Complete when a valid login opens the workspace and a rejected login can retry.'
 daynight task create --title "Build the sign-in page" --depends-on <design-task-id> --external-depends-on <authentication-task-id>
+daynight task create --type goal --title "Improve installation"
+daynight task create --type goal --title "Unassigned Goal" --clear-assigned-to
+daynight task create --title "Document prerequisites" --parent <goal-id> --status todo
 daynight task ready
-daynight task ready --limit 5 --json
+daynight task ready --parent <goal-id> --limit 5 --json
 daynight task ready --allow-agents true --compatible-platform linux --json
 daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
+daynight task list --type goal --json
+daynight task list --parent none --json
 daynight task list --status in_progress --json
 daynight task list --status in_progress --group-by chain --assigned-to me --json
 daynight task list --ready --assigned-to me --json
@@ -862,6 +867,8 @@ daynight task properties <task-id> --json
 daynight task properties --schema --json
 daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Fix synchronization"}]' --if-version <observed-version>
 daynight task remove-property <task-id> pullRequests --if-version <observed-version>
+daynight task update <task-id> --parent <goal-id> --if-version <version>
+daynight task update <task-id> --parent none --if-version <version>
 daynight task update <task-id> --description=
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
@@ -910,16 +917,35 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Task resources require `type` (`task` or `goal`) and a nullable `parentId`. A Goal has no parent, uses `todo`, `in_progress`, `done` or `cancelled`, and is never ready. Full Goal reads include progress; its Session registration is `not_applicable`. Graph nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources without exposing their details.
+Task resources require `type` (`task` or `goal`) and a nullable `parentId`. Create,
+list and search default to `task`; `--type goal` selects a Goal. List, search and
+ready accept `--parent <goal-id|none>`: omission does not filter by parent, `none`
+selects Tasks without a Goal, and a Goal UUID selects its direct children. Filters apply
+before pagination and persist across pages. Create defaults to no parent; on update,
+omission preserves the current parent. `--parent none` sends null, and a Goal UUID
+sets the parent. A Goal cannot have a parent. Membership does not change Task
+identity, status, assignee, materials, dependencies or their classifications.
 
-Before setting a Goal to `done` or `cancelled`, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Both commands read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
+A Goal uses `todo`, `in_progress`, `done` or `cancelled` and is never ready. Full
+Goal reads include progress; its Session registration is `not_applicable`. Graph
+nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources
+without exposing their details. Ready remains a dependency fact; it does not apply
+the additional parent-state restrictions used for automatic claims.
 
-Ordinary task creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Ordinary creation uses `allowAgents=false` and unrestricted
-`requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
+Before creating a Goal in `done` or `cancelled`, or setting a Goal to either status, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Status and delete read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
+
+Ordinary Task creation defaults to `proposed`; `--status proposed|todo` explicitly
+selects the initial state, so confirmed internal multi-step work can start in todo.
+Goal creation defaults to `todo` and accepts `todo`, `in_progress`, `done` and
+`cancelled`. Both default to the signed-in assignee; `--assigned-to <user-uuid>`
+overrides it, and `--clear-assigned-to` explicitly creates an unassigned resource.
+These two options conflict.
+Ordinary creation uses `allowAgents=false` and unrestricted `requiredPlatform=null`
+unless explicitly set. Goal execution fields are not applicable. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
 sets `proposed`, `todo`, `in_progress`, `done` or `cancelled` for ordinary Tasks. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
 reopening and direct completion; ordinary Task cancellation is irreversible and does not prove
-delivery. Goals use the other four read statuses; Goal-specific lifecycle effects are not implemented by the CLI and remain subject to the service's business checks. Cancelled records and materials remain readable unless effective parent deletion hides them.
+delivery. Goal-specific lifecycle effects remain subject to the service's business checks. Cancelled records and materials remain readable unless effective parent deletion hides them.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -1111,13 +1137,14 @@ only those external edges. IDs are canonicalized and sorted; malformed and
 case-equivalent duplicate/cross-declared UUIDs fail before configuration or
 network access. `--clear-dependencies` sends two empty sets and conflicts with
 either dependency option. An update needs at least one mutable
-field. Create/update accept `--assigned-to <user-uuid>`; update also accepts
-`--clear-assigned-to` to send null. CLI creation without `--assigned-to` reads
-the signed-in account through `/me` and submits its UUID. An explicit UUID skips
-that identity lookup. A failed or cancelled lookup prevents creation; the CLI
-does not substitute an unassigned task. Update omission preserves the existing
-assignee. Direct API callers retain optional assignment and may create unassigned
-tasks by omitting `assignedTo` or sending null. The set/clear options conflict, and invalid UUIDs or combinations fail before
+field. Create/update accept `--assigned-to <user-uuid>` or `--clear-assigned-to`
+to send null. Ordinary Task creation with neither option reads the signed-in
+account through `/me` and submits its UUID; a failed or cancelled lookup prevents
+creation. Goal creation with neither option omits `assignedTo`, and the service
+defaults it to the caller. An explicit UUID or null skips the lookup. Update
+omission preserves the existing assignee. Direct API ordinary Task creation may
+omit `assignedTo` or send null to create an unassigned Task; Goal creation uses
+explicit null for that result. The set/clear options conflict, and invalid UUIDs or combinations fail before
 configuration, Git or HTTP access. Writes accept UUIDs, not the list tokens
 me/unassigned. A real assignment change atomically sets allowAgents=false; an
 equal assignment causes no permission reset; a pure equal update preserves

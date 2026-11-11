@@ -39,6 +39,28 @@ it("prints ordered projected search JSON only after all pages, preserving the qu
   expect(fetch.mock.calls.map(([, init]) => new Headers(init!.headers).get("authorization"))).toEqual(["Bearer fixture-token", "Bearer fixture-token"]);
 });
 
+it.each(["none", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"])("passes type and parent %s on every search page", async parent => {
+  const parentId = parent === "none" ? null : parent.toLowerCase();
+  const page = (value: any) => ({ ...value, items: value.items.map((item: any) => ({ ...item, type: "task", parentId, context: parentId === null ? null : { taskId: parentId, title: "Actual Goal" } })) });
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(page(first))).mockResolvedValueOnce(response(page(next)));
+  const f = fixture(fetch);
+  expect(await f.run(["cache", "--project", projectId, "--type", "task", "--parent", parent, "--json"])).toBe(0);
+  const bodies = fetch.mock.calls.map(([, init]) => JSON.parse(String(init!.body)));
+  expect(bodies).toEqual([
+    { query: "cache", type: "task", parentId, limit: 100 },
+    { query: "cache", type: "task", parentId, limit: 100, cursor: first.nextCursor },
+  ]);
+  const output = JSON.parse(f.context.stdout.mock.calls[0]![0]);
+  expect(output.map((item: any) => item.context)).toEqual([parentId, parentId].map(id => id === null ? null : { taskId: id, title: "Actual Goal" }));
+});
+
+it("rejects malformed parent before search dispatch", async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>();
+  const f = fixture(fetch);
+  expect(await f.run(["cache", "--project", projectId, "--parent", "invalid"])).toBe(2);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it("escapes terminal control characters while retaining the complete JSON title", async () => {
   const title = "完整标题\u001b[31m\n尾";
   const item = { ...first.items[0], title, context: { ...first.items[0].context, title: "Goal\t标题" }, futureField: "wire-secret" };

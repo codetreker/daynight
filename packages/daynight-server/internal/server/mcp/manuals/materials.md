@@ -2,6 +2,8 @@
 
 Read this topic to organize independently understandable requirements, designs and results. Collection protocols are owned by [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md) and [Attachment reads](daynight://manuals/attachment-reads.md). Before replacing descriptions, uploading files or recording discussion, also read [Write safety](daynight://manuals/write-safety.md) and the operation-specific topic.
 
+A Goal has its own description, Thread and attachments. A child Task has separate material; Parent ownership does not move or copy it. Use the actual resource ID when reading or writing either.
+
 ## Give information an effective owner
 
 | Information | Owner |

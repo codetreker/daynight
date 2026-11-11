@@ -33,6 +33,24 @@ it('separates draft, filters and cursors, and retires later cursors after readin
   expect(search.mock.calls[3]?.[3]).toBe('new-cursor');
   act(() => result.current.clear()); expect(result.current.applied).toBeNull();
 });
+it('clears filters, pages and pending reads without publishing late results', async () => {
+  const search = vi.mocked(searchTasks); const pending = deferred<TaskSearchPage>();
+  search.mockResolvedValueOnce(page('a', 'cursor')).mockResolvedValueOnce(page('a', 'filtered-cursor')).mockResolvedValueOnce(page('b', null)).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(page('fresh', null, 1));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, 'me'));
+  act(() => { result.current.setDraft('query'); result.current.submit(); }); await waitFor(() => expect(result.current.canNext).toBe(true));
+  act(() => result.current.setFilters({ status: 'done', assignedTo: 'me' })); await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(result.current.canNext).toBe(true));
+  act(() => result.current.next()); await waitFor(() => expect(result.current.page).toBe(2));
+  act(() => result.current.retry()); await waitFor(() => expect(search).toHaveBeenCalledTimes(4));
+  const signal = search.mock.calls[3]![4];
+  act(() => result.current.clear());
+  expect(signal.aborted).toBe(true);
+  expect(result.current).toMatchObject({ draft: '', applied: null, filters: { status: '', assignedTo: '' }, items: [], total: null, page: 1, canPrevious: false, canNext: false, busy: false, error: null });
+  await act(async () => { pending.resolve(page('late', 'late-cursor')); });
+  expect(result.current).toMatchObject({ applied: null, items: [], page: 1, canNext: false });
+  act(() => { result.current.setDraft('new'); result.current.submit(); }); await waitFor(() => expect(result.current.items[0]?.id).toBe('fresh'));
+  expect(search.mock.calls[4]?.[3]).toBeNull();
+});
 it('aborts stale requests and does not publish late results after a new submission or history retirement', async () => {
   const search = vi.mocked(searchTasks); const first = deferred<TaskSearchPage>(), later = deferred<TaskSearchPage>();
   search.mockReturnValueOnce(first.promise).mockReturnValueOnce(later.promise).mockResolvedValueOnce(page('new-history', null, 1));

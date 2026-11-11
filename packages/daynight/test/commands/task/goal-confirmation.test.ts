@@ -9,7 +9,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const time = "2026-10-20T00:00:00Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: taskId, version: 1n }, createdAt: time, updatedAt: time };
 const base = { id: taskId, projectId, type: "goal", parentId: null, title: "Goal", description: "", properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
-const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "content-type": "application/json" } });
+const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "content-type": "application/json", "Daynight-User-ID": projectId } });
 const operations: ReturnType<typeof createOperation>[] = [];
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); });
 
@@ -26,6 +26,10 @@ const fixture = (options: { answer?: string; interactive?: boolean; task?: objec
     if (options.unknown) throw new Error("connection lost");
     if (options.refusal) return json({ error: { code: options.refusal, message: "Refused.", requestId: "refused" } }, 409);
     if (init!.method === "DELETE") return new Response(null, { status: 204 });
+    if (init!.method === "POST") {
+      const request = parseApiJson(String(init!.body)) as { status: string };
+      return json({ ...record, assignedTo: projectId, status: request.status, completedAt: request.status === "done" ? time : null, cancelledAt: request.status === "cancelled" ? time : null }, 201);
+    }
     const request = parseApiJson(String(init!.body)) as { status: string; version: bigint };
     return json({ ...record, status: request.status, version: request.version, cancelledAt: request.status === "cancelled" ? time : null });
   });
@@ -39,6 +43,40 @@ const fixture = (options: { answer?: string; interactive?: boolean; task?: objec
 };
 
 describe("Goal impact confirmation", () => {
+  it.each(["done", "cancelled"])("requires confirmation before creating a %s Goal", async status => {
+    const f = fixture();
+    expect(await f.run(["create", "--type", "goal", "--title", "Goal", "--status", status])).toBe(1);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["GET"]);
+    const warning = f.context.stderr.mock.calls.map(([text]) => text).join("");
+    expect(warning).toContain("--force"); expect(warning).toContain("new automatic claims");
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each(["no", "yes"])("honors interactive creation answer %s", async answer => {
+    const f = fixture({ interactive: true, answer });
+    expect(await f.run(["create", "--type", "goal", "--title", "Goal", "--status", "done"])).toBe(answer === "yes" ? 0 : 1);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(answer === "yes" ? ["GET", "POST"] : ["GET"]);
+    expect(f.ask).toHaveBeenCalledOnce(); expect(f.context.prompt.close).toHaveBeenCalledOnce();
+    if (answer === "yes") expect(parseApiJson(String(f.fetch.mock.calls[1]![1]!.body))).toEqual({ title: "Goal", type: "goal", status: "done" });
+    else expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "cancelled"])("force submits the %s Goal exactly once and propagates refusal", async status => {
+    const f = fixture({ refusal: "invalid_input" });
+    expect(await f.run(["create", "--type", "goal", "--title", "Goal", "--status", status, "--force"])).toBe(1);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["GET", "POST"]);
+    expect(parseApiJson(String(f.fetch.mock.calls[1]![1]!.body))).toEqual({ title: "Goal", type: "goal", status });
+    expect(f.ask).not.toHaveBeenCalled();
+    expect(f.context.stderr.mock.calls.map(([text]) => text).join("")).toContain("invalid_input");
+  });
+
+  it("force successfully creates a terminal Goal without prompting", async () => {
+    const f = fixture();
+    expect(await f.run(["create", "--type", "goal", "--title", "Goal", "--status", "cancelled", "--force"])).toBe(0);
+    expect(f.fetch.mock.calls.map(([, init]) => init!.method)).toEqual(["GET", "POST"]);
+    expect(f.ask).not.toHaveBeenCalled(); expect(f.context.stdout.mock.calls[0]![0]).toContain("Status: cancelled");
+  });
+
   it.each([["set-status", taskId, "done"], ["set-status", taskId, "cancelled"], ["delete", taskId]])("refuses noninteractive %s before the write", async (...args) => {
     const f = fixture();
     expect(await f.run([...args, "--if-version", "1"])).toBe(1);

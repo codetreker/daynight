@@ -1,17 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { runValidation } from './testdata/validation-fixture.mts';
 
 test('module check leaves command execution and coverage to its independent owner', async (t) => {
-  const { result, trace } = await runValidation(t, 'check', undefined, { GOFLAGS: '-race=false -tags=stress' });
+  const { result, trace, fixture } = await runValidation(t, 'check', undefined, { GOFLAGS: '-race=false -tags=stress' });
   assert.equal(result.status, 0, result.stderr);
+  assert.match(trace, /node scripts\/command-timeout.mts 1800000 5000 env GOFLAGS=.*node scripts\/go-cov-capture.mts module /);
+  const base = join(fixture, '.tmp/go-test-evidence/module');
+  const [run] = await readdir(base);
+  assert.ok(run);
+  const raw = await readFile(join(base, run, 'go-test.jsonl'));
+  assert.ok(raw.length > 0);
+  assert.deepEqual(JSON.parse(await readFile(join(base, run, 'go-test.complete.json'), 'utf8')),
+    { version: 1, bytes: raw.length, exitCode: 0, signal: null });
   const coverage = trace.split('\n').find(line => line.startsWith('go-cov '))!;
   assert.match(coverage, /--race=true --exclude-packages=example\/cmd\/daynight-server/);
   assert.match(coverage, /-tags= -race=true -coverpkg=example\/api,example\/internal\/server/);
   assert.doesNotMatch(coverage, /-coverpkg=[^ ]*cmd\/daynight-server/);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth .* -race=true/);
   assert.doesNotMatch(trace, /TestWebhookRunnerAbruptProcessRecovery|go build |--tags=startupshutdown/);
-  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts scripts\/command-timeout.test.mts/);
+  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts scripts\/command-timeout.test.mts scripts\/go-cov-capture.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
 });
 
@@ -30,7 +40,7 @@ test('module check propagates vet and fixture test failures before coverage', as
   for (const [extra, expected] of [[{ VET_EXIT: '21' }, 21], [{ TESTAUTH_EXIT: '22' }, 22]] as const) {
     const { result, trace } = await runValidation(t, 'check', undefined, extra);
     assert.equal(result.status, expected);
-    assert.doesNotMatch(trace, /go-cov|node scripts\/coverage.mts/);
+    assert.doesNotMatch(trace, /(?:^|\n)go-cov |node scripts\/coverage.mts/);
   }
 });
 
@@ -56,7 +66,7 @@ test('module check rejects empty production selection and exact ninety percent c
   const empty = await runValidation(t, 'check', 'true', { EMPTY_PACKAGES: '1' });
   assert.notEqual(empty.result.status, 0);
   assert.match(empty.result.stderr, /No production packages found/);
-  assert.doesNotMatch(empty.trace, /go-cov/);
+  assert.doesNotMatch(empty.trace, /(?:^|\n)go-cov /);
   const boundary = await runValidation(t, 'check', undefined, { PROFILE_COVERED: '9', PROFILE_TOTAL: '10' });
   assert.equal(boundary.result.status, 1);
   assert.match(boundary.result.stderr, /Overall coverage must be >90%/);

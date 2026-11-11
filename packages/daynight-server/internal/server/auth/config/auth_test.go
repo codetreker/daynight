@@ -56,3 +56,14 @@ func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionChannelCallbackPathsReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://daynight.example.com"}
+	for _, root := range []string{"/api/v1/session-capabilities", "/api/v1/test-session-capabilities", "/api/v1/controller-channel", "/api/v1/controller-resources"} {
+		for _, path := range []string{root, root + "/child"} {
+			if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+				t.Fatal("callback overlaps session route", path)
+			}
+		}
+	}
+}

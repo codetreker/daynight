@@ -1,4 +1,4 @@
-package server
+package session_test
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,8 +14,86 @@ import (
 
 	"github.com/coder/websocket"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+func TestControllerChannelRejectsInvalidGrantsBeforeUpgrade(t *testing.T) {
+	for _, kind := range []string{"unknown", "expired", "consumed", "revoked"} {
+		t.Run(kind, func(t *testing.T) {
+			f := realSessionSetup(t)
+			token := f.grant.Token
+			switch kind {
+			case "unknown":
+				token = "dncontroller_invalid"
+			case "expired":
+				expired := time.Now().Add(-time.Second)
+				f.record.GrantExpiry = &expired
+			case "consumed":
+				f.record.Consumed = true
+			case "revoked":
+				f.credentialRevoked = true
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			conn, response, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http://", "ws://", 1)+"/api/v1/controller-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}})
+			if conn != nil {
+				_ = conn.CloseNow()
+			}
+			if err == nil || response == nil || (response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden) {
+				t.Fatalf("invalid grant upgraded: response=%v error=%v", response, err)
+			}
+			if count := f.application.routes.ActiveConnections(); count != 0 {
+				t.Fatal("invalid grant occupied channel capacity", count)
+			}
+		})
+	}
+}
+
+func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
+	f := realSessionSetup(t)
+	epoch := uuid.NewString()
+	conn, snapshot := f.controller(t, epoch)
+	native := "native-session"
+	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
+	publish := func(seq string) {
+		sessionWSWrite(t, conn, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: seq, Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}}})
+		sessionWSKind(t, conn, "events_ack")
+		f.supplyState(state)
+		source, _ := strconv.ParseInt(seq, 10, 64)
+		f.supplySource(source)
+	}
+	publish("1")
+	submit := func() sp.Command {
+		command := sp.Command{Protocol: sp.Protocol, RequestID: "stale-offer", Fence: snapshot.Fence, OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"bounded test input"}],"expectedTurnId":null}`)}
+		f.expectCommand(t, command)
+		receipt := decodeResponse[struct {
+			Operation sp.Operation `json:"operation"`
+		}](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+snapshot.SessionID+"/commands", jsonBody(t, command)), http.StatusAccepted).Operation
+		f.suppliedOperation(t, command, receipt)
+		f.selectOffers(t, command.OperationID)
+		sessionWSKind(t, conn, "operation_offer")
+		f.suppliedOffer(t, command.OperationID, snapshot.ConnectionEpoch)
+		return command
+	}
+	command := submit()
+	state.Activity = "unknown"
+	publish("2")
+	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
+	frame := sessionWSKind(t, conn, "receipt_ack")
+	var receipt sp.Operation
+	if err := json.Unmarshal(frame["operation"], &receipt); err != nil || receipt.State != "rejected" || receipt.OperationID != command.OperationID {
+		t.Fatal(receipt, err)
+	}
+	f.supplyReceipt(t, receipt)
+	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence})
+	sessionWSKind(t, conn, "heartbeat_ack")
+	state.Activity = "idle"
+	publish("3")
+	command = submit()
+	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
+	sessionWSKind(t, conn, "operation_authorized")
+}
 
 // The controller uses JSON.stringify, which does not HTML-escape tool text.
 func sessionNativeJSON(t *testing.T, v any) []byte {
@@ -40,7 +119,7 @@ func sessionNativeWrite(t *testing.T, c *websocket.Conn, v any) {
 	}
 }
 func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := realSessionSetup(t)
 	epoch := uuid.NewString()
 	controller, snapshot := f.controller(t, epoch)
 	path := f.base + "/" + snapshot.SessionID
@@ -101,7 +180,12 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	response["error"] = nil
 	response["result"] = map[string]any{"kind": "timeline", "historyEpoch": historyEpoch, "items": []any{entry}, "resources": []any{}, "beforeCursor": nil, "afterCursor": nil, "hasMoreBefore": false, "hasMoreAfter": false}
 	sessionNativeWrite(t, controller, response)
-	page := await(t, done)
+	var page *httptest.ResponseRecorder
+	select {
+	case page = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP history request did not complete")
+	}
 	if page.Code != http.StatusOK || page.Body.Len() > 500000 || !bytes.Contains(page.Body.Bytes(), []byte(strings.Repeat("<", 100))) {
 		t.Fatalf("HTTP history status=%d bytes=%d", page.Code, page.Body.Len())
 	}
@@ -112,7 +196,7 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 }
 
 func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := realSessionSetup(t)
 	controller, snapshot := f.controller(t, uuid.NewString())
 	controller.SetReadLimit(sp.MaxFrameBytes)
 	native := "offer-session"
@@ -174,4 +258,76 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 		t.Fatal("refused request blocked following offer", err)
 	}
 	f.suppliedOffer(t, following.OperationID, snapshot.ConnectionEpoch)
+}
+func startupCurrent(t *testing.T, f *realSessionFixture, version bool) map[string]any {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, f.base+"/current", nil)
+	authorizeResourceRequest(f.handler, r)
+	if version {
+		r.Header.Set("X-Daynight-Startup-Version", "1")
+	}
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	return decodeResponse[map[string]any](t, w, http.StatusOK)
+}
+
+func TestSessionCurrentStartupEvidenceNegotiationAndGeneration(t *testing.T) {
+	f := realSessionSetup(t)
+	current := startupCurrent(t, f, true)
+	if value, exists := current["startupReport"]; !exists || value != nil {
+		t.Fatal("missing evidence is not explicit null")
+	}
+	report := map[string]any{
+		"schemaVersion": 1, "source": "worker", "sessionId": f.snapshot.SessionID, "claimId": f.snapshot.ClaimID,
+		"executionGeneration": f.snapshot.ExecutionGeneration, "controllerInstanceId": f.registration.ControllerInstanceID,
+		"revision": "1", "observedAt": "2026-11-05T00:00:00Z",
+		"startup":  map[string]any{"state": "unknown", "reasonCode": "native_timeout"},
+		"recovery": map[string]any{"state": "blocked", "reasonCode": "native_identity_missing"},
+	}
+	old, err := sp.DecodeStartupReport([]byte(jsonBody(t, report)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sessionTask.StartupReport = &old
+	current = startupCurrent(t, f, true)
+	var expected map[string]any
+	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current["startupReport"], expected) {
+		t.Fatalf("current lost startup evidence: %#v", current)
+	}
+	legacy := startupCurrent(t, f, false)
+	if _, exists := legacy["startupReport"]; exists || len(legacy) != 2 {
+		t.Fatal("legacy current response changed shape")
+	}
+
+	previous, nextInstance := "1", uuid.NewString()
+	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
+	f.mediaRecoveryRead = func(context.Context) ([]store.SessionResourceLease, error) {
+		return []store.SessionResourceLease{}, nil
+	}
+	f.mintGrant(t, grant)
+	f.mu.Lock()
+	f.record.Snapshot.ExecutionGeneration = "2"
+	f.record.Snapshot.Identity.ControllerInstanceID = nextInstance
+	recoveryReads := f.calls["ListSessionMediaLeases"]
+	f.mu.Unlock()
+	if recoveryReads != 1 {
+		t.Fatalf("generation grant recovery listings=%d, want 1", recoveryReads)
+	}
+	current = startupCurrent(t, f, true)
+	if current["startupReport"] != nil {
+		t.Fatal("new generation displays previous startup evidence")
+	}
+	report["executionGeneration"], report["controllerInstanceId"] = "2", nextInstance
+	next, err := sp.DecodeStartupReport([]byte(jsonBody(t, report)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sessionTask.StartupReport = &next
+	current = startupCurrent(t, f, true)
+	if current["startupReport"] == nil {
+		t.Fatal("current generation evidence not readable")
+	}
 }

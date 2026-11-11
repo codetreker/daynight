@@ -37,7 +37,7 @@ The [server design](../../../../docs/design/daynight-server.md#http-传输准入
 records those unchanged transport mechanisms.
 
 The guidance describes current MCP schemas and results, including typed Task/Goal
-reads, ordinary-only creation, grouped-work continuation, nullable Session
+reads and creation, Parent selection and mutation, grouped-work continuation, nullable Session
 observations and completion no-ops. CLI pre-reads, prompts, local recovery files
 and repository delivery workflows do not define MCP behavior.
 

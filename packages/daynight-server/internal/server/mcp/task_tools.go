@@ -38,6 +38,8 @@ type taskResourceOperations interface {
 type taskArguments struct {
 	ProjectID         string              `json:"projectId"`
 	TaskID            string              `json:"taskId"`
+	Type              model.TaskType      `json:"type"`
+	ParentID          *string             `json:"parentId"`
 	Title             *string             `json:"title"`
 	Description       *string             `json:"description"`
 	AssignedTo        *string             `json:"assignedTo"`
@@ -85,7 +87,7 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 				return ToolResult{}, err
 			}
 			var input taskArguments
-			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
 			if err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
 			}
@@ -112,7 +114,7 @@ func taskBusinessLimit(name string, fields map[string]json.RawMessage, version i
 		return nil
 	}
 	body := map[string]json.RawMessage{}
-	for _, key := range []string{"title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "status", "claimId", "removeDepends"} {
+	for _, key := range []string{"type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "status", "claimId", "removeDepends"} {
 		if value, ok := fields[key]; ok {
 			body[key] = value
 		}
@@ -181,10 +183,12 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 			return ToolResult{}, err
 		}
 		assigned := in.AssignedTo
-		if assigned == nil {
+		_, assignedPresent := fields["assignedTo"]
+		_, platformPresent := fields["requiredPlatform"]
+		if !assignedPresent && in.Type != model.TaskTypeGoal {
 			assigned = &actor.Principal.UserID
 		}
-		input := taskcore.CreateTask{Title: *in.Title, AssignedTo: assigned, RequiredPlatform: in.RequiredPlatform}
+		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent}
 		if _, exists := fields["status"]; exists {
 			input.Status = &in.Status
 		}
@@ -249,6 +253,9 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 	switch name {
 	case "task_update":
 		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents}
+		if _, ok := fields["parentId"]; ok {
+			input.ParentID = &in.ParentID
+		}
 		if _, ok := fields["assignedTo"]; ok {
 			input.AssignedTo = &in.AssignedTo
 		}

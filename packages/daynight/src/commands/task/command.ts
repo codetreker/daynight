@@ -9,6 +9,7 @@ import { taskDefinition } from "./definition.js";
 import { isTerminalTaskStatus } from "../../task/status.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { CliCancelledError } from "../../cli/cancellation.js";
+import { parseParent } from "./parent.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -22,11 +23,11 @@ const defaultDependencies: TaskCommandDependencies = {
 
 const taskPriority = (task: Task): number => task.status === "in_progress" ? 0 : task.ready ? 1 : task.status === "todo" ? 2 : task.status === "proposed" ? 3 : 4;
 
-const confirmGoalChange = async (context: CliContext, action: "status" | "delete", taskId: string, projectId: string, signal: AbortSignal): Promise<void> => {
-  const impact = action === "status"
+const confirmGoalChange = async (context: CliContext, action: "create" | "status" | "delete", taskId: string, projectId: string, signal: AbortSignal): Promise<void> => {
+  const impact = action === "create" || action === "status"
     ? "Its Tasks retain their statuses; new automatic claims are excluded. Already claimed Tasks continue."
     : "The Goal and all its Tasks become invisible; their Goal membership is retained. Running Tasks will stop through the existing process after a subsequent successful observation.";
-  context.stderr(`Goal ${taskId} in Project ${projectId}: ${impact}\n`);
+  context.stderr(`${action === "create" ? "New Goal" : `Goal ${taskId}`} in Project ${projectId}: ${impact}\n`);
   if (context.prompt?.isInteractive !== true) throw new Error("This Goal operation requires interactive confirmation or --force.");
   let answer: string;
   try { answer = await context.prompt.ask("Continue? [y/N]: ", signal); }
@@ -107,6 +108,13 @@ export const runTaskCommand = async (
   const title = command.options.get("--title") as string | undefined;
   const description = command.options.get("--description") as string | undefined;
   const status = command.options.get("--status") as TaskFilters["status"];
+  const type = command.options.get("--type") as "task" | "goal" | undefined;
+  const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
+  if (name === "create") {
+    if (type === "goal" && status === "proposed") throw new UsageError("Goal initial status must be todo, in_progress, done or cancelled.", help);
+    if (type !== "goal" && status !== undefined && status !== "proposed" && status !== "todo") throw new UsageError("Task initial status must be proposed or todo.", help);
+    if (type === "goal" && parentId != null) throw new UsageError("A Goal cannot have a parent.", help);
+  }
   const allowAgentsArgument = command.options.get("--allow-agents") as "true" | "false" | undefined;
   const allowAgents = allowAgentsArgument === undefined ? undefined : allowAgentsArgument === "true";
   const assignedToArgument = command.options.get("--assigned-to") as string | undefined;
@@ -139,7 +147,7 @@ export const runTaskCommand = async (
   const groupArgument = command.options.get("--group-id") as string | undefined;
   const targetsCursor = command.options.get("--targets-cursor") as string | undefined;
   if (!grouped && name === "list" && [limitArgument, cursor, groupArgument, targetsCursor].some(value => value !== undefined)) throw new UsageError("Pagination options require --group-by chain.", help);
-  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined)) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
+  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined || type !== undefined || parentId !== undefined)) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
   if ((groupArgument === undefined) !== (targetsCursor === undefined)) throw new UsageError("--group-id and --targets-cursor must be supplied together.", help);
   if (groupArgument !== undefined && cursor !== undefined) throw new UsageError("--cursor cannot be combined with --targets-cursor.", help);
   const readyLimit = limitArgument === undefined ? (grouped ? 20 : 10) : Number(limitArgument);
@@ -155,13 +163,14 @@ export const runTaskCommand = async (
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
   const changes: Omit<UpdateTaskInput, "version"> = {
     ...assignmentFields,
+    ...(parentId === undefined ? {} : { parentId }),
     ...(allowAgents === undefined ? {} : { allowAgents }),
     ...platformFields,
     ...(title === undefined ? {} : { title }),
     ...(description === undefined ? {} : { description }),
     ...dependencyFields,
   };
-  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, assignee, automatic-execution permission, platform requirement, or dependency change.", help);
+  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, assignee, automatic-execution permission, platform requirement, parent, or dependency change.", help);
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
@@ -204,9 +213,13 @@ export const runTaskCommand = async (
     const { taskObservationPartial } = await import("../../api/task-observation.js");
     operation.check();
     if (command.command.name === "create") {
-      const createAssignedTo = assignedTo === undefined ? (await api.getCurrentUser()).id : assignedTo;
+      if (type === "goal" && status !== undefined && isTerminalTaskStatus(status) && !command.options.has("--force")) {
+        await confirmGoalChange(context, "create", "", project.id, operation.signal);
+        operation.check();
+      }
+      const createAssignment = clearAssignedTo ? { assignedTo: null } : assignedTo !== undefined ? { assignedTo } : type === "goal" ? {} : { assignedTo: (await api.getCurrentUser()).id };
       operation.check();
-      const input: CreateTaskInput = { title: title!, ...(status === undefined ? {} : { status: status as NonNullable<CreateTaskInput["status"]> }), ...(description === undefined ? {} : { description }), assignedTo: createAssignedTo, ...platformFields, ...dependencyFields };
+      const input: CreateTaskInput = { title: title!, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(status === undefined ? {} : { status }), ...(description === undefined ? {} : { description }), ...createAssignment, ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;
@@ -220,7 +233,7 @@ export const runTaskCommand = async (
         partialObservation = page.partial;
         return command.options.has("--json") ? `${stringifyApiJson(page)}\n` : renderTaskWorkPage(page, project.id, assignedTo ?? "me");
       }
-      const filters: TaskFilters = { ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
+      const filters: TaskFilters = { ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const observed = await api.listObservedTasks(project.id, filters);
       partialObservation = observed.partial;
       unsupportedObservation = observed.unsupported;
@@ -231,7 +244,7 @@ export const runTaskCommand = async (
       return command.options.has("--json") ? renderTaskListJson(tasks) : renderTaskSummaryList(tasks);
     }
     if (command.command.name === "ready") {
-      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
+      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...(parentId === undefined ? {} : { parentId }), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
       operation.check();
       return command.options.has("--json") ? renderTaskJson(tasks) : tasks.length === 0 ? "No ready tasks.\n" : renderTaskList(tasks);
     }

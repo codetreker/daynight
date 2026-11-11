@@ -8,6 +8,10 @@ also requires [write safety](write-safety.md).
 ```bash
 daynight task create --title "Improve installation" --description "Document prerequisites and verify setup."
 daynight task create --title "Implement confirmed work" --status todo
+daynight task create --type goal --title "Improve installation"
+daynight task create --parent <goal-id> --title "Document prerequisites" --status todo
+daynight task list --type goal --json
+daynight task list --parent <goal-id> --json
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task list --ready --assigned-to me --json
@@ -17,14 +21,21 @@ daynight task show <task-id> --json
 ```
 
 Ordinary Task creation accepts only `--status proposed|todo`: default proposed is an unconfirmed
-suggestion; todo is confirmed work, including internal multi-step Tasks. Defaults
-are the signed-in assignee and automatic execution disabled; override assignment
-with `--assigned-to <user-uuid>`. Creation returns text, not `--json`.
+suggestion; todo is confirmed work, including internal multi-step Tasks. Goal
+creation defaults to todo and accepts todo, in_progress, done and cancelled. Both
+default to the signed-in assignee; override it with `--assigned-to <user-uuid>`
+or create an unassigned resource with `--clear-assigned-to`. These options conflict.
+Ordinary Tasks default to automatic execution disabled. Creation returns text, not
+`--json`.
 
 Task resources require `type` (`task` or `goal`) and nullable `parentId`.
-Ordinary creation produces `type=task` with no parent; public creation/update
-options expose neither field. CLI list/search select ordinary Tasks and expose
-no type/parent filters; `task show` can read a known Goal.
+Create, list and search default to `task`; `--type goal` selects Goals. Create,
+update, list, search and ready accept `--parent <goal-id|none>`. For queries,
+omission does not filter by parent, `none` selects Tasks without a Goal and a UUID
+selects direct children of that Goal. On create omission means no parent; on update
+it preserves the current parent. `none` writes null and a UUID sets the Goal.
+Goals cannot have parents. Membership is independent of Task dependencies, status,
+assignee and materials.
 
 Full Goal reads include `progress:{total,done,cancelled,unfinished}` for visible
 direct ordinary children, independently of dependency chains. Counts are
@@ -43,10 +54,11 @@ deletion without implying a child-row or version rewrite.
 | `task list --status in_progress --group-by chain` | One page of the selected user's in-progress chains/independent Tasks; see [grouped work](session-reads.md#grouped-work). |
 
 List filters are `--ready`, `--assigned-to <user-uuid|me|unassigned>`,
-`--allow-agents true|false`, and `--compatible-platform windows|linux|macos`.
+`--allow-agents true|false`, `--compatible-platform windows|linux|macos`,
+`--type task|goal` and `--parent <goal-id|none>`.
 They combine with AND before pagination and persist on every page. Platform
 matching includes unrestricted Tasks and exact matches. `me` uses response
-identity even on empty pages. Ready supports permission/platform filters but no
+identity even on empty pages. Ready supports parent and permission/platform filters but no
 assignee filter; use `task list --ready --assigned-to me`. Readiness, assignment
 and automatic permission are independent.
 
@@ -60,14 +72,14 @@ descriptions and separate materials required for the decision.
 
 ## Search
 
-`task search <expression>` searches ordinary Task IDs, full titles and Markdown
+`task search <expression>` searches Task or Goal IDs, full titles and Markdown
 descriptions in one Project, including done/cancelled. Pass one expression argument; use `--` for
 a leading dash. Grammar: uppercase `AND`, `OR`, `NOT`, parentheses, quoted phrases,
 `title:`, `description:`, `id:`; adjacency means AND. Matching is literal substring
 with ASCII case folding.
 
-Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents` and
-`--compatible-platform`, not `--all`; it traverses all pages in server relevance
+Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents`,
+`--compatible-platform`, `--type` and `--parent`, not `--all`; it traverses all pages in server relevance
 order. Matches and actual parent Goal context are compact, not full Tasks.
 Text/JSON omit assignee and update time;
 JSON fields are id, type, parentId, projectId, title, status, cancelledAt, context
@@ -81,6 +93,8 @@ changes.
 
 ```bash
 daynight task update <task-id> --title "Clarify installation" --if-version <observed-version>
+daynight task update <task-id> --parent <goal-id> --if-version <observed-version>
+daynight task update <task-id> --parent none --if-version <observed-version>
 daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-version>
 daynight task update <task-id> --allow-agents true --required-platform linux --if-version <observed-version>
 ```
@@ -91,8 +105,10 @@ preserves it. `--required-platform windows|linux|macos` conflicts with
 `--clear-required-platform`.
 
 `assignedTo` is one nullable human responsible, independent of properties/Worker
-identity. Creation resolves the current account unless given an explicit UUID;
-lookup failure prevents creation. Assignment writes accept UUIDs, not the list
+identity. Ordinary Task creation resolves the current account unless given an
+explicit UUID or `--clear-assigned-to`; lookup failure prevents creation. Goal
+creation with neither option omits `assignedTo` and the service defaults it to
+the caller. Assignment writes accept UUIDs, not the list
 filters me/unassigned. `--clear-assigned-to` clears assignment and conflicts with
 `--assigned-to`.
 
@@ -114,9 +130,9 @@ Goal read states are todo, in_progress, done and cancelled. They
 have no parent, platform restriction or prerequisites; automatic execution is
 disabled and they are never ready.
 
-Without `--force`, before a Goal is set to done/cancelled, the CLI warns on stderr that child Task
+Without `--force`, before a Goal is created or set to done/cancelled, the CLI warns on stderr that child Task
 states remain, new automatic claims are excluded and existing claims continue.
-Goal terminal-status changes and deletion require interactive confirmation or
+Goal terminal-status creation, changes and deletion require interactive confirmation or
 `--force`; noninteractive calls without force do not submit. Force skips only
 the Goal prompt, preserving service business/version checks. Ordinary Tasks and
 nonterminal Goal status changes do not prompt.

@@ -516,8 +516,9 @@ use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked
 summaries; request `full` for complete content. Task full and summary schemas
 require `type` and nullable `parentId`; the Goal full schema also describes
-`progress`. Current public Task writes create ordinary tasks only. Step page cursors bind the parent
-version and reject
+`progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
+filters select Goal membership, and Task updates can assign or clear a Parent.
+Step page cursors bind the parent version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
 messages in oldest-first order; an explicit claim ID supplies agent attribution.
@@ -1936,19 +1937,19 @@ separate API integration entry.
 ### Session HTTP tests
 
 The regular `internal/server/session` suite executes actual routes and
-`RequestAuthentication` with controlled credential results and direct typed
-Session use-case callbacks. The private `serviceCalls` binding projects existing
-production service methods; test-only aliases supply the same calls without
-starting the service, engine, DAO or gateway. Tests supply valid principals,
-snapshots, events and returned bytes and verify context, canonical addresses,
-fences, inputs, outputs and call counts.
+`RequestAuthentication`. Adapter cases use direct typed Session use-case
+callbacks, supplied through the private `serviceCalls` binding. Protocol
+component cases assemble the real Session service, engine and identity service
+with controlled DAO facts; they retain channel fences, serialization, startup
+evidence and terminal recovery. Tests verify context, canonical addresses,
+fences, inputs, outputs and call counts without a database or gateway.
 
 Configured calls are required, and unknown, extra or missing calls fail.
 Foreground operations have finite expected counts; repeated channel polling is
 scenario-declared. Callback barriers and cancellation observe each operation's
-lifetime without a global goroutine order. Supplied replies remain independent
-of captured requests. A mock result does not implement lower business rules,
-query behavior or transaction persistence.
+lifetime without a global goroutine order. Supplied DAO facts and replies remain
+independent of captured requests. A mock result does not establish physical
+transaction persistence.
 
 Run the regular suite from this module without database or UniAuth fixtures:
 
@@ -2069,6 +2070,25 @@ one checked-in configuration. Package and function thresholds remain 85% and
 Each raw profile passes an exact statement comparison strictly greater than
 90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
 coverage blocks without loading the complete profile into one string.
+
+Each coverage invocation also retains the original `go test -json` bytes under
+`.tmp/go-test-evidence/module/run-*/` or
+`.tmp/go-test-evidence/startup-shutdown/run-*/`. Inspect `go-test.jsonl` when the
+coverage summary omits a test's failure detail. `go-test.complete.json` records
+the captured byte count and the Go process's exit code or signal; it confirms
+complete capture, including a failed test run, rather than a passing result.
+A missing marker means the log may be partial. `go-test.failed.json` records a
+capture failure and prevents success even if another invocation publishes a
+completion marker afterward. Later invocations use new
+directories, preserving earlier evidence. The corresponding CI artifacts include
+these files even when validation fails.
+
+Capture preserves the same Go invocation, parameters and coverage calculation.
+File or forwarding errors fail validation. The existing command supervisor owns
+the coverage process group, with a 30-minute module bound and the existing
+12-minute lifecycle bound; per-package test and CI job limits still apply.
+The [failure evidence decision](../../.agents/notes/implemented/testing/2026-11-11-go-test-failure-evidence.md)
+records why the raw stream is retained separately from the coverage summary.
 
 Production packages have disjoint coverage owners:
 

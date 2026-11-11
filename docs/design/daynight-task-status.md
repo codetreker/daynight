@@ -103,7 +103,7 @@ ended = done + cancelled
 
 CLI 通过既有 set-status 提交 cancelled，继续支持 daynight/dn、项目发现、lossless int64、精确审阅版本和无自动重放。--claim-id 仅选择 done 完成，不从环境或 Task 推断，也不在拒绝后回退普通完成。
 
-MCP 创建 schema 接受 proposed/todo，task_list/task_set_status schema 和描述识别五态，状态写入复用同一 service 事务；claimId⇒done 条件保持。full/summary、节点预算、截断与 read-full 引用不变。取消不增加新的工具或操作流程往返；字节增加可能触发现有预算截断。
+MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_list/task_set_status 识别相应状态，状态写入复用同一 service 事务，claimId⇒done 条件保持。普通 Task 的取消不增加新的工具或操作流程往返。
 
 CLI/Web 解析器接受 released+cancelled 并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 

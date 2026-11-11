@@ -996,9 +996,12 @@ index. Overview positioning adjusts filters that hide its target. The
 mutation and presentation mechanisms.
 
 Project task search submits the original expression to the server, matching IDs,
-complete titles and Markdown descriptions, including completed Tasks and chain members. Its draft, filters and cursor pages are
-independent of the ordinary lists. Clearing the search restores the ordinary
-view and its scroll position. Search results open a live Task detail, including
+complete titles and Markdown descriptions, including completed Tasks and chain
+members. Nonempty draft edits do not change the applied query. Clicking × or
+deleting the input to empty clears the search without submitting an empty query,
+cancels in-flight reads and keeps focus in the input. Search filters and cursor
+pages reset; the ordinary view retains its filters, pages and scroll position.
+Search results open a live Task detail, including
 when project graph synchronization fails. Errors and empty results remain
 distinct; the server owns matching, ordering and context. The
 [requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
