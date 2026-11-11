@@ -754,9 +754,9 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
     await coordinator.tick();
     const started = stream === "helper" ? rootReady : ready;
     await vi.waitFor(async () => { await expect(access(started)).resolves.toBeUndefined(); }, { timeout: 15_000, interval: 20 });
-    if (stream === "child" || stream === "helper") {
+    if (stream === "child" && process.platform !== "win32") {
       await vi.waitFor(() => { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }, { timeout: 12_000, interval: 20 });
-    } else {
+    } else if (stream === "stdout" || stream === "stderr") {
       await vi.waitFor(() => {
         expect(gitProcess.child?.exitCode).toBe(0);
         expect(stream === "stdout" ? gitProcess.stderrClosed : gitProcess.stdoutClosed).toBe(true);
@@ -770,12 +770,16 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
     await vi.waitFor(async () => { await expect(access(ready)).resolves.toBeUndefined(); }, { timeout: 12_000, interval: 20 });
     if (stream === "child") {
       expect(gitProcess.child?.exitCode).toBeNull();
-      expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
+      expect(gitProcess.child?.signalCode).toBeNull();
+      expect(gitProcess.childClosed).toBe(false);
+      if (process.platform !== "win32") { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }
     }
     if (stream === "helper") {
       await vi.waitFor(() => {
         expect(gitProcess.child).toBeDefined();
         expect(gitProcess.child!.exitCode !== null || gitProcess.child!.signalCode !== null).toBe(true);
+        expect(gitProcess.childClosed).toBe(true);
+        expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
         expect(gitProcess.stopHelper?.exitCode).toBe(0);
       }, { timeout: 12_000, interval: 20 });
       expect(gitProcess.helperStdoutClosed).toBe(false);
