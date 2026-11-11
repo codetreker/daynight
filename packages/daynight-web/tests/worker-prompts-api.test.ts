@@ -67,6 +67,26 @@ describe('principal-admitted prompt API', () => {
     await expect(saveWorkerPrompt(user, input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
     await expect(saveWorkerPrompt(user, input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
   });
+  it('reports a receipt only after principal, body and submission validation', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response(resource('user', userId, '1', 'wrong', at)))
+      .mockResolvedValueOnce(response(resource('user', userId, '1', 'new', at), 200, projectId))
+      .mockResolvedValueOnce(response(resource('user', userId, '1', 'new', at)));
+    vi.stubGlobal('fetch', fetch);
+    const onReceipt = vi.fn(), gate = { ...admission(), onReceipt }, input = { expectedUserId: userId, revision: '0', text: 'new' };
+    await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(onReceipt).not.toHaveBeenCalled();
+    const saved = await saveWorkerPrompt(user, input, signal(), gate);
+    expect(onReceipt).toHaveBeenCalledOnce(); expect(onReceipt).toHaveBeenCalledWith(saved);
+  });
+  it('reports only a validated server refusal as a known rejection', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response({ error: { code: 'version_conflict', message: 'changed', requestId: 'save-1' } }, 409))
+      .mockResolvedValueOnce(response({ invalid: true }, 409)).mockRejectedValueOnce(new Error('offline'));
+    vi.stubGlobal('fetch', fetch);
+    const onRejection = vi.fn(), gate = { ...admission(), onRejection }, input = { expectedUserId: userId, revision: '0', text: 'new' };
+    for (let i = 0; i < 3; i++) await expect(saveWorkerPrompt(user, input, signal(), gate)).rejects.toBeDefined();
+    expect(onRejection).toHaveBeenCalledOnce(); expect(onRejection).toHaveBeenCalledWith(expect.objectContaining({ code: 'version_conflict' }));
+  });
   it('counts the complete escaped JSON bytes and refuses invalid or oversized writes before dispatch', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const gate = admission(), base = { expectedUserId: userId, revision: '0', text: '\n' };
