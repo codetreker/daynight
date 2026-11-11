@@ -29,7 +29,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.type, t.parent_id::text, left(t.title, $2), char_length(t.title) > $2,
 		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
-		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
+		FROM task_resource_rows t WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
 	if err != nil {
 		return nil, pg.QueryError("read task sync", err)

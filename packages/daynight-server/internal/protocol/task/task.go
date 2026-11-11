@@ -18,6 +18,7 @@ import (
 )
 
 type REST struct {
+	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Properties        map[string]json.RawMessage `json:"properties"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
@@ -93,7 +94,7 @@ func restTask(t model.Task, extended, copyValues bool) (REST, error) {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	result := REST{ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
+	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
 	if extended {
 		return result, nil
 	}
@@ -144,6 +145,7 @@ func EncodeREST(w io.Writer, t model.Task, extended bool, max int64) (int64, err
 }
 
 type MCPFull struct {
+	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Projection        string                     `json:"projection"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
@@ -204,7 +206,7 @@ func MCPTaskSummary(t model.Task) MCPSummary {
 }
 func mcpTask(t model.Task, copyValues bool) MCPFull {
 	properties := properties(t.Properties, copyValues)
-	return MCPFull{Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
+	return MCPFull{Progress: t.Progress, Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
 		Status: t.Status, Version: strconv.FormatInt(t.Version, 10), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues),
 		ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues),

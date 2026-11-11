@@ -74,7 +74,7 @@ const second = await search('quartz', first.nextCursor);
 const expectedIds = [...first.items, ...second.items].map((item: { id: string }) => item.id);
 assert.equal(new Set(expectedIds).size, 21);
 assert.ok(expectedIds.includes(child.id) && expectedIds.includes(description.id) && expectedIds.includes(longTitle.id) && expectedIds.includes(historical.id));
-assert.equal([...first.items, ...second.items].find((item: { id: string }) => item.id === child.id).context.taskId, goal.id);
+assert.equal([...first.items, ...second.items].find((item: { id: string }) => item.id === child.id).context, null);
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 900 } });
@@ -137,12 +137,12 @@ try {
 
   await submit('Quartz child');
   await expect(page.getByRole('button', { name: 'Open task: Quartz child' })).toBeVisible();
-  await expect(page.getByText('[Goal] Search acceptance context updated')).toBeVisible();
+  await expect(page.getByText('[Goal] Search acceptance context updated')).toHaveCount(0);
   await submit('Quartz historical completed');
   await expect(page.getByRole('button', { name: 'Open task: Quartz historical completed' })).toBeVisible();
   await submit('quartz-ending');
   await expect(page.getByRole('button', { name: `Open task: ${longTitle.title}` })).toBeVisible();
-  done('Goal context, completed task and long-title tail');
+  done('unassigned context, completed task and long-title tail');
 
   await submit('no-match-fc954b');
   await expect(page.getByText('No matching tasks', { exact: false })).toBeVisible();

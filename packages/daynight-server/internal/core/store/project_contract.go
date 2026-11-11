@@ -65,6 +65,7 @@ type ProjectWriteDAO interface {
 type TaskWriteDAO interface {
 	Task(context.Context, string) (model.Task, error)
 	TasksByID(context.Context, []string) ([]model.Task, error)
+	VisibleTaskIDs(context.Context, []string) ([]string, error)
 	ActiveDependentIDs(context.Context, string) ([]string, error)
 	Reachable(context.Context, string, string, DependencyReplacement) (bool, error)
 	CreateTask(context.Context, string, TaskWrite) (model.Task, error)

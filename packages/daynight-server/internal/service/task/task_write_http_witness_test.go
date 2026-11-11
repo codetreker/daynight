@@ -236,6 +236,9 @@ func (d *writeWitnessTaskDAO) Task(context.Context, string) (model.Task, error) 
 func (d *writeWitnessTaskDAO) TasksByID(context.Context, []string) ([]model.Task, error) {
 	panic(d.f.unexpected("TaskWriteDAO.TasksByID"))
 }
+func (d *writeWitnessTaskDAO) VisibleTaskIDs(context.Context, []string) ([]string, error) {
+	panic(d.f.unexpected("TaskWriteDAO.VisibleTaskIDs"))
+}
 func (d *writeWitnessTaskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ActiveDependentIDs"))
 }

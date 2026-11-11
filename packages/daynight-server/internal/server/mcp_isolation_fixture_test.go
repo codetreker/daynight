@@ -94,6 +94,12 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 		summary.Description = ""
 		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: summary}}}, nil
 	}
+	reader.TaskBodiesFn = func(ctx context.Context, pid string, ids []string) ([]model.Task, error) {
+		counts.Called("task")
+		mcpAttachmentCheck(t, pid, project.ID)
+		mcpAttachmentCheck(t, ids, []string{target.ID})
+		return []model.Task{mcpCloneFixture(target)}, nil
+	}
 	reader.TaskFn = func(ctx context.Context, pid, id string) (model.Task, error) {
 		counts.Called("task")
 		mcpAttachmentCheck(t, []string{pid, id}, []string{project.ID, target.ID})

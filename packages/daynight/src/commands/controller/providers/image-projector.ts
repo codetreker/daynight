@@ -1,5 +1,5 @@
 import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt, type ImageError, type ImageLocator, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type ValidatedImage } from "../../../session/image-values.js";
-import type { NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
+import type { MarkdownTimelineMetadata, NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
 import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
 
@@ -28,6 +28,7 @@ const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.o
 /** Native positions and capture share the existing journal, ACK and resource pipeline. */
 export class ProviderImageProjector {
   private readonly entries = new Map<string, ProviderEntry>();
+  private readonly metadata = new Map<string, MarkdownTimelineMetadata>();
   private readonly pending = new Map<string, Pending>();
   private readonly cleanup = new Set<NativeImagePayload>();
   private work: Promise<void> = Promise.resolve();
@@ -67,6 +68,8 @@ export class ProviderImageProjector {
       if (restored.entry.content.some(part => (part.type === "image" || part.type === "image_unavailable") && !images.has(part.imageId))) throw new Error("Committed native image has no capture owner.");
       const { entrySeq: _entrySeq, ...entry } = restored.entry;
       this.entries.set(entry.entryId, entry);
+      // A publication receipt proves image ownership, not Markdown completeness.
+      this.metadata.delete(entry.entryId);
       for (const committed of restored.slots) {
         const { state: saved, key, label, original } = committed, native = saved.request.nativeSource!;
         const incoming = payloads.find(slot => !handled.has(slot) && canonicalImageJson(slot.native) === canonicalImageJson(native));
@@ -94,7 +97,7 @@ export class ProviderImageProjector {
     if (failures.length) throw new AggregateError(failures, "Committed native image resources could not be adopted.");
   }
 
-  publish(input: ProviderEntry, slots: readonly NativeImageSlot[] = []): void {
+  publish(input: ProviderEntry, slots: readonly NativeImageSlot[] = [], metadata?: MarkdownTimelineMetadata): void {
     if (this.stopped) {
       const failures: unknown[] = [];
       for (const slot of slots) try { this.releasePayload(slot.payload); } catch (error) { failures.push(error); }
@@ -147,7 +150,10 @@ export class ProviderImageProjector {
       }
       const enriched = parts?.some(part => part.type !== "text" && part.type !== "resource") ? { imageProjectionError: "imageProjectionError" in input ? input.imageProjectionError ?? null : null } : {};
       const entry = parts ? input.kind === "tool_call" ? { ...input, ...enriched, output: parts } : { ...input, ...enriched, content: parts } as ProviderEntry : input;
-      this.entries.set(input.entryId, entry); this.options.onTimeline(entry);
+      this.entries.set(input.entryId, entry);
+      if (metadata) this.metadata.set(input.entryId, structuredClone(metadata));
+      else this.metadata.delete(input.entryId);
+      this.options.onTimeline(entry, metadata);
       // The durable timeline callback precedes occurrence registration. The ACK
       // is checked again by the shared capture owner before any source is read.
       for (const pending of registrations) this.options.onImageOccurrence?.(pending.saved.request.occurrence, pending.saved.request.nativeSource);
@@ -198,7 +204,7 @@ export class ProviderImageProjector {
     const content = contentOf(entry); if (!content) return;
     const parts = content.map(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId ? pending.saved.part : part);
     const updated = entry.kind === "tool_call" ? { ...entry, output: parts } : { ...entry, content: parts } as ProviderEntry;
-    this.options.onTimeline(updated); this.entries.set(entry.entryId, updated);
+    this.options.onTimeline(updated, this.metadata.get(entry.entryId)); this.entries.set(entry.entryId, updated);
   }
   private releasePayload(payload: NativeImagePayload): void {
     if (payload.kind !== "file") return;
@@ -323,5 +329,6 @@ export class ProviderImageProjector {
     }
     if (failures.length) throw new AggregateError(failures, "Native image leases could not be released.");
     this.entries.clear();
+    this.metadata.clear();
   }
 }

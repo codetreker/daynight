@@ -1,5 +1,8 @@
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
+import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
+import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -21,9 +24,10 @@ import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } fr
 import { NativeRpcError } from "./providers/native-rpc.js";
 import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
+import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
 import { syncControllerImageHistory } from "./media/history-sync.js";
-import type { NativeProvider, ProviderOptions, ProviderState } from "./providers/types.js";
+import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
 export const runController = async (options: { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string }): Promise<void> => {
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
@@ -31,12 +35,14 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
   const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(options.homeDirectory).stateDirectory });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
+  let nativeReadPolicy: NativeReadPolicy | null = null;
   let nativeImages: ProviderState["images"];
   let projectionFailure: string | null = null, providerFailure: string | null = null;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
   let historyWork: Promise<void> | null = null, historyRequested = false;
   let historyTimer: NodeJS.Timeout | null = null;
+  let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
   let cleanupInputStarted = false;
   let cleaning = isCleaningGeneration(journal.listOperations(), ticket.executionGeneration);
@@ -92,7 +98,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   const relay = createControllerRelay(ticket, journal, {
-    onConnection: connected => { synchronized = connected; if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
+    onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: diagnostic,
     readState,
     onAcknowledged: () => {
@@ -102,6 +108,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     },
     beforeImage: () => synchronizeImageHistory(),
     onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
+    acquireCaptureReadPolicy: request => markdownCaptures.acquireReadPolicy(request),
     onCommand: async command => {
       if (command.sessionId !== ticket.sessionId || command.claimId !== ticket.claimId || command.testExecutionId !== ticket.testExecutionId || command.executionGeneration !== ticket.executionGeneration) throw new Error("Stale session command.");
       const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload, intent: command });
@@ -134,7 +141,23 @@ export const runController = async (options: { homeDirectory: string; provider: 
       });
     },
   });
-  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: relay.capture, beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
+  const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
+    writable: () => !stopping && !cleaning && synchronized,
+    fence: () => { const fence = relay.currentFence?.(); return fence ? JSON.stringify(fence) : null; },
+    nativeReadPolicy: () => nativeReadPolicy,
+    acquireExternalPolicy: externalImages.acquire,
+    onReceipt: (request, receipt) => markdownTimeline.receipt(request, receipt),
+    onFailure: (occurrence, error) => markdownTimeline.failure(occurrence, error),
+  });
+  const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
+  // Source admission and AST analysis page the durable index independently;
+  // native callbacks only persist text and never wait for media work.
+  markdownTimer = setInterval(() => {
+    void markdownTimeline.tick().catch(fail);
+    void markdownCaptures.tick().catch(fail);
+  }, 250);
   async function synchronizeImageHistory(): Promise<void> {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     if (stopping || !relay.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
@@ -177,12 +200,17 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     stopping = true;
+    if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; }
+    markdownCaptures.invalidate();
+    const externalImagesClosed = externalImages.close().catch(fail);
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     shutdownPromise = (async () => {
     try {
       await startup?.catch(() => {});
       try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
+      await markdownCaptures.stop();
       await provider?.close(); await Promise.all(processCaptures);
+      await markdownTimeline.stop();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
       if (projectionFailure) {
         // Drain committed events before recording a visible gap. Never discard an
@@ -194,6 +222,9 @@ export const runController = async (options: { homeDirectory: string; provider: 
     }
     catch (error) { fail(error); }
     finally {
+      await externalImagesClosed;
+      await markdownCaptures.stop().catch(fail);
+      await markdownTimeline.stop().catch(fail);
       historyAbort.abort(new Error("Controller history synchronization stopped."));
       await historyWork?.catch(error => diagnostic(String(error)));
       try { await relay.close(); } catch (error) { fail(error); }
@@ -305,6 +336,24 @@ export const runController = async (options: { homeDirectory: string; provider: 
       if (provider) void shutdown();
     }
   };
+  const adoptNativePublication = <T extends NativeInputPublicationResult | NativeInputPublicationQuery>(result: T): T => {
+    let current = result;
+    nativeEvent(() => {
+      journal.assertUsable();
+      if (result.state !== "committed") return;
+      const { entrySeq: _entrySeq, ...entry } = result.view.entry, identity = result.receipt.identity;
+      const intent = journal.getInputIntent(identity.operationId);
+      const command = intent?.sha256 === identity.intentSha256 ? restoreCanonicalInputIntent(intent, identity.operationId) : null;
+      const text = command?.kind === "send_message" ? command.payload.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : null;
+      const bodies = entry.content.flatMap(part => part.type === "text" || part.type === "markdown" && part.text.length > 0 ? [part.text] : []);
+      const complete = text !== null && bodies.length === 1 && bodies[0] === text;
+      markdownTimeline.adoptCommitted(entry, { complete, format: "markdown", truncated: !complete });
+      const displayed = journal.getTimelineEntry(entry.entryId);
+      if (!displayed || displayed.kind !== "user_message") throw new Error("Native publication lost its current committed message.");
+      current = { ...result, view: { ...result.view, entry: displayed } };
+    });
+    return current;
+  };
   const signal = () => { void shutdown(); };
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
@@ -331,6 +380,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
       ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
+      onNativeReadPolicy: policy => { nativeReadPolicy = policy; if (!policy) markdownCaptures.invalidateNativeReadPolicy(); },
+      drainNativeReadPolicy: () => markdownCaptures.drainNativeReadPolicy(),
       onFatalError: error => {
         if (providerFailure) return;
         providerFailure = error.message; fail(error);
@@ -344,11 +395,14 @@ export const runController = async (options: { homeDirectory: string; provider: 
       imageRuntime: {
         publishNativeInputAssociation: request => {
           const result = journal.publishNativeInputAssociation(request);
-          nativeEvent(() => journal.assertUsable());
-          return result;
+          return adoptNativePublication(result);
         },
-        patchNativeImagePart: (occurrence, part) => journal.patchNativeImagePart(occurrence, part),
-        queryNativeInputAssociation: identity => journal.queryNativeInputAssociation(identity),
+        patchNativeImagePart: (occurrence, part) => {
+          const current = journal.patchNativeImagePart(occurrence, part), { entrySeq: _entrySeq, ...entry } = current;
+          nativeEvent(() => { markdownTimeline.adoptCommitted(entry); });
+          return current;
+        },
+        queryNativeInputAssociation: identity => adoptNativePublication(journal.queryNativeInputAssociation(identity)),
         getIntent: operationId => {
           const intent = journal.getInputIntent(operationId), operation = journal.getOperation(operationId);
           return intent && operation ? { sha256: intent.sha256, command: restoreCanonicalInputIntent(intent, operationId), state: operation.state } : null;
@@ -379,8 +433,9 @@ export const runController = async (options: { homeDirectory: string; provider: 
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
       hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
-      onTimeline: entry => nativeEvent(() => {
-        journal.projectTimeline(providerDisplayEntry(entry));
+      onTimeline: (entry, metadata) => nativeEvent(() => {
+        const displayed = providerDisplayEntry(entry);
+        markdownTimeline.accept(displayed, metadata && { ...metadata, truncated: metadata.truncated || JSON.stringify(displayed) !== JSON.stringify(entry) });
         if (entry.kind === "interaction") {
           const id = entry.interaction.interactionId;
           if (cleaning && cleanupInputStarted && !knownInteractions.has(id) && entry.interaction.state === "pending") cleanupInteractions.add(id);

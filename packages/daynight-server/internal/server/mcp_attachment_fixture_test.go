@@ -428,6 +428,14 @@ var _ store.AttachmentMutationDAO = (*mcpAttachmentDAO)(nil)
 var _ store.PrivateTransferDAO = (*mcpTransferDAO)(nil)
 var _ store.TaskReader = (*mcpAttachmentTaskReader)(nil)
 
+func (d *mcpAttachmentTaskReader) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskBodies")
+	panic("unreachable")
+}
+func (d *mcpAttachmentTaskReader) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.GoalProgresses")
+	panic("unreachable")
+}
 func (d *mcpAttachmentTaskReader) Task(p0 context.Context, p1 string, p2 string) (model.Task, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.Task")
 	panic("unreachable")

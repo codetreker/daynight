@@ -40,6 +40,8 @@ runtime information as healthy.
 
 Monitoring storage failures do not hide host telemetry or imply a Worker is idle.
 The list is limited to the fields in the batch summary; richer diagnostics require
-opening detail. Current permission checks and client withdrawal prevent a retained
+opening detail. The [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
+removes admission reasons and monitoring times from list cards. Current permission
+checks and client withdrawal prevent a retained
 page from restoring inaccessible associations, but the observation remains a
 snapshot and does not establish claim ownership or control execution.

@@ -107,6 +107,17 @@ func (f *taskFailureFixture) expectPrerequisites(t *testing.T, prerequisites []m
 		}
 		return prerequisites, nil
 	}
+	f.tasks.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+		if ctx != f.ctx {
+			t.Fatal("dependency visibility query changed context")
+		}
+		for _, id := range ids {
+			if !slices.ContainsFunc(prerequisites, func(task model.Task) bool { return task.ID == id }) {
+				t.Fatalf("unexpected dependency visibility query: %v", ids)
+			}
+		}
+		return slices.Clone(ids), nil
+	}
 }
 
 func TestTaskReadAndWriteDAOFailures(t *testing.T) {

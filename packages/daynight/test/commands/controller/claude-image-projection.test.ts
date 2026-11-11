@@ -1,15 +1,45 @@
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ClaudeProjection } from "../../../src/commands/controller/providers/claude-image-projection.js";
-import type { NativeInput, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { MarkdownTimelineMetadata, NativeInput, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureRequest } from "../../../src/session/image-values.js";
 
 const fixture = () => {
-  const saved = new Map<string, unknown>(), entries: ProviderEntry[] = [], occurrences: unknown[] = [];
-  const options = { onTimeline: (entry: ProviderEntry) => entries.push(structuredClone(entry)), imageOccurrenceAcknowledged: () => false, onImageOccurrence: (occurrence: unknown) => { occurrences.push(occurrence); return true; }, imageRuntime: { readState: (key: string) => saved.get(key), writeState: (key: string, value: unknown) => saved.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
-  return { options, entries, saved, occurrences, sessionId: randomUUID() };
+  const saved = new Map<string, unknown>(), entries: ProviderEntry[] = [], metadata: (MarkdownTimelineMetadata | undefined)[] = [], occurrences: unknown[] = [];
+  const options = { onTimeline: (entry: ProviderEntry, value?: MarkdownTimelineMetadata) => { entries.push(structuredClone(entry)); metadata.push(value); }, imageOccurrenceAcknowledged: () => false, onImageOccurrence: (occurrence: unknown) => { occurrences.push(occurrence); return true; }, imageRuntime: { readState: (key: string) => saved.get(key), writeState: (key: string, value: unknown) => saved.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
+  return { options, entries, metadata, saved, occurrences, sessionId: randomUUID() };
 };
 const image = { type: "image", source: { type: "url", url: "https://example.test/original.png" } };
+
+test.each(["text", "thinking"])("%s block stop closes the streamed Markdown body at its original identity", async kind => {
+  const f = fixture(), projection = new ClaudeProjection(f.options, f.sessionId, () => null);
+  try {
+    projection.stream({ type: "stream_event", event: { type: "message_start", message: { id: "message" } } });
+    projection.stream({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: kind } } });
+    projection.stream({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: `${kind}_delta`, [kind]: "![preview](local.png)" } } });
+    projection.stream({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    expect(f.entries).toHaveLength(2);
+    expect(f.entries[1]).toEqual(f.entries[0]);
+    expect(f.metadata).toEqual([{ complete: false, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }]);
+  } finally { await projection.close(); }
+});
+
+test("bounded streaming keeps truncation through later deltas and native block completion", async () => {
+  const f = fixture(), projection = new ClaudeProjection(f.options, f.sessionId, () => null);
+  try {
+    projection.stream({ type: "stream_event", event: { type: "message_start", message: { id: "message" } } });
+    projection.stream({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } });
+    for (const text of ["a".repeat(200_001), "![preview](local.png)"]) projection.stream({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } });
+    projection.stream({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    expect(f.metadata.map(value => value?.truncated)).toEqual([true, true, true]);
+    expect(f.metadata.at(-1)).toEqual({ complete: true, format: "markdown", truncated: true });
+    for (const entry of f.entries) {
+      expect(entry.kind).toBe("assistant_message");
+      if (entry.kind !== "assistant_message" || entry.content[0]?.type !== "text") throw new Error("Expected the streamed text body.");
+      expect(entry.content[0].text.length).toBeLessThan(200_100);
+    }
+  } finally { await projection.close(); }
+});
 
 test("stream, final blocks and cold history preserve the same image, text and reasoning identities", async () => {
   const f = fixture(), projection = new ClaudeProjection(f.options, f.sessionId, () => null);

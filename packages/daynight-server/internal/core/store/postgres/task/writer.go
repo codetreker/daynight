@@ -31,9 +31,24 @@ func (tx *Writer) TasksByID(ctx context.Context, ids []string) ([]model.Task, er
 	return tx.tasks(ctx, `t.id = ANY($2::uuid[])`, ids, "read prerequisites")
 }
 
+// VisibleTaskIDs admits only live ordinary resources as new dependency targets.
+func (tx *Writer) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, error) {
+	rows, err := tx.tx.Query(ctx, `SELECT id::text FROM task_resource_rows
+		WHERE project_id=$1 AND id=ANY($2::uuid[]) AND type='task' AND effective_deleted_at IS NULL ORDER BY id`, tx.projectID, ids)
+	if err != nil {
+		return nil, pg.QueryError("read visible dependency targets", err)
+	}
+	defer rows.Close()
+	visible, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, pg.QueryError("read visible dependency targets", err)
+	}
+	return visible, nil
+}
+
 func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT `+pg.TaskProjection+` FROM tasks t
-		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND `+condition+` ORDER BY t.id`, tx.projectID, value)
+		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, pg.QueryError(phase, err)
 	}
@@ -51,7 +66,7 @@ func (tx *Writer) ActiveDependentIDs(ctx context.Context, id string) ([]string, 
 	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
 		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
-		AND t.deleted_at IS NULL AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
+		AND t.deleted_at IS NULL AND t.type = 'task' AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
 	if err != nil {
 		return nil, pg.QueryError("read active dependents", err)
 	}
@@ -68,7 +83,7 @@ func (tx *Writer) Reachable(ctx context.Context, from, to string, replacement De
 	err := tx.tx.QueryRow(ctx, `WITH RECURSIVE edges(task_id, depends_on_task_id) AS (
 		SELECT d.task_id, d.depends_on_task_id FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
-		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND d.task_id <> $4::uuid
+		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND d.task_id <> $4::uuid
 		UNION SELECT $4::uuid, unnest($5::uuid[])
 	), visited(id) AS (
 		SELECT $2::uuid

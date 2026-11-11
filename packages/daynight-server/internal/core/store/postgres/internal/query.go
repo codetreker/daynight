@@ -133,7 +133,7 @@ const TaskBlockedBy = `ARRAY(SELECT d.depends_on_task_id::text FROM task_depende
 const TaskBlockedCount = `(SELECT count(*) FROM task_dependencies d
     WHERE d.project_id = t.project_id AND d.task_id = t.id AND ` + TaskDependencyUnsatisfied + `)`
 
-const TaskReady = `(t.status = 'todo' AND NOT EXISTS (
+const TaskReady = `(t.type = 'task' AND t.status = 'todo' AND NOT EXISTS (
     SELECT 1 FROM task_dependencies d WHERE d.project_id = t.project_id AND d.task_id = t.id
     AND ` + TaskDependencyUnsatisfied + `))`
 

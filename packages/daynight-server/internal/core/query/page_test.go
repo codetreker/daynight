@@ -42,7 +42,7 @@ func TestListCursorBindingAndFormat(t *testing.T) {
 			}
 			version := float64(1)
 			if scope.Kind == "tasks" {
-				version = 2
+				version = 3
 			}
 			if fields["version"] != version {
 				t.Fatalf("version = %v", fields["version"])

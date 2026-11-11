@@ -1,7 +1,7 @@
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { NativeProvider, ProviderOptions } from "../providers/types.js";
 import type { createControllerRelay } from "../relay.js";
-import type { ValidatedImage } from "../../../session/image-values.js";
+import type { ImageCaptureRequest, ValidatedImage } from "../../../session/image-values.js";
 
 /** Provider capture hooks share one durable service identity with source retries. */
 export const createControllerCaptureBridge = (options: {
@@ -10,6 +10,7 @@ export const createControllerCaptureBridge = (options: {
   beforeCapture(): Promise<void>;
   provider(): NativeProvider | null;
   writable(): boolean;
+  retrySource?(request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage>;
 }) => {
   const { journal } = options;
   const retries = new Map<string, Promise<ValidatedImage>>();
@@ -36,13 +37,16 @@ export const createControllerCaptureBridge = (options: {
   return { providerOptions,
     retry: async ({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => {
       const provider = options.provider();
-      if (!provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
+      if (!options.retrySource && !provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
       if (!options.writable()) throw new Error("Image source retry target_changed.");
       signal.throwIfAborted();
       const request = journal.retryImageCaptureRequest(captureId, attemptId);
-      const saved = journal.media().captureStatus(captureId, attemptId); if (saved) return saved;
       const key = `${captureId}:${attemptId}`, pending = retries.get(key); if (pending) return pending;
       const work = (async () => {
+        // A Markdown stage can survive before its source admission is durable.
+        if (options.retrySource && ["local", "external"].includes(request.locator.kind)) return options.retrySource(request, signal);
+        const saved = journal.media().captureStatus(captureId, attemptId); if (saved) return saved;
+        if (!provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
         const source = await provider.retryImageCapture!(request, signal);
         try {
           signal.throwIfAborted();

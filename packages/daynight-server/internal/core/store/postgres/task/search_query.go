@@ -91,6 +91,10 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 		return store.TaskSearchPage{}, fmt.Errorf("invalid task search assignee")
 	}
 	args := []any{projectID, input.Status, input.Ready, input.AllowAgents, input.CompatiblePlatform, string(input.AssignedTo.Mode), assignee, afterExact, afterPriority, afterTime, afterID, input.Limit + 1}
+	resourceFilter, err := taskResourceFilter(input.Type, input.Parent, &args)
+	if err != nil {
+		return store.TaskSearchPage{}, searchError("query task search", err)
+	}
 	folded := []string{"t.id", "t.updated_at"}
 	if c.id {
 		folded = append(folded, `t.id::text AS id_text`)
@@ -122,12 +126,12 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 		hits = append(hits, fmt.Sprintf("%s AS i%d", idHit, i), fmt.Sprintf("%s AS e%d", exactHit, i), fmt.Sprintf("%s AS t%d", titleHit, i), fmt.Sprintf("%s AS d%d", descriptionHit, i))
 	}
 	expr := c.expression(input.Expression)
-	sql := `WITH folded AS MATERIALIZED (SELECT ` + strings.Join(folded, ", ") + ` FROM tasks t
- WHERE t.project_id=$1 AND t.deleted_at IS NULL AND ($2::text IS NULL OR t.status=$2)
+	sql := `WITH folded AS MATERIALIZED (SELECT ` + strings.Join(folded, ", ") + ` FROM task_resource_rows t
+ WHERE t.project_id=$1 AND t.effective_deleted_at IS NULL AND ($2::text IS NULL OR t.status=$2)
  AND ($3::boolean IS NULL OR ` + pg.TaskReady + `=$3)
  AND ($4::boolean IS NULL OR t.allow_agents=$4)
  AND ($5::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$5)
- AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))),
+ AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))` + resourceFilter + `),
  atom_hits AS MATERIALIZED (SELECT ` + strings.Join(hits, ", ") + ` FROM folded f),
  matched AS MATERIALIZED (SELECT h.id,h.updated_at,` + expr.exactIDPriority + ` AS exact_id_priority,` + expr.titlePriority + ` AS title_priority FROM atom_hits h WHERE ` + expr.matches + `),
  total AS (SELECT count(*) AS total FROM matched),
