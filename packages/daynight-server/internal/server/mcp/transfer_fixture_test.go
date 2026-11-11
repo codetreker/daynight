@@ -1,13 +1,19 @@
-package server
+package mcp
 
 import (
 	"context"
+	"io"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
 func mcpAttachmentCheck(t *testing.T, got, want any) {
@@ -99,11 +105,11 @@ func (s *mcpAttachmentScope) AttachmentDAO() store.AttachmentMutationDAO {
 	return s.DAO
 }
 
-func mcpAttachmentRead(t *testing.T, tx *httpTestStore, p model.Principal, project, task string, reader store.AttachmentReader) {
+func mcpAttachmentRead(t *testing.T, tx *transferTestStore, p model.Principal, project, task string, reader store.AttachmentReader) {
 	t.Helper()
 	counts := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "presence": 1})
-	snapshot := newHTTPTestSnapshot(t)
-	snapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+	snapshot := newTransferTestSnapshot(t)
+	snapshot.Projects = mcpOrgProjectReader{t: t, ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		counts.Called("access")
 		mcpAttachmentCheck(t, actor, p)
 		mcpAttachmentCheck(t, id, project)
@@ -133,7 +139,7 @@ func (d *mcpAttachmentTaskReader) TaskPresence(ctx context.Context, project, tas
 	return d.PresenceCall(ctx, project, task)
 }
 
-func mcpAttachmentMutation(t *testing.T, tx *httpTestStore, p model.Principal, project, task string, dao store.AttachmentMutationDAO, authorize bool) *mcpAttachmentScope {
+func mcpAttachmentMutation(t *testing.T, tx *transferTestStore, p model.Principal, project, task string, dao store.AttachmentMutationDAO, authorize bool) *mcpAttachmentScope {
 	t.Helper()
 	want := map[string]int{"mutation": 1, "presence": 1}
 	if authorize {
@@ -310,7 +316,7 @@ func (d *mcpTransferDAO) Prune(ctx context.Context, at time.Time, limit int) (in
 	return d.PruneCall(ctx, at, limit)
 }
 
-func mcpAttachmentPage(t *testing.T, tx *httpTestStore, p model.Principal, project, task, after string, limit int, result store.AttachmentPage) {
+func mcpAttachmentPage(t *testing.T, tx *transferTestStore, p model.Principal, project, task, after string, limit int, result store.AttachmentPage) {
 	t.Helper()
 	calls := newHTTPCallPlan(t, map[string]int{"page": 1})
 	mcpAttachmentRead(t, tx, p, project, task, &mcpAttachmentDAO{t: t, AttachmentsCall: func(ctx context.Context, pid, tid string, q store.AttachmentQuery) (store.AttachmentPage, error) {
@@ -324,11 +330,11 @@ func mcpAttachmentPage(t *testing.T, tx *httpTestStore, p model.Principal, proje
 		return mcpCloneFixture(result), nil
 	}})
 }
-func mcpAttachmentDenyRead(t *testing.T, tx *httpTestStore, p model.Principal, project string) {
+func mcpAttachmentDenyRead(t *testing.T, tx *transferTestStore, p model.Principal, project string) {
 	t.Helper()
 	calls := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1})
-	snapshot := newHTTPTestSnapshot(t)
-	snapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+	snapshot := newTransferTestSnapshot(t)
+	snapshot.Projects = mcpOrgProjectReader{t: t, ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		calls.Called("access")
 		mcpAttachmentCheck(t, actor, p)
 		mcpAttachmentCheck(t, id, project)
@@ -339,7 +345,7 @@ func mcpAttachmentDenyRead(t *testing.T, tx *httpTestStore, p model.Principal, p
 		return op(snapshot)
 	}
 }
-func mcpAttachmentDenyMutation(t *testing.T, tx *httpTestStore, p model.Principal, project, task string) {
+func mcpAttachmentDenyMutation(t *testing.T, tx *transferTestStore, p model.Principal, project, task string) {
 	t.Helper()
 	calls := newHTTPCallPlan(t, map[string]int{"mutation": 1, "presence": 1, "authorization": 1})
 	scope := &mcpAttachmentScope{t: t, PresenceCall: func(ctx context.Context, pid, tid string) (store.TaskPresence, error) {
@@ -358,7 +364,7 @@ func mcpAttachmentDenyMutation(t *testing.T, tx *httpTestStore, p model.Principa
 	}
 }
 
-func mcpTransferPlan(t *testing.T, tx *httpTestStore, daos ...*mcpTransferDAO) {
+func mcpTransferPlan(t *testing.T, tx *transferTestStore, daos ...*mcpTransferDAO) {
 	t.Helper()
 	counts := newHTTPCallPlan(t, map[string]int{"transfer transaction": len(daos)})
 	next := 0
@@ -517,4 +523,110 @@ func (d *mcpAttachmentTaskReader) TaskWorkTargets(context.Context, string, []str
 func (d *mcpAttachmentTaskReader) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncDependencyStates")
 	panic("unreachable")
+}
+
+// Transfer fixtures share only the capabilities needed by the selected adapters.
+type transferTestStore struct {
+	*httpTestStore
+	WriteAttachmentMutationCall func(context.Context, func(store.AttachmentMutationScope) error) (store.Completion, error)
+	WritePrivateTransferCall    func(context.Context, func(store.PrivateTransferDAO) error) (store.Completion, error)
+}
+
+func newTransferTestStore(t *testing.T) *transferTestStore {
+	return &transferTestStore{httpTestStore: newHTTPTestStore(t)}
+}
+func (s *transferTestStore) WriteAttachmentMutation(ctx context.Context, op func(store.AttachmentMutationScope) error) (store.Completion, error) {
+	return requireCallback(s.t, "WriteAttachmentMutation", s.WriteAttachmentMutationCall)(ctx, op)
+}
+func (s *transferTestStore) WritePrivateTransfer(ctx context.Context, op func(store.PrivateTransferDAO) error) (store.Completion, error) {
+	return requireCallback(s.t, "WritePrivateTransfer", s.WritePrivateTransferCall)(ctx, op)
+}
+
+type transferTestSnapshot struct {
+	store.SnapshotScope
+	t           *testing.T
+	Projects    store.ProjectReader
+	Tasks       store.TaskReader
+	Attachments store.AttachmentReader
+}
+
+func newTransferTestSnapshot(t *testing.T) *transferTestSnapshot { return &transferTestSnapshot{t: t} }
+func (s *transferTestSnapshot) ProjectDAO() store.ProjectReader {
+	if s.Projects == nil {
+		unexpectedHTTPCall(s.t, "ProjectDAO")
+	}
+	return s.Projects
+}
+func (s *transferTestSnapshot) TaskDAO() store.TaskReader {
+	if s.Tasks == nil {
+		unexpectedHTTPCall(s.t, "TaskDAO")
+	}
+	return s.Tasks
+}
+func (s *transferTestSnapshot) AttachmentDAO() store.AttachmentReader {
+	if s.Attachments == nil {
+		unexpectedHTTPCall(s.t, "AttachmentDAO")
+	}
+	return s.Attachments
+}
+func newHTTPCallPlan(t *testing.T, want map[string]int) *mcpThreadCallPlan {
+	return newMCPThreadCallPlan(t, want)
+}
+func mcpCloneFixture[T any](value T) T { return mcpThreadClone(value) }
+func attachmentTestFiles(t *testing.T) *local.Storage {
+	t.Helper()
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return files
+}
+
+type transferAuthenticator map[string]model.Principal
+
+func (a transferAuthenticator) Authenticate(_ context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+	if p, ok := a[token]; ok && kind == model.PATCredential {
+		return p, nil
+	}
+	return model.Principal{}, &model.Fault{Code: "unauthenticated", Message: "invalid credential"}
+}
+func newTransferAdapterHost(t *testing.T, database *transferTestStore, files *local.Storage, principals map[string]model.Principal, adapters ...string) *httptest.Server {
+	t.Helper()
+	attachments := attachmentservice.NewAttachments(database, database, files)
+	lifecycle, err := mcptransfer.New(database, files, files, 8<<30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lifecycle.Close(ctx); err != nil {
+			t.Errorf("transfer shutdown: %v", err)
+		}
+	})
+	server, _ := newAdapterHost(t, transferAuthenticator(principals), io.Discard, func(entry *Entry, _ string) error {
+		for _, name := range adapters {
+			var err error
+			switch name {
+			case "attachment":
+				err = RegisterAttachmentTools(entry, attachments)
+			case "upload":
+				err = RegisterUploadTools(entry, mcptransfer.NewUploads(lifecycle, files, attachments))
+			case "download":
+				err = RegisterDownloadTool(entry, mcpdownload.New(attachments, lifecycle, files))
+			default:
+				t.Fatalf("unknown transfer adapter %q", name)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return server
 }

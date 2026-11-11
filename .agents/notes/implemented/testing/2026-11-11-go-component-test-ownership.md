@@ -50,7 +50,11 @@ scenarios use a focused Entry host with those real collaborators and the SDK;
 Root retains full catalog, default authentication and cross-route proofs.
 Step MCP lifecycle scenarios use the same focused host with controlled Step
 operations, and Thread scenarios retain the real service with controlled DAO
-facts. The separate Step stress test uses PostgreSQL and real Step services.
+facts. Attachment, upload and download MCP scenarios use their real services,
+Core, SDK and local files with controlled DAO facts through a focused host;
+Root retains the assembled PAT isolation and revocation path. Controlled DAO
+results do not prove database persistence. The separate Step stress test uses
+PostgreSQL and real Step services.
 The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
 records why those operation-level observations were introduced.
 The Webhook Runner process-recovery and takeover witnesses live with the Runner

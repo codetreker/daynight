@@ -82,8 +82,11 @@ explains the behavior and cost basis for that boundary. Bot's completed-response
 loss scenario also uses real Service and Core with controlled DAO facts and an
 Entry host registering only Bot tools. Its SDK transport consumes each completed
 response before discarding it; a separate reader observes explicitly supplied
-Bot facts. Root retains the shared MCP and REST application lifecycle. These
-controlled facts do not establish persistence.
+Bot facts. Attachment and transfer scenarios likewise use real Service, Core,
+local files and SDK with controlled DAO facts; they retain deletion, response
+loss and download snapshot proofs. Root retains the shared MCP and REST
+application lifecycle, PAT isolation and revocation. These controlled facts do
+not establish persistence.
 
 The ordinary MCP test binary clears database and UniAuth fixture variables before
 test execution. The separate stress build retains the database variable for its
