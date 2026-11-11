@@ -3,7 +3,7 @@ Daynight provides MCP tools for Projects, Tasks/Goals, Steps, Threads, attachmen
 | Purpose | Manual Resource name |
 | --- | --- |
 | Establish Account/Team/Project context; resolve a repository | concepts |
-| Query Task/Goal projections, readiness, lifecycle or properties | tasks |
+| Create and organize Tasks/Goals; query projections, readiness, lifecycle or properties | tasks |
 | Interpret graphs; create or replace dependencies | dependencies; tasks for creation rules |
 | Interpret versions, authorization and write outcomes | write-safety |
 | Organize requirements, accepted conclusions, references and results | materials |

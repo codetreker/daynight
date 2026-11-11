@@ -17,7 +17,12 @@ null through structural defaults; their business data is not converted. Full
 and summary resource projections carry both fields, while narrow receipts and
 references retain their own projections. Public creation selects the type and optional Parent; updates can change Parent
 but never type. The shared
-MCP output schemas describe the typed resource and Goal progress shape.
+MCP output schemas describe the typed resource and Goal progress shape. MCP
+creation and queries expose Type and Parent through the existing Task tools;
+Parent updates preserve omitted, null and UUID inputs. Query cursors bind the
+type and Parent scope, and the list fence covers visible resources of both types.
+The adapter delegates type policy to the shared business service and retains
+the original version and write outcome.
 
 The CLI strictly reads the type and parent fields, accepts Goal progress and a
 not-applicable Session observation, and confines graph nodes to ordinary Tasks.

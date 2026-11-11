@@ -65,6 +65,23 @@
             "full"
           ],
           "default": "summary"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "task",
+            "goal"
+          ],
+          "default": "task",
+          "description": "Select ordinary tasks (default) or Goals."
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
         }
       },
       "required": [
@@ -1165,6 +1182,14 @@
             "full"
           ],
           "default": "summary"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
         }
       },
       "required": [

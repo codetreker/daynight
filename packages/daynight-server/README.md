@@ -516,8 +516,9 @@ use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked
 summaries; request `full` for complete content. Task full and summary schemas
 require `type` and nullable `parentId`; the Goal full schema also describes
-`progress`. Current public Task writes create ordinary tasks only. Step page cursors bind the parent
-version and reject
+`progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
+filters select Goal membership, and Task updates can assign or clear a Parent.
+Step page cursors bind the parent version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
 messages in oldest-first order; an explicit claim ID supplies agent attribution.
