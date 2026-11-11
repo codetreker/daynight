@@ -7,6 +7,20 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
 
+func TestResolveRelativePathsAndPreserveEmpty(t *testing.T) {
+	c := Config{NodePath: "bin/node", HelperPath: "/opt/helper", ManifestPath: "artifacts/manifest", TemporaryDirectory: "storage/staging"}
+	if err := c.ResolvePaths("/srv/daynight"); err != nil {
+		t.Fatal(err)
+	}
+	if c.NodePath != "/srv/daynight/bin/node" || c.HelperPath != "/opt/helper" || c.ManifestPath != "/srv/daynight/artifacts/manifest" || c.TemporaryDirectory != "/srv/daynight/storage/staging" || c.Validate() != nil {
+		t.Fatalf("resolution: %+v", c)
+	}
+	var disabled Config
+	if err := disabled.ResolvePaths("/srv/daynight"); err != nil || disabled != (Config{}) || disabled.Validate() != nil {
+		t.Fatalf("disabled: %+v %v", disabled, err)
+	}
+}
+
 func TestImageConfiguration(t *testing.T) {
 	c := DefaultConfig()
 	if c.Validate() != nil {
@@ -24,6 +38,7 @@ func TestImageConfiguration(t *testing.T) {
 		t.Fatalf("explicit configuration: %+v %v", c, err)
 	}
 	for field, original := range values {
+		expected := map[string]string{"DAYNIGHT_IMAGE_NODE_PATH": "node_path", "DAYNIGHT_IMAGE_HELPER_PATH": "helper_path", "DAYNIGHT_IMAGE_MANIFEST_PATH": "manifest_path", "DAYNIGHT_IMAGE_TEMP_DIRECTORY": "temporary_directory"}[field]
 		for _, invalid := range []string{"", "relative/path", "/absolute/../path", "/absolute/line\nbreak"} {
 			values[field] = invalid
 			candidate := DefaultConfig()
@@ -31,7 +46,7 @@ func TestImageConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			var failure *configvalue.ConfigurationError
-			if err := candidate.Validate(); !errors.As(err, &failure) || failure.Field != field {
+			if err := candidate.Validate(); !errors.As(err, &failure) || failure.Field != expected {
 				t.Fatalf("accepted invalid %s: %v", field, err)
 			}
 		}

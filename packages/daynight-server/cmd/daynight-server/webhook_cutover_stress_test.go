@@ -30,11 +30,8 @@ type webhookToggleProcess struct {
 
 func startWebhookToggleProcess(t *testing.T, binary string, env map[string]string) *webhookToggleProcess {
 	t.Helper()
-	p := &webhookToggleProcess{cmd: exec.Command(binary), done: make(chan error, 1)}
-	p.cmd.Env = os.Environ()
-	for key, value := range env {
-		p.cmd.Env = append(p.cmd.Env, key+"="+value)
-	}
+	p := &webhookToggleProcess{cmd: exec.Command(binary, "--root", testStorageRoot(t)), done: make(chan error, 1)}
+	p.cmd.Env = grantEnvironment(env)
 	p.cmd.Stdout = io.Discard
 	p.cmd.Stderr = &p.logs
 	if err := p.cmd.Start(); err != nil {

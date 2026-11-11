@@ -184,6 +184,20 @@ func TestSafeFailureDiagnostics(t *testing.T) {
 	}
 }
 
+func TestConfigurationFailureSourceIsSafe(t *testing.T) {
+	cause := errors.New("private YAML secret")
+	failure := &configvalue.ConfigurationError{Field: "uniauth.app_secret", Rule: "must be a string", Phase: "decode", Origin: configvalue.Origin{Source: "config.local.yml", Line: 4, Column: 3}, Cause: cause}
+	var output bytes.Buffer
+	LogFailure(slog.New(slog.NewJSONHandler(&output, nil)), context.Background(), "configuration", "startup", failure)
+	var entry map[string]any
+	if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["phase"] != "decode" || entry["field"] != "uniauth.app_secret" || entry["source"] != "config.local.yml" || entry["line"] != float64(4) || entry["column"] != float64(3) || strings.Contains(output.String(), cause.Error()) {
+		t.Fatalf("unsafe or incomplete configuration diagnostic: %s", &output)
+	}
+}
+
 func TestListenerConflictDiagnosticsPreserveCategoryAndHideAddress(t *testing.T) {
 	cause := &net.OpError{Op: "listen", Net: "tcp", Err: fmt.Errorf("private-address-secret: %w", syscall.EADDRINUSE)}
 	failure := &RuntimeError{Phase: "listen", Cause: cause}

@@ -49,7 +49,7 @@ func TestInvalidAppCredentialsRetainSafeCause(t *testing.T) {
 	_, loadErr := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_UNIAUTH_APP_ID": invalidID, "DAYNIGHT_UNIAUTH_APP_SECRET": secret}))
 	for _, err := range []error{loadErr, c.Validate()} {
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+		if !errors.As(err, &failure) || !strings.Contains(failure.Field, "app_id") {
 			t.Fatalf("credential syntax lost configuration diagnosis: %v", err)
 		}
 		cause := errors.Unwrap(failure)

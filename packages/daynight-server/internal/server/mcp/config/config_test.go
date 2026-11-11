@@ -20,7 +20,7 @@ func TestOriginsEnvironmentAndValidation(t *testing.T) {
 		_ = c.ApplyEnvironment(func(string) (string, bool) { return value, true }, func(string, string) {})
 		err := c.Validate()
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" || failure.Cause == nil || strings.Contains(err.Error(), value) {
+		if !errors.As(err, &failure) || failure.Field != "allowed_origins" || failure.Cause == nil || strings.Contains(err.Error(), value) {
 			t.Fatalf("invalid origin: %v", err)
 		}
 	}

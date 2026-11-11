@@ -69,8 +69,8 @@ const reservePort = async (excluded: ReadonlySet<number>): Promise<number> => {
   return address.port;
 };
 
-const launch = (name: string, binary: string, environment: NodeJS.ProcessEnv): ManagedCommand => {
-  const command = startCommand(binary, [], {
+const launch = (name: string, binary: string, environment: NodeJS.ProcessEnv, args: string[] = []): ManagedCommand => {
+  const command = startCommand(binary, args, {
     cwd: artifacts,
     env: environment,
     timeoutMs: 30 * 60_000,
@@ -131,6 +131,8 @@ const main = async (): Promise<void> => {
   await removeDefaultRoutes();
   await mkdir(path.join(runDirectory, 'logs'), { recursive: true });
   await mkdir(path.join(runDirectory, 'private', 'storage'), { recursive: true, mode: 0o700 });
+  const daynightRoot = path.join(runDirectory, 'private', 'daynight');
+  await mkdir(daynightRoot, { recursive: true, mode: 0o700 });
   const provider = await startProvider({
     port: configuration.proxyPort,
     certificatePath: path.join(artifacts, 'provider-ca.pem'),
@@ -175,7 +177,7 @@ const main = async (): Promise<void> => {
     DAYNIGHT_UNIAUTH_CALLBACK_URL: `${baseURL}/auth/callback`,
     DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN: '1',
     DAYNIGHT_ALLOW_LOOPBACK_HTTP: '1',
-  });
+  }, ['--root', daynightRoot]);
   await ended;
   if (failure !== undefined) throw failure;
 };

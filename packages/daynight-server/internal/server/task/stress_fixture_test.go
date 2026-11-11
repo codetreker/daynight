@@ -52,6 +52,7 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}
+	config.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {

@@ -10,6 +10,17 @@ type Config struct {
 	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
+type Patch struct {
+	AllowedOrigins *[]string `yaml:"allowed_origins"`
+}
+
+func (p Patch) ApplyTo(c *Config) error {
+	if p.AllowedOrigins != nil {
+		c.AllowedOrigins = *p.AllowedOrigins
+	}
+	return nil
+}
+
 func DefaultConfig() Config { return Config{} }
 
 func (c *Config) ApplyEnvironment(lookup func(string) (string, bool), mark func(field, variable string)) error {
@@ -29,7 +40,7 @@ func (c *Config) ApplyEnvironment(lookup func(string) (string, bool), mark func(
 
 func (c Config) Validate() error {
 	if err := ValidateOrigins(c.AllowedOrigins); err != nil {
-		return &configvalue.ConfigurationError{Field: "DAYNIGHT_MCP_ALLOWED_ORIGINS", Rule: "must contain comma-separated exact origins", Cause: err}
+		return &configvalue.ConfigurationError{Field: "allowed_origins", Rule: "must contain exact origins", Cause: err}
 	}
 	return nil
 }

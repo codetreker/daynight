@@ -19,7 +19,7 @@ func TestWebhookEnvironment(t *testing.T) {
 	for _, value := range []string{"true", "yes", "2"} {
 		err := apply(value)
 		var invalid *configvalue.ConfigurationError
-		if !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_WEBHOOK_ENABLED" {
+		if !errors.As(err, &invalid) || invalid.Field != "enabled" {
 			t.Fatalf("invalid flag %q: %v", value, err)
 		}
 	}
