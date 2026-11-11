@@ -4,10 +4,12 @@ import { canonicalId } from "../../api/validation";
 import { previewProjectTransfer, transferProject, type ProjectTransferPreview, type ProjectTransferReceipt } from "../../api/project-transfer";
 import type { TeamRef } from "../../api/auth-types";
 import { useI18n } from "../../i18n/LocaleProvider";
+import { browserNavigation } from "../../app/navigation";
 import { useProjectAccess } from "../projects/ProjectAccess";
 import { useTeams } from "../teams/TeamsProvider";
 import { useOperation } from "../teams/TeamManagement";
 import { ManagementDialog } from "./ManagementDialog";
+import type { TransferNavigationContext } from "./transfer-navigation";
 import type { ProjectManagementGuard } from "./ProjectManagementGuard";
 
 export const parseTransferTarget = (value: string, origin: string): string | null => {
@@ -38,7 +40,7 @@ const TeamChoices = ({ value, onChange, disabled }: { readonly value: string; re
   </div>;
 };
 
-export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange, guard }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard?: ProjectManagementGuard | undefined }) => {
+export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange, guard }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt, context: TransferNavigationContext) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard?: ProjectManagementGuard | undefined }) => {
   const access = useProjectAccess(projectId), scope = access.session.scope;
   const { locale, messages: { auth: { roles } } } = useI18n(), m = messages(locale === "zh-CN");
   const op = useOperation(scope);
@@ -46,30 +48,42 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const [subject, setSubject] = useState<string | null>(null);
   const [dialog, setDialog] = useState(false), [target, setTarget] = useState(""), [preview, setPreview] = useState<ProjectTransferPreview | null>(null);
   const current = useRef({ active, onRoute, dialog, target, preview }); current.current = { active, onRoute, dialog, target, preview };
+  const editor = useRef(0), revision = useRef(0), mounted = useRef(false);
+  const revokingEditor = useRef<{ editor: number; revision: number; generation: string } | null>(null);
+  const preserveRevokedDraft = useRef(false), retainedPresentation = useRef(false);
   const gate = useRef<AbortController | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [reading, setReading] = useState(false), [readError, setReadError] = useState<unknown>(null), [invalid, setInvalid] = useState(false), [conflict, setConflict] = useState(false);
   const [observed, setObserved] = useState(false), [cleanupError, setCleanupError] = useState<unknown>(null);
   const read = useRef<AbortController | null>(null), cleanup = useRef<(() => Promise<void>) | null>(null);
-  const retirePrivatePreview = () => {
+  const retirePrivatePreview = (preserveDraft = false) => {
     read.current?.abort(); read.current = null; gate.current?.abort();
-    setSubject(null); setTarget(""); setPreview(null); setReading(false);
+    setSubject(null);
+    if (!preserveDraft) setTarget("");
+    setPreview(null); setReading(false);
     setReadError(null); setInvalid(false); setConflict(false); setObserved(false);
-    if (!operation.current.guarded() && operation.current.result === null && cleanup.current === null) setDialog(false);
+    if (!preserveDraft && !operation.current.guarded() && operation.current.result === null && cleanup.current === null) {
+      setDialog(false);
+      if (retainedPresentation.current) { retainedPresentation.current = false; onRetentionChange?.(false); }
+    }
   };
-  useEffect(() => () => { read.current?.abort(); gate.current?.abort(); }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; read.current?.abort(); gate.current?.abort(); }; }, []);
   useEffect(() => { if (!onRoute) { read.current?.abort(); gate.current?.abort(); } }, [onRoute]);
   useEffect(() => scope.subscribe((event) => {
-    if (event.projectId === projectId && event.accessRevoked) retirePrivatePreview();
+    if (event.projectId === projectId && event.accessRevoked) {
+      const original = revokingEditor.current;
+      preserveRevokedDraft.current = original !== null && event.revokedGeneration === original.generation && (original.editor !== editor.current || original.revision !== revision.current);
+      retirePrivatePreview(preserveRevokedDraft.current);
+    }
   }), [scope, projectId]);
-  useEffect(() => { if (unavailable) retirePrivatePreview(); }, [unavailable]);
+  useEffect(() => { if (unavailable) retirePrivatePreview(preserveRevokedDraft.current); else preserveRevokedDraft.current = false; }, [unavailable]);
   const unknown = op.result?.kind === "unknown";
-  const open = () => { if (!active) return; setSubject(projectName); setDialog(true); setTarget(""); setPreview(null); setReadError(null); setInvalid(false); setConflict(false); setObserved(false); op.clear(); void access.session.revalidate(); };
-  const close = () => { if (!op.pending && gate.current === null && cleanup.current === null) { read.current?.abort(); read.current = null; setReading(false); setDialog(false); if (op.result?.kind === "rejected") { op.clear(); onRetentionChange?.(false); } } };
-  const change = (value: string) => { read.current?.abort(); read.current = null; setReading(false); setTarget(value); setPreview(null); setInvalid(false); setReadError(null); setConflict(false); };
+  const open = () => { if (!active) return; preserveRevokedDraft.current = false; editor.current++; revision.current++; setSubject(projectName); setDialog(true); setTarget(""); setPreview(null); setReadError(null); setInvalid(false); setConflict(false); setObserved(false); op.clear(); void access.session.revalidate(); };
+  const close = () => { if (!op.pending && gate.current === null && cleanup.current === null) { read.current?.abort(); read.current = null; setReading(false); editor.current++; setDialog(false); if (op.result?.kind !== "unknown") { if (op.result?.kind === "rejected") op.clear(); retainedPresentation.current = false; onRetentionChange?.(false); } } };
+  const change = (value: string) => { revision.current++; read.current?.abort(); read.current = null; setReading(false); setTarget(value); setPreview(null); setInvalid(false); setReadError(null); setConflict(false); };
   const inspect = async () => {
     if (!active || op.guarded()) return;
-    op.clear(); onRetentionChange?.(false);
+    op.clear(); if (cleanup.current === null && !retainedPresentation.current) onRetentionChange?.(false);
     const id = parseTransferTarget(target, window.location.origin);
     if (id === null) { setInvalid(true); setPreview(null); return; }
     if (id === access.access?.ownership.teamId) { setInvalid(true); setPreview(null); return; }
@@ -98,9 +112,22 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   };
   const submit = () => {
     const snapshot = access.session.snapshot();
-    if (!active || gate.current !== null || op.guarded() || preview === null || reading || snapshot.status !== "ready" || !snapshot.access?.canTransfer || snapshot.access.ownership.teamId !== preview.ownership.teamId || snapshot.access.ownership.version !== preview.ownership.version) return;
+    if (!active || gate.current !== null || cleanup.current !== null || op.guarded() || preview === null || reading || snapshot.status !== "ready" || !snapshot.access?.canTransfer || snapshot.access.ownership.teamId !== preview.ownership.teamId || snapshot.access.ownership.version !== preview.ownership.version) return;
     if (guard !== undefined && !guard.tryAcquire("transfer")) return;
-    const selected = preview, originalTarget = target;
+    const selected = preview, originalTarget = target, originalEditor = editor.current, originalRevision = revision.current;
+    const navigation = browserNavigation(), location = navigation.snapshot();
+    const submissionLocation = location.pathname === `/projects/${projectId}/settings` &&
+      location.pathname + location.search + location.hash === window.location.pathname + window.location.search + window.location.hash ? location : null;
+    const ownsEditor = () => mounted.current && editor.current === originalEditor && revision.current === originalRevision;
+    const ownsPresentation = () => ownsEditor() && current.current.dialog && submissionLocation !== null && navigation.snapshot() === submissionLocation &&
+      window.location.pathname + window.location.search + window.location.hash === submissionLocation.pathname + submissionLocation.search + submissionLocation.hash;
+    const finishPresentation = (withdrawn = false) => {
+      const closeOriginal = ownsPresentation();
+      const release = closeOriginal || withdrawn && ownsEditor();
+      retainedPresentation.current = !release;
+      if (closeOriginal) setDialog(false);
+      return release;
+    };
     const controller = new AbortController(); gate.current = controller; setWaiting(true);
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     const stillCurrent = (fresh: typeof access.access) => !signal.aborted && !scope.isInvalidated && current.current.active && current.current.onRoute && current.current.dialog && current.current.preview === selected && current.current.target === originalTarget && fresh?.canTransfer === true && fresh.ownership.teamId === selected.ownership.teamId && fresh.ownership.version === selected.ownership.version;
@@ -124,21 +151,26 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       return { receipt, ticket };
     }, ({ receipt, ticket }) => {
       const finish = async () => {
+        let withdrawn = false;
         setCleanupError(null);
         try {
           await scope.ready(scope.signal);
           if (receipt.actorAccess === null) {
-            const revoked = await scope.revokeProject(ticket, scope.signal);
+            revokingEditor.current = { editor: originalEditor, revision: originalRevision, generation: ticket.cacheGeneration };
+            let revoked: boolean;
+            try { revoked = await scope.revokeProject(ticket, scope.signal); }
+            finally { revokingEditor.current = null; }
+            withdrawn = revoked;
             await scope.ready(scope.signal);
             if (!revoked) {
               await access.session.revalidateAfterMutation();
               const latest = await access.session.waitForFreshAccess(scope.signal);
               if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
-              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; setDialog(false); onTransferred?.(receipt); guard?.release("transfer"); onRetentionChange?.(false); return; }
+              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; const closed = finishPresentation(); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); guard?.release("transfer"); if (mounted.current && closed) onRetentionChange?.(false); return; }
             }
           }
           await scope.ready(scope.signal);
-          if (receipt.actorAccess === null) access.session.publishMutation(null);
+          if (receipt.actorAccess === null) { access.session.publishMutation(null); withdrawn = true; }
           else {
             await access.session.revalidateAfterMutation();
             const latest = await access.session.waitForFreshAccess(scope.signal);
@@ -146,7 +178,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
           }
           await scope.ready(scope.signal);
           if (scope.isInvalidated) return;
-          cleanup.current = null; setDialog(false); onTransferred?.(receipt); guard?.release("transfer"); onRetentionChange?.(false);
+          cleanup.current = null; const closed = finishPresentation(withdrawn); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); guard?.release("transfer"); if (mounted.current && closed) onRetentionChange?.(false);
         } catch (error) {
           if (scope.signal.aborted) return;
           try { await scope.ready(scope.signal); } catch { return; }
@@ -158,7 +190,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       guard?.release("transfer");
       if (error instanceof ApiError && (error.code === "version_conflict" || error.status === 403 || error.status === 404)) { setPreview(null); setConflict(error.code === "version_conflict"); void access.session.revalidate(); }
       });
-    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { if (!started || !op.guarded() && cleanup.current === null) { guard?.release("transfer"); if (!started) onRetentionChange?.(false); } if (gate.current === controller) { gate.current = null; setWaiting(false); } } })();
+    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { if (!started || !op.guarded() && cleanup.current === null) { guard?.release("transfer"); if (!started && mounted.current && !retainedPresentation.current) onRetentionChange?.(false); } if (gate.current === controller) { gate.current = null; setWaiting(false); } } })();
   };
   const check = () => { setObserved(false); setReading(true); void access.session.revalidateAfterMutation().then(() => setObserved(true)).finally(() => setReading(false)); };
   const describeError = (error: unknown) => access.status === "unavailable" ? m.sourceMissing : access.status === "error" && access.error instanceof ApiError && access.error.kind === "network" ? m.network : access.ready && !access.access?.canTransfer ? m.sourceDenied : error instanceof ApiError && error.kind === "network" ? m.network : error instanceof ApiError && error.status === 404 ? m.targetMissing : m.failed;
