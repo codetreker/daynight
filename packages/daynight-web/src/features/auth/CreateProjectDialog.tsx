@@ -22,9 +22,9 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   const receiptGeneration = useRef<number | null>(null);
   const revision = useRef(0);
   const [draftRevision, setDraftRevision] = useState(0);
-  const owner = useRef({ userId, admission });
+  const owner = useRef({ userId, admission, onPublished });
   const effectOwner = useRef({ userId, admission });
-  owner.current = { userId, admission };
+  owner.current = { userId, admission, onPublished };
   const [settled, setSettled] = useState<{ kind: "confirmed" | "unknown"; revision: number } | null>(null);
   const checkSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
   const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
@@ -189,7 +189,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     const publishReceipt = (project: Project) => {
       if (!receipts.current.delete(project)) return;
       setConfirmedProjects((previous) => [...previous, project]);
-      onPublished?.(project);
+      owner.current.onPublished?.(project);
     };
     // Superseding a presentation cancels its destructive effects, but its receipt remains publishable.
     if (receipts.current.size > 0) {

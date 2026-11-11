@@ -12,6 +12,7 @@ import * as auth from '../src/api/auth';
 import { browserNavigation } from '../src/app/navigation';
 import { directAccessFixture } from './helpers/taskSync';
 import { stringifyWireJson } from './helpers/wireJson';
+import { ProjectsProvider, useProjectList, type ProjectScope } from '../src/features/projects/ProjectsProvider';
 
 const render = createLocaleRender('en');
 const userId = '00000000-0000-4000-8000-000000000101';
@@ -616,6 +617,44 @@ describe('project creation context', () => {
     expect(create).toHaveBeenCalledOnce();
     expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
     view.unmount(); admission.dispose();
+  });
+
+  it('refreshes the current project-list scope when a delayed receipt is published after navigation', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Created project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    const shared = { ...project, id: '00000000-0000-4000-8000-000000000202', name: 'Shared project' };
+    const fetcher = vi.fn((url: string) => Promise.resolve(new Response(stringifyWireJson({ items: url.includes('shared=true') ? [shared] : [], nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } })));
+    vi.stubGlobal('fetch', fetcher);
+    const onCreated = vi.fn(), onPublished = vi.fn();
+    const Content = ({ scopeKind }: { readonly scopeKind: ProjectScope['kind'] }) => {
+      const projects = useProjectList();
+      return <><div>List: {projects.status}</div>{projects.items.map(item => <div key={item.id}>{item.name}</div>)}
+        <CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} onPublished={item => { onPublished(item, scopeKind); projects.refresh(); }} /></>;
+    };
+    const tree = (scope: ProjectScope) => <ProjectsProvider scope={scope} admission={admission}><Content scopeKind={scope.kind} /></ProjectsProvider>;
+    const navigation = browserNavigation();
+    navigation.navigate('/projects');
+    const view = render(tree({ kind: 'team', teamId: teamA }));
+    await screen.findByText('List: ready');
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Created project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    await act(async () => pending.resolve(project));
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
+    act(() => navigation.navigate('/shared-projects'));
+    view.rerender(tree({ kind: 'shared' }));
+    expect(screen.getByText('List: loading')).toBeInTheDocument();
+    await act(async () => resume());
+    await screen.findByText('Shared project');
+    expect(screen.getByText('List: ready')).toBeInTheDocument();
+    expect(onPublished).toHaveBeenCalledExactlyOnceWith(project, 'shared');
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.some(([url]) => url.includes('shared=true'))).toBe(true);
+    view.unmount(); admission.dispose(); navigation.dispose();
   });
 
   it('publishes the first confirmed project when a newer creation is refused', async () => {
