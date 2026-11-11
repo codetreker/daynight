@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -33,7 +34,7 @@ func TestCallbackRejectsOversizedUpstreamProfile(t *testing.T) {
 	}
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	h.Identity = identityservice.New(h.Database, client, h.Origin+"/api/v1/auth/callback")
-	h.Auth, err = NewAuthentication(h.Identity, configpkg.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
+	h.Auth, err = NewAuthentication(h.Identity, authconfig.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

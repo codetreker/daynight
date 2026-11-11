@@ -28,6 +28,28 @@ const fixture = () => {
   return { options, states, calls, entries, entry, slot, release, resourceId, acknowledge: () => { acknowledged = true; } };
 };
 
+test("unchanged text publishes its Markdown completion transition", async () => {
+  const f = fixture(), onTimeline = vi.fn(), projector = new ProviderImageProjector({ ...f.options, onTimeline });
+  try {
+    projector.publish(f.entry, [], { format: "markdown", complete: false, truncated: false });
+    projector.publish(f.entry, [], { format: "markdown", complete: true, truncated: false });
+    expect(onTimeline.mock.calls.map(call => call[1])).toEqual([{ format: "markdown", complete: false, truncated: false }, { format: "markdown", complete: true, truncated: false }]);
+  } finally { await projector.close(); }
+});
+
+test.each([true, false])("late native capture preserves the current body's metadata (known=%s)", async known => {
+  const f = fixture(), onTimeline = vi.fn(), projector = new ProviderImageProjector({ ...f.options, onTimeline });
+  try {
+    projector.publish(f.entry, [f.slot], { format: "markdown", complete: true, truncated: false });
+    const changed = { ...f.entry, revision: "2" };
+    const metadata = known ? { format: "markdown" as const, complete: false, truncated: false } : undefined;
+    projector.publish(changed, [{ ...f.slot, payload: { kind: "pending" } }], metadata);
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(onTimeline.mock.calls.at(-1)?.[0]).toMatchObject({ revision: "2", content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(onTimeline.mock.calls.at(-1)?.[1]).toEqual(metadata);
+  } finally { await projector.close(); }
+});
+
 test.each(["user_message", "assistant_message", "tool_call"] as const)("%s image positions and committed originals survive the timeline protocol", async kind => {
   const f = fixture(), projector = new ProviderImageProjector(f.options);
   const parts = [{ type: "text" as const, text: "before" }, { type: "text" as const, text: "slot" }, { type: "text" as const, text: "after" }];
@@ -320,6 +342,24 @@ test("adopted pending positions wait for their existing ACK before native source
     expect(f.calls).toEqual(before); expect(read).not.toHaveBeenCalled();
     f.acknowledge(); projector.acknowledged(); await projector.settled();
     expect(read).toHaveBeenCalledOnce(); expect(f.options.registerImageCapture).toHaveBeenCalledWith((saved as NativeImageProjectionState).request);
+  } finally { await projector.close(); }
+});
+
+test("adopting a different committed body cannot inherit an earlier Markdown permit", async () => {
+  const f = fixture(), onTimeline = vi.fn(f.options.onTimeline), projector = new ProviderImageProjector({ ...f.options, onTimeline });
+  try {
+    projector.publish({ ...f.entry, kind: "user_message" }, [{ ...f.slot, payload: { kind: "pending" } }], { format: "markdown", complete: true, truncated: false });
+    await projector.settled();
+    const [key, state] = [...f.states.entries()][0]!;
+    const previous = f.entries.at(-1)! as Extract<ProviderEntry, { kind: "user_message" | "assistant_message" }>;
+    const view: NativeInputPublicationView = {
+      entry: { ...previous, kind: "user_message", entrySeq: "1", revision: "2", content: [{ type: "text", text: "![changed](another.png)" }, ...previous.content.slice(1)] },
+      slots: [{ key, label: "Native image", state: structuredClone(state) as NativeImageProjectionState }],
+    };
+    projector.adoptCommitted(view, [f.slot]);
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(onTimeline.mock.calls.at(-1)?.[0]).toMatchObject({ revision: "2", content: [{ text: "![changed](another.png)" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(onTimeline.mock.calls.at(-1)?.[1]).toBeUndefined();
   } finally { await projector.close(); }
 });
 

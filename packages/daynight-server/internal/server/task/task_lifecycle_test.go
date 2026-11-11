@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -106,7 +106,7 @@ func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 		return f.actor, f.authenticationError
 	}
 	identity := identityservice.New(writer, nil, f.origin+"/api/v1/auth/callback")
-	auth, err := authhttp.NewRequestAuthentication(identity.Authenticate, config.AuthSettings{PublicOrigin: f.origin}, logger)
+	auth, err := authhttp.NewRequestAuthentication(identity.Authenticate, authconfig.AuthSettings{PublicOrigin: f.origin}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

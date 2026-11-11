@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -19,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -82,7 +82,7 @@ func taskComponentHandler(t *testing.T, database *httpTestStore, output io.Write
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
 		return handler.AuthenticateFunc(ctx, kind, credential)
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,18 +245,19 @@ func (mock *taskHTTPProjectScopeMock) SessionDAO() store.ProjectSessionDAO {
 
 type taskHTTPReaderMock struct {
 	taskHTTPMockBase
-	TaskFn                 func(context.Context, string, string) (model.Task, error)
-	TaskBodiesFn           func(context.Context, string, []string) ([]model.Task, error)
-	GoalProgressesFn       func(context.Context, string, []string) (map[string]model.GoalProgress, error)
-	TasksFn                func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
-	TaskPresenceFn         func(context.Context, string, string) (store.TaskPresence, error)
-	ThreadCandidatesFn     func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
-	ThreadSidesFn          func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
-	TaskAssigneesFn        func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	ResolveTaskAssigneesFn func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphTasksFn       func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-	TaskCacheEpochFn       func(context.Context, string) (string, error)
-	TaskSyncTasksFn        func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskFn                     func(context.Context, string, string) (model.Task, error)
+	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
+	GoalProgressesFn           func(context.Context, string, []string) (map[string]model.GoalProgress, error)
+	TasksFn                    func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
+	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
+	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
+	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
+	TaskAssigneesFn            func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	ResolveTaskAssigneesFn     func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
+	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	TaskCacheEpochFn           func(context.Context, string) (string, error)
+	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
 func (mock *taskHTTPReaderMock) Task(p0 context.Context, p1 string, p2 string) (model.Task, error) {
@@ -357,6 +358,11 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, projectID string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+	mock.need("TaskSyncDependencyStates", mock.TaskSyncDependencyStatesFn != nil)
+	return mock.TaskSyncDependencyStatesFn(ctx, projectID, lower)
 }
 
 type taskHTTPWriterMock struct {
@@ -964,10 +970,15 @@ func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 	})
 }
 
-func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time) {
+func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, states map[string]model.TaskDependencyState, facts []model.TaskAssigneeFact, lower *time.Time) {
 	f.t.Helper()
 	rows, facts, lower = copyTaskHTTPSyncRows(rows), copyTaskHTTPAssigneeFacts(facts), copyTaskHTTPPointer(lower)
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	stateCopy := make(map[string]model.TaskDependencyState, len(states))
+	for id, state := range states {
+		state.BlockedBy = copyTaskHTTPSlice(state.BlockedBy)
+		stateCopy[id] = state
+	}
+	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
@@ -980,6 +991,19 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.
 				unexpectedHTTPCall(f.t, "TaskSync arguments")
 			}
 			return copyTaskHTTPSyncRows(rows), nil
+		}
+		reader.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, since *time.Time) (map[string]model.TaskDependencyState, error) {
+			f.require(ctx, id)
+			plan.Called("dependencies")
+			if !reflect.DeepEqual(since, lower) {
+				unexpectedHTTPCall(f.t, "TaskSync dependency arguments")
+			}
+			result := make(map[string]model.TaskDependencyState, len(stateCopy))
+			for id, state := range stateCopy {
+				state.BlockedBy = copyTaskHTTPSlice(state.BlockedBy)
+				result[id] = state
+			}
+			return result, nil
 		}
 		reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 			f.require(ctx, id)

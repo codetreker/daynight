@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
@@ -20,8 +21,8 @@ type RequestAuthentication struct {
 	logger       *slog.Logger
 }
 
-func NewRequestAuthentication(authenticate AuthenticateCredential, settings config.AuthSettings, logger *slog.Logger) (*RequestAuthentication, error) {
-	origin, err := config.ValidatePublicOrigin(settings)
+func NewRequestAuthentication(authenticate AuthenticateCredential, settings authconfig.AuthSettings, logger *slog.Logger) (*RequestAuthentication, error) {
+	origin, err := authconfig.ValidatePublicOrigin(settings)
 	if err != nil {
 		return nil, err
 	}

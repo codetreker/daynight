@@ -1,5 +1,7 @@
 import { createNativeInputPublication } from "./media/native-publication.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
+import { createMarkdownSourceStore } from "./markdown/store.js";
+import type { MarkdownProjectionState } from "./markdown/projection.js";
 import { createNativeImageState } from "./media/native-state.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { createImageHistorySource } from "./media/history-source.js";
@@ -119,6 +121,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
+  const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
   const writeOperation = (operation: ControllerOperation): ControllerOperation => { metadataBudget.assert(Buffer.byteLength(JSON.stringify(operation)) + 16384, operation.state !== "accepted"); db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
@@ -204,6 +207,12 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
   return {
+    markdownStore,
+    publishMarkdownProjection: (state: MarkdownProjectionState, entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+      if (state.entryId !== entry.entryId || state.input.entryId !== entry.entryId || state.input.kind !== entry.kind) throw new Error("Markdown publication changed its entry identity.");
+      markdownStore.put("projection", state.entryId, state);
+      return projectTimeline(entry);
+    }),
     ...createNativeInputPublication({ db, ticket, pendingContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
     ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
@@ -283,6 +292,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
     hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.hasEntry(entryId)),
+    getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => pendingContent.getEntry(entryId)),
     projectTimeline,
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");

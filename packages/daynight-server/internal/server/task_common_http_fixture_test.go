@@ -281,7 +281,7 @@ func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time) {
 	f.t.Helper()
 	rows, facts, lower = copyTaskHTTPSyncRows(rows), copyTaskHTTPAssigneeFacts(facts), copyTaskHTTPPointer(lower)
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
@@ -294,6 +294,14 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.
 				unexpectedHTTPCall(f.t, "TaskSync arguments")
 			}
 			return copyTaskHTTPSyncRows(rows), nil
+		}
+		reader.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, since *time.Time) (map[string]model.TaskDependencyState, error) {
+			f.require(ctx, id)
+			plan.Called("dependencies")
+			if !reflect.DeepEqual(since, lower) {
+				unexpectedHTTPCall(f.t, "TaskSync dependency arguments")
+			}
+			return map[string]model.TaskDependencyState{}, nil
 		}
 		reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 			f.require(ctx, id)

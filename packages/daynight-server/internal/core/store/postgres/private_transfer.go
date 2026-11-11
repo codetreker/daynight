@@ -57,7 +57,7 @@ func (d *privateTransferDAO) Authorize(ctx context.Context, principal model.Prin
 	if model.RequirePrincipal(principal) != nil || (kind != "pat" && kind != "oauth") || string(principal.Kind) != kind || (kind == "pat" && principal.CredentialID != authorityID) {
 		return model.Unauthenticated(nil)
 	}
-	presence, err := pg.TaskPresence(ctx, d.tx, projectID, taskID, " FOR SHARE")
+	presence, err := pg.LockTaskResource(ctx, d.tx, projectID, taskID, false)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (d *privateTransferDAO) Authorize(ctx context.Context, principal model.Prin
 // LockProjectLifecycle follows the transfer row lock and retains the Task lock
 // through the bounded private object and receipt write.
 func (d *privateTransferDAO) LockProjectLifecycle(ctx context.Context, projectID, taskID string) error {
-	presence, err := pg.TaskPresence(ctx, d.tx, projectID, taskID, " FOR SHARE")
+	presence, err := pg.LockTaskResource(ctx, d.tx, projectID, taskID, false)
 	if err != nil {
 		return err
 	}

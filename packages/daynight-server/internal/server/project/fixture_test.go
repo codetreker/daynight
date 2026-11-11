@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -59,7 +60,7 @@ func newHTTPHarness(t *testing.T) *httpHarness {
 	var err error
 	h.Auth, err = authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, secret string) (model.Principal, error) {
 		return h.AuthenticateFunc(ctx, kind, secret)
-	}, configpkg.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: h.Origin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

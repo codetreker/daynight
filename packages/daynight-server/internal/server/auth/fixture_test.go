@@ -3,7 +3,8 @@ package auth
 import (
 	"log/slog"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 
@@ -14,6 +15,6 @@ type authHarness = testsupport.AuthHarness[*Authentication]
 
 func authTestHarness(t *testing.T) *authHarness {
 	return testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*Authentication, error) {
-		return NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+		return NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 	})
 }

@@ -23,9 +23,9 @@ func newMCPHTTPServer(t *testing.T, tx store.Transactions, files filestorage.Sto
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
 	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin = origin
+	config.UniAuth.CallbackURL = origin + "/api/v1/auth/callback"
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	output := io.Discard
 	if len(outputs) > 1 {
 		t.Fatal("MCP fixture accepts at most one log writer")

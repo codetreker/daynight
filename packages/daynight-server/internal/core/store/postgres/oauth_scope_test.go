@@ -111,7 +111,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 				t.Fatal(err)
 			}
 			defer holder.Rollback(context.Background())
-			id, table, prefix := taskID, "tasks", "SELECT deleted_at FROM tasks WHERE project_id="
+			id, table, prefix := taskID, "tasks", "SELECT id::text FROM tasks WHERE project_id="
 			if target == "bot" {
 				id, table, prefix = bot.ID, "bots", "SELECT id::text FROM bots WHERE id="
 			}

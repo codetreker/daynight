@@ -6,11 +6,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { startCopilotRuntime } from "../../../../dist/commands/controller/providers/copilot-runtime.js";
 import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
+import { CopilotReadCorrelation, copilotReadMarker } from "../../../../dist/commands/controller/providers/copilot-read-authority-correlation.js";
 import { openNativeMediaSpool } from "../../../../dist/commands/controller/media/native-spool.js";
 import { validateImageFile } from "../../../../dist/commands/controller/media/image-validation.js";
 
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
+let permissionRequest;
+const correlation = new CopilotReadCorrelation("b".repeat(64), "fixture-session"), hidden = [];
 const records = () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const eventually = async predicate => {
   for (let attempt = 0; attempt < 400; attempt++) { if (predicate()) return; await delay(10); }
@@ -27,7 +30,7 @@ const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNa
       child.stdout.on("data", chunk => { peakControllerRss = Math.max(peakControllerRss, process.memoryUsage().rss); for (const byte of chunk) { bytes++; if (byte === 10) { maxFrameBytes = Math.max(maxFrameBytes, bytes); bytes = 0; } } });
     }
   }, onDiagnostic(line) { traces.push(line); },
-}, error => losses.push(error), mode === "no-media" ? undefined : { createSpool(maxBytes) {
+}, error => losses.push(error), undefined, mode === "no-media" ? undefined : { createSpool(maxBytes) {
   if (mode === "capture-failure") throw new Error("Fixture shared media owner capacity exhausted.");
   return openNativeMediaSpool(path.join(root, randomUUID()), maxBytes, () => {}, () => {});
 } });
@@ -37,9 +40,10 @@ try {
   const client = await runtime.ready;
   assert.equal(children.length, 2);
   assert.notEqual(children[0].pid, children[1].pid);
-  const config = { sessionId: "fixture-session", onEvent(event) { events.push(event); }, onPermissionRequest() {
-    assert(events.some(event => event.id === "permission-event"), "Identity event must precede callback.");
-    return { kind: "approved" };
+  const config = { sessionId: "fixture-session", onEvent(event) { if (correlation.suppress(event)) { hidden.push(event); return; } if (event.id === "permission-event") assert.equal(event.data.permissionRequest, permissionRequest, "The bridge must preserve the exact callback object."); events.push(event); }, onPermissionRequest(request, context) {
+    const refusal = correlation.reject(request, context); if (refusal) return refusal;
+    permissionRequest = request;
+    return { kind: "no-result" };
   } };
   if (mode === "open-race") {
     const opening = client.createSession(config);
@@ -59,6 +63,18 @@ try {
       await rejected; await historyRejected; await eventually(() => losses.length > 0);
       assert.equal(records().filter(record => record.connected).length, 1);
     } else {
+      if (mode === "read-authority") {
+        const sourcePath = path.join(root, "source.png"), marker = copilotReadMarker("b".repeat(64), session.sessionId, randomUUID(), 1, "c".repeat(64), sourcePath);
+        correlation.issue(marker, sourcePath);
+        await client.ping(JSON.stringify({ kind: "source-permission", path: sourcePath, intention: marker }));
+        await eventually(() => hidden.length === 2);
+        const decision = records().find(record => record.method === "session.permissions.handlePendingPermissionRequest" && record.params.requestId === "source-request");
+        assert.equal(decision.params.result.kind, "reject");
+        assert.match(decision.params.result.feedback, /^daynight-local-image-refusal-v1:[a-f0-9]{64}$/);
+        const restored = new CopilotReadCorrelation("b".repeat(64), session.sessionId); restored.prepareHistory(hidden);
+        assert(hidden.every(event => restored.suppress(event, true)));
+        assert(!events.some(event => event.id.startsWith("source-")));
+      }
       assert.deepEqual(await client.ping("health"), { message: "health", timestamp: 1 });
       assert.deepEqual(await session.rpc.model.getCurrent(), { modelId: "fixture-model" });
       assert.equal((await client.getSessionMetadata(session.sessionId)).sessionId, session.sessionId);
@@ -67,6 +83,8 @@ try {
       const filename = path.join(root, "input.png"), bytes = Buffer.from("first-image"); writeFileSync(filename, bytes, { mode: 0o400 });
       const input = { path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" };
       assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }), "sent-1");
+      await eventually(() => events.some(event => event.id === "permission-event"));
+      await session.rpc.permissions.handlePendingPermissionRequest({ requestId: "permission-request", result: { kind: "reject" } });
       await eventually(() => records().some(record => record.method === "session.permissions.handlePendingPermissionRequest"));
       const send = records().find(record => record.method === "session.send");
       assert.equal(send.params.prompt, ""); assert.equal(send.params.mode, "immediate");

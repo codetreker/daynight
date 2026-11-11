@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+
 	coreidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
@@ -48,7 +49,7 @@ func TestIdentityHTTPActualResponses(t *testing.T) {
 					_, _ = w.Write(body)
 				}))
 				defer server.Close()
-				client, err := NewIdentityClient(config.Config{UniAuthURL: server.URL, UniAuthAppID: "app", UniAuthAppSecret: "secret", AllowLoopbackHTTP: true})
+				client, err := NewIdentityClient(identityconfig.Config{URL: server.URL, AppID: "app", AppSecret: "secret", AllowLoopbackHTTP: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -152,7 +153,7 @@ func TestIdentityHTTPMalformedCancelAndRedirect(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	client, err := NewIdentityClient(config.Config{UniAuthURL: server.URL, UniAuthAppID: "app", UniAuthAppSecret: "secret", AllowLoopbackHTTP: true})
+	client, err := NewIdentityClient(identityconfig.Config{URL: server.URL, AppID: "app", AppSecret: "secret", AllowLoopbackHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestIdentityHTTPMalformedCancelAndRedirect(t *testing.T) {
 		http.Redirect(w, r, "/other", http.StatusFound)
 	}))
 	defer redirect.Close()
-	client, err = NewIdentityClient(config.Config{UniAuthURL: redirect.URL, UniAuthAppID: "app", UniAuthAppSecret: "secret", AllowLoopbackHTTP: true})
+	client, err = NewIdentityClient(identityconfig.Config{URL: redirect.URL, AppID: "app", AppSecret: "secret", AllowLoopbackHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}

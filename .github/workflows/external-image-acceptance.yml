@@ -1,0 +1,91 @@
+name: Markdown external-image integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/external-image-acceptance.yml
+      - packages/daynight/scripts/external-image-*
+      - packages/daynight/scripts/external-image-harness/**
+      - packages/daynight/src/commands/controller/markdown/**
+      - packages/daynight/src/commands/controller/media/capture.ts
+      - packages/daynight/src/commands/controller/media/history-sync.ts
+      - packages/daynight/src/commands/controller/relay.ts
+      - packages/daynight-server/internal/core/session/image_captures.go
+      - packages/daynight-server/internal/core/session/image_reads.go
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-image-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  external-image-integration:
+    name: verify (public Markdown image originals)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      GOCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-mod
+      GOPATH: ${{ github.workspace }}/.tmp/product-e2e-cache/go
+      IMAGE_RUN_DIRECTORY: ${{ github.workspace }}/.tmp/external-image-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 2
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        timeout-minutes: 2
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 3
+        with:
+          go-version: 1.27.2
+          cache: true
+          cache-dependency-path: |
+            packages/daynight-server/go.sum
+            packages/e2e_tests/src/build.ts
+      - name: Prepare owned Linux network tools
+        timeout-minutes: 3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends nftables iproute2 iptables dnsutils curl
+          docker info --format '{{.ServerVersion}} {{.OSType}} {{.Architecture}}'
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+        timeout-minutes: 3
+      - name: Check network orchestration without network mutation
+        timeout-minutes: 1
+        run: |
+          bash -n packages/daynight/scripts/external-image-network.sh
+          python3 packages/daynight/scripts/external-image-network.test.py
+      - name: Save public image originals and read them after source and Controller shutdown
+        id: integration
+        timeout-minutes: 25
+        run: node packages/daynight/scripts/external-image-acceptance.ts --run-directory "$IMAGE_RUN_DIRECTORY"
+      - name: Reconcile owned resources independently of the test result
+        if: ${{ always() && steps.integration.outcome != 'skipped' }}
+        timeout-minutes: 4
+        run: node packages/daynight/scripts/external-image-acceptance.ts --cleanup --run-directory "$IMAGE_RUN_DIRECTORY"
+      - name: Upload source-bound integration results
+        if: ${{ always() && steps.integration.outcome != 'skipped' }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: markdown-external-image-integration
+          path: ${{ env.IMAGE_RUN_DIRECTORY }}/results/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

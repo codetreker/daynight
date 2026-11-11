@@ -38,7 +38,7 @@ func TestTaskSyncSessionWireContainsOnlyTaskKeysAndFourStates(t *testing.T) {
 	if !reflect.DeepEqual(states, want) {
 		t.Fatalf("session wire: %s", fields["sessions"])
 	}
-	if len(fields) != 8 {
+	if len(fields) != 9 || string(fields["dependencyStates"]) != "{}" {
 		t.Fatalf("unexpected envelope fields: %v", fields)
 	}
 	delete(response.Sessions, "11111111-1111-4111-8111-111111111111")

@@ -59,6 +59,7 @@ func ReadAssignees(ctx context.Context, reader AssigneeReader, projectID string,
 type SyncReader interface {
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 	TaskAssignees(context.Context, string) ([]model.TaskAssigneeFact, error)
 }
 
@@ -71,6 +72,10 @@ func ReadSync(ctx context.Context, reader SyncReader, clock SnapshotClock, proje
 	var lower *time.Time
 	result.Mode, lower = projection.SyncWindow(requestedEpoch, result.Epoch, since, overlap)
 	result.Tasks, err = reader.TaskSyncTasks(ctx, projectID, lower, projection.TitlePreviewCharacters)
+	if err != nil {
+		return model.TaskSync{}, nil, err
+	}
+	result.DependencyStates, err = reader.TaskSyncDependencyStates(ctx, projectID, lower)
 	if err != nil {
 		return model.TaskSync{}, nil, err
 	}

@@ -83,9 +83,9 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthURL = origin, ready.Origin
-	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = ready.AppID, ready.AppSecret, callback
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin, config.UniAuth.URL = origin, ready.Origin
+	config.UniAuth.AppID, config.UniAuth.AppSecret, config.UniAuth.CallbackURL = ready.AppID, ready.AppSecret, callback
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)

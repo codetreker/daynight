@@ -26,6 +26,8 @@ Engine 先取得 registry 引用，再在短 cell 锁下复制已提交标量；
 
 HTTP 使用 `include=session` 显式选择新表示，show 在原 Task 顶层增加 `session`，list 保持原 `items/nextCursor` 并增加 `observedAt/partial`。HTTP 投影以无方法的 Task 字段别名组合 Session，避免旧 Task 自定义 `MarshalJSON` 吞掉附加字段。Worker protocol 仍控制旧 Worker claim 表示、inventory 拒绝和候选过滤。
 
+合法 Goal 没有执行 Session；普通读取将其执行观察标为 `observed/not_applicable`，不查询或注册执行 Session，也不因此将结果标为部分失败。目标或 Parent 有效删除后，普通 Session 读取、连接和输入不可用；原 owner 仍可按既有身份与停止证明完成 ledger、recording 和归档收尾。父 Goal 完成或取消不构成删除。
+
 Graph 每节点附加 `session/relation`，顶层附加 `sessionSummary/partial`。relation 从请求 Task 沿普通依赖的无向连通分量计算；直接外部前置保留为 `external`，不参与进行中汇总。内部 GraphTask 读取版本用于绑定检查，不改变旧 Graph API 字段。`--depends-only` 使用原查询，不触发 Session 观察。
 
 ## 工作分组与稳定遍历

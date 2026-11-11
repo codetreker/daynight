@@ -34,7 +34,7 @@ func (f *webhookApplicationFixture) start() {
 		_ = app.Close(context.Background())
 		f.t.Fatal(err)
 	}
-	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.Server.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
 	if err != nil {
 		_ = handler.Shutdown(context.Background())
 		_ = app.Close(context.Background())
@@ -72,7 +72,7 @@ func (f *webhookApplicationFixture) request(method, path, body string) (int, []b
 		f.t.Fatal(err)
 	}
 	req.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: f.token})
-	req.Header.Set("Origin", f.cfg.PublicOrigin)
+	req.Header.Set("Origin", f.cfg.Server.PublicOrigin)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(req)

@@ -28,6 +28,14 @@ it("loads exact wire versions and encodes only epoch and the unmodified maximum 
   expect(fetch.mock.calls[0]![1]).toMatchObject({ cache: "no-store", credentials: "same-origin", redirect: "error" });
 });
 
+it("keeps existing sync behavior when the server includes dependency states", async () => {
+  const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ ...sync, dependencyStates })));
+  const result = await getTaskSync(projectId, {}, userId, signal());
+  expect(result.sync).toEqual(parseTaskSync(sync, projectId, userId));
+  expect(result.sync.tasks[0]!.version).toBe(9_007_199_254_740_993n);
+});
+
 it("requests a first snapshot and preserves known empty epochs without inventing since", async () => {
   const fetch = vi.fn().mockImplementation(() => Promise.resolve(response({ ...sync, tasks: [] }))); vi.stubGlobal("fetch", fetch);
   await getTaskSync(projectId, {}, userId, signal());

@@ -30,6 +30,15 @@ A durable capture result interrupted before its timeline update is repaired at
 that same image position on the current view, without registering or sending
 again; ordinary receipt adoption does not publish another timeline event.
 
+The named Markdown publication operation commits its projection state in the
+same transaction as the candidate pointer and source outbox. Analysis and image
+receipt state cannot advance independently of visible text. Native-only patches
+may precede a Markdown state rebase; recovery reads the committed entry and
+adopts only the same native image positions before publishing another Markdown
+view. This preserves both completed analysis and late native image receipts
+without guessing which body is newer. The
+[source decision](2026-11-05-session-image-sources.md) owns that projection flow.
+
 Journal v8 migrates only legacy content that exactly matches its SQL index.
 Missing, unindexed or advanced legacy files cannot prove the committed snapshot;
 migration refuses them while retaining the original database and files. New

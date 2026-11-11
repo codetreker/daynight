@@ -8,12 +8,13 @@ import { readFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import type { CopilotClient, CopilotSession, SessionConfig, SessionEvent } from "@github/copilot-sdk";
 import { NativeRpcError, record, string } from "./native-rpc.js";
-import { nativeEntryId, parseProviderArguments } from "./projection.js";
+import { nativeEntryId, parseProviderArguments, markdownTimelineMetadata } from "./projection.js";
 import { NativeTurns } from "./turns.js";
 import { CopilotInteractions } from "./copilot-interactions.js";
 import { CopilotProjection, copilotOwner } from "./copilot-projection.js";
-import { copilotDeadline, startCopilotRuntime } from "./copilot-runtime.js";
+import { copilotDeadline, copilotExecutable, startCopilotRuntime } from "./copilot-runtime.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
+import { prepareCopilotAuthorityArtifacts } from "./copilot-read-authority-artifacts.js";
 import { ControllerStartupError } from "../startup.js";
 import { CopilotImageInputs } from "./copilot-image-input.js";
 import { CopilotImages } from "./copilot-images.js";
@@ -48,7 +49,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const lost = new Promise<never>((_, reject) => { rejectLost = reject; }); void lost.catch(() => {});
   const disconnect = (error: Error) => {
     if (closed || disconnected) return;
-    disconnected = true; controls?.close(); if (heartbeat) clearInterval(heartbeat);
+    disconnected = true; runtime?.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
     rejectLost(error); interactions.dispose(error);
     if (currentTurnId) turns.complete(currentTurnId, error);
     for (const waiter of cancelWaiters) waiter.reject(error); cancelWaiters.clear();
@@ -82,7 +83,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       todoProjected = true;
     }).catch(() => { options.onDiagnostic?.("Copilot todo state is unavailable."); });
   };
-  const seen = new Set<string>();
+  const seen = new Set<string>(), hiddenPermissionEvents = new Set<string>();
   const accept = (event: SessionEvent, history = false) => {
     if (closed || disconnected || seen.has(event.id)) { images.discard(event); return; }
     if (seen.size >= 100_000) throw new Error("Copilot event identity metadata exceeded its bound.");
@@ -104,6 +105,11 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     else if (event.type === "session.shutdown") disconnect(new Error("Native Copilot session closed; operation results are unknown."));
   };
   const onEvent = (event: SessionEvent) => {
+    runtime?.authority?.observe(event);
+    if (runtime?.authority?.suppressPermissionEvent(event)) {
+      if (hiddenPermissionEvents.size >= 100_000) runtime.authority.invalidate(); else hiddenPermissionEvents.add(event.id);
+      images.discard(event); return;
+    }
     if (closed || disconnected) { images.discard(event); return; }
     try {
       interactions.accept(event);
@@ -117,7 +123,45 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     }
     catch { disconnect(new Error("Native Copilot event could not be processed; operation results are unknown.")); }
   };
-  const runtime = startCopilotRuntime({ ...options, cwd }, disconnect, options.imageRuntime ? { createSpool: maximum => options.imageRuntime!.createSpool(maximum) } : undefined);
+  options.onNativeReadPolicy?.(null);
+  const artifacts = options.onNativeReadPolicy && !options.executable ? await prepareCopilotAuthorityArtifacts(copilotExecutable(), options.env ?? process.env, options.onDiagnostic) : undefined;
+  let runtime: ReturnType<typeof startCopilotRuntime>;
+  try { runtime = startCopilotRuntime({ ...options, cwd }, disconnect, artifacts, options.imageRuntime ? { createSpool: maximum => options.imageRuntime!.createSpool(maximum) } : undefined); }
+  catch (error) { await artifacts?.cleanup(); throw error; }
+  let permissionHistoryPrepared = false;
+  const preparePermissionHistory = async (): Promise<void> => {
+    if (!runtime.authority) return;
+    // Authenticate complete refusal pairs before either event is projected. The
+    // separate scan never transfers images or replaces the durable replay cursor.
+    let cursor: string | undefined, reset = false, bytes = 0;
+    const events: SessionEvent[] = [], cursors = new Set<string>();
+    try {
+      for (let pages = 0; !closed && !disconnected; pages++) {
+        if (pages >= 100_000) throw new Error("Copilot permission history exceeded its page bound.");
+        const page = await call(native!.rpc.eventLog.read({ ...(cursor ? { cursor } : {}), types: ["permission.requested", "permission.completed"], max: 1, includeEphemeral: false }), "Copilot permission history");
+        try {
+          if (!Array.isArray(page.events) || page.events.length > 1 || typeof page.cursor !== "string" || typeof page.hasMore !== "boolean") throw new Error("Copilot permission history page is invalid.");
+          if (page.cursorStatus === "expired") {
+            if (reset) throw new Error("Copilot permission history cursor repeatedly expired.");
+            cursor = undefined; reset = true; bytes = 0; events.length = 0; cursors.clear(); continue;
+          }
+          if (page.cursorStatus !== "ok") throw new Error("Copilot permission history cursor is unavailable.");
+          for (const event of page.events) {
+            if (event.type !== "permission.requested" && event.type !== "permission.completed") throw new Error("Copilot permission history returned an unrelated event.");
+            bytes += Buffer.byteLength(JSON.stringify(event));
+            if (bytes > 16_777_216) throw new Error("Copilot permission history exceeded its metadata bound.");
+            events.push(event);
+          }
+          if (!page.hasMore) { runtime.authority.prepareHistory(events); permissionHistoryPrepared = true; return; }
+          if (cursors.has(page.cursor) || page.cursor === cursor) throw new Error("Copilot permission history cursor did not advance.");
+          cursor = page.cursor; cursors.add(cursor);
+        } finally { if (Array.isArray(page.events)) for (const event of page.events) images.discard(event); }
+      }
+    } catch {
+      runtime.authority.invalidate();
+      options.onDiagnostic?.("Copilot image permission history is unverified; image reads are disabled and original interactions remain visible.");
+    }
+  };
   const historyKey = `copilot:cursor:${nativeEntryId(nativeId, "history")}`;
   let historyRead: Promise<SessionEvent | null> | null = null;
   const readHistory = (): Promise<SessionEvent | null> => historyRead ??= (async () => {
@@ -129,6 +173,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       if (!Array.isArray(page.events) || page.events.length > 1 || typeof page.cursor !== "string" || typeof page.hasMore !== "boolean") throw new Error("Copilot history page is invalid.");
       if (page.cursorStatus === "expired") { if (reset) throw new Error("Copilot history cursor repeatedly expired."); cursor = undefined; reset = true; cursors.clear(); continue; }
       for (const event of page.events) {
+        if (hiddenPermissionEvents.has(event.id) || permissionHistoryPrepared && runtime.authority?.suppressPermissionEvent(event, true)) { images.discard(event); continue; }
         if (!buffered?.some(live => live.id === event.id)) interactions.accept(event, true);
         accept(event, true);
         if (!copilotOwner(event) && (event.type === "user.message" || event.type === "assistant.turn_start")) last = { ...event, data: { interactionId: string(record(event.data).interactionId) } } as SessionEvent;
@@ -146,7 +191,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     if (closing) return closing;
     const attempt = (async () => {
       const errors: unknown[] = [];
-      closed = true; controls?.close(); if (heartbeat) clearInterval(heartbeat);
+      closed = true; runtime.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
+      try { await options.drainNativeReadPolicy?.(); } catch (error) { errors.push(error); }
       const error = new Error("Native Copilot process is closing; pending operation results are unknown.");
       rejectLost(error);
       try { interactions.dispose(error); } catch (error) { errors.push(error); }
@@ -190,7 +236,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     const config: SessionConfig = { ...(skillDirectories ? { skillDirectories } : {}), sessionId: nativeId, workingDirectory: cwd, streaming: true, includeSubAgentStreamingEvents: true,
       ...(options.instructions !== undefined ? { systemMessage: { mode: "append" as const, content: options.instructions } } : {}),
       ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as NonNullable<SessionConfig["reasoningEffort"]> } : {}),
-      onEvent, onPermissionRequest: () => interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
+      onEvent, onPermissionRequest: (request, context) => runtime.authority?.rejectPermission(request, context) ?? interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
       onElicitationRequest: request => interactions.bindElicitation(request), onExitPlanModeRequest: request => interactions.bindPlan(request) };
     const opening = options.resumeNativeSessionId ? client.resumeSession(nativeId, config) : client.createSession(config);
     void opening.then(async opened => { if (closed && !startupFailed) await copilotDeadline(opened.disconnect(), "Late Copilot session disconnect", 2000); }).catch(() => {});
@@ -205,6 +251,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       imageProfile = options.imageRuntime ? copilotImageProfile(sdk.version, status.version) : null;
     } catch { imageProfile = null; }
     if (options.validateNativeSelection && !options.resumeNativeSessionId) await controls.validateSelection({ model: options.model, ...(args.effort === undefined ? {} : { effort: args.effort }) });
+    await runtime.authority?.install(nativeId);
+    await preparePermissionHistory();
     verified = true; state();
     for (const match of imageInputs.restoreAccepted()) images.accepted(match);
     const last = await readHistory();
@@ -274,16 +322,39 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   return {
     nativeSessionId: nativeId, send,
     async refreshControls() { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); } },
-    async setSetting(id, value, operationId, revision) { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; controls!.invalidateImages(); state(); try { await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; } finally { controlsBusy = false; state(); } },
+    async setSetting(id, value, operationId, revision) {
+      if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable.");
+      controlsBusy = true; controls!.invalidateImages(); state();
+      const modelSetting = id === "model" || id === "effort";
+      try {
+        if (!modelSetting) { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); }
+        try { await controls!.set(id, value, operationId, revision); }
+        catch (error) {
+          if (modelSetting) {
+            runtime.authority?.invalidate();
+            try { await options.drainNativeReadPolicy?.(); }
+            catch (cleanupError) { throw new AggregateError([error, cleanupError], "Copilot setting failed and image cleanup did not complete."); }
+          }
+          throw error;
+        }
+        // Settings-only readback preserves the checker; native permission events
+        // can still revoke it while a model change awaits confirmation.
+        if (modelSetting && runtime.authority) {
+          let valid = true; try { runtime.authority.verify(); } catch { valid = false; }
+          if (!valid) await options.drainNativeReadPolicy?.();
+        }
+        return { disposition: "handled" };
+      } finally { controlsBusy = false; state(); }
+    },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       controlsBusy = true; controls!.invalidateImages(); state();
       let result: Awaited<ReturnType<CopilotControls["invoke"]>>;
-      try { result = await controls!.invoke(id, args, revision); await controls!.refresh(false); } finally { controlsBusy = false; state(); }
+      try { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); result = await controls!.invoke(id, args, revision); await controls!.refresh(false); } finally { controlsBusy = false; state(); }
       if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");
       const text = result.kind === "text" ? result.text : result.message;
-      if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
+      if (text) options.onTimeline({ entryId: nativeEntryId(nativeId, `command:${operationId}`), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] }, markdownTimelineMetadata(text, true, "plain"));
       return { disposition: "handled" };
     },
     async cancel(expectedTurnId): Promise<ProviderReceipt> {

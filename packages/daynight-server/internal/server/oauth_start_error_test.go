@@ -80,7 +80,7 @@ func TestProductionOAuthInvalidClientAndCallbackErrorPage(t *testing.T) {
 			err := fn(oauthHTTPClientScope{clients: lookup})
 			return oauthHTTPCompletion(err), err
 		}
-		q := url.Values{"client_id": {clientID}, "redirect_uri": {"https://evil.example/callback"}, "response_type": {"code"}, "scope": {"daynight:mcp"}, "resource": {config.PublicOrigin + "/mcp"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}}
+		q := url.Values{"client_id": {clientID}, "redirect_uri": {"https://evil.example/callback"}, "response_type": {"code"}, "scope": {"daynight:mcp"}, "resource": {config.Server.PublicOrigin + "/mcp"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}}
 		r := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
 		r.RemoteAddr = "127.0.0.1:1234"
 		r.Header.Set("Accept", "text/html,application/xhtml+xml")

@@ -86,19 +86,28 @@ const eventSize = (input: unknown): number => {
   };
   scan(input, 0); return bytes;
 };
+const permissionIdentities = new WeakMap<object, string>();
 const enqueueEvent = (sessionId: string, event: unknown) => {
   try {
+    const request = object(object(event).data).permissionRequest;
+    const permissionIdentity = object(event).type === "permission.requested" && request !== null && typeof request === "object" ? permissionIdentities.get(request) : undefined;
     const bytes = eventSize(event);
     if (queuedEventBytes + bytes > 201_326_592) throw new Error("Copilot event queue exceeded its bound; native history must be reconciled.");
     queuedEventBytes += bytes;
     eventWork = eventWork.then(async () => {
       if (closing || fatalFailure) return;
       const result = await exportCopilotBridgeMedia(event, "event", transferImage);
-      await channel.send({ type: "event", sessionId, result });
+      await channel.send({ type: "event", sessionId, result, ...(permissionIdentity ? { permissionIdentity } : {}) });
     }).finally(() => { queuedEventBytes -= bytes; }).catch(fatal);
   } catch (error) { fatal(error instanceof Error ? error : new Error(String(error))); }
 };
 const callback = (sessionId: string, name: string) => async (...args: unknown[]) => {
+  if (name === "onPermissionRequest" && args[0] !== null && typeof args[0] === "object") {
+    // Preserve the SDK's callback-before-event order and shared object identity
+    // across serialization. This identity grants no permission by itself.
+    const permissionIdentity = randomUUID(); permissionIdentities.set(args[0], permissionIdentity);
+    return request({ method: "callback", sessionId, callback: name, args, permissionIdentity });
+  }
   // SDK callback dispatch can precede its identity-bearing event in one stack.
   // Drain that event before the Controller attempts to bind the callback.
   await Promise.resolve(); await eventWork;

@@ -4,7 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { parseValidatedImage, type ValidatedImage } from "../../../session/image-values.js";
-import { IMAGE_VALIDATION_BUILD_ID, type ImageValidationRequest } from "./image-validation.js";
+import { IMAGE_VALIDATION_BUILD_ID, IMAGE_VALIDATION_ERROR_CODES, ImageValidationError, type ImageValidationRequest } from "./image-validation.js";
 
 export type ImageDecoder = (request: ImageValidationRequest, signal?: AbortSignal) => Promise<ValidatedImage>;
 export type ImageDecoderConfiguration = { runtimePath: string; helperPath: string; enginePath: string; helperSha256: string; engineSha256: string; buildId: string; timeoutMilliseconds?: number; rssLimitBytes?: number; onPeakRss?(bytes: number): void };
@@ -42,7 +42,14 @@ export const createImageDecoder = (configuration: ImageDecoderConfiguration): Im
         if (!reply || typeof reply !== "object" || Object.keys(reply).sort().join() !== "buildId,error,result,version") throw new Error("Invalid image decoder response.");
         const r = reply as Record<string, unknown>;
         if (r.version !== 1 || r.buildId !== c.buildId || (r.result === null) === (r.error === null)) throw new Error("Invalid image decoder response.");
-        if (r.error !== null) throw new Error("Image complete decode failed.");
+        if (r.error !== null) {
+          if (typeof r.error !== "object" || Array.isArray(r.error) || Object.keys(r.error).sort().join() !== "code,message,retry") throw new Error("Invalid image decoder failure.");
+          const error = r.error as Record<string, unknown>;
+          if (typeof error.message !== "string" || !error.message || !error.message.isWellFormed() || error.message.length > 1024 || error.retry !== "never") throw new Error("Invalid image decoder failure.");
+          if (error.code === "image_validation_unavailable") throw Object.assign(new Error(error.message), { code: error.code });
+          if (!IMAGE_VALIDATION_ERROR_CODES.some(code => code === error.code)) throw new Error("Invalid image decoder failure.");
+          throw new ImageValidationError(error.code as ImageValidationError["code"], error.message);
+        }
         const result = parseValidatedImage(r.result);
         if (result.sha256 !== request.expectedSha256 || result.byteLength !== request.expectedByteLength) throw new Error("Image decoder returned conflicting original integrity.");
         resolve(result);

@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -20,7 +21,7 @@ import (
 
 func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+		return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 	})
 	cookie := h.Login(t, "worker")
 	mux := http.NewServeMux()

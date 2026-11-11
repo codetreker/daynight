@@ -4,22 +4,28 @@ package task_test
 
 import (
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
-	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"io"
 	"log/slog"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
+	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
+	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
 func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
@@ -39,7 +45,13 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 	origin := "http://" + instance.Listener.Addr().String()
 	callback := origin + "/api/v1/auth/callback"
 	gateway := testauth.StartGateway(t, callback)
-	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
+	config := configpkg.Config{
+		Database: databaseconfig.Config{URL: "postgres://database"},
+		Storage:  storageconfig.Config{Root: "storage"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
+		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
+	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {

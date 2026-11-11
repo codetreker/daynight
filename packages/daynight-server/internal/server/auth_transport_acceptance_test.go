@@ -121,9 +121,9 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 		t.Fatal("construct direct real UniAuth SDK client failed")
 	}
 	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthURL = origin, cut.server.URL
-	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = gateway.AppID, gateway.AppSecret, origin+callbackPath
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin, config.UniAuth.URL = origin, cut.server.URL
+	config.UniAuth.AppID, config.UniAuth.AppSecret, config.UniAuth.CallbackURL = gateway.AppID, gateway.AppSecret, origin+callbackPath
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {

@@ -35,21 +35,21 @@ func (r *Reader) TaskSessionSources(ctx context.Context, projectID string, taskI
 		return []store.TaskSessionSource{}, nil
 	}
 	return r.taskObservationSources(ctx, `SELECT `+taskObservationColumns+`
- FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
- LEFT JOIN task_properties w ON w.task_id=t.id AND w.name='worker'
- LEFT JOIN task_sessions s ON s.project_id=t.project_id AND s.task_id=t.id AND s.scope='task'
+ FROM task_resource_rows t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+ LEFT JOIN task_properties w ON w.task_id=t.id AND t.type='task' AND w.name='worker'
+ LEFT JOIN task_sessions s ON s.project_id=t.project_id AND s.task_id=t.id AND t.type='task' AND s.scope='task'
  AND s.claim_id=((w.value::jsonb)->>'claimId')::uuid
  LEFT JOIN session_archives a ON a.session_id=s.id
- WHERE t.project_id=$1 AND t.id=ANY($2::uuid[]) AND t.deleted_at IS NULL ORDER BY t.id`, projectID, taskIDs)
+ WHERE t.project_id=$1 AND t.id=ANY($2::uuid[]) AND t.effective_deleted_at IS NULL ORDER BY t.id`, projectID, taskIDs)
 }
 
 func (r *Reader) TaskSessionInspectionSource(ctx context.Context, projectID, taskID, sessionID string) (store.TaskSessionSource, error) {
 	sources, err := r.taskObservationSources(ctx, `SELECT `+taskObservationColumns+`
- FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
- LEFT JOIN task_properties w ON w.task_id=t.id AND w.name='worker'
- JOIN task_sessions s ON s.project_id=t.project_id AND s.task_id=t.id AND s.scope='task' AND s.id=$3
+ FROM task_resource_rows t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+ LEFT JOIN task_properties w ON w.task_id=t.id AND t.type='task' AND w.name='worker'
+ JOIN task_sessions s ON s.project_id=t.project_id AND s.task_id=t.id AND t.type='task' AND s.scope='task' AND s.id=$3
  LEFT JOIN session_archives a ON a.session_id=s.id
- WHERE t.project_id=$1 AND t.id=$2 AND t.deleted_at IS NULL`, projectID, taskID, sessionID)
+ WHERE t.project_id=$1 AND t.id=$2 AND t.effective_deleted_at IS NULL`, projectID, taskID, sessionID)
 	if err != nil {
 		return store.TaskSessionSource{}, err
 	}
