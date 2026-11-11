@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
@@ -32,6 +32,10 @@ vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadSto
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr/durable.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/herdr/durable.js")>();
+  return { ...actual, createDurableWorkerHerdr: (...args: Parameters<typeof actual.createDurableWorkerHerdr>) => mocks.durable.getMockImplementation() ? mocks.durable(...args) : actual.createDurableWorkerHerdr(...args) };
+});
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
@@ -90,6 +94,7 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
@@ -1090,7 +1095,9 @@ it("admits another task through the real coordinator after a stop wake with both
     prepareWorkspace: async (context: any) => { trace.push("workspace"); const nativeBinding = { session: "w", workspaceId: "new-workspace", paneId: "new-pane", terminalId: "new-terminal" }; resources.set(context.claimId, { owner: context, workspaceId: nativeBinding.workspaceId, panes: [{ binding: nativeBinding, cwd: context.cwd, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(33) }, stateChangeSeq: 1, completionSeq: 0 }] }); return nativeBinding; },
     start: started, syncWorkspaceName: async () => {},
   };
-  mocks.herdr.mockReturnValue({ tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} });
+  const herdr = { tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} };
+  mocks.herdr.mockReturnValue(herdr);
+  mocks.durable.mockReturnValue(herdr);
   mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
     prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.taskId), branch: `daynight/${target.taskId}` }; worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
     removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); },
@@ -1115,19 +1122,24 @@ it("admits another task through the real coordinator after a stop wake with both
   });
   let actualOptions!: WorkerCoordinatorOptions;
   mocks.coordinator.mockImplementation(value => { actualOptions = value; return createWorkerCoordinator(value); });
+  const bounded = async <T>(stage: string, value: Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([value, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${stage}.`)), 8_000); })]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  };
   const running = start(f);
   try {
-    await Promise.all([archiveEntered.promise, stopEntered.promise, promptsReceived.promise]);
+    await Promise.all([bounded("historical archive", archiveEntered.promise), bounded("original stop", stopEntered.promise), bounded("prompt receipt", promptsReceived.promise)]);
     await eventually(() => expect(actualOptions.promptSource?.current(owner.projectId)).not.toBeNull());
     await eventually(() => expect(polls.some(signal => !signal.aborted)).toBe(true));
     stopRelease.resolve();
-    await removeEntered.promise;
+    await bounded("original worktree removal", removeEntered.promise);
     await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture("1"), grants: [...grants.values()].map(value => value.id) })); });
     expect([...grants.values()].map(value => value.id)).toEqual([uuid(30)]);
     expect(worktrees.has(owner.claimId)).toBe(true);
     expect(mocks.archive).toHaveBeenCalledOnce();
   } finally { stopRelease.resolve(); removeRelease.resolve(); f.signal.abort(); await running; }
-});
+}, 20_000);
 
 it("retains Web stop observation causes and claim identity through runtime diagnostics", async () => {
   const f = await fixture();
