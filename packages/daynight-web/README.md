@@ -512,7 +512,7 @@ stale indicator, without admission reasons or monitoring timestamps and age.
 Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines.
+retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and

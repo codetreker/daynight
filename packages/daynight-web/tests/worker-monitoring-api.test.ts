@@ -31,6 +31,28 @@ const mutate = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker monitoring response contracts', () => {
+  it('accepts only canonical claim worktree locations and preserves absence', () => {
+    expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
+    for (const worktree of [
+      { kind: 'project-relative', path: '.' }, { kind: 'project-relative', path: '../retained/工作 区' },
+      { kind: 'project-relative', path: 'a'.repeat(4096) },
+      ...['different-volume', 'invalid-path', 'limit-exceeded'].map(reason => ({ kind: 'unavailable', reason })),
+    ]) {
+      const input = mutate(['data', 'currentFailures', '0', 'worktree'], worktree);
+      expect(parseWorkerMonitoringDetail(input)).toEqual(input);
+    }
+  });
+  it('rejects invalid worktree shapes, paths and non-claim scope', () => {
+    for (const worktree of [null, {}, { kind: 'unknown' }, { kind: 'unavailable', reason: 'unknown' },
+      { kind: 'unavailable', reason: 'invalid-path', extra: true }, { kind: 'project-relative', path: 'a', extra: true },
+      ...['', '/a', '//server/share', 'C:folder', 'C:/folder', 'a\\b', 'a//b', './a', 'a/./b', 'a/../b', 'a/', '\u0000', '\u0085', '\ud800', 'é'.repeat(2049)].map(path => ({ kind: 'project-relative', path })),
+    ]) expect(() => parseWorkerMonitoringDetail(mutate(['data', 'currentFailures', '0', 'worktree'], worktree))).toThrow();
+    for (const [owner, label] of [[{ kind: 'worker' }, null], [{ kind: 'project', projectId }, { kind: 'project', projectName: 'Project' }]] as const) {
+      const value = detail();
+      Object.assign(value.data.currentFailures[0]!, { scope: owner, association: label, worktree: { kind: 'project-relative', path: 'ok' } });
+      expect(() => parseWorkerMonitoringDetail(value)).toThrow();
+    }
+  });
   it('accepts available observations and absent state without fabricating data', () => {
     expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
     expect(parseWorkerMonitoringDetail(absent())).toEqual(absent());

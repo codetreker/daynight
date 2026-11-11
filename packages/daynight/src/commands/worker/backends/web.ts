@@ -8,7 +8,7 @@ import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTi
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
-import { WorktreePreconditionError } from "../worktrees.js";
+import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
@@ -39,7 +39,7 @@ export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   type FailureObservation = { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean };
-  type Monitoring = { observePhase?: WorkerPhaseObserver; observeSelect?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey: string) => void; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey?: string) => void; observeFailure?: (identity: ClaimIdentity, phase: WorkerObservedPhase, error: unknown, operationKey?: string, observedFailure?: FailureObservation) => boolean; observeRetry?: (identity: ClaimIdentity, operationKey: string, running: boolean) => void; observeDiscard?: (identity: ClaimIdentity, operationKey: string) => void; observeUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => boolean };
+  type Monitoring = { observeWorktree?: (identity: ClaimIdentity, root: string, target: string) => void; observePhase?: WorkerPhaseObserver; observeSelect?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey: string) => void; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey?: string) => void; observeFailure?: (identity: ClaimIdentity, phase: WorkerObservedPhase, error: unknown, operationKey?: string, observedFailure?: FailureObservation) => boolean; observeRetry?: (identity: ClaimIdentity, operationKey: string, running: boolean) => void; observeDiscard?: (identity: ClaimIdentity, operationKey: string) => void; observeUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => boolean };
   let monitoring: Monitoring = {};
   const pendingFailures = new Map<string, { identity: ClaimIdentity; operationKey: string; error: unknown; observedFailure: FailureObservation }>();
   const pendingIdentities = new Map<string, { identity: ClaimIdentity; operationKey: string }>();
@@ -158,6 +158,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
       phase(task, { kind: "execution", phase: "worktree-preparation" });
       const preparing = task.resources.worktree === null;
+      try { monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree?.worktreePath ?? selectedWorktreePath(task.repositoryPath, task.taskId)); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
       if (preparing) task = options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
       else { await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal); task = current(task); }
       success(task, { kind: "execution", phase: "worktree-preparation" });

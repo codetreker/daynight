@@ -92,7 +92,7 @@ func TestMonitoringProjectionRevokedAndCompletedCleanup(t *testing.T) {
 	o["admission"].(map[string]any)["reasons"] = []any{map[string]any{"code": "cleanup-capacity-blocked", "scope": map[string]any{"kind": "worker"}}, map[string]any{"code": "project-unavailable", "scope": hidden}}
 	o["activities"] = []any{map[string]any{"kind": "cleanup", "scope": visible}, map[string]any{"kind": "cleanup", "scope": hidden}}
 	o["reservations"] = []any{map[string]any{"scope": hidden, "reservationId": "private reservation"}}
-	o["currentFailures"] = []any{map[string]any{"scope": hidden, "error": "private cause"}}
+	o["currentFailures"] = []any{map[string]any{"scope": hidden, "error": "private cause", "worktree": map[string]any{"kind": "project-relative", "path": "private-worktree"}}}
 	o["lastRecovery"] = map[string]any{"scope": hidden, "explanation": "private recovery"}
 	source := monitorTaskSource(t, model.TaskDone, model.WorkerCompleted, monitorWorker, "20000000-0000-4000-8000-000000000004")
 	result := monitoring.DetailResponse{State: "available", Data: o, DetailCoverage: "complete", PermissionProjection: "current"}
@@ -103,7 +103,7 @@ func TestMonitoringProjectionRevokedAndCompletedCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{hiddenProject, hiddenTask, hiddenClaim, "private reservation", "private cause", "private recovery"} {
+	for _, secret := range []string{hiddenProject, hiddenTask, hiddenClaim, "private reservation", "private cause", "private recovery", "private-worktree"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("private data leaked: %s", b)
 		}
@@ -121,6 +121,33 @@ func TestMonitoringProjectionRevokedAndCompletedCleanup(t *testing.T) {
 	}
 	if len(o["reservations"].([]any)) != 0 || len(o["currentFailures"].([]any)) != 0 || o["lastRecovery"] != nil {
 		t.Fatalf("hidden details retained: %s", b)
+	}
+}
+
+func TestMonitoringProjectionKeepsWorktreeWhenLabelDoesNotFit(t *testing.T) {
+	o := monitorObservation()
+	path := strings.Repeat("<", 4096)
+	o["currentFailures"] = []any{map[string]any{
+		"scope":    monitorScope(monitorProject, monitorTask, monitorClaim),
+		"worktree": map[string]any{"kind": "project-relative", "path": path},
+	}}
+	sources := store.WorkerMonitoringSources{
+		Projects: map[string]string{monitorProject: "Project"},
+		Tasks: map[string]store.WorkerTaskSource{monitorTask: {
+			Task: model.Task{ID: monitorTask, ProjectID: monitorProject, Title: strings.Repeat("<", monitoring.MaxDetail)}, ProjectName: "Project",
+		}},
+	}
+	result := monitoring.DetailResponse{State: "available", Data: o, DetailCoverage: "complete", PermissionProjection: "current"}
+	if err := ProjectMonitoring(&result, sources); err != nil {
+		t.Fatal(err)
+	}
+	failure := o["currentFailures"].([]any)[0].(map[string]any)
+	if failure["association"].(map[string]any)["kind"] != "labels-omitted" || failure["worktree"].(map[string]any)["path"] != path || result.DetailCoverage != "partial" {
+		t.Fatalf("worktree or label lost: %v", failure)
+	}
+	b, err := json.Marshal(result)
+	if err != nil || len(b)+1 > monitoring.MaxDetail || !strings.Contains(string(b), `\u003c`) {
+		t.Fatalf("encoded detail: bytes=%d error=%v", len(b)+1, err)
 	}
 }
 func TestMonitoringProjectionActualEscapedBudget(t *testing.T) {

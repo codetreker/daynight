@@ -22,6 +22,7 @@
 .monitoring-issue { padding: 18px 22px; border-bottom: 1px solid #eef0f4; color: #59667d; font-size: 12px; overflow-wrap: anywhere; }
 .monitoring-issue summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .monitoring-issue dl { padding: 15px; background: #fafbfd; border: 1px solid #edf0f5; border-radius: 7px; }
+.monitoring-worktree { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .monitoring-delivery { padding: 0 22px 22px; color: #59667d; }
 .monitoring-card-state { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; color: #68758b; font-size: 11px; overflow-wrap: anywhere; }
 @media (max-width: 850px) { .monitoring-grid { grid-template-columns: 1fr; } .monitoring-activities li { grid-template-columns: minmax(0, 1fr) minmax(100px, .6fr); } .monitoring-activities dl { grid-column: 1 / -1; } }

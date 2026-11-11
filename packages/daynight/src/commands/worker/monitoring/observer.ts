@@ -1,13 +1,13 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { classifyFailure } from "./diagnostics.js";
-import type { Activity, ActivityPhase, AdmissionReason, Coverage, DeliveryPhase, Failure, FailureComponent, Observation, Reservation, ReservationRole, RetryState, SchedulerPhase, Scope, WaitReason } from "./types.js";
+import type { Activity, ActivityPhase, AdmissionReason, Coverage, DeliveryPhase, Failure, FailureComponent, FailureWorktree, Observation, Reservation, ReservationRole, RetryState, SchedulerPhase, Scope, WaitReason } from "./types.js";
 
 type Identity = { projectId: string; taskId: string; claimId: string };
 type ReservationInput = { identity: Identity; roles: readonly ReservationRole[]; occupied?: boolean; observedAt?: string };
 type ActivityInput = ActivityPhase & { scope: Scope; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null };
 type ActivityPatch = { phase?: Activity["phase"]; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null; progress?: boolean };
-type FailureInput = { operationId: string; component: FailureComponent; phase: string; scope: Scope; error: unknown; retryState?: RetryState; nextAttemptAt?: string | null; outcomeUnconfirmed?: boolean; observedFailure?: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number } };
+type FailureInput = { operationId: string; component: FailureComponent; phase: string; scope: Scope; error: unknown; worktree?: FailureWorktree; retryState?: RetryState; nextAttemptAt?: string | null; outcomeUnconfirmed?: boolean; observedFailure?: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number } };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const identityKey = (id: Identity): string => `${id.projectId}/${id.taskId}/${id.claimId}`;
 const validIdentity = (id: Identity): boolean => uuid.test(id.projectId) && uuid.test(id.taskId) && uuid.test(id.claimId);
@@ -55,7 +55,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   const snapshot = (sequence: string): Observation => {
     const activityItems = [...activities.values()].map(({ value, monotonicStart }) => ({ ...value, scope: copyScope(value.scope), elapsedMs: Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(monotonic() - monotonicStart))) }));
     activityItems.sort((a, b) => Number(b.status !== "running") - Number(a.status !== "running") || a.startedAt.localeCompare(b.startedAt) || a.operationId.localeCompare(b.operationId));
-    const failureItems = [...failures.values()].map(value => ({ ...value, scope: copyScope(value.scope), error: { ...value.error } })).sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.operationId.localeCompare(b.operationId));
+    const failureItems = [...failures.values()].map(value => ({ ...value, scope: copyScope(value.scope), error: { ...value.error }, ...(value.worktree === undefined ? {} : { worktree: { ...value.worktree } }) })).sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.operationId.localeCompare(b.operationId));
     const reservationItems = reservations.map(value => ({ ...value, scope: copyScope(value.scope), roles: [...value.roles] })).sort((a, b) => Number(b.roles.includes("cleanup") || b.roles.includes("unresolved") || b.roles.includes("pending-stop")) - Number(a.roles.includes("cleanup") || a.roles.includes("unresolved") || a.roles.includes("pending-stop")) || a.observedAt.localeCompare(b.observedAt) || a.reservationId.localeCompare(b.reservationId));
     const preparationReasons: AdmissionReason[] = [...projectPreparationReasons].map(([projectId, reason]) => ({ code: "project-preparation-failed", scope: { kind: "project", projectId }, ...reason }));
     const nativeReasons: AdmissionReason[] = [...nativeConfigurationReasons.values()].map(reason => ({ code: "configuration-incomplete", ...reason, scope: copyScope(reason.scope) }));
@@ -67,13 +67,19 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler, coverage: preparationIncomplete() ? "partial" : scheduler.coverage }, capacity: capacity === null ? null : { ...capacity, detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
       admission: { ...admission, coverage: reasonsTruncated && admissionCoverage !== "unknown" ? "partial" : admissionCoverage, reasons: selectedReasons.slice(0, 16).map(item => ({ ...item, scope: copyScope(item.scope) })) },
       reservations: reservationItems.slice(0, 128), activities: activityItems.slice(0, 128), currentFailures: failureItems.slice(0, 32), lastRecovery: lastRecovery === null ? null : { ...lastRecovery, scope: copyScope(lastRecovery.scope) },
-      detailCoverage: detailsPartial || unattributed.size > 0 || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
+      detailCoverage: detailsPartial || unattributed.size > 0 || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 || failureItems.some(item => item.worktree?.kind === "unavailable" && item.worktree.reason === "limit-exceeded") ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
     };
     // Account for both the PUT envelope and Go's normalized body; never infer total capacity from details.
     const payload = { expectedRevision: "00000000-0000-4000-8000-000000000000", observation: result };
     while (goJsonBytes(payload) > 256 * 1024 || goJsonBytes(result) > 256 * 1024) {
       if (result.activities.length) { result.activities = result.activities.slice(0, -1); result.detailCoverage = "partial"; }
       else if (result.reservations.length) { result.reservations = result.reservations.slice(0, -1); result.detailCoverage = "partial"; if (result.capacity) result.capacity.detailCoverage = "partial"; }
+      else if (result.currentFailures.some(item => item.worktree?.kind === "project-relative")) {
+        let largest = -1, index = -1;
+        result.currentFailures.forEach((item, i) => { if (item.worktree?.kind === "project-relative") { const size = goJsonBytes(item.worktree); if (size > largest) { largest = size; index = i; } } });
+        result.currentFailures = result.currentFailures.map((item, i) => i === index ? { ...item, worktree: { kind: "unavailable", reason: "limit-exceeded" } } : item);
+        result.detailCoverage = "partial";
+      }
       else if (result.currentFailures.length) { result.currentFailures = result.currentFailures.slice(0, -1); result.detailCoverage = "partial"; }
       else if (result.admission.reasons.length) { result.admission.reasons = result.admission.reasons.slice(0, -1).filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected"); result.admission.coverage = "partial"; }
       else throw new Error("Monitoring observation exceeds its encoding budget.");
@@ -155,7 +161,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       if (!validScope(input.scope) || input.component === "project" && input.scope.kind === "worker" || !uuid.test(input.operationId)) { detailsPartial = true; dirty(); return; }
       const at = time(), previous = failures.get(input.operationId), retryState = input.retryState ?? "none";
       if (retryState === "scheduled" && !input.nextAttemptAt) throw new Error("A scheduled retry requires its next attempt time.");
-      failures.set(input.operationId, { operationId: input.operationId, component: input.component, phase: input.phase, scope: copyScope(input.scope), error: classifyFailure(input.error, input.outcomeUnconfirmed), firstObservedAt: previous?.firstObservedAt ?? input.observedFailure?.firstObservedAt ?? at, lastObservedAt: input.observedFailure?.lastObservedAt ?? at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (previous?.occurrencesInRun ?? 0) + (input.observedFailure?.occurrencesInRun ?? 1)), retryState, nextAttemptAt: retryState === "scheduled" ? input.nextAttemptAt! : null }); dirty();
+      failures.set(input.operationId, { operationId: input.operationId, component: input.component, phase: input.phase, scope: copyScope(input.scope), error: classifyFailure(input.error, input.outcomeUnconfirmed), ...(input.scope.kind === "claim" && input.worktree !== undefined ? { worktree: { ...input.worktree } } : {}), firstObservedAt: previous?.firstObservedAt ?? input.observedFailure?.firstObservedAt ?? at, lastObservedAt: input.observedFailure?.lastObservedAt ?? at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (previous?.occurrencesInRun ?? 0) + (input.observedFailure?.occurrencesInRun ?? 1)), retryState, nextAttemptAt: retryState === "scheduled" ? input.nextAttemptAt! : null }); dirty();
     },
     updateFailureRetry(id: string, retryState: RetryState, nextAttemptAt: string | null = null): void {
       const failure = failures.get(id);
