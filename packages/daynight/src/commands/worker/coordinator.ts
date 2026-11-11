@@ -42,6 +42,7 @@ import type { FailureWorktree } from "./monitoring/types.js";
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" };
 export type WorkerCoordinatorOptions = {
+  freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
   webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
@@ -821,7 +822,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
     if (task.agentControlMode === "web") {
       if (!options.webStore || !options.webBackend) throw new Error("The Web execution backend is unavailable.");
-      const configuration = configurationFor(task);
+      let configuration = configurationFor(task);
       if (configuration === null) return;
       const worker = readWorkerClaim(remoteTask.properties)!;
       let record = options.webStore.getTask(task);
@@ -837,6 +838,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
             await options.verifyWebUnregistered(task, signal);
             if (task.sessionId !== null || worker.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
+            if (options.freezeConfiguration !== undefined) configuration = await options.freezeConfiguration(configuration, signal);
           }
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
           if (record.cleanup !== null) record = await finishShutdown(record, signal);
@@ -911,8 +913,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     nameFailureThisJob.delete(key(task));
     if (!execute) return;
-    const currentConfiguration = configurationFor(task);
+    let currentConfiguration = configurationFor(task);
     if (currentConfiguration === null) return;
+    if (task.sessionId === null && options.store.getNativeConfiguration(task) === null && options.freezeConfiguration !== undefined) currentConfiguration = await options.freezeConfiguration(currentConfiguration, signal);
     if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
     const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
     observe(() => selectWorktree(owner, input.project.localPath, executionContext(input).cwd));
@@ -1501,6 +1504,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           }
           requireImplementedWorkerBackend(currentRepository.configuration);
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
+          const frozenConfiguration = options.freezeConfiguration === undefined ? currentRepository.configuration : await options.freezeConfiguration(currentRepository.configuration, normalSignal);
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
           const claimId = randomUUID();
           reconciliationPhase = "claim-request";
@@ -1508,7 +1512,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           try {
             const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
             const owner = remoteOwner(granted);
-            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
+            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration });
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });

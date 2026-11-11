@@ -2,6 +2,7 @@ import { scanFromList } from "../../helpers/worker-git-scan.js";
 import * as durableHerdr from "../../../src/commands/worker/herdr/durable.js";
 import { execFileSync } from "node:child_process";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -23,6 +24,9 @@ import type { createWorkerReporter } from "../../../src/commands/worker/reporter
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
@@ -93,7 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
-  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined) });
+  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
     currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => resource(desired())),
@@ -852,7 +856,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   await mkdir(f.paths.workerDirectory, { recursive: true });
   const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
   const invalid = new Database(webFile);
-  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=4"); invalid.close();
+  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=999"); invalid.close();
   mocks.emit.mockImplementation((event: { error?: unknown }) => { if (event.error !== undefined) cancellation.abort(); });
   await runWorker({ ...f, signal: cancellation.signal });
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
@@ -861,7 +865,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
-  expect(web.pragma("user_version", { simple: true })).toBe(4);
+  expect(web.pragma("user_version", { simple: true })).toBe(999);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
   web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT; PRAGMA user_version=1"); web.close();
   mocks.emit.mockImplementation(() => {});
@@ -869,7 +873,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   await runWorker({ ...f, signal: repaired.signal });
   expect(mocks.coordinator).toHaveBeenCalledOnce();
   const upgradedWeb = new Database(webFile);
-  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(3);
+  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(webExecutionStoreFormat));
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
   expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
@@ -884,7 +888,7 @@ it("rebuilds unknown zero-version Web state before starting its coordinator", as
   finishAtTick(cancellation);
   await runWorker({ ...f, signal: cancellation.signal });
   const web = new Database(webFile);
-  expect(web.pragma("user_version", { simple: true })).toBe(3);
+  expect(web.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(webExecutionStoreFormat));
   expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }]);
   expect(web.prepare("SELECT * FROM executions").all()).toEqual([]); web.close();
 });

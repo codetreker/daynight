@@ -53,10 +53,14 @@ describe("Worker telemetry", () => {
     const actual = (version: string) => ({ selection: { kind: "auto" as const }, selectionKey: "a".repeat(64), entryPath: "/tool/copilot", executablePath: "/tool/copilot", interpreterPath: null, source: "bundled" as const, version, checkedAt: time });
     const observation = (context: "web" | "herdr", version: string) => ({ tool: "copilot" as const, context, configurationSource: "local" as const, targetRevision: null, target: { kind: "auto" as const }, state: "applied" as const, reason: null, actual: actual(version), candidate: null, activeSelectionCount: 0, activeSelectionsComplete: true, activeObservationError: null, activeSelections: [], error: null });
     const snapshot = () => ({ schemaVersion: 1 as const, observedAt: time, entries: [observation("web", "web-version"), observation("herdr", "herdr-version")] });
-    const sample = await finish(collector({ context: "web", snapshot }).collect(operation()));
+    let context: "web" | "herdr" = "web";
+    const instance = collector({ context: () => context, snapshot });
+    const sample = await finish(instance.collect(operation()));
     expect(sample.telemetry.versions.copilot).toEqual({ state: "ok", checkedAt: time, value: "web-version" });
+    context = "herdr";
+    expect((await finish(instance.collect(operation()))).telemetry.versions.copilot).toEqual({ state: "ok", checkedAt: time, value: "herdr-version" });
     expect(mocks.version).not.toHaveBeenCalled();
-    expect(mocks.herdr).toHaveBeenCalledOnce();
+    expect(mocks.herdr).toHaveBeenCalledTimes(2);
   });
 
   it("keeps Herdr legacy versions tied to running instances when a new selection is ready", async () => {

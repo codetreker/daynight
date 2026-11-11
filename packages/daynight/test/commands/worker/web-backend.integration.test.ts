@@ -133,7 +133,7 @@ it("reconciles an unknown cleanup IPC outcome from the controller operation jour
 it.each((["live", "stopped"] as const).flatMap(state => (["none", "pid", "birth", "command", "group", "native-parent"] as const).map(conflict => [state, conflict] as const)))("cleans up a POSIX Controller reparented after persisted launch proof and Worker interruption (%s, %s)", async (state, conflict) => {
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
-  const source = await cleanupSource(f, task);
+  const source = await cleanupSource(f, task, "unknown");
   const launcherProof = { ...source.snapshot.controllerProcess!, parentPid: 777 };
   const native = { ...launcherProof, pid: 988, parentPid: launcherProof.pid, startedAt: "native-original", commandHash: "b".repeat(64) };
   f.store.updateWebExecution(source.task, { launchSubmission: "unknown", controllerProcess: launcherProof, nativeProcesses: [native] }, 6);

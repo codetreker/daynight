@@ -19,18 +19,29 @@ const observation = (): NativeModelObservation => ({ model: "a", models: [
   { id: "hidden", label: "Hidden", hidden: true, efforts: null },
   { id: "b", label: "Model B", efforts: ["high"] },
 ] });
-const setup = async (overrides: { inspect?: (native: WorkerCloudNative, operation: Operation) => Promise<NativeModelObservation>; configuration?: () => ReturnType<typeof base> } = {}) => {
+const setup = async (overrides: { prepare?: Parameters<typeof createWorkerModelDiscovery>[0]["prepare"]; inspect?: (native: WorkerCloudNative, operation: Operation) => Promise<NativeModelObservation>; configuration?: () => ReturnType<typeof base> } = {}) => {
   const temporary = path.resolve("../../.tmp");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "worker-models-")); roots.push(root);
   const calls: WorkerCloudNative[] = [];
-  const service = createWorkerModelDiscovery({ defaultCwd: root, environment: {}, configuration: overrides.configuration ?? base,
+  const service = createWorkerModelDiscovery({ ...(overrides.prepare === undefined ? {} : { prepare: overrides.prepare }), defaultCwd: root, environment: {}, configuration: overrides.configuration ?? base,
     verifier: { discover: async (options, operation) => { operation.check(); calls.push(options.native); return overrides.inspect?.(options.native, operation) ?? observation(); } },
   });
   return { service, root: await realpath(root), calls, signal: new AbortController().signal };
 };
 
 describe("Worker model discovery", () => {
+  it("captures the prepared recipe identity before pagination and rejects pages after a tool change", async () => {
+    let selected: string | null = null;
+    const prepare = vi.fn(async () => { selected = "A"; });
+    const { service, signal } = await setup({ prepare, configuration: () => ({ ...base(), toolSelection: selected }) });
+    const first = await service.discover({ provider: "codex", limit: 1 }, signal);
+    expect(first.nextCursor).not.toBeNull(); expect(prepare).toHaveBeenCalledOnce();
+    await service.discover({ provider: "codex", limit: 1, cursor: first.nextCursor! }, signal);
+    expect(prepare).toHaveBeenCalledOnce(); selected = "B";
+    await expect(service.discover({ provider: "codex", limit: 1, cursor: first.nextCursor! }, signal)).rejects.toMatchObject({ code: "stale_configuration" });
+  });
+
   it("reads native per-model capabilities, hides optional entries and retains native defaults", async () => {
     const { service, root, calls, signal } = await setup();
     const result = await service.discover({ provider: "codex" }, signal);

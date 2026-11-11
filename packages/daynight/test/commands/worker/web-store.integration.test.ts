@@ -6,11 +6,13 @@ import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/w
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { createWebStoreFixtures } from "./web-store.fixtures.js";
 
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+
 const { id, stores, open, close, connect, externalContentFixture, fixture, blockedInitialFixture } = createWebStoreFixtures("file");
 
 it("persists a distinct web execution without inventing Herdr resources or workspace closure", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   const started = store.initializeWebExecution(claim, 3);
   expect(started.nativeExecution).toBeNull(); expect(started.resources.herdr).toBeNull();
   const operationId = started.webExecution!.initialOperationId;
@@ -19,12 +21,12 @@ it("persists a distinct web execution without inventing Herdr resources or works
   const cleaning = reopened.beginCleanup(claim, { kind: "shutdown", deadline: 100 }, 5);
   expect(cleaning.cleanup).toEqual({ kind: "shutdown", startedAt: 5, deadline: 100 });
   expect(reopened.getTask(claim)?.cleanup).toEqual(cleaning.cleanup);
-  expect(connect(file).pragma("user_version", { simple: true })).toBe(3);
+  expect(connect(file).pragma("user_version", { simple: true })).toBe(4);
 });
 
 it("migrates version-two records intact, persists independent blockers, and fences old readers", () => {
   const { file, store, project, claim } = fixture();
-  const original = store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);
+  const original = store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);
   close(store);
   const db = connect(file); db.exec("DROP TABLE orchestration_blockers"); db.pragma("user_version=2");
   const upgraded = open(file);
@@ -42,7 +44,7 @@ it("migrates version-two records intact, persists independent blockers, and fenc
 
 it("retains shutdown provenance across worker reopen without resetting recovery state", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
   store.initializeWebExecution(claim, 3);
   store.updateWebExecution(claim, { launchSubmission: "acknowledged" }, 4);
   store.bindNativeSession(claim, { source: "controller", sessionId: id(7) }, 5);
@@ -109,7 +111,7 @@ it("keeps completed versioned executions available for archive backfill after re
 
 it.each([false, true])("migrates version-one cleanup receipts to resource intent without trusting their outcome (%s)", observed => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   store.initializeWebExecution(claim, 2);
   store.updateWebExecution(claim, { cleanupOperationId: id(7) }, 3);
   const original = store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 4);
@@ -123,24 +125,24 @@ it.each([false, true])("migrates version-one cleanup receipts to resource intent
   expect(upgraded.getTask(claim)).toEqual(original);
   expect(upgraded.getTask(claim)?.cleanup).toEqual({ kind: "terminal", startedAt: 4, deadline: 100 });
   expect(upgraded.getTask(claim)?.webExecution?.cleanupOperationId).toBe(id(7));
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 3 }, { kind: "completed", fromVersion: 1, toVersion: 3 }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 4 }, { kind: "completed", fromVersion: 1, toVersion: 4 }]);
   close(upgraded);
   expect(open(file).getTask(claim)).toEqual(original);
 });
 
 it("rebuilds the current unversioned schema and discards its execution records", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   store.initializeWebExecution(claim, 2);
   close(store);
   const db = connect(file); db.pragma("user_version = 0");
   const events: unknown[] = [];
   const rebuilt = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.getTask(claim)).toBeNull();
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 3 }, { kind: "completed", fromVersion: 0, toVersion: 3 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 4 }, { kind: "completed", fromVersion: 0, toVersion: 4 }]);
   close(rebuilt); events.length = 0;
   const reopened = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
@@ -174,23 +176,23 @@ it("restores FTS5 external content and its index when the Web baseline fails aft
 
 it("rejects newer and unknown nonzero table formats without deleting state", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM executions").all();
-  db.pragma("user_version=4");
+  db.pragma("user_version=5");
   expect(() => open(file)).toThrow("unsupported-version");
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
-  db.pragma("user_version=3"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
+  db.pragma("user_version=4"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
   expect(() => open(file)).toThrow("invalid-format");
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
   expect(db.prepare("SELECT value FROM unexpected").get()).toEqual({ value: "retained" });
 });
 
 it("commits an exhausted recovery pause and preserves it across reopen and shutdown", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, userId: id(6) }, 1);
   store.initializeWebExecution(claim, 2);
   store.bindNativeSession(claim, { source: "controller", sessionId: id(7) }, 3);
   store.beginRecovery(claim, 4);
@@ -220,7 +222,7 @@ it("commits an exhausted recovery pause and preserves it across reopen and shutd
 
 it("atomically consumes an explicit retry for the same unsubmitted intent across reopen", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
   let original = store.initializeWebExecution(claim, 2);
   const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) };
   original = store.updateWebExecution(original, { sessionId: id(8), controllerProcess, initialPrompt: "original assignment", launchSubmission: "acknowledged" }, 3);
@@ -246,7 +248,7 @@ it("atomically consumes an explicit retry for the same unsubmitted intent across
 
 it("retains startup revision through reopen, rejects invalid persisted evidence, and resets it at a proven generation change", () => {
   const { file, store, project, claim } = fixture();
-  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   store.initializeWebExecution(claim, 2);
   const task = store.updateWebExecution(claim, { sessionId: id(8) }, 3);
   store.bindNativeSession(claim, { source: "controller", sessionId: id(7) }, 4);

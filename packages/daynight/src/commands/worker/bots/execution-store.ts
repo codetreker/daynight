@@ -7,6 +7,8 @@ import { controllerPayloadHash, controllerTicketPath } from "../../controller/la
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { ProcessProof } from "../../controller/process-proof.js";
 import { workerStoreFormat } from "../store-format.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { botUUID, botVersion, parseBotOwner, type BotRecord } from "./types.js";
 
 export type BotPreviousGeneration = { launchId: string; generation: string; instanceId: string; recordId: string; stoppedAt: string };
@@ -172,7 +174,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
     }),
     /** The caller first proves process-tree stop and commits the matching journal snapshot. */
-    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string): BotRecord => atomic(() => {
+    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string, toolLaunch?: ResolvedToolLaunch): BotRecord => atomic(() => {
       const saved = current(record), previous = get(saved), intent = saved.intent!;
       if (saved.observed.deletion !== null) throw new Error("A deleting Bot cannot recover execution.");
       if (previous === null || previous.launchSubmission === "not-submitted") throw new Error("Bot recovery requires the original submitted generation.");
@@ -185,6 +187,13 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       const orderly = previous.restartAfterShutdown && stopped.error === null;
       if (!orderly && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
       if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
+      if (intent.registration.provider !== "claude") {
+        const selected = toolLaunch ?? intent.toolLaunch;
+        if (selected === undefined) throw new ToolSelectionError(intent.registration.provider, "web", "launch", "legacy_tool_identity_missing");
+        const checked = parseResolvedToolLaunch(selected, { tool: intent.registration.provider, context: "web" });
+        if (intent.toolLaunch !== undefined && !same(intent.toolLaunch, checked)) throw new Error("Recovery cannot replace the original Bot tool selection.");
+        intent.toolLaunch = checked;
+      }
       const generation = botVersion(String(BigInt(intent.executionGeneration) + 1n));
       const launchId = randomUUID(), controllerInstanceId = randomUUID();
       const next: BotRecord = { ...saved, intent: { ...intent, executionGeneration: generation, launchId, controllerInstanceId,

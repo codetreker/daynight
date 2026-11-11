@@ -14,11 +14,58 @@ import { writeControllerCredential } from "./session-api.js";
 import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
-export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
+import { matchesLaunchConfiguration, readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import type { FrozenToolObservation } from "../types.js";
+export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number;
+  selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
+  toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
+}) => {
   let grantObserver: { started(task: LocalTask): void; settled(task: LocalTask): void; checked(task: LocalTask): void; refreshed(task: LocalTask): void; failed(task: LocalTask, error: unknown, started: boolean): void; ticketFailed(task: LocalTask, error: unknown): void; ticketVerified(task: LocalTask): void; identityUnknown(task: LocalTask): void; identityResolved(task: LocalTask): void; identityLost(task: LocalTask): void } | undefined;
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
   const serializeExecution = createControllerExecutionSerializer();
   const serialize = <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => serializeExecution(task.webExecution?.executionId ?? task.claimId, action);
+  const checkTicket = (task: LocalTask, ticket: ControllerLaunchTicket): void => {
+    const execution = task.webExecution!;
+    if (task.configuration === null) throw new Error("The frozen Web configuration disappeared.");
+    if (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.claimId !== task.claimId
+      || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.worktreeId !== task.worktreeId
+      || ticket.workerId !== task.workerId || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin
+      || ticket.controllerId !== execution.controllerId || ticket.controllerInstanceId !== execution.controllerInstanceId
+      || ticket.executionGeneration !== execution.executionGeneration || ticket.initialOperationId !== execution.initialOperationId
+      || ticket.sessionId !== execution.sessionId || ticket.initialPrompt !== execution.initialPrompt
+      || task.resources.worktree !== null && ticket.cwd !== task.resources.worktree.worktreePath
+      || !matchesLaunchConfiguration(ticket.configuration, task.configuration)) throw new Error("An existing launch ticket does not match the durable execution intent.");
+  };
+  const missingSelection = (task: LocalTask): ToolSelectionError => new ToolSelectionError(task.configuration!.agent as "codex" | "copilot", "web", "launch", "legacy_tool_identity_missing");
+  const assertUnsubmitted = (input: LocalTask): LocalTask => {
+    const task = current(input), execution = task.webExecution!;
+    if (task.status !== "active" || task.cleanup !== null || execution.launchId !== input.webExecution!.launchId
+      || execution.executionGeneration !== "1" || execution.launchSubmission !== "not-submitted"
+      || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || execution.initialInputState !== "not_submitted"
+      || task.resources.nativeSession !== null || task.recovery.count !== 0 || task.recovery.retryAuthorized || execution.restartAfterShutdown
+      || readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite")) !== null) throw missingSelection(task);
+    return task;
+  };
+  const prepareExistingSelection = async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+    let task = current(input);
+    checkTicket(task, ticket);
+    // Reattachment and cleanup keep the original process proof; only a new spawn needs this binding.
+    if (task.configuration!.agent === "claude" || task.webExecution!.launchSubmission !== "not-submitted") return;
+    let selected = await readLaunchToolSelection(options.homeDirectory, ticket);
+    if (selected === undefined) {
+      task = assertUnsubmitted(task);
+      selected = task.configuration!.toolLaunch ?? await options.selectToolLaunch?.(task.configuration!.agent as "codex" | "copilot", signal);
+      if (selected === undefined) throw missingSelection(task);
+      signal.throwIfAborted();
+      await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(task); });
+    }
+    if (task.configuration!.toolLaunch === undefined) {
+      assertUnsubmitted(task);
+      const observation = options.toolObservationFor?.(selected);
+      options.store.freezeToolLaunch(task, selected, options.now(), { sidecarLaunchId: ticket.launchId, ...(observation === undefined ? {} : { observation }) });
+    } else if (task.configuration!.toolLaunch.selectionKey !== selected.selectionKey) throw new Error("The original Web ticket tool selection differs from its frozen configuration.");
+  };
   const cleanupStopped = async (task: LocalTask): Promise<boolean> => {
     if (task.cleanup === null) return false;
     const execution = task.webExecution!;
@@ -30,13 +77,23 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
   const methods = {
     prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
       let task = current(input); let execution = task.webExecution!;
-      if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
+      if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); await prepareExistingSelection(task, ticket, signal); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
       try {
         const existing = await readLaunchTicket(options.homeDirectory, execution.launchId);
         if (existing.executionId !== execution.executionId || existing.claimId !== task.claimId || existing.executionGeneration !== execution.executionGeneration || existing.controllerInstanceId !== execution.controllerInstanceId || existing.initialOperationId !== execution.initialOperationId || existing.sessionId !== execution.sessionId || existing.initialPrompt !== execution.initialPrompt) throw new Error("An existing launch ticket does not match the durable execution intent.");
+        await prepareExistingSelection(task, existing, signal);
         options.store.updateWebExecution(task, { ticketPath: controllerTicketPath(options.homeDirectory, execution.launchId), nativeHome: existing.nativeHome }, options.now()); return existing;
       } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
       if (task.resources.worktree === null || task.configuration === null || task.userId === null) throw new Error("Controller launch requires its original worktree, provider and owner.");
+      if (task.configuration.agent !== "claude" && task.configuration.toolLaunch === undefined) {
+        assertUnsubmitted(task);
+        const selected = await options.selectToolLaunch?.(task.configuration.agent, signal);
+        if (selected === undefined) throw missingSelection(task);
+        signal.throwIfAborted(); assertUnsubmitted(task);
+        const observation = options.toolObservationFor?.(selected);
+        task = options.store.freezeToolLaunch(task, selected, options.now(), observation === undefined ? {} : { observation });
+        execution = task.webExecution!;
+      }
       if (execution.sessionId === null) { const registered = await options.sessionApi.register(task, execution, signal); task = options.store.updateWebExecution(task, { sessionId: registered.sessionId }, options.now()); execution = task.webExecution!; }
       const directory = controllerExecutionDirectory(options.homeDirectory, execution.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
       const credentialFile = path.join(directory, "credential.json");
@@ -64,6 +121,12 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     },
     launch: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
       let task = current(input); if (task.webExecution!.launchSubmission !== "not-submitted") return;
+      checkTicket(task, ticket);
+      if (ticket.provider !== "claude") {
+        const selected = await readLaunchToolSelection(options.homeDirectory, ticket);
+        if (selected === undefined) throw missingSelection(task);
+        if (task.configuration?.toolLaunch?.selectionKey !== selected.selectionKey) throw new Error("Web spawn requires its original frozen tool selection.");
+      }
       // A reusable grant also supports the first hello, including a lost bootstrap handshake.
       await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(task, { ...task.webExecution!, launchSubmission: "unknown" }, signal));
       let submitting = false, acknowledged = false;

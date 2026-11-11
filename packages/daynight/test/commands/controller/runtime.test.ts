@@ -19,7 +19,10 @@ vi.mock("../../../src/commands/controller/local-client.js", () => ({ validateCon
 const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.ProcessEnv | undefined, read: vi.fn(async () => ({})) }));
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: aliasFixture.read }));
 vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv }) => ({ environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }) }));
+const toolSelectionFixture = vi.hoisted(() => ({ read: null as null | (() => Promise<unknown>) }));
+vi.mock("../../../src/commands/controller/launch-tool-selection.js", () => ({ readLaunchToolSelection: async (_home: string, ticket: { configuration: { toolLaunch?: unknown } }) => toolSelectionFixture.read ? toolSelectionFixture.read() : ticket.configuration.toolLaunch }));
 import { runController } from "../../../src/commands/controller/runtime.js";
+afterEach(() => { toolSelectionFixture.read = null; });
 afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.close.mockReset(); externalRuntime.close.mockResolvedValue(); vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
@@ -50,16 +53,30 @@ test("stop during process-proof initialization never starts a native writer afte
   await running; expect(fixture.open).not.toHaveBeenCalled(); expect(fixture.closed).toBe(true);
 });
 
+test("stop while reading the frozen tool selection prevents a later provider start", async () => {
+  setup(); let selected!: (value: unknown) => void;
+  const read = vi.fn(() => new Promise(resolve => { selected = resolve; })); toolSelectionFixture.read = read;
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+  process.emit("SIGTERM", "SIGTERM"); selected(undefined);
+  await running; expect(fixture.open).not.toHaveBeenCalled(); expect(fixture.closed).toBe(true);
+});
+
 
 test("dispatches Copilot with its frozen profile and closes that provider", async () => {
   setup(); fixture.provider = "copilot";
   vi.stubEnv("COPILOT_HOME", "/changed/after/launch");
+  vi.stubEnv("DN_CONFIG_DIR", "/private/worker-state");
+  const toolLaunch = Object.freeze({ schemaVersion: 1, tool: "copilot", context: "web", source: "explicit", entryPath: "/frozen/copilot", canonicalEntryPath: "/frozen/copilot", executablePath: "/frozen/node", interpreterPath: "/frozen/node", command: { file: "/frozen/node", prefixArgs: ["/frozen/copilot"] }, artifacts: [], selectionKey: "frozen-selection" });
+  fixture.ticketOverrides = { configuration: { model: null, args: [], toolLaunch } };
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const running = runController({ homeDirectory: "/private", provider: "copilot", launchId: "launch" });
   let failure: unknown; void running.catch(error => { failure = error; });
   try {
     await vi.waitFor(() => { if (failure) throw failure; expect(fixture.open).toHaveBeenCalledOnce(); });
     expect((fixture.options as { env: NodeJS.ProcessEnv }).env.COPILOT_HOME).toBe("/private/native");
+    expect((fixture.options as { toolLaunch: unknown }).toolLaunch).toBe(toolLaunch);
+    expect((fixture.options as { toolRuntimeRoot: string }).toolRuntimeRoot).toBe(path.join("/private/worker-state", "worker", "tool-runtimes"));
     expect(process.env.COPILOT_HOME).toBe("/changed/after/launch");
   } finally { if (!failure) process.emit("SIGTERM", "SIGTERM"); await running.catch(() => {}); }
   expect(fixture.close).toHaveBeenCalledOnce();

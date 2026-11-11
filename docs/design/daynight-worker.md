@@ -101,7 +101,7 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 `commands/worker/config.ts` 与 `configuration-source.ts` 共用这个解析器，两种本地配置结果都包含三项 choice；缺文件的默认读取仍不创建配置文件。语法检查不读取程序文件、不启动子进程，也不把路径规范化成另一入口，保留符号链接和词法路径供工具解析器核验。`parseWorkerCloudBootstrap` 提供完整三项 choice，由 API 按已协商能力投影；本地 choice 没有云端“未采纳”状态，独立候选在云端已有目标时仍可填未采纳项。
 
-`platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation)`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 与 Herdr 使用 PATH，Copilot 的 Web 上下文使用随包 native，Herdr 上下文使用 PATH；显式选择不回退其它安装。
+`platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation, {trustedRuntimeRoot?})`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 与 Herdr 使用 PATH，Copilot 的 Web 上下文使用随包 native，Herdr 上下文使用 PATH；显式选择不回退其它安装。
 
 入口适配器支持 native、Node 入口及完整登记的 npm Node shim 模板。Node 入口使用 `workerNode`（缺省 `process.execPath`）的 realpath；shim 静态校验所有分支和参数后解包，不运行 shell 文本。官方 Copilot 根据入口所属 manifest 定位同一安装的 native；官方 Codex 保留 loader，并登记选中的平台 native 和 manifests。Codex loader 通过完整内容摘要识别，登记范围为 0.142.5、0.145.0、0.156.1 的发行字节；未知 loader、额外 shim 命令或 flags 返回 `unsupported_launcher`，调用者可指定受支持 Node 入口或最终 native。该静态识别不证明版本输出或协议兼容。
 
@@ -119,7 +119,23 @@ shim 的 target 从已登记模板的 prefix 和同一份有界字节快照提�
 
 资源键在 Windows 归一化检索键后排除 PATH/PATHEXT；POSIX 保持环境名大小写语义，普通 native 变量 `Path` 不能被当作 `PATH` 排除。
 
-当前 Worker 调度、Task/Bot 冻结记录、Herdr 实例和探测入口尚未消费该选择。因此配置解析只证明本地目标合法，不生成工具版本或应用成功事实；云端协商只建立目标交换与兼容保证，运行接线必须另行提供真实消费证据。选择解析与运行调度的分离理由见[工具路径决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-tool-path-resolution.md)。
+`commands/worker/tool-selection.ts` 统一拥有 Web Codex/Copilot 的目标 generation、候选验证、新执行准入与观察快照。版本、host 能力、模型目录与启动消费同一个完整 recipe；实际版本来自该 recipe 的原生响应。候选结果提交前重验目标 generation 和 cleanup generation，旧目标的迟到成功不能覆盖新选择。新目标失败保留旧实际观察，只阻断依赖该工具的新执行。Herdr 的实例映射尚未消费该管理器；显式 Herdr 工具目标明确拒绝，全部 auto 时保留既有 Herdr 检查，不能报告为已应用工具路径。
+
+Task 的冻结配置、Web 执行记录、Bot intent、Controller ticket 共用严格 `parseResolvedToolLaunch`，未知字段和不匹配的工具/context 拒绝。首次启动前保存 recipe 及同 selectionKey 的 `{version,checkedAt}`，恢复先读原 claim 配置，不能先被新的目标验证挡住。每次新 spawn 核验原文件；缺失或变化报告 `tool_identity_changed`，不改用 PATH 上的另一个安装。旧活执行的观察、输入、停止和归档继续原 process-proof/RPC。旧记录缺身份且已经 submitted/unknown 时禁止新 spawn；有完整 never-submitted 证明时才能创建原 ticketHash/launchId/executionId 绑定的私有 `tool-selections` 侧文件，原票字节保持不变，读回成功后继续冻结。侧文件为 create-only，symlink、错误 ticket 或冲突内容拒绝，不能重放首条输入或换 Session 绕过。
+
+原生探测按 canonical `probeResourceKey` 共享清理 owner，缓存额外绑定 context、selectionKey、model、args 和 cwd。任一关闭结果未知使成功缓存失效，路径切换不能丢弃旧 owner；shutdown 等待全部历史责任。Web Copilot 的版本与 host 查询使用与 Provider 相同的 owned headless process 和 SDK `forUri`；模型查询在 supervisor 内直接使用 SDK，保留内存 SessionFs、拒绝权限及无业务 prompt 的保证。Provider bridge 不序列化函数型 SessionFs。
+
+遥测快照只读已观察事实，不启动工具。活动组来自 Web/Bot 的持久配置与实际执行状态，按 selectionKey 聚合；旧记录缺版本或检查时间时如实报告不完整，不重新探测拼接历史事实。后台候选准备具有独立预算，五秒 host 采样只消费已就绪选择。工具冻结与准入的取舍见[运行接线决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-frozen-tool-runtime.md)。
+
+### Copilot authority 的私有运行目录
+
+Web Copilot 只有在 macOS ARM64、原 SEA 内容及 SDK 1.0.11 符合既有图片 authority profile 时才采用 `copilot-read-authority-v1`。未知 build 保留普通 recipe；已匹配 profile 后的准备失败明确失败，不停用 authority 或换安装。`ResolvedToolLaunch.runtimeProfile` 保存原普通 sourceLaunch、物化 key、可信私有 root、manifest、preload 及固定协议。入口仍表示用户选择的 SEA，实际 executable 是 `distribution/index.js`，interpreter 是冻结 Worker Node，command 精确包含 Node、`--import`、preload URL 与 JS 入口。原 SEA、Node、preload 六文件闭包、控制模块格式的 package manifest 和 SDK manifest 都纳入 artifacts；生成物 manifest 和入口摘要进入 selectionKey。原普通 recipe 的 hash 保持不变。
+
+Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory>/tool-runtimes/<materializationKey>` 发布持久依赖。key 从 canonical 来源、Node、adapter 内容及协议产生，排除词法别名、目标版本与随机路径。准备记录先持久化完整预留；owned helper 再保存 PID、出生时间、进程组及本次身份，父进程读回并提交记录后才放行提取。提交前失去父进程不启动 native，提交后保留可归属 leader，恢复必须先确认原进程组停止。未知提取不换 preparationId 重提。
+
+提取使用独立私有 cache、extract-only 和 no-auto-update。完整 distribution manifest 包括文件与目录集合、类型、大小、SHA-256、模式；拒绝 symlink、额外或遗漏对象、路径逃逸与大小写碰撞，最多 10,000 对象、深度 32、512 MiB，manifest 最多 4 MiB。文件与目录 fsync 后原子发布并读回，partial staging 不能准入，已有 final 只能完整匹配复用。Controller 从可信配置根计算 runtime root，不采信 ticket 自报的根；每次 spawn 验证原来源、Node、冻结 adapter 闭包和完整发行树。当前 Controller SDK 必须仍支持冻结协议，但不能用当前安装路径替换原 adapter。
+
+首次准备最多 60 秒，其中提取最多 20 秒，停止有独立有界预算。进程禁用 Node compile cache，发布树保持不可变。总容量为 2 GiB，提取前持久预留完整 512 MiB，并计入其它预留、历史 unknown 和已发布内容。只有确认原 owner 停止、删除 staging 后才能释放失败预留；发布成功改计实际字节。容量不足拒绝新准备，保留已有执行。Provider/probe close 和普通 shutdown 不删除发布树；它们随 Worker 状态生命周期保留，没有逐目录自动 GC。图片权限仍由[原生 Read authority](session-image-sources.md#原生单次读取准入)拥有。
 
 ### 云端接收与本机提交
 

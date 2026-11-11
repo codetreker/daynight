@@ -1,3 +1,4 @@
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -60,7 +61,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const workerStore = openWorkerStore(path.join(home, "worker.sqlite"), { onMigration() {} });
   disposals.push(async () => { store.close(); workerStore.close(); });
   const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
-  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 3 };
+  const configuration = { toolLaunch: frozenToolLaunch(), agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 3 };
   const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID() };
   let task = store.register({ ...identity, project, serverOrigin: project.serverOrigin, configuration }, 1);
   task = store.bindWorktree(task, { repositoryPath: home, commonDirectory: home, worktreePath: home, branch: "task" }, 2);

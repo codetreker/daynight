@@ -20,6 +20,9 @@ import type { createWorkerReporter } from "../../../src/commands/worker/reporter
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
+  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
+}));
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
@@ -90,7 +93,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
-  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined) });
+  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
     currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => resource(desired())),

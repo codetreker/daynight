@@ -2,6 +2,8 @@ import { parseStartupObservation, type StartupObservation, type SessionStartupRe
 import { randomUUID } from "node:crypto";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
@@ -95,6 +97,19 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       }
       return write({ projectId: input.projectId, taskId: input.taskId, claimId: input.claimId, worktreeId: input.worktreeId, serverOrigin: input.serverOrigin, workerId: input.workerId, userId: input.userId, status: "active", repoUrl: input.project.repoUrl, repositoryPath: input.project.localPath, configuration: { ...input.configuration, agentControlMode: "web" }, resources: { mode: "web", worktree: null, herdr: null, nativeSession: null }, nativeExecution: null, webExecution: null, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: now, updatedAt: now });
     }),
+    /** The caller proves no Controller writer exists and reads back any immutable sidecar. */
+    freezeToolLaunch: (identity: ClaimIdentity, launch: ResolvedToolLaunch, now: number, options: { sidecarLaunchId?: string; observation?: import("../types.js").FrozenToolObservation } = {}): LocalTask => change(identity, now, task => {
+      requireOrdinary(task);
+      const configuration = task.configuration!, execution = task.webExecution;
+      if (configuration.agent === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
+      const selected = parseResolvedToolLaunch(launch, { tool: configuration.agent, context: "web" });
+      if (configuration.toolLaunch !== undefined) {
+        if (!same(configuration.toolLaunch, selected)) throw new Error("The original Web tool selection is already frozen.");
+        return task;
+      }
+      if (task.resources.nativeSession !== null || task.recovery.count !== 0 || task.recovery.retryAuthorized || execution !== null && (execution.executionGeneration !== "1" || execution.ticketPath !== null && options.sidecarLaunchId !== execution.launchId || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || execution.initialInputState !== "not_submitted" || execution.restartAfterShutdown)) throw new ToolSelectionError(configuration.agent, "web", "launch", "legacy_tool_identity_missing");
+      return { ...task, configuration: { ...configuration, toolLaunch: selected, ...(options.observation === undefined ? {} : { toolObservation: options.observation }) } };
+    }),
     clearShutdown: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       const cleanup = task.cleanup;
       if (cleanup === null) return task;
@@ -181,6 +196,8 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
     updateWebExecution: (identity: ClaimIdentity, patch: Partial<WebExecutionState>, now: number): LocalTask => change(identity, now, task => {
       if (task.configuration?.agentControlMode !== "web" || task.webExecution == null) throw new Error("The web execution identity is missing.");
       const previous = task.webExecution;
+      const submissions = ["not-submitted", "unknown", "acknowledged"];
+      if (patch.launchSubmission !== undefined && submissions.indexOf(patch.launchSubmission) < submissions.indexOf(previous.launchSubmission)) throw new Error("A Web launch submission cannot regress after a possible dispatch.");
       if (patch.restartAfterShutdown !== undefined && patch.restartAfterShutdown !== previous.restartAfterShutdown) throw new Error("Orderly restart provenance requires confirmed shutdown.");
       for (const key of ["executionGeneration", "controllerInstanceId", "launchId"] as const) if (patch[key] !== undefined && patch[key] !== previous[key]) throw new Error("A new web generation requires verified original process stop.");
       for (const key of ["executionId", "registrationId", "controllerId", "initialOperationId"] as const) if (patch[key] !== undefined && patch[key] !== previous[key]) throw new Error("The web execution identity cannot be replaced.");
@@ -189,15 +206,23 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       if (previous.sessionId !== null && patch.sessionId !== undefined && patch.sessionId !== previous.sessionId) throw new Error("The registered session cannot change.");
       return { ...task, webExecution: parseWebExecution({ ...previous, ...patch }) };
     }),
-    beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number): LocalTask => change(identity, now, task => {
+    beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number, toolLaunch?: ResolvedToolLaunch): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;
       if (execution == null || task.configuration?.agentControlMode !== "web" || previous.executionGeneration !== execution.executionGeneration || previous.controllerInstanceId !== execution.controllerInstanceId || !previous.nativeStopped || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId) throw new Error("Web recovery requires the exact stopped generation and native identity.");
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) throw new Error("The paused execution requires an explicit recovery retry.");
       if (task.recovery.retryAuthorized && task.recovery.pauseReason === null) throw new Error("The authorized recovery generation is still awaiting a successful observation.");
+      let configuration = task.configuration;
+      if (configuration.agent !== "claude") {
+        const selected = toolLaunch ?? configuration.toolLaunch;
+        if (selected === undefined) throw new ToolSelectionError(configuration.agent, "web", "launch", "legacy_tool_identity_missing");
+        const checked = parseResolvedToolLaunch(selected, { tool: configuration.agent, context: "web" });
+        if (configuration.toolLaunch !== undefined && !same(configuration.toolLaunch, checked)) throw new Error("Recovery cannot replace the original Web tool selection.");
+        configuration = { ...configuration, toolLaunch: checked };
+      }
       // Persist consumption and its sole replacement identity together across Worker interruption.
       const recovery = task.recovery.retryAuthorized ? { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true } : task.recovery;
       const { startupReport: previousReport, ...previousExecution } = execution; void previousReport;
-      return { ...task, recovery, webExecution: { ...previousExecution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
+      return { ...task, configuration, recovery, webExecution: { ...previousExecution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
     }),
     retryUnsubmittedWebGeneration: (identity: ClaimIdentity, previous: ControllerSnapshot, now: number): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;

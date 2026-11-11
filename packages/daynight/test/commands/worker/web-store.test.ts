@@ -55,7 +55,7 @@ it.each(["not json", '{"stored":"private value"}'])("discards malformed unversio
   db.pragma("ignore_check_constraints = ON");
   db.prepare("INSERT INTO executions VALUES(?,?)").run("another-claim", data);
   const rebuilt = open(file);
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
 });
@@ -64,7 +64,7 @@ it("rebuilds an unknown unversioned schema with duplicate execution identities",
   const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
   db.exec("CREATE TABLE executions(identity TEXT, data TEXT); CREATE TABLE unrelated(value TEXT); INSERT INTO executions VALUES('duplicate', 'invalid'), ('duplicate', 'invalid'); INSERT INTO unrelated VALUES('discarded')");
   const rebuilt = open(file);
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
   expect(() => db.exec("INSERT INTO executions VALUES('invalid', 'not json')")).toThrow("CHECK constraint failed");
@@ -85,7 +85,7 @@ it("discards FTS5 external content classified as a shadow table when rebuilding 
   });
   const rebuilt = open(file);
   expect(baselineReached).toBe(true);
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ type: "table", name: "executions" }, { type: "table", name: "orchestration_blockers" }]);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
@@ -97,7 +97,7 @@ it("validates current-version execution records during ordinary reads", () => {
   const db = connect(file), data = '{"stored":"private value"}';
   db.prepare("UPDATE executions SET data=?").run(data);
   expect(() => store.getTask(claim)).toThrow("Web execution record");
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
 });
 
@@ -105,7 +105,7 @@ it("fences an open Web connection before mutating a changed format", () => {
   const { file, store, project, claim } = fixture();
   store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   const db = connect(file), data = (db.prepare("SELECT data FROM executions").get() as { data: string }).data;
-  db.pragma("user_version=4");
+  db.pragma("user_version=5");
   expect(() => store.initializeWebExecution(claim, 3)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(() => store.listCompletedTasks()).toThrow("unsupported-version");

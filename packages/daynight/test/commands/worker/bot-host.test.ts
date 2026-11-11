@@ -26,7 +26,7 @@ const fixture = async () => {
     serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", configuration: () => configuration,
     pollIntervalMs: () => 60_000, recoveryLimit: () => 3, emit: () => {} };
   const sample = { assistantHost: { protocolVersion: 1, defaultProvider: "codex" }, issues: [] };
-  const collect = vi.fn(async () => sample); mocks.collector.mockReturnValue({ collect });
+  const collect = vi.fn(async () => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });
   return { options, collect, sample, set: (value: ExecutionConfiguration | null) => { configuration = value; } };
 };
 const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
@@ -39,7 +39,7 @@ it("omits unsupported configuration and discards a capability probe spanning a c
   f.collect.mockImplementationOnce(async () => { f.set({ ...native, model: "changed" }); return f.sample; });
   expect(await host.collect(operation)).toBeUndefined();
   expect(await host.collect(operation)).toBe(f.sample);
-  host.close(); expect(await host.collect(operation)).toBeUndefined();
+  await host.close(); expect(await host.collect(operation)).toBeUndefined();
 });
 
 it("closes both actual SQLite handles when a later host constructor fails", async () => {

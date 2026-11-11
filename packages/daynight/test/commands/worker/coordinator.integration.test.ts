@@ -634,3 +634,36 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
 });
+
+it("validates and freezes a Web tool before claiming, then retains that choice when current targets fail", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { resolveToolLaunch } = await import("../../../src/platform/tool-executables.js");
+  const f = await fixture(); f.candidates.splice(1);
+  const file = path.join(f.root, "selected.mjs"); await writeFile(file, "#!/usr/bin/env node\nconsole.log('fixture');\n", { mode: 0o755 });
+  const operation = createOperation();
+  let toolLaunch;
+  try { toolLaunch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: file }, cwd: f.root, environment: {} }, operation); }
+  finally { operation.dispose(); }
+  const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
+  let available = false, selections = 0;
+  const freezeConfiguration = async (input: ExecutionConfiguration) => {
+    if (input.toolLaunch !== undefined) return input;
+    if (!available) throw new Error("Selected tool is unavailable.");
+    expect(f.remote.claim).not.toHaveBeenCalled(); selections++;
+    return { ...input, toolLaunch, toolObservation: { version: "1.0.0", checkedAt: "2026-11-12T00:00:00Z" } };
+  };
+  const advance = vi.fn(async (input: WebTask) => webStore.initializeWebExecution(input, 1));
+  const coordinator = createWorkerCoordinator({ ...f.options, freezeConfiguration, webStore, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration,
+    verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: async task => ({ task, complete: true }) } });
+  try {
+    await expect(coordinator.tick()).rejects.toThrow("Selected tool is unavailable"); expect(f.remote.claim).not.toHaveBeenCalled();
+    available = true; await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalled());
+    const task = f.store.listTasks()[0]!;
+    expect(f.store.getNativeConfiguration(task)?.toolLaunch?.selectionKey).toBe(toolLaunch.selectionKey);
+    expect(webStore.getTask(task)?.configuration?.toolObservation?.version).toBe("1.0.0");
+    const advances = advance.mock.calls.length; available = false;
+    await coordinator.tick(); await eventually(() => expect(advance.mock.calls.length).toBeGreaterThan(advances));
+    expect(selections).toBe(1); expect(f.remote.claim).toHaveBeenCalledOnce();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});

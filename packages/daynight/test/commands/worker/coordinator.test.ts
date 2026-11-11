@@ -2,6 +2,7 @@ import { ArchiveRepairRequiredError, type ArchiveProbeResult } from "../../../sr
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { execFileSync } from "node:child_process";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -2217,7 +2218,7 @@ it.each(["claim", "worktree"])("rejects Web retry after original %s loss without
 it("keeps an authorized Web retry waiting until a healthy observation after confirmed shutdown", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver();
-  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0, toolLaunch: frozenToolLaunch() };
   let starting = true;
   const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => {
     let record = webStore.initializeWebExecution(input, 2);
@@ -3370,7 +3371,7 @@ describe("worker monitoring of coordinator jobs", () => {
     const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
     const { createWebControllerLauncher } = await import("../../../src/commands/worker/backends/web-process.js");
     const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver({ now: () => 1000 });
-    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2, toolLaunch: frozenToolLaunch() };
     const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
     const owner = { projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
     f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));

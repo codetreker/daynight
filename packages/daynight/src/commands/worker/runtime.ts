@@ -67,6 +67,9 @@ import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager } from "./worktrees.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
+import { createWorkerToolSelectionRuntime } from "./tool-selection-runtime.js";
+import { readWebToolActivity } from "./tool-activity.js";
+import type { ActiveToolSelection } from "./tool-selection.js";
 import { createNativeSelectionVerifier } from "./native-selection.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -136,6 +139,7 @@ const effectiveExecutionConfiguration = (native: WorkerCloudNative, mode: AgentC
 });
 
 const nativeConfigurationApplication = (options: {
+  tools?: () => ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   paths: WorkerPaths; homeDirectory: string; workingDirectory: string;
   overrides: WorkerLocalNativeOverrides;
   signal: AbortSignal; emit: (event: WorkerEvent) => void;
@@ -155,6 +159,11 @@ const nativeConfigurationApplication = (options: {
     apply: async (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode): Promise<void> => {
       normalizeWorkerNative(native, mode, options.overrides);
       const nativeEnvironment = await getEnvironment();
+      const tools = options.tools?.();
+      if (tools !== undefined) {
+        await tools.prepareNative(native, mode, signal);
+        if (mode === "web" && (native.agent === "codex" || native.agent === "copilot")) return;
+      }
       const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
       try { await probeNativeAgentVersion({ agent: native.agent, environment: { ...process.env, ...nativeEnvironment.agentEnvironment }, cwd: options.workingDirectory }, operation); }
       finally { operation.dispose(); }
@@ -162,11 +171,11 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const api = createWorkerSessionApi(serverUrl, serverToken);
-    const launcher = createWebControllerLauncher({ ...options, store: webStore, sessionApi: api, now: Date.now });
+    const launcher = createWebControllerLauncher({ ...options, ...(tools === undefined ? {} : { selectToolLaunch: tools.selectToolLaunch, toolObservationFor: tools.toolObservationFor }), store: webStore, sessionApi: api, now: Date.now });
     const archive: NonNullable<import("./backends/web.js").WebBackendOptions["archive"]> = async (task, journalPath, signal) => {
       if (!task.webExecution) throw new Error("Original controller execution is missing.");
       const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
@@ -197,6 +206,20 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
   }
 };
 
+const webToolSelections = (homeDirectory: string, web: Awaited<ReturnType<typeof createWebRuntime>> | undefined): ActiveToolSelection[] => web?.webStore.listUnfinishedTasks().flatMap(task => {
+  const execution = task.webExecution, tool = task.configuration?.agent;
+  if (execution === null || tool !== "codex" && tool !== "copilot") return [];
+  const activity = readWebToolActivity(homeDirectory, task); if (activity === "inactive") return [];
+  const unknown = activity === "unconfirmed";
+  return [{ tool, context: "web", launch: task.configuration!.toolLaunch ?? null, version: task.configuration!.toolObservation?.version ?? null, checkedAt: task.configuration!.toolObservation?.checkedAt ?? null, executionCount: unknown ? null : 1, instanceCount: 0, unconfirmedCount: unknown ? 1 : 0 }];
+}) ?? [];
+
+const legacyHerdrToolSelections = (store: ReturnType<typeof openWorkerStore> | undefined): ActiveToolSelection[] => store?.listUnfinishedTasks().flatMap(task => {
+  if ((task.agentControlMode ?? "herdr") !== "herdr" || task.sessionId === null) return [];
+  const tools = task.agent === "codex" || task.agent === "copilot" ? [task.agent, "herdr"] as const : ["herdr"] as const;
+  return tools.map(tool => ({ tool, context: "herdr", launch: null, version: null, checkedAt: null, executionCount: null, instanceCount: null, unconfirmedCount: 0 }));
+}) ?? [];
+
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
@@ -208,6 +231,7 @@ export const runWorker = async (options: {
   let lock: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
   let store: ReturnType<typeof openWorkerStore> | undefined;
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
+  let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: WorkerHerdrAdapter | undefined;
@@ -351,7 +375,10 @@ export const runWorker = async (options: {
       void job.finally(() => { if (bindingJobs.get(projectId)?.job === job) bindingJobs.delete(projectId); }).catch(() => undefined);
       return job;
     };
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
+    const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
+    const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
+    tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths, readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...legacyHerdrToolSelections(store), ...bots?.activeToolSelections() ?? []] });
+    const toolRuntime = tools;
     let fallback: Awaited<ReturnType<typeof validateWorkerConfigurationSource>> | null = null;
     let fallbackRepositories: WorkerRepositoryAssignment[] = [];
     let fallbackTargets: string[] = [];
@@ -384,7 +411,7 @@ export const runWorker = async (options: {
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
-      applyNative: nativeApplication.apply,
+      ...toolRuntime.configurationOptions, applyNative: nativeApplication.apply,
       onNativeApplication: event => {
         const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
         const key = projectId === null ? "native" : `project/${projectId}`;
@@ -412,6 +439,7 @@ export const runWorker = async (options: {
         }
       },
       onChange: snapshot => {
+        toolRuntime.setTargets(snapshot.toolTargets);
         const targetSignature = JSON.stringify(snapshot.desired?.value ?? null);
         if (monitoringTargetSignature !== targetSignature) { monitoringTargetSignature = targetSignature; observeMonitoring(m => m.invalidateAdmission()); }
         const incomplete = snapshot.desired === null
@@ -495,12 +523,23 @@ export const runWorker = async (options: {
       }
     }
     const manager = configuration;
+    const proofSignature = () => JSON.stringify([toolRuntime.manager.currentSelection("codex", "web")?.selectionKey, toolRuntime.manager.currentSelection("copilot", "web")?.selectionKey]);
+    let observedToolProof = proofSignature();
+    const refreshToolProofs = (): Promise<void> | undefined => {
+      const current = proofSignature(); if (current === observedToolProof) return;
+      observedToolProof = current; return manager.refreshToolSelections();
+    };
     modelDiscovery = createWorkerModelDiscovery({
-      defaultCwd: options.workingDirectory, environment: process.env, verifier: selectionVerifier,
+      prepare: async (provider, operation) => { if (provider === "codex" || provider === "copilot") await toolRuntime.manager.prepare(provider, "web", operation); },
+      defaultCwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, verifier: { discover: async (input, operation) => {
+        if (input.native.agent !== "codex" && input.native.agent !== "copilot") return selectionVerifier.discover(input, operation);
+        const toolLaunch = await toolRuntime.manager.selectForNewExecution(input.native.agent, "web", operation);
+        return toolRuntime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: toolRuntime.toolRuntimeRoot }, operation);
+      } },
       configuration: () => {
         const native = manager.current().effective.native;
         if (native === null) throw new WorkerModelDiscoveryError("capability_error");
-        return normalizeWorkerNative(native, "web", local, false);
+        return { ...normalizeWorkerNative(native, "web", local, false), toolSelections: ["codex", "copilot"].map(tool => toolRuntime.manager.currentSelection(tool as "codex" | "copilot", "web")?.selectionKey ?? null) };
       },
     });
     const executeReadOnly = async <K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], requestSignal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]> => {
@@ -510,7 +549,7 @@ export const runWorker = async (options: {
       return result as WorkerReadOnlyOperations[K]["result"];
     };
     readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
-      configurationSignature: () => JSON.stringify([manager.current().effective, local.agentModel, local.agentReasoningEffort]),
+      configurationSignature: () => JSON.stringify([manager.current().effective, local.agentModel, local.agentReasoningEffort, toolRuntime.manager.currentSelection("codex", "web")?.selectionKey, toolRuntime.manager.currentSelection("copilot", "web")?.selectionKey]),
       execute: executeReadOnly,
       onInvalidate: () => modelDiscovery?.invalidate(),
       onError: message => emit({ kind: "worker-readonly", message }),
@@ -709,7 +748,7 @@ export const runWorker = async (options: {
       void job.finally(() => { if (initialRemovalsJob === job) initialRemovalsJob = undefined; }).catch(() => undefined);
       return job;
     };
-    bots = createWorkerBotHost({ ...options, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
+    bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
@@ -725,7 +764,7 @@ export const runWorker = async (options: {
     });
     botRun = bots.run(signal).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     let reconcileReport = false;
-    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots });
+    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => manager.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
     reporter = createWorkerReporter({ signal, collect: async operation => {
       const sample = await telemetry.collect(operation);
       const snapshot = manager.current();
@@ -784,14 +823,14 @@ export const runWorker = async (options: {
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
-        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, signal, currentPromptSource, undefined, observer);
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
         const environment = await nativeApplication.prepareEnvironment();
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
-        coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
           monitoring: observer,
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
@@ -876,7 +915,9 @@ export const runWorker = async (options: {
     };
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
+      void toolRuntime.prepareWebCandidates(signal).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
       try {
+        const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
         observeMonitoring(m => m.setPhase("configuration"));
         scheduleLocalMappingChecks();
         await refreshFallback();
@@ -944,11 +985,12 @@ export const runWorker = async (options: {
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
     try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
-    try { bots?.close(); } catch (error) { failures.push(error); }
+    try { await bots?.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
+    try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
@@ -968,6 +1010,7 @@ export const runWorkerControl = async (options: {
   let lock: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>> | undefined;
   let store: ReturnType<typeof openWorkerStore> | undefined;
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
+  let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let actualHerdr: WorkerHerdrAdapter | undefined;
@@ -990,7 +1033,10 @@ export const runWorkerControl = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
+    const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
+    const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
+    tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths, readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...legacyHerdrToolSelections(store)] });
+    const toolRuntime = tools;
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
@@ -1022,7 +1068,7 @@ export const runWorkerControl = async (options: {
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
-        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, applyNative: nativeApplication.apply });
+        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply });
         await configurationManager.receive(resource.desired, resource.observationRevision);
         await configurationManager.settle();
         const effective = configurationManager.current().effective;
@@ -1049,7 +1095,7 @@ export const runWorkerControl = async (options: {
       retryPromptSource.beginCycle();
       const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
       try {
-        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl });
+        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => configurationManager?.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
         const sample = await telemetry.collect(operation);
         const cleanupFailure = sample.issues.find(issue => hasUnconfirmedHerdrCommandCleanup(issue.error));
         if (cleanupFailure !== undefined) throw cleanupFailure.error;
@@ -1066,7 +1112,7 @@ export const runWorkerControl = async (options: {
                   resource = { desired: null, observationRevision: "0", observation: null };
                 }
               }
-              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, applyNative: nativeApplication.apply });
+              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply });
               await configurationManager.receive(resource.desired, resource.observationRevision);
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }
@@ -1081,10 +1127,10 @@ export const runWorkerControl = async (options: {
         diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
       } finally { operation.dispose(); }
     };
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource);
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime);
     if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const coordinator = createWorkerCoordinator({
-      store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
+      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
       hasHerdrJournal: await hasHerdrJournal(paths, platform),
       availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
       buildPrompt: buildWorkerPrompt, ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
@@ -1104,6 +1150,7 @@ export const runWorkerControl = async (options: {
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { actualHerdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
+    try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
