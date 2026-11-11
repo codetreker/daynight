@@ -11,7 +11,7 @@ import { graphFixture } from './helpers/taskDetail';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
 import { ProjectDraftHost } from '../src/features/task-detail/TaskDraftNavigation';
-import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { browserNavigation } from '../src/app/navigation';
 import { useBrowserLocation } from '../src/app/browser-location';
 import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
@@ -250,6 +250,100 @@ describe('task detail dialog', () => {
     });
     expect(screen.queryByRole('heading', { name: goal.title })).toBeNull();
     expect(direct).not.toHaveBeenCalled();
+  });
+
+  it.each(['direct', 'project-summary'] as const)('loads actual Steps across %s and the other Task observation source', async initialSource => {
+    const reviewed = detail();
+    await world.sync([reviewed]);
+    let stepsReads = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/steps')) {
+        stepsReads++;
+        return new Response(stringifyApiJson({ projectId, taskId: reviewed.id, version: reviewed.version,
+          steps: [{ id: '00000001', title: 'Actual step', description: '', status: 'todo', createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' }] }),
+          { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      }
+      return response(reviewed);
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const current = snapshot([reviewed], 1);
+    const options = props({ snapshot: current, navigation: { tab: 'steps', path: null }, onNavigate: vi.fn() });
+    const observation = (kind: 'direct' | 'project-summary') => kind === 'direct' ? { kind: 'direct' as const }
+      : { kind: 'project-summary' as const, revision: current.revision, task: current.index.nodes.get(reviewed.id) };
+    const view = renderWithLocale(<TaskDetailDialog {...options} observation={observation(initialSource)} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByText('Actual step');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    const firstReads = stepsReads;
+    const otherSource = initialSource === 'direct' ? 'project-summary' : 'direct';
+    view.rerender(<TaskDetailDialog {...options} observation={observation(otherSource)} />);
+    await waitFor(() => expect(stepsReads).toBeGreaterThan(firstReads));
+    await screen.findByText('Actual step');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    const secondReads = stepsReads;
+    view.rerender(<TaskDetailDialog {...options} observation={observation(initialSource)} />);
+    await waitFor(() => expect(stepsReads).toBeGreaterThan(secondReads));
+    await screen.findByText('Actual step');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+  });
+
+  it('waits for the live summary receipt and ignores a late direct response after changing source', async () => {
+    const reviewed = detail();
+    const old = detail(1, { title: 'Late direct response' });
+    await world.sync([reviewed]);
+    const pending = deferred<Response>();
+    let detailReads = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/tasks/${reviewed.id}`)) return ++detailReads === 1 ? pending.promise : Promise.resolve(response(reviewed));
+      return Promise.resolve(response(reviewed));
+    }));
+    const current = snapshot([reviewed], 1);
+    const options = props({ snapshot: current, observation: { kind: 'direct' } });
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await waitFor(() => expect(detailReads).toBe(1));
+    const preview = snapshot([reviewed], 0);
+    view.rerender(<TaskDetailDialog {...options} snapshot={preview} observation={{ kind: 'project-summary', revision: 0, task: preview.index.nodes.get(reviewed.id) }} />);
+    expect(screen.queryByRole('heading', { name: reviewed.title })).toBeNull();
+    expect(detailReads).toBe(1);
+    view.rerender(<TaskDetailDialog {...options} observation={{ kind: 'project-summary', revision: 1, task: current.index.nodes.get(reviewed.id) }} />);
+    await screen.findByRole('heading', { name: reviewed.title });
+    await act(async () => { pending.resolve(response(old)); await pending.promise; });
+    expect(screen.queryByRole('heading', { name: old.title })).toBeNull();
+    expect(screen.getByRole('heading', { name: reviewed.title })).toBeVisible();
+  });
+
+  it.each([['direct', 'pending'], ['direct', 'unknown'], ['project-summary', 'pending'], ['project-summary', 'unknown']] as const)('does not replay a %s Task write while %s when switching source', async (source, phase) => {
+    const reviewed = detail();
+    await world.sync([reviewed]);
+    const write = deferred<Response>();
+    const recovery = deferred<Response>();
+    let writes = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') { writes++; return write.promise; }
+      if (phase === 'unknown' && writes !== 0 && String(input).endsWith(`/tasks/${reviewed.id}`)) return recovery.promise.then(value => value.clone());
+      return Promise.resolve(response(reviewed));
+    }));
+    let session!: TaskDetailSessions;
+    const Capture = () => { session = useTaskDetailSessions(); return null; };
+    const current = snapshot([reviewed], 1);
+    const options = props({ snapshot: current });
+    const content = (source: 'direct' | 'project-summary') => <TaskDetailSessionProvider><Capture /><TaskDetailDialog {...options}
+      observation={source === 'direct' ? { kind: 'direct' } : { kind: 'project-summary', revision: 1, task: current.index.nodes.get(reviewed.id) }} /></TaskDetailSessionProvider>;
+    const view = renderWithLocale(content(source), { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByRole('heading', { name: reviewed.title });
+    await waitFor(() => expect(source === 'direct' ? session.directRequiresFreshRead(projectId, reviewed.id) : session.requiresFreshRead(projectId, reviewed.id, current.index.nodes.get(reviewed.id))).toBe(false));
+    act(() => session.setStatus(projectId, reviewed.id, 'in_progress', reviewed.version));
+    await waitFor(() => expect(writes).toBe(1));
+    if (phase === 'unknown') {
+      await act(async () => { write.reject(new TypeError('Response lost')); await write.promise.catch(() => {}); });
+      await waitFor(() => expect(session.snapshot(projectId, reviewed.id).mutation.phase).toBe('unknown'));
+    }
+    view.rerender(content(source === 'direct' ? 'project-summary' : 'direct'));
+    if (phase === 'pending') await waitFor(() => expect(session.snapshot(projectId, reviewed.id).detail?.title).toBe(reviewed.title));
+    act(() => session.setStatus(projectId, reviewed.id, 'in_progress', reviewed.version));
+    expect(writes).toBe(1);
+    if (phase === 'pending') await act(async () => { write.reject(new TypeError('Response lost')); await write.promise.catch(() => {}); });
+    view.unmount();
+    recovery.resolve(response(reviewed));
   });
 
   it('continues a direct Task read when there is no Project graph', async () => {

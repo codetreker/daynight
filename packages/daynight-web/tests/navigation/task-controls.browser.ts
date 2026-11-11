@@ -164,6 +164,27 @@ test('history protects a summary task draft before restoring its earlier direct 
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
+test('returning from direct search detail to the earlier summary loads Steps', async ({ page }) => {
+  const writes = await install(page);
+  const dialog = await openDialog(page);
+  const summaryEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('summary');
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(dialog).toHaveCount(0);
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  await page.getByRole('button', { name: 'Open task: Target task' }).click();
+  await expect(dialog).toHaveAccessibleName('Target task');
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('direct');
+  await page.evaluate(() => history.go(-2));
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(summaryEntry);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
+
 test('summary detail waits for a snapshot and retains its real editor through snapshot loss', async ({ page }) => {
   const writes = await install(page);
   await page.goto('/summary-detail-fixture');

@@ -22,7 +22,10 @@ changes push; closing a layer replaces the current entry after the existing draf
 admission. Same-resource editors are identified by their resource, host and
 presentation, not the history entry. A Project root Task may change draft hosts
 when switching between `summary` and `direct` observations, so that transition
-requires departure admission even for the same Task ID. Goal roots and children
+requires departure admission even for the same Task ID. A retained detail hook
+establishes a new opening when its observation source changes; earlier content
+cannot satisfy the new source's admission. Pending and unknown writes retain
+their existing reconciliation without replay. Goal roots and children
 are judged by their actual hosts rather than the root observation source. A
 verified direct Goal retains its typed owner when the graph is temporarily absent;
 an available graph that cannot identify the target as a Goal requires draft
