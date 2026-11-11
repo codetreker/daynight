@@ -33,7 +33,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Test module selection and job gates
-        run: node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts
+        run: node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts .github/scripts/windows-cli-shards.test.mts
       - name: Select modules from the complete PR diff
         id: modules
         env:
@@ -43,13 +43,25 @@ jobs:
         run: node .github/scripts/ci-modules.mts
 
   verify:
-    name: verify (CLI tests, ${{ matrix.os }})
+    name: verify (CLI tests, ${{ matrix.os }}${{ matrix.suffix }})
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.cli == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        include:
+          - os: ubuntu-latest
+            shard: ""
+            suffix: ""
+          - os: windows-latest
+            shard: "1/2"
+            suffix: "-shard-1"
+          - os: windows-latest
+            shard: "2/2"
+            suffix: "-shard-2"
+          - os: macos-15
+            shard: ""
+            suffix: ""
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -81,8 +93,20 @@ jobs:
       - name: Test the local development installer
         run: pnpm dev:test
       - name: Test the compiled CLI
-        if: matrix.os != 'macos-15'
+        if: matrix.os == 'ubuntu-latest'
         run: pnpm --filter @codetreker/daynight exec vitest run
+      - name: Discover the complete Windows CLI test collection
+        if: matrix.os == 'windows-latest'
+        run: pnpm --filter @codetreker/daynight exec vitest list --config vitest.windows-shards.config.ts --filesOnly --json=../../.tmp/windows-cli-shard/discovered.json
+      - name: Test the compiled CLI Windows shard
+        id: windows-tests
+        if: matrix.os == 'windows-latest'
+        run: pnpm --filter @codetreker/daynight exec vitest run --config vitest.windows-shards.config.ts --shard=${{ matrix.shard }}
+      - name: Record the Windows shard source and test outcome
+        if: ${{ always() && matrix.os == 'windows-latest' && steps.windows-tests.outcome != 'skipped' }}
+        env:
+          CLI_TEST_RESULT: ${{ steps.windows-tests.outcome }}
+        run: node .github/scripts/windows-cli-shards.mts record ${{ matrix.shard }}
       - name: Test the compiled CLI with macOS termination diagnostics
         if: matrix.os == 'macos-15'
         run: node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
@@ -102,7 +126,7 @@ jobs:
         if: ${{ always() && steps.environment.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-cli-tests-${{ matrix.os }}
+          name: daynight-cli-tests-${{ matrix.os }}${{ matrix.suffix }}
           path: .tmp/validation-environment.json
           include-hidden-files: true
           if-no-files-found: error
@@ -111,7 +135,7 @@ jobs:
         if: ${{ always() && steps.environment.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-cli-tests-probes-${{ matrix.os }}
+          name: daynight-cli-tests-probes-${{ matrix.os }}${{ matrix.suffix }}
           path: .tmp/validation-probes.json
           include-hidden-files: true
           if-no-files-found: error
@@ -121,7 +145,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-cli-tests-failures-${{ matrix.os }}
+          name: daynight-cli-tests-failures-${{ matrix.os }}${{ matrix.suffix }}
           path: .tmp/cli-test-failures/*.jsonl
           include-hidden-files: true
           if-no-files-found: warn
@@ -135,6 +159,16 @@ jobs:
           path: .tmp/native-validation/
           include-hidden-files: true
           if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Windows shard discovery and execution results
+        if: ${{ always() && matrix.os == 'windows-latest' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-results-${{ matrix.os }}${{ matrix.suffix }}
+          path: .tmp/windows-cli-shard/*.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 30
 
   verify-installed:
@@ -673,6 +707,38 @@ jobs:
         env:
           JOB_RESULTS: ${{ toJSON(needs.*.result) }}
         run: jq --exit-status 'all(.[]; . == "success" or . == "skipped")' <<< "$JOB_RESULTS"
+      - name: Require selected CLI jobs to succeed
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        env:
+          CLI_RESULT: ${{ needs.verify.result }}
+          INSTALLED_RESULT: ${{ needs.verify-installed.result }}
+          RUNTIME_RESULT: ${{ needs.verify-runtime.result }}
+          COMPLETION_RESULT: ${{ needs.verify-completion.result }}
+        run: test "$CLI_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$RUNTIME_RESULT" = success && test "$COMPLETION_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Download Windows CLI shard 1
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-cli-tests-results-windows-latest-shard-1
+          path: .tmp/windows-cli-shards/1
+      - name: Download Windows CLI shard 2
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-cli-tests-results-windows-latest-shard-2
+          path: .tmp/windows-cli-shards/2
+      - name: Verify the complete Windows CLI execution
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        run: node .github/scripts/windows-cli-shards.mts verify .tmp/windows-cli-shards
       - name: Require selected Go server jobs to succeed
         if: ${{ needs.detect-changes.outputs.server == 'true' }}
         env:
