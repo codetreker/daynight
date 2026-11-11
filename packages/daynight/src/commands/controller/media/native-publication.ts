@@ -23,6 +23,7 @@ type Context = {
   read<T>(action: () => T): T;
   getSnapshot(): ControllerSnapshot;
   getOperation(operationId: string): ControllerOperation | null;
+  associateInputMessage(operationId: string, nativeSessionId: string, entryId: string): void;
   projectTimeline(entry: SourceTimelineEntry): ControllerOutboxEvent | null;
   publishTimelineSnapshot(entry: TimelineEntry): ControllerOutboxEvent;
   registerImageOccurrence(occurrence: ImageOccurrence, source: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean };
@@ -153,6 +154,7 @@ export const createNativeInputPublication = (context: Context) => {
             if (previous.receipt.requestSha256 !== hash) conflict("Native publication replay changed the original request.");
             return committed(previous, request.identity);
           }
+          context.associateInputMessage(request.identity.operationId, request.identity.nativeSessionId, request.identity.entryId);
           const current = pendingContent.getEntry(request.identity.entryId);
           if (current && current.kind !== "user_message") conflict("Native publication cannot replace another entry kind.");
           const content = [...(current?.kind === "user_message" ? current.content : request.seed.entry.content)];

@@ -40,7 +40,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   let imageProfile: CodexImageProfile | null = null;
   let transportFailed = false, fatalReported = false;
   let startingImageTurns: Set<string> | null = null;
-  const interruptions = new CodexInterruptions(() => nativeId, options.onTimeline, options.hasTimelineEntry);
+  const interruptions = new CodexInterruptions(() => nativeId, options.onTimeline, options.hasTimelineEntry, options.onInputMessage);
   const completing = new Set<string>();
   const terminalProjections = new Set<Promise<void>>();
   let turnStartedAt: string | null = null;
@@ -79,6 +79,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const source = record(raw), imageUser = source.type === "userMessage" && Array.isArray(source.content) && source.content.some(part => ["image", "localImage"].includes(string(record(part).type)));
     if (imageUser) interruptions.item(turnId, { ...source, clientId: null });
     const item = imageUser ? source : interruptions.item(turnId, source);
+    if (item.type === "userMessage" && typeof item.clientId === "string" && typeof item.id === "string") options.onInputMessage?.(item.clientId, nativeId, nativeEntryId(nativeId, item.id));
     if (!imageUser && item.type === "userMessage" && typeof item.clientId === "string") options.onInputObserved?.(item.clientId);
     projection?.item(item, completed, turnId);
   };

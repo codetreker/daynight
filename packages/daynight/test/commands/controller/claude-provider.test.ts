@@ -272,6 +272,29 @@ test("Claude initializes its transport before the first prompt proves native ses
   } finally { await provider.close(); }
 });
 
+test("Claude first input defers provenance until delayed native identity is verified", async () => {
+  const fixture = nativeFixture(false), entries: ProviderEntry[] = [], associations: { operationId: string; nativeSessionId: string; observedNativeId: string | null }[] = [];
+  const original = sdk.query.getMockImplementation()!;
+  sdk.query.mockImplementation((args: unknown) => ({ ...original(args), initializationResult: async () => ({}) }));
+  let observedNativeId: string | null = null;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: entry => entries.push(entry), onState: state => { observedNativeId = state.nativeSessionId; }, onSpawn() {},
+    onInputMessage: (operationId, nativeSessionId) => { associations.push({ operationId, nativeSessionId, observedNativeId }); },
+  });
+  const operationId = randomUUID();
+  const sending = provider.send(textNativeInput("first Daynight input"), operationId, null).then(result => ({ result }), error => ({ error }));
+  try {
+    await vi.waitFor(() => expect(entries.some(entry => entry.kind === "user_message")).toBe(true));
+    expect(observedNativeId).toBeNull();
+    expect(associations).toEqual([]);
+    fixture.emit({ type: "user", uuid: operationId, session_id: provider.nativeSessionId, message: { content: "first Daynight input" } });
+    expect(await sending).toMatchObject({ result: { disposition: "started", turnId: operationId } });
+    expect(associations.length).toBeGreaterThan(0);
+    expect(associations.every(item => item.operationId === operationId && item.nativeSessionId === provider.nativeSessionId && item.observedNativeId === provider.nativeSessionId)).toBe(true);
+    expect(fixture.inputs).toHaveLength(1);
+  } finally { await provider.close(); await sending; }
+});
+
 test("Claude blockwise assistant messages replace matching stream blocks without losing reasoning or duplicating text", async () => {
   const fixture = nativeFixture(), entries: ProviderEntry[] = [];
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });

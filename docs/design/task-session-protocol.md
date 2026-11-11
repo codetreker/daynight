@@ -31,7 +31,7 @@ Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task
 
 浏览器操作包含 requestId、operationId、sessionId、对应绑定、executionGeneration、kind 和 payload。浏览器操作不绑定某次 Controller 网络连接；实际投递和回执由服务端连接代次约束。操作包括：
 
-- `send_message`：typed text content 与 expectedTurnId，空闲发送或受原生能力限制的 steer。
+- `send_message`：typed content、expectedTurnId 与可选的 `origin: "user" | "daynight"`，空闲发送或受原生能力限制的 steer。
 - `cancel`：精确的活动 expectedTurnId。
 - `interaction_response`：当前交互身份、修订、submissionId 及 typed response。
 - `update_setting`、`execute_command`、`refresh_controls`：原生设置修改、命令执行和能力目录刷新；目录修订与活动 turn 的绑定见[会话设置与原生命令](#会话设置与原生命令)。
@@ -43,6 +43,14 @@ Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task
 Test 创建时显式声明有无首条 prompt。无 prompt 使用 not_required，不伪造一次 confirmed 输入。该分支只在 Controller 取得 Provider handle、Provider ready 且 relay 同步后允许首次网页发送；Claude 此时可尚无已确认原生 ID，收到真实原生证据后才填入。Task 不能使用 not_required，有 prompt 的 Test 仍遵守原首次输入受理门控。未知输入按原 operation 查询，不能借空会话状态重发。
 
 共享 JSON fixtures 是 Go/TypeScript 对协议表示和拒绝行为的共同输入；验证必须经过各自的真实 codec，不能仅将 JSON 解析到通用 map 后回写。
+
+### 输入消息来源
+
+`send_message.payload.origin` 和 `user_message.origin` 是可选的来源字段，只接受 `user`、`daynight`；缺省表示 `user`，显式 `null`、空字符串和未知值均拒绝。字段不属于 Provider 输入正文，也不改变 Session owner 权限、发送门禁、原生受理及操作恢复规则。它用于区分同一所有者提交的普通输入与 Daynight 通知，不是独立的身份认证证明。
+
+服务端保存操作的来源并透传给 Controller；操作指纹区分 `daynight` 与普通输入，显式 `user` 与缺省的来源语义相同。相同 operationId 不能改换来源后作为原操作恢复。Controller 将来源与原提交操作对应的原生用户消息关联，在本次执行的 journal 保存该关联，并在同一 Session 恢复重建时间线时保留；不得仅凭正文相同修改另一条用户消息。历史投影、浏览器持久快照与归档沿用同一 `user_message` 字段。原生投递结果未知且没有取得消息身份时，不能按正文猜测来源；后续取得原操作的身份可补齐关联。独立 `controller resume` 会创建新 Session 和 journal，仅导入原生历史，不迁移旧 Session 的 Daynight 来源元数据；旧 Session 的归档保持不变。
+
+网站在 Standard 和 Conversation 中均将 `origin=daynight` 显示为默认折叠的一行带图标的“Daynight 通知”（英文 “Daynight notification”），展开后显示原有完整内容与资源。缺省或 `user` 保持用户气泡。展开不提交命令、不改变消息正文，刷新和归档读取保留来源。事件的生成、合并与投递由其调用者负责，不属于来源字段本身。
 
 ## 在线测试会话目录
 

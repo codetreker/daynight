@@ -38,6 +38,10 @@ Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻
 
 ## 基础会话交互
 
+Daynight 提交的通知输入通过可选的 `origin: "daynight"` 标记来源；普通输入可以省略来源或使用 `origin: "user"`。来源不改变 Session 的提交权限和原生执行语义。旧输入和旧历史缺少来源时，显示行为保持不变。
+
+时间线中的 Daynight 输入在 Standard 和 Conversation 模式下均显示为一行带图标的“Daynight 通知”（英文 “Daynight notification”），默认折叠，可以用鼠标或键盘展开完整内容及其资源，不显示为用户气泡。刷新、同一 Session 的执行恢复以及归档读取后仍保留该来源和展示方式。来源字段不触发事件投递或额外的 Agent 回合。
+
 Session 与 Task Overview、Attachments 并列，弹窗和独立详情页共享内容。基础能力包括消息、Markdown、reasoning 展开、工具参数/结果/错误、长输出、历史分页、流式合并、滚动跟随、文本草稿及输入法处理。
 
 具有当前项目访问权限的成员可以阅读活动 Session、历史、资源和归档；只有该 Session 持久记录的 owner 可以发送消息、回答审批、问题和表单、停止当前 turn、修改设置、执行命令或刷新原生控制目录。Herdr 的人工输入、取得和维护控制租约、处置初始提交及恢复自动执行同样只允许原 Session owner。项目管理员和通过 Team 继承访问的其他用户只读，当前 Task assignee 不替代 Session owner。非 owner 保留实时内容、分页、资源、显示模式、刷新和全屏阅读，全部执行交互禁用；活动 Session 的只读权限不能被误判为已结束归档。

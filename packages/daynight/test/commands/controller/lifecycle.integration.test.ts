@@ -158,3 +158,34 @@ it("bounds reconciliation pages and persists acknowledged terminal tombstones", 
   expect(store.listUnacknowledgedOperations().some(op => op.operationId === first.operationId)).toBe(false);
   expect(store.prepareOperation(first).state).toBe("confirmed"); store.close();
 });
+
+
+it("retains message origins through receipt ordering, journal reopen and native history replay", async () => {
+  const { home, ticket } = await fixture(), filename = path.join(home, "origin.sqlite");
+  let store = openControllerLifecycleStore(filename, ticket, { contentOwnedLocally: true });
+  const nativeSessionId = "native-origin", operationId = randomUUID();
+  const entry = { entryId: randomUUID(), revision: "1", kind: "user_message" as const, content: [{ type: "text" as const, text: "same input" }] };
+  try {
+    store.patchSnapshot({ nativeSessionId });
+    store.prepareOperation({ operationId, kind: "send_message", payload: { origin: "daynight", content: entry.content, expectedTurnId: null } });
+    store.markDispatching(operationId);
+    store.projectTimeline(entry);
+    store.associateInputMessage(operationId, nativeSessionId, entry.entryId);
+    expect(store.getTimelineEntry(entry.entryId)).toMatchObject({ origin: "daynight", revision: "2" });
+    store.close(); store = openControllerLifecycleStore(filename, ticket, { contentOwnedLocally: true });
+    expect(store.projectTimeline(entry)).toBeNull();
+    expect(store.getTimelineEntry(entry.entryId)).toMatchObject({ origin: "daynight", revision: "2" });
+    const sameText = { ...entry, entryId: randomUUID() };
+    store.projectTimeline(sameText);
+    expect(store.getTimelineEntry(sameText.entryId)).not.toHaveProperty("origin");
+    const later = { ...entry, entryId: randomUUID() };
+    const laterOperation = randomUUID();
+    store.prepareOperation({ operationId: laterOperation, kind: "send_message", payload: { origin: "daynight", content: entry.content, expectedTurnId: null } });
+    store.markDispatching(laterOperation);
+    store.associateInputMessage(laterOperation, nativeSessionId, later.entryId);
+    store.projectTimeline(later);
+    expect(store.getTimelineEntry(later.entryId)).toMatchObject({ origin: "daynight", revision: "1" });
+    expect(() => store.associateInputMessage(operationId, "another-native-session", entry.entryId)).toThrow(/identity/);
+    expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items).toEqual(expect.arrayContaining([expect.objectContaining({ entryId: entry.entryId, origin: "daynight" })]));
+  } finally { store.close(); }
+});

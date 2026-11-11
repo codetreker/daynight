@@ -1,3 +1,4 @@
+import { nativeEntryId } from "../../../src/commands/controller/providers/projection.js";
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter, once } from "node:events";
@@ -502,12 +503,14 @@ test("Copilot preserves media and runtime shutdown errors without reporting an u
 });
 
 test("Copilot late ACK confirms only the timed-out invocation in its still-owned runtime", async () => {
-  const provider = await openCopilotProvider(fixture.options); vi.useFakeTimers();
+  const onInputMessage = vi.fn();
+  const provider = await openCopilotProvider({ ...fixture.options, onInputMessage }); vi.useFakeTimers();
   let acknowledge!: (id: string) => void; fixture.native.send.mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
   const operation = randomUUID(), rejected = expect(provider.send(textNativeInput("one dispatch"), operation, null)).rejects.toThrow(/unknown/);
   await vi.advanceTimersByTimeAsync(60_001); await rejected; expect(fixture.observed).toEqual([]);
   acknowledge("real-native-message-id"); await vi.advanceTimersByTimeAsync(0);
   expect(fixture.observed).toEqual([operation]); expect(fixture.native.send).toHaveBeenCalledOnce();
+  expect(onInputMessage).toHaveBeenCalledWith(operation, provider.nativeSessionId, nativeEntryId(provider.nativeSessionId, ":user:real-native-message-id"));
   await provider.close();
 });
 
@@ -855,5 +858,24 @@ test.each(["complete", "incomplete", "wrong-request", "expired", "during-replay"
     expect(fixture.native.getEvents).not.toHaveBeenCalled();
     expect(fixture.native.rpc.eventLog.read.mock.calls.every(([input]) => input.max === 1 && input.includeEphemeral === false)).toBe(true);
     expect(fixture.states.at(-1)?.activity).toBe(unavailable ? "working" : "idle");
+  } finally { await provider.close(); }
+});
+
+
+test("Copilot associates the receipt identity after an earlier message event without matching equal text", async () => {
+  const associated: unknown[][] = [], onInputMessage = (...values: unknown[]) => { associated.push(values); };
+  const provider = await openCopilotProvider({ ...fixture.options, onInputMessage });
+  const operationId = randomUUID(), nativeMessage = event("user.message", { content: "same input" });
+  try {
+    fixture.native.send.mockImplementation(async () => {
+      fixture.emit(nativeMessage);
+      fixture.emit(event("user.message", { content: "same input" }));
+      expect(associated).toEqual([]);
+      return nativeMessage.id;
+    });
+    await provider.send(textNativeInput("same input"), operationId, null);
+    expect(associated).toEqual([[operationId, provider.nativeSessionId, nativeEntryId(provider.nativeSessionId, `:user:${nativeMessage.id}`)]]);
+    expect(fixture.entries.filter(entry => entry.kind === "user_message")).toHaveLength(2);
+    expect(fixture.native.send).toHaveBeenCalledOnce();
   } finally { await provider.close(); }
 });

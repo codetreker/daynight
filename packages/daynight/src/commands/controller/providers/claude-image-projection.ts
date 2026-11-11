@@ -66,6 +66,7 @@ export class ClaudeProjection {
     return { index, label: "Image", native: { provider: "claude", nativeSessionId: this.sessionId, nativeMessageId, nativePartId }, payload };
   }
   dispatch(input: NativeInput, id: string): void {
+    this.options.onInputMessage?.(id, this.sessionId, nativeEntryId(this.sessionId, `${id}:0`));
     const slots: NativeImageSlot[] = [], content: Content = input.content.map((part, index) => {
       if (part.type === "text") return { type: "text", text: limited(part.text) };
       slots.push({ index, label: "Image", native: { provider: "claude", nativeSessionId: this.sessionId, nativeMessageId: id, nativePartId: `content:${index}` }, original: { imageId: part.imageId, resourceId: part.resourceId }, payload: { kind: "resource", resourceId: part.resourceId } }); return unavailable();
@@ -98,6 +99,7 @@ export class ClaudeProjection {
   message(raw: unknown, history?: { row: ClaudeTranscriptRecord; reader: ClaudeTranscriptReader; acknowledged?: Promise<void> }): void {
     const value = record(raw), message = record(value.message), type = string(value.type), uuid = string(value.uuid), id = type === "assistant" ? string(message.id) || uuid : uuid;
     if (!id) return;
+    if (type === "user" && !value.parent_tool_use_id) this.options.onInputMessage?.(id, this.sessionId, nativeEntryId(this.sessionId, `${id}:0`));
     const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : Array.isArray(message.content) ? message.content : [];
     const userContent: Content = [], userSlots: NativeImageSlot[] = [], original = type === "user" ? this.original(uuid) : null;
     for (const [index, rawPart] of parts.entries()) {

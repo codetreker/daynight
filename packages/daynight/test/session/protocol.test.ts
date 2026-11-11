@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   parseSessionCommand, parseSessionEvent, parseSessionOperation, parseSessionResource,
-  parseSessionSnapshot, assertSessionFence,
+  parseSessionSnapshot, parseTimelineEntry, assertSessionFence,
 } from "../../src/session/protocol.js";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8"));
@@ -99,4 +99,28 @@ it("preserves Copilot capability gates without assuming native steer", () => {
   expect(parseSessionSnapshot(value).identity.provider).toBe("copilot");
   expect(() => parseSessionSnapshot({ ...value, operations: { ...value.operations, canSend: true } })).toThrow();
   expect(parseSessionSnapshot({ ...value, activity: "idle", currentTurnId: null, operations: { ...value.operations, canSend: true, canCancel: false } }).operations.canSend).toBe(true);
+});
+
+
+describe("message origins", () => {
+  const entry = { entryId: "00000013-1111-4111-8111-111111111111", entrySeq: "1", revision: "1", kind: "user_message", content: [{ type: "text", text: "same input" }] };
+  it.each(["user", "daynight"])("retains explicit %s origins on input and user timeline entries", origin => {
+    const command = fixture("send-message");
+    const value = { ...command, payload: { ...(command.payload as object), origin } };
+    expect(parseSessionCommand(value)).toEqual(value);
+    expect(parseTimelineEntry({ ...entry, origin })).toEqual({ ...entry, origin });
+  });
+  it("keeps legacy omitted origins omitted", () => {
+    expect(parseTimelineEntry(entry)).toEqual(entry);
+    expect(parseSessionCommand(fixture("send-message"))).toEqual(fixture("send-message"));
+  });
+  it.each([null, undefined, "system", "", 1])("rejects invalid explicit origin %j", origin => {
+    const command = fixture("send-message");
+    expect(() => parseSessionCommand({ ...command, payload: { ...(command.payload as object), origin } })).toThrow();
+    expect(() => parseTimelineEntry({ ...entry, origin })).toThrow();
+  });
+  it("does not add origin to assistant messages or other commands", () => {
+    expect(() => parseTimelineEntry({ ...entry, kind: "assistant_message", origin: "daynight" })).toThrow();
+    expect(() => parseSessionCommand({ ...fixture("cancel"), origin: "daynight" })).toThrow();
+  });
 });

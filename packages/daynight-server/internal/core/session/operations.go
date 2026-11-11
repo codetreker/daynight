@@ -49,12 +49,22 @@ func loadOperation(ctx context.Context, tx *operationTx, session, id string) (op
 	}
 	return o, nil
 }
+
+// Missing origin and explicit user input share the historical operation digest.
+// A Daynight notification remains a distinct intent even when its text matches.
+func normalizeMessageOrigin(kind string, payload any) {
+	if fields, ok := payload.(map[string]any); kind == "send_message" && ok && fields["origin"] == "user" {
+		delete(fields, "origin")
+	}
+}
+
 func commandHash(c sp.Command) []byte {
 	if sp.ContainsImages(c.Payload) {
 		return imageCommandHash(c)
 	}
 	var payload any
 	_ = json.Unmarshal(c.Payload, &payload)
+	normalizeMessageOrigin(c.Kind, payload)
 	b := encode(sp.BindingFields(c.Fence, map[string]any{"sessionId": c.SessionID, "claimId": c.ClaimID, "executionGeneration": c.ExecutionGeneration, "operationId": c.OperationID, "kind": c.Kind, "payload": payload}))
 	h := sha256.Sum256(b)
 	return h[:]

@@ -10,12 +10,13 @@ import { fileURLToPath } from "node:url";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
 import type { ProviderEntry } from "../../../src/commands/controller/providers/types.js";
 
-const open = async (scenario: string, resumed = false, journal?: { hasTimelineEntry(id: string): boolean; projectTimeline(entry: ProviderEntry): unknown }) => {
+const open = async (scenario: string, resumed = false, journal?: { hasTimelineEntry(id: string): boolean; projectTimeline(entry: ProviderEntry): unknown; associateInputMessage(operationId: string, nativeSessionId: string, entryId: string): void }) => {
   const entries: ProviderEntry[] = [], observed: string[] = [];
   let child!: ChildProcess;
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resumed ? "native-thread" : null,
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), env: { ...process.env, CODEX_TEST_INTERRUPT: scenario },
     ...(journal ? { hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id) } : {}),
+    onInputMessage: (operationId, nativeSessionId, entryId) => journal?.associateInputMessage(operationId, nativeSessionId, entryId),
     onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onState: () => {}, onSpawn: value => { child = value; } });
   return { provider, entries, observed, child };
 };
@@ -30,7 +31,11 @@ test.each(["history-user", "history-read-failure", "ack-first"])("%s input keeps
   const filename = path.join(home, "state.sqlite"), historyEpoch = randomUUID();
   let journal = openControllerLifecycleStore(filename, ticket, { contentOwnedLocally: true });
   const stored = () => journal.readTimeline({ historyEpoch, direction: "tail", cursor: null, limit: 100 }).items;
-  const hooks = { hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id), projectTimeline: (entry: ProviderEntry) => journal.projectTimeline(entry) };
+  journal.patchSnapshot({ nativeSessionId: "native-thread" });
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  journal.prepareOperation({ operationId, kind: "send_message", payload: { content: [{ type: "text", text: "cancel" }], expectedTurnId: null, origin: "daynight" } });
+  journal.markDispatching(operationId); journal.recordOperation(operationId, "unknown");
+  const hooks = { associateInputMessage: (id: string, native: string, entry: string) => journal.associateInputMessage(id, native, entry), hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id), projectTimeline: (entry: ProviderEntry) => journal.projectTimeline(entry) };
   try {
     const live = await open(scenario, false, hooks);
     try {
@@ -45,7 +50,8 @@ test.each(["history-user", "history-read-failure", "ack-first"])("%s input keeps
     await restored.provider.close();
     const users = stored().filter(entry => entry.kind === "user_message");
     expect(users).toHaveLength(1);
-    expect(users[0]).toMatchObject({ entryId: originalUser.entryId, entrySeq: originalUser.entrySeq, content: [{ type: "text", text: "cancel" }] });
+    expect(users[0]).toMatchObject({ origin: "daynight", entryId: originalUser.entryId, entrySeq: originalUser.entrySeq, content: [{ type: "text", text: "cancel" }] });
     expect(markers(stored())).toHaveLength(1);
+    expect(journal.getOperation(operationId)?.state).toBe("unknown");
   } finally { journal.close(); await rm(home, { recursive: true, force: true }); }
 });

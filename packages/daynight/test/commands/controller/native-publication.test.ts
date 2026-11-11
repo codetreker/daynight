@@ -17,7 +17,7 @@ import type { SessionCommand, SessionResource } from "../../../src/session/proto
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
-const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question") => {
+const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCount = 1, text = "question", origin?: "user" | "daynight") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/native-publication-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: root, nativeHome: path.join(root, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -29,7 +29,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
   const resource: SessionResource = { resourceId, revision: "1", status: "available", name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256, width: 1, height: 1, frameCount: 1, error: null, ...resourceMetadata };
   journal.saveResource(resource, bytes);
   const images = Array.from({ length: imageCount }, (_, index) => ({ type: "image" as const, imageId: index === 0 ? imageId : randomUUID(), uploadId: randomUUID(), resourceId, byteLength: String(bytes.length), sha256 }));
-  const payload = { content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
+  const payload = { ...(origin ? { origin } : {}), content: [{ type: "text" as const, text }, ...images], expectedTurnId: null, target: { serverOrigin: ticket.serverOrigin, actorUserId: ticket.userId, fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: nativeSessionId }, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
   const command: SessionCommand = { protocol: "daynight.session.v1", contentRevision: 2, requestId: randomUUID(), operationId, sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: "1", kind: "send_message", payload };
   journal.prepareOperation({ operationId, kind: "send_message", payload, intent: command }); journal.markDispatching(operationId);
   const entryId = nativeEntryId(nativeSessionId, `:user:${nativeMessageId}`);
@@ -51,7 +51,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
 };
 
 test.each([false, true])("Markdown preserves atomic native publication positions and recovers a later committed patch (parse failure=%s)", async failParse => {
-  const f = await fixture({}, 1, "![a](one.png)"), errors: Error[] = [], sources = new Map<string, ImageOccurrence>();
+  const f = await fixture({}, 1, "![a](one.png)", "daynight"), errors: Error[] = [], sources = new Map<string, ImageOccurrence>();
   const captures = { contextKey: () => "trusted", contextFor: () => ({}), get: (id: string) => sources.get(id), enqueue: (occurrence: ImageOccurrence) => { sources.set(occurrence.imageId, occurrence); } };
   const projector = failParse ? createMarkdownImageProjector({ parse: async () => { throw new Error("Controlled parse failure"); } }) : createMarkdownImageProjector();
   let journal = f.journal;
@@ -76,6 +76,7 @@ test.each([false, true])("Markdown preserves atomic native publication positions
     const current = journal.queryNativeInputAssociation(f.request.identity);
     expect(current.state).toBe("committed"); if (current.state !== "committed") return;
     expect(current.receipt).toEqual(published.receipt); expect(current.view.entry.content[1]).toEqual(saved);
+    expect(current.view.entry).toMatchObject({ origin: "daynight" });
     expect(current.view.entry.content[published.receipt.originalSlots[0]!.index]).toMatchObject({ imageId: f.imageId, resourceId: f.resourceId });
     const sequence = journal.getLastSourceSequence(); expect(journal.publishNativeInputAssociation(f.request)).toEqual(current); expect(journal.getLastSourceSequence()).toBe(sequence);
     expect(errors).toEqual([]);

@@ -175,3 +175,29 @@ it("uses the same serialized byte boundary for ticket writes and reads", async (
   await writeFile(file, JSON.stringify({ ...tooLarge, launchId: exact.launchId }) + "\n");
   await expect(readLaunchTicket(home, exact.launchId)).rejects.toThrow(/private regular file/);
 });
+
+
+it("binds provenance to dispatched operations without converting unknown delivery into success", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "origins.sqlite"), ticket, { database, contentOwnedLocally: true });
+  const operationId = randomUUID(), entryId = randomUUID(), nativeSessionId = "native-source";
+  const payload = { content: [{ type: "text", text: "same input" }], expectedTurnId: null };
+  try {
+    store.patchSnapshot({ nativeSessionId });
+    const user = store.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload });
+    expect(store.prepareOperation({ operationId: user.operationId, kind: "send_message", payload: { ...payload, origin: "user" } })).toEqual(user);
+    expect(() => store.prepareOperation({ operationId: user.operationId, kind: "send_message", payload: { ...payload, origin: "daynight" } })).toThrow(/different content/);
+    store.prepareOperation({ operationId, kind: "send_message", payload: { ...payload, origin: "daynight" } });
+    expect(() => store.associateInputMessage(operationId, nativeSessionId, entryId)).toThrow(/dispatched/);
+    store.markDispatching(operationId); store.recordOperation(operationId, "unknown");
+    store.associateInputMessage(operationId, nativeSessionId, entryId);
+    store.projectTimeline({ entryId, kind: "user_message", revision: "1", content: [{ type: "text", text: "retained input" }] });
+    expect(store.getTimelineEntry(entryId)).toMatchObject({ origin: "daynight" });
+    expect(store.getOperation(operationId)?.state).toBe("unknown");
+    expect(() => store.projectTimeline({ entryId, kind: "user_message", origin: "user", revision: "1", content: [] })).toThrow(/origin/);
+    const conflictingOperation = randomUUID();
+    store.prepareOperation({ operationId: conflictingOperation, kind: "send_message", payload: { ...payload, origin: "daynight" } });
+    store.markDispatching(conflictingOperation);
+    expect(() => store.associateInputMessage(conflictingOperation, nativeSessionId, entryId)).toThrow(/conflicts/);
+  } finally { store.close(); }
+});

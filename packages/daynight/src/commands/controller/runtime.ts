@@ -414,6 +414,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         reserveIndex: additional => journal.media().reserveNativeIndex(additional),
         acquireIndexReservation: (additional, owner) => journal.acquireNativeIndexReservation(additional, owner),
       },
+      onInputMessage: (operationId, nativeSessionId, entryId) => nativeEvent(() => { journal.associateInputMessage(operationId, nativeSessionId, entryId); }),
       onInputObserved: observation => {
         let accepted = false;
         nativeEvent(() => {

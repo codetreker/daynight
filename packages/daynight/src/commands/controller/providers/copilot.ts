@@ -304,6 +304,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
         return native!.send({ prompt: text, ...(displayPrompt ? { displayPrompt } : {}), mode: "immediate" });
       }).then(messageId => {
         if (typeof messageId !== "string" || !messageId) throw new Error("Copilot returned no native message identity; input result is unknown.");
+        if (!closed && !disconnected) options.onInputMessage?.(operationId, nativeId, nativeEntryId(nativeId, `:user:${messageId}`));
         if (inputImages.length) {
           if (closed || disconnected) throw new Error("Copilot image receipt arrived after runtime ownership was lost; outcome is unknown.");
           images.accepted(imageInputs.accept(operationId, messageId)); if (activity === "idle") imageInputs.finishTurn(); state();
