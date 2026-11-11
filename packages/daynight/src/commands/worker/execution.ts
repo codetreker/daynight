@@ -7,7 +7,7 @@ import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
-import { appendWorkerPrompts, workerPingPrompt } from "./prompts.js";
+import { appendWorkerPrompts, workerContinuationPrompt, workerPingPrompt } from "./prompts.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
 import { PromptInputLimitError } from "./prompt-input-limit.js";
 import { validateHerdrPromptInput } from "./herdr/rpc.js";
@@ -318,7 +318,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
           ...(deps.herdr.lifecycle === undefined ? {} : { preparePrompt: (recovery: boolean) => {
-            return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? "Continue the original assigned task under its existing authorization." : deps.buildPrompt(assignment, deps.platform));
+            return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? workerContinuationPrompt(task!) : deps.buildPrompt(assignment, deps.platform));
           }, ...(deps.preparePromptSource === undefined ? {} : { preparePromptSource: (operation: Operation) => prepareSource(task!, operation.signal) }),
           onPromptPrepared: (prepared: string, recovery: boolean) => { pendingInput.set(identity, { binding, prompt: prepared, continuation: recovery }); observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false); } }),
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),
