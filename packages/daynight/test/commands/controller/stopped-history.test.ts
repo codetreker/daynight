@@ -17,7 +17,7 @@ const fixture = async (count = 3, text = "durable", floor = false) => {
   const journalPath = path.join(home, "journal.sqlite"), store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, ...(floor ? { maxOutboxBytes: 256 } : {}) });
   for (let i = 0; i < count; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
   store.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }); store.markDispatching(ticket.initialOperationId); store.recordOperation(ticket.initialOperationId, "unknown");
-  store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true }); store.close();
+  store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) } }); store.close();
   const read = () => { const db = new Database(journalPath, { readonly: true }); try { return { state: db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence,last_acknowledged,source_floor FROM execution").get(), operation: db.prepare("SELECT value FROM operations").get(), outbox: db.prepare("SELECT count(*) AS total FROM outbox").get(), batch: db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_tail'").get() }; } finally { db.close(); } };
   return { journalPath, ticket, read };
 };
@@ -69,12 +69,27 @@ test("an active generation is rejected before transport", async () => {
   const send = vi.fn(); await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow("original stopped"); expect(send).not.toHaveBeenCalled();
 });
 
+test.each(["win32", "linux"] as const)("%s rejects unidentifiable legacy stopped history before archive or replay", async readerPlatform => {
+  const f = await fixture(), db = new Database(f.journalPath);
+  try { db.exec("UPDATE execution SET snapshot=json_set(snapshot,'$.controllerProcess',json('null'))"); }
+  finally { db.close(); }
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!, send = vi.fn();
+  Object.defineProperty(process, "platform", { ...platform, value: readerPlatform });
+  try {
+    await expect(probeStoppedControllerArchive(f)).rejects.toThrow(/Windows.*receipt/);
+    await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow(/Windows.*receipt/);
+    expect(send).not.toHaveBeenCalled();
+    expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
+  } finally { Object.defineProperty(process, "platform", platform); }
+});
+
 test("Windows history and archive require the matching original Job receipt regardless of reader platform", async () => {
   const f = await fixture();
   const controller = { pid: 123, parentPid: 1, processGroupId: null, startedAt: "2026-01-01T00:00:00.0000000Z", commandHash: "a".repeat(64) };
   const guardian = { ...controller, pid: 124, parentPid: controller.pid, commandHash: "b".repeat(64) };
-  const store = openControllerLifecycleStore(f.journalPath, f.ticket);
-  store.patchSnapshot({ controllerProcess: controller }); store.close();
+  const original = new Database(f.journalPath);
+  try { original.prepare("UPDATE execution SET snapshot=json_set(snapshot,'$.controllerProcess',json(?))").run(JSON.stringify(controller)); }
+  finally { original.close(); }
   const send = vi.fn(async (batch: StoppedSourceTail) => acknowledged(batch));
   await expect(probeStoppedControllerArchive(f)).rejects.toThrow(/Windows.*receipt/);
   await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow(/Windows.*receipt/);

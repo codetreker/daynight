@@ -16,9 +16,11 @@ export const assertStoppedWindowsJobEvidence = (db: Database.Database, ticket: C
   const version = Number(db.pragma("user_version", { simple: true }));
   const row = version >= 9 ? db.prepare("SELECT source,receipt FROM windows_job_evidence WHERE launch_id=?").get(ticket.launchId) as { source: string; receipt: string | null } | undefined : undefined;
   const proof = snapshot.controllerProcess;
-  const requiresReceipt = row !== undefined || proof != null && (proof.processGroupId === null || proof.jobObjectName !== undefined);
+  const posixProof = proof != null && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.processGroupId === proof.pid
+    && typeof proof.startedAt === "string" && proof.startedAt.length > 0 && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && proof.jobObjectName === undefined;
+  const requiresReceipt = row !== undefined || !posixProof;
   if (!requiresReceipt) return;
-  if (!row || row.receipt === null) throw new Error("Windows stopped history requires the original Job stop receipt.");
+  if (!row || row.receipt === null) throw new Error("Stopped history requires original POSIX provenance or a Windows Job stop receipt.");
   const source = parseWindowsJobSource(JSON.parse(row.source), ticket);
   const receipt = parseWindowsJobReceipt(JSON.parse(row.receipt), ticket);
   if (source.phase !== "assigned" || controllerPayloadHash(source) !== controllerPayloadHash(receipt.source) || controllerPayloadHash(snapshot) !== controllerPayloadHash(receipt.snapshot)) throw new Error("Windows Job stop receipt conflicts with the original stopped generation.");

@@ -67,7 +67,7 @@ test("v8 legacy stopped state remains readable without inventing a source or rec
   expect(() => commitWindowsJobStop(oldFile, f.ticket, readControllerSnapshot(oldFile)!, f.assigned)).toThrow();
   const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+  if (process.platform !== "win32") Object.defineProperty(process, "platform", { ...platform, value: "linux" });
   try { expect(() => openControllerLifecycleStore(oldFile, next, { previousWindowsTicket: f.ticket })).toThrow("Job stop receipt"); }
   finally { Object.defineProperty(process, "platform", platform); }
   expect(readControllerSnapshot(oldFile)).toEqual(legacy);
@@ -163,14 +163,14 @@ test("receipt readback rejects changes to the persisted process list or current 
   expect(() => readWindowsJobReceipt(f.file, f.ticket)).toThrow();
 });
 
-test("Windows provenance requires the original receipt even when the next generation runs on Linux", async () => {
+test("Windows provenance requires the original receipt across generation recovery", async () => {
   const f = await fixture(), nativeSessionId = randomUUID();
   f.store.patchSnapshot({ nativeSessionId });
   prepareWindowsJobSource(f.file, f.ticket, f.prepared); assignWindowsJobSource(f.file, f.ticket, f.prepared, f.assigned); f.store.patchSnapshot({ nativeProcesses: [f.native] }); f.store.close();
   const stopped = commitWindowsJobStop(f.file, f.ticket, readControllerSnapshot(f.file)!, f.assigned);
   const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+  if (process.platform !== "win32") Object.defineProperty(process, "platform", { ...platform, value: "linux" });
   let nextStore: ReturnType<typeof openControllerLifecycleStore>;
   try {
     expect(() => openControllerLifecycleStore(f.file, next)).toThrow("original ticket");

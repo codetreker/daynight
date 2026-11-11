@@ -1,3 +1,4 @@
+import { prepareFixtureWindowsJob, stopFixtureGeneration } from "../helpers/controller-windows-job.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -32,12 +33,12 @@ describe("relay transport persistence", () => {
       };
       const filename = path.join(home, "state.sqlite");
       journal = openControllerLifecycleStore(filename, original);
+      const source = prepareFixtureWindowsJob(journal, original);
       const operation = journal.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload: { text: "Do not replay" } });
       const nativeSessionId = randomUUID();
-      journal.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, nativeSessionId });
-      journal.close(); journal = undefined;
+      stopFixtureGeneration(journal, filename, original, nativeSessionId, source); journal = undefined;
       const ticket = { ...original, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
-      journal = openControllerLifecycleStore(filename, ticket);
+      journal = openControllerLifecycleStore(filename, ticket, source === null ? {} : { previousWindowsTicket: original });
       await writeFile(ticket.credentialFile, JSON.stringify({ token: "local-test-grant", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
       const fixture = JSON.parse(await readFile(new URL("./fixtures/snapshot.json", import.meta.url), "utf8"));
       const snapshot = { ...fixture, sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: "2", connectionEpoch: "1", identity: { ...fixture.identity, projectId: ticket.projectId, taskId: ticket.taskId, workerId: ticket.workerId, worktreeId: ticket.worktreeId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, nativeSessionId } };

@@ -14,14 +14,15 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 const roots: string[] = [], readers: Database.Database[] = [];
 const pending = (file: string, sessionId: string) => { const db = new Database(file, { readonly: true }); readers.push(db); return openPendingContent(file, sessionId, db); };
 afterEach(async () => { vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const fixture = async () => {
+const posixProof = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
+const fixture = async (withProcessProof = true) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const journalPath = path.join(home, "journal.sqlite");
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
-  store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true }); store.close();
+  store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, ...(withProcessProof ? { controllerProcess: posixProof } : {}) }); store.close();
   return { home, ticket, journalPath, entry, sourceThrough };
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
@@ -198,7 +199,7 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
 test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {
-  const f = await fixture();
+  const f = await fixture(false);
   let store = openControllerLifecycleStore(f.journalPath, f.ticket, { maxOutboxBytes: 256 });
   const next = { ...f.entry, content: [{ type: "text" as const, text: "x".repeat(1000) }] };
   expect(() => store.projectTimeline(next)).toThrow("capacity");
@@ -211,28 +212,28 @@ test("an outbox rollback preserves the committed timeline in memory and after re
 });
 
 test("a delivered relay gap remains a permanent incomplete-archive marker", async () => {
-  const f = await fixture(); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const f = await fixture(false); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   store.markProjectionGap("A native event could not be captured.");
-  expect(store.drainProjectionGap()).not.toBeNull(); store.close();
+  expect(store.drainProjectionGap()).not.toBeNull(); store.patchSnapshot({ controllerProcess: posixProof }); store.close();
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("unresolved projection gap");
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("archive migrates an original resource into the common blob model and rejects a mismatching receipt",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture(false),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  const bytes=Buffer.from("binary artifact"),resource={resourceId:randomUUID(),name:"output.txt",status:"available" as const,mediaType:"text/plain",byteLength:String(bytes.length),sha256:createHash("sha256").update(bytes).digest("hex"),error:null};
- store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.close();
+ store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.patchSnapshot({controllerProcess:posixProof});store.close();
  const bodies:string[]=[];const receiver=archiveTestReceiver({bodies,sourceThrough:through,onManifest:body=>Response.json({archive:{state:"ready",schemaVersion:3,completeness:"complete",sha256:"0".repeat(64),byteLength:String(Buffer.byteLength(body)),errorCode:null}})});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("matching integrity");
  const manifest=JSON.parse(bodies[0]!);expect(manifest.resources[0].resource).toEqual(resource);expect(manifest.resources[0].blobId).toBeTypeOf("string");expect(manifest.resources[0]).not.toHaveProperty("data");expect(receiver.files.get(manifest.resources[0].blobId)?.equals(bytes)).toBe(true);
  expect(pending(f.journalPath,f.ticket.sessionId).resources.get(resource.resourceId)?.data).toBeNull();
 });
 test("stopped archival retains and retries an available zero-byte legacy resource", async () => {
-  const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const f = await fixture(false), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const bytes = Buffer.alloc(0), resource = { resourceId: randomUUID(), name: "empty.txt", status: "available" as const, mediaType: "text/plain", byteLength: "0", sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
   store.saveResource(resource, bytes);
   store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "empty original" }] });
-  const sourceThrough = store.getLastSourceSequence(); store.close();
+  const sourceThrough = store.getLastSourceSequence(); store.patchSnapshot({ controllerProcess: posixProof }); store.close();
   const bodies: string[] = [], offsets: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough });
   const request: typeof fetch = async (input, init) => {
@@ -251,13 +252,13 @@ test("stopped archival retains and retries an available zero-byte legacy resourc
   expect(bodies).toHaveLength(1);
 });
 test("an available resource cannot be published without retained original bytes",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture(false),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  try { expect(()=>store.saveResource({resourceId:randomUUID(),name:"missing.txt",status:"available",mediaType:"text/plain",byteLength:"1",sha256:"0".repeat(64),error:null})).toThrow("incomplete"); }finally{store.close()}
 });
 
 // A long conversation must not rewrite a growing timeline manifest on every insert.
 test("timeline growth keeps file inventory writes bounded while SQL detects deleted entries", async () => {
-  const f = await fixture();
+  const f = await fixture(false);
   const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const inventory = `${f.journalPath}.pending-content/index.json`;
   const before = await stat(inventory);

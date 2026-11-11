@@ -1,3 +1,4 @@
+import { prepareFixtureWindowsJob, stopFixtureGeneration } from "../../helpers/controller-windows-job.js";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -51,33 +52,37 @@ it("lists durable operations and refuses to reopen an unproven native generation
   store.patchSnapshot({ controllerProcess: { pid: 987654, parentPid: 1, processGroupId: 987654, startedAt: "original", commandHash: "hash" } });
   store.close(); expect(() => openControllerLifecycleStore(filename, ticket)).toThrow(/generation/);
 });
-it("retains an overflow gap outside the outbox across generations and emits it once after ACK",async()=>{
+it.each(["host", "guarded"] as const)("retains an overflow gap across generations and emits it once after ACK (%s)",async mode=>{
  const {home,ticket}=await fixture();const file=path.join(home,"state.sqlite");let store=openControllerLifecycleStore(file,ticket,{maxOutboxBytes:512});
+ const source = prepareFixtureWindowsJob(store, ticket, mode === "guarded" || process.platform === "win32");
  store.appendEvent({text:"a".repeat(470)});
  expect(()=>store.appendEvent({text:"lost native output".repeat(30)})).toThrow(/capacity/);
  store.markProjectionGap("Native projection overflow requires history reload.");
  expect(store.drainProjectionGap()).toBeNull();expect(store.pendingEvents()).toHaveLength(1);
- const nativeId=randomUUID();store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
+ const nativeId=randomUUID();stopFixtureGeneration(store,file,ticket,nativeId,source);
  const resumed={...ticket,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"2",resumeNativeSessionId:nativeId};
- store=openControllerLifecycleStore(file,resumed,{maxOutboxBytes:512});
+ store=openControllerLifecycleStore(file,resumed,{maxOutboxBytes:512,...(source === null ? {} : { previousWindowsTicket: ticket })});
  expect(store.drainProjectionGap()).toBeNull();store.acknowledgeEvents("1");
  expect(store.drainProjectionGap()).toMatchObject({sequence:"2",payload:{kind:"gap",payload:{reason:"Native projection overflow requires history reload."}}});
  expect(store.drainProjectionGap()).toBeNull();store.close();store=openControllerLifecycleStore(file,resumed,{maxOutboxBytes:512});
  expect(store.pendingEvents()).toHaveLength(1);expect(store.drainProjectionGap()).toBeNull();store.close();
 });
-it("seeds control revisions above retained outbox and snapshot revisions across native recovery", async () => {
+it.each(["host", "guarded"] as const)("seeds control revisions across native recovery (%s)", async mode => {
   const {home,ticket}=await fixture(); const file=path.join(home,"state.sqlite"); let store=openControllerLifecycleStore(file,ticket);
+  const useWindows = mode === "guarded" || process.platform === "win32";
+  const source = prepareFixtureWindowsJob(store, ticket, useWindows);
   const controls={revision:"9007199254740993",settings:[],commands:[],settingsError:null,commandsError:null};
   store.patchSnapshot({controls});
   store.appendEvent({kind:"state",payload:{controls:{...controls,revision:"9007199254740995"}}});
-  const nativeId=randomUUID();store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
+  const nativeId=randomUUID();stopFixtureGeneration(store,file,ticket,nativeId,source);
   const resumed={...ticket,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"2",resumeNativeSessionId:nativeId};
-  store=openControllerLifecycleStore(file,resumed);
+  store=openControllerLifecycleStore(file,resumed,source === null ? {} : { previousWindowsTicket: ticket });
+  const resumedSource = prepareFixtureWindowsJob(store, resumed, useWindows);
   expect(store.getSnapshot().controls).toBeUndefined();
   expect(store.getSnapshot().controlsRevisionFloor).toBe("9007199254740995");
   expect(store.pendingEvents()).toHaveLength(1);
-  store.acknowledgeEvents("1");store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
-  store=openControllerLifecycleStore(file,{...resumed,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"3"});
+  store.acknowledgeEvents("1");stopFixtureGeneration(store,file,resumed,nativeId,resumedSource);
+  store=openControllerLifecycleStore(file,{...resumed,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"3"},resumedSource === null ? {} : { previousWindowsTicket: resumed });
   expect(store.getSnapshot().controlsRevisionFloor).toBe("9007199254740995");store.close();
 });
 
@@ -120,17 +125,19 @@ it.each(["task", "test"])("preserves the original %s ticket bytes and journal ha
   finally { reopened.close(); }
 });
 
-it("carries persisted role instructions through stopped generations without replaying unknown user input", async () => {
+it.each(["host", "guarded"] as const)("carries role instructions through stopped generations without replaying unknown user input (%s)", async mode => {
   const { home, ticket: task } = await fixture();
   const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
   let ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", instructions: "固定角色\nUse the CLI. 😀" };
   const nativeSessionId = randomUUID(), journal = path.join(home, "role.sqlite"), operationId = randomUUID();
+  let previousWindowsTicket: ControllerLaunchTicket | undefined;
   for (const generation of ["1", "2", "3"]) {
     await writeLaunchTicket(home, ticket);
     const persisted = await readLaunchTicket(home, ticket.launchId);
     expect(() => validateControllerLocalRequest({ requestId: randomUUID(), executionId: persisted.executionId, testExecutionId: persisted.testExecutionId, executionGeneration: persisted.executionGeneration, controllerInstanceId: persisted.controllerInstanceId, secret: persisted.ipcSecret, action: { kind: "submit_initial", operationId: persisted.initialOperationId } }, persisted)).toThrow(/initial operation/);
     expect(persisted.instructions).toBe("固定角色\nUse the CLI. 😀");
-    const store = openControllerLifecycleStore(journal, persisted);
+    const store = openControllerLifecycleStore(journal, persisted, previousWindowsTicket === undefined ? {} : { previousWindowsTicket });
+    const source = prepareFixtureWindowsJob(store, persisted, mode === "guarded" || process.platform === "win32");
     try {
       expect(store.getSnapshot()).toMatchObject({ executionGeneration: generation, initialInputState: "not_required" });
       if (generation === "1") {
@@ -142,7 +149,8 @@ it("carries persisted role instructions through stopped generations without repl
         expect(store.listOperations()).toMatchObject([{ operationId, state: "unknown" }]);
         expect(() => store.markDispatching(operationId)).toThrow(/replay/);
       }
-      store.patchSnapshot({ nativeSessionId, lifecycle: "stopped", nativeStopped: true });
+      stopFixtureGeneration(store, journal, persisted, nativeSessionId, source);
+      previousWindowsTicket = source === null ? undefined : persisted;
     } finally { store.close(); }
     ticket = { ...persisted, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: String(Number(generation) + 1), resumeNativeSessionId: nativeSessionId };
   }

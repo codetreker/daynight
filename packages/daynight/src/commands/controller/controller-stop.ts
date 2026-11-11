@@ -78,10 +78,12 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
   }
   let closed = false;
   const check = () => { if (closed) throw new Error("The original Controller stop operation is closed."); };
+  const checkNativePrefix = (snapshot: ControllerSnapshot): void => {
+    if (current.nativeProcesses.length > snapshot.nativeProcesses.length || !current.nativeProcesses.every((proof, index) => isDeepStrictEqual(proof, snapshot.nativeProcesses[index]))) throw new ControllerStopIdentityError("The original Windows native process evidence changed during stop observation.");
+  };
   const confirm = async (): Promise<boolean> => {
     check();
-    const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller);
-    if (current.nativeProcesses.length > snapshot.nativeProcesses.length || !current.nativeProcesses.every((proof, index) => isDeepStrictEqual(proof, snapshot.nativeProcesses[index]))) throw new ControllerStopIdentityError("The original Windows native process evidence changed during stop observation.");
+    const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
     if (receipt !== null) return isDeepStrictEqual(snapshot, receipt.snapshot);
     return held?.lease !== undefined && empty(held.lease) && await allStopped(snapshot, source);
   };
@@ -102,7 +104,7 @@ export const openControllerStop = async (input: { journalPath: string; ticket: C
     try {
       if (receipt !== null) { if (!await confirm()) throw new ControllerStopIdentityError("The original stopped generation no longer matches its receipt."); hooks?.onVerified(); return receipt.snapshot; }
       if (!held?.lease || !await confirm()) throw new Error("The original Windows Job stop remains unconfirmed.");
-      const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller);
+      const snapshot = snapshotFor(file, ticket); sameOriginal(snapshot, source, controller); checkNativePrefix(snapshot);
       if (!empty(held.lease) || !await allStopped(snapshot, source)) throw new Error("The original Windows Job changed before its stop receipt.");
       // Notification and the synchronous CAS share one turn: a source conflict
       // can revoke the notice before the coordinator acts on its wake.

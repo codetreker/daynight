@@ -21,7 +21,7 @@ const fixture = async (version: 1 | 2 | 3 | 4 | 5) => {
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "legacy-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
-  const snapshot: ControllerSnapshot = { executionId: ticket.executionId, claimId: ticket.claimId, sessionId: ticket.sessionId, executionGeneration: "1", controllerInstanceId: ticket.controllerInstanceId, lifecycle: "stopped", nativeSessionId: randomUUID(), initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
+  const snapshot: ControllerSnapshot = { executionId: ticket.executionId, claimId: ticket.claimId, sessionId: ticket.sessionId, executionGeneration: "1", controllerInstanceId: ticket.controllerInstanceId, lifecycle: "stopped", nativeSessionId: randomUUID(), initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) }, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
   const entry = { entryId: randomUUID(), revision: "3", kind: "assistant_message", content: [{ type: "text", text: "original legacy answer" }] };
   const operation = { executionGeneration: "1", operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt }, payloadHash: "original-hash", state: "confirmed", result: { completed: true }, error: null, createdAt: 1, updatedAt: 2 };
   const journalPath = path.join(home, "journal.sqlite"), db = new Database(journalPath);
@@ -57,7 +57,11 @@ const committedLegacySource = async (upgraded = false) => {
   inspect(f.journalPath, db => db.prepare("INSERT INTO resources VALUES(?,?,?)").run(resourceId, JSON.stringify(resource), bytes));
   const source = JSON.stringify(parseSessionArchive({ schemaVersion: 1, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, executionGeneration: f.ticket.executionGeneration, controllerId: f.ticket.controllerId, controllerInstanceId: f.ticket.controllerInstanceId, provider: f.ticket.provider, nativeSessionId: f.snapshot.nativeSessionId, entries: [{ ...f.entry, entrySeq: "1" }], resources: [{ resource, data: bytes.toString("base64") }] }));
   const current = { state: "ready", schemaVersion: 3, completeness: "complete", sha256: "2".repeat(64), byteLength: "96", errorCode: null, migration: { migrationId: randomUUID(), sourceSha256: createHash("sha256").update(source).digest("hex"), sourceByteLength: String(Buffer.byteLength(source)) } };
-  if (upgraded) openControllerLifecycleStore(f.journalPath, f.ticket).close();
+  if (upgraded) {
+    inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...f.snapshot, controllerProcess: null })));
+    openControllerLifecycleStore(f.journalPath, f.ticket).close();
+    inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(f.snapshot)));
+  }
   return { ...f, current };
 };
 
@@ -281,9 +285,11 @@ test.each([1, 999] as const)("rejects archive journal version %i without changin
 
 test.each([1, 2, 3, 4, 5] as const)("normal lifecycle opening retains v%i upgrade and writer-lease behavior", async version => {
   const f = await fixture(version);
+  const writableSnapshot = { ...f.snapshot, controllerProcess: null };
+  inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(writableSnapshot)));
   const store = openControllerLifecycleStore(f.journalPath, f.ticket);
   try {
-    expect(store.getSnapshot()).toEqual(f.snapshot);
+    expect(store.getSnapshot()).toEqual(writableSnapshot);
     expect(store.getOperation(f.operation.operationId)).toEqual(f.operation);
     expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("writer is still running");
     expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
@@ -296,6 +302,7 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
   if (entrypoint === "snapshot") expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   else if (entrypoint === "operation") expect(readControllerOperation(f.journalPath, f.operation.operationId)).toEqual(f.operation);
   else if (entrypoint === "writer") {
+    inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...f.snapshot, controllerProcess: null })));
     const store = openControllerLifecycleStore(f.journalPath, f.ticket);
     // Delivery may drain the old outbox without supplying a complete local history.
     store.acknowledgeEvents("9");

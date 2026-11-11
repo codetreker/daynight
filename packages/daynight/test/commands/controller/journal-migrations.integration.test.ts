@@ -1,3 +1,4 @@
+import { prepareFixtureWindowsJob } from "../../helpers/controller-windows-job.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
@@ -5,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { commitWindowsJobStop, openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
@@ -162,12 +163,24 @@ test("missing and invalid journal paths preserve their distinct read contracts",
   expect(() => readControllerSnapshot(bad)).toThrow();
 });
 
-test("stopped-generation writing rejects a format change during asynchronous process proof", async () => {
+test.skipIf(process.platform === "win32")("stopped-generation writing rejects a format change during asynchronous process proof", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
   store.patchSnapshot({ controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }); store.close();
   proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma(`user_version=${journalVersion + 1}`); changed.close(); return true; });
   await expect(recordStoppedControllerGeneration(f.file, f.ticket)).rejects.toThrow("unsupported-version");
   const db = new Database(f.file); try { expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot).nativeStopped).toBe(false); } finally { db.close(); }
+});
+
+test("guarded Windows stop rejects a format change after observing its original source", async () => {
+  const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+  const source = prepareFixtureWindowsJob(store, f.ticket, true)!;
+  store.close();
+  const observed = readControllerSnapshot(f.file)!;
+  const db = new Database(f.file); db.pragma(`user_version=${journalVersion + 1}`); db.close();
+  expect(() => commitWindowsJobStop(f.file, f.ticket, observed, source)).toThrow("unsupported-version");
+  const check = new Database(f.file);
+  try { expect(JSON.parse((check.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot).nativeStopped).toBe(false); }
+  finally { check.close(); }
 });
 
 test("journal.close refuses stale-version SQL while still closing its handle", async () => {

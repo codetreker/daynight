@@ -230,6 +230,20 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  if (process.platform === "win32") {
+    // This fixture controls the original stop result; native Job ownership has
+    // separate OS-backed tests. Retain the real coordinator and Web backend.
+    const openOriginal = controllerStop.openControllerStop;
+    vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async input => {
+      if (input.ticket.launchId !== ticket.launchId) return openOriginal(input);
+      return {
+        confirm: () => processProof.confirmControllerProcessesStopped(input.controller, input.native),
+        stop: deadline => processProof.stopControllerProcesses(input.controller, input.native, deadline),
+        commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(input.journalPath, input.ticket); },
+        close: async () => {},
+      };
+    });
+  }
   return { task, ticket, snapshot, request: vi.fn<typeof requestController>().mockRejectedValue(new Error("Original controller is stopped.")) };
 };
 

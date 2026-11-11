@@ -2,10 +2,10 @@ import { createOperation } from "../../../src/api/operation.js";
 import { ExecutionSourceConflictError, type CleanupRequest } from "../../../src/commands/worker/execution-stop.js";
 import { performance } from "node:perf_hooks";
 import { CLEANUP_OPERATION_MS } from "../../../src/commands/cleanup-operation.js";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { createWorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
@@ -15,6 +15,7 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
+import * as webStop from "../../../src/commands/worker/backends/web-stop.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
@@ -25,6 +26,27 @@ const cleanupRequest = (owner: { projectId: string; taskId: string; claimId: str
   : { kind, deadline, immediateStop: false, scope: { attempt: { attemptId: "test", owner }, onExecutionStopped: () => {} } };
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
+
+// These tests control process inspection; real Job ownership belongs to the
+// native and Web integration tests, not the synthetic process identities here.
+beforeEach(() => {
+  vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
+    confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+    stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
+    commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(journalPath, ticket); },
+    close: async () => {},
+  }));
+  if (process.platform === "win32") vi.spyOn(webStop, "previousWebTicket").mockImplementation(async (home, snapshot) => {
+    if (vi.isMockFunction(launchTickets.readLaunchTicket)) return launchTickets.readLaunchTicket(home, randomUUID());
+    const directory = path.dirname(launchTickets.controllerTicketPath(home, randomUUID()));
+    for (const name of await readdir(directory)) {
+      if (!name.endsWith(".json")) continue;
+      const ticket = await launchTickets.readLaunchTicket(home, name.slice(0, -5));
+      if (ticket.executionId === snapshot.executionId && ticket.executionGeneration === snapshot.executionGeneration && ticket.controllerInstanceId === snapshot.controllerInstanceId) return ticket;
+    }
+    throw new Error("Synthetic original launch ticket is missing.");
+  });
+});
 
 it("waits for new Web prompts and retries only after a rejected revision changes", async () => {
   const f = await fixture();
@@ -378,6 +400,7 @@ it.each([false,true])("only an orderly shutdown can resume at an exhausted recov
  const e=task.webExecution!;const stopped:ControllerSnapshot={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"stopped",nativeSessionId:nativeId,initialInputState:"confirmed",activity:"stopped",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:e.controllerProcess,nativeProcesses:[],nativeStopped:true,stoppedAt:new Date(0).toISOString(),error:null};
  vi.spyOn(lifecycle,"readControllerSnapshot").mockReturnValue(stopped);vi.spyOn(lifecycle,"recordStoppedControllerGeneration").mockResolvedValue(stopped);vi.spyOn(processProof,"confirmControllerProcessesStopped").mockResolvedValue(true);
  const launcher={prepare:vi.fn(async(task:LocalTask):Promise<ControllerLaunchTicket>=>{const e=task.webExecution!;return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:"managed",resumeNativeSessionId:nativeId,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};}),launch:vi.fn(async()=>{}),refreshGrant:vi.fn(async()=>{})};
+ const originalTicket=await launcher.prepare(task);launcher.prepare.mockClear();vi.spyOn(launchTickets,"readLaunchTicket").mockResolvedValue(originalTicket);
  const actions:string[]=[];const request:typeof requestController=async(ticket,action)=>{actions.push(action.kind);if(ticket.executionGeneration==="1")throw new Error("Original stopped controller is unreachable");return {requestId:randomUUID(),ok:true,snapshot:{...stopped,executionGeneration:ticket.executionGeneration,controllerInstanceId:ticket.controllerInstanceId,lifecycle:"ready",activity:"idle",nativeStopped:false,stoppedAt:null}};};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed",emit:()=>{},now:()=>20,request});
  if(orderly){const resumed=await backend.advance(task,new AbortController().signal);expect(resumed.webExecution?.executionGeneration).toBe("2");expect(resumed.recovery.count).toBe(2);expect(resumed.resources.nativeSession?.sessionId).toBe(nativeId);expect(actions).toEqual(["observe","observe"]);}

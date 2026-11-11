@@ -14,7 +14,7 @@ import type { WindowsJobPreparedSource } from "../../../src/commands/controller/
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-const fixture = async () => {
+const fixture = async (withNative = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-stop-order"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -23,11 +23,14 @@ const fixture = async () => {
   const assigned = { ...prepared, phase: "assigned" as const }, file = path.join(home, "journal.sqlite");
   const store = openControllerLifecycleStore(file, ticket);
   store.patchSnapshot({ controllerProcess: { ...controller, jobObjectName: `Local\\Daynight-${ticket.launchId}` } });
-  prepareWindowsJobSource(file, ticket, prepared); assignWindowsJobSource(file, ticket, prepared, assigned); store.close();
+  prepareWindowsJobSource(file, ticket, prepared); assignWindowsJobSource(file, ticket, prepared, assigned);
+  const native = { ...controller, pid: 1236, parentPid: controller.pid, commandHash: "c".repeat(64) };
+  if (withNative) store.patchSnapshot({ nativeProcesses: [native] });
+  store.close();
   const lease = { inspect: vi.fn(() => ({ sealed: true, active: 0, members: [] })), terminate: vi.fn(), seal: vi.fn(), sealAndObserveEmpty: vi.fn(() => ({ sealed: true, active: 0, members: [] })), close: vi.fn(), closeAfterCommit: vi.fn() };
   vi.spyOn(guardian, "openWindowsGuardianJob").mockResolvedValue(lease);
   vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
-  return { file, ticket, controller, lease };
+  return { file, ticket, controller, native, lease };
 };
 
 test.each(["success", "source conflict", "ordinary I/O"] as const)("stop commit settles %s before the coordinator wake", async scenario => {
@@ -71,4 +74,36 @@ test.each(["success", "source conflict", "ordinary I/O"] as const)("stop commit 
     if (moved) renameSync(`${f.file}.moved`, f.file);
     Object.defineProperty(process, "platform", platform);
   }
+});
+
+test.each(["removed", "changed"] as const)("rejects a native identity %s during asynchronous stop verification", async change => {
+  const f = await fixture(true), platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let blocked = false;
+  vi.mocked(processProof.inspectProcessProof).mockImplementation(async proof => {
+    if (proof.pid === f.native.pid && !blocked) { blocked = true; enter(); await barrier; }
+    return "stopped";
+  });
+  const verified = vi.fn(), conflict = vi.fn();
+  try {
+    const stop = await openControllerStop({ journalPath: f.file, ticket: f.ticket, controller: f.controller, native: [f.native] });
+    const result = stop.commit({ onVerified: verified, onConflict: conflict });
+    void result.catch(() => {});
+    await entered;
+    const original = readControllerSnapshot(f.file)!;
+    const altered = { ...original, nativeProcesses: change === "removed" ? [] : [{ ...f.native, commandHash: "d".repeat(64) }] };
+    const db = new Database(f.file);
+    try { db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(altered)); } finally { db.close(); }
+    release();
+    await expect(result).rejects.toThrow();
+    expect(verified).not.toHaveBeenCalled();
+    expect(conflict).toHaveBeenCalledOnce();
+    expect(isControllerStopIdentityConflict(conflict.mock.calls[0]![0])).toBe(true);
+    expect(readWindowsJobReceipt(f.file, f.ticket)).toBeNull();
+    expect(readControllerSnapshot(f.file)?.nativeProcesses).toEqual(altered.nativeProcesses);
+    await stop.close();
+  } finally { release(); Object.defineProperty(process, "platform", platform); }
 });
