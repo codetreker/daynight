@@ -135,6 +135,52 @@ func TestCASPersistenceAndTTL(t *testing.T) {
 		t.Fatalf("absent: %+v %v", got, err)
 	}
 }
+
+func TestWorktreePersistenceDigestAndTTL(t *testing.T) {
+	s, id, key := fixture(t)
+	ctx := context.Background()
+	run := uuid.NewString()
+	failure := fmt.Sprintf(`{"operationId":%q,"component":"cleanup","phase":"archive","scope":{"kind":"claim","projectId":%q,"taskId":%q,"claimId":%q},"error":{"type":"operation","code":"unknown","cause":"The operation failed; inspect local Worker diagnostics for details.","causeTruncated":false},"firstObservedAt":"2026-01-01T00:00:00Z","lastObservedAt":"2026-01-01T00:00:00Z","occurrencesInRun":1,"retryState":"none","nextAttemptAt":null,"worktree":{"kind":"project-relative","path":"../tree/<>&"}}`, run, uuid.NewString(), uuid.NewString(), uuid.NewString())
+	raw := fmt.Sprintf(`{"runId":%q,"sequence":"1","capturedAt":"2026-01-01T00:00:00Z","lifecycle":"running","scheduler":{"phase":"initializing","coverage":"unknown","cycleId":null,"lastCompletedAt":null,"lastSuccessfulAt":null,"lastOutcome":null,"nextPollAt":null},"capacity":null,"admission":{"observedAt":"2026-01-01T00:00:00Z","coverage":"unknown","reasons":[]},"reservations":[],"activities":[],"currentFailures":[%s],"lastRecovery":null,"detailCoverage":"complete","delivery":{"lastSucceededAt":null,"lastFailure":null}}`, run, failure)
+	o, err := monitoring.ParseObservation([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := monitoring.Summary(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := store.MonitoringCandidate{RunID: run, Sequence: "1", Body: body, Summary: summary}
+	first, err := s.CompareAndSet(ctx, id, nil, c)
+	if err != nil || first.Kind != store.MonitoringAccepted || first.Receipt == nil || first.Receipt.ExpiresAt.Sub(first.Receipt.ReceivedAt) != TTL {
+		t.Fatalf("write: %+v %v", first, err)
+	}
+	read, err := s.Read(ctx, id)
+	if err != nil || read.Value == nil {
+		t.Fatalf("read: %+v %v", read, err)
+	}
+	decoded, err := monitoring.ParseObservation(read.Value.Body)
+	if err != nil || decoded["currentFailures"].([]any)[0].(map[string]any)["worktree"].(map[string]any)["path"] != "../tree/<>&" || strings.Contains(string(read.Value.Summary), "worktree") {
+		t.Fatalf("readback: %s %v", read.Value.Body, err)
+	}
+	if err := s.client.PExpire(ctx, key, time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := s.CompareAndSet(ctx, id, nil, c)
+	if err != nil || duplicate.Kind != store.MonitoringDuplicate || s.client.PTTL(ctx, key).Val() > time.Minute {
+		t.Fatalf("duplicate or TTL: %+v %v", duplicate, err)
+	}
+	changed := c
+	changed.Body = []byte(strings.Replace(string(c.Body), "../tree/", "../other/", 1))
+	conflict, err := s.CompareAndSet(ctx, id, nil, changed)
+	if err != nil || conflict.Kind != store.MonitoringSampleConflict || s.client.PTTL(ctx, key).Val() > time.Minute {
+		t.Fatalf("digest conflict or TTL: %+v %v", conflict, err)
+	}
+}
 func TestCorruptFramesAndWrongTypes(t *testing.T) {
 	s, id, k := fixture(t)
 	ctx := context.Background()

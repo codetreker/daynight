@@ -8,7 +8,7 @@ When this skill and Daynight are available, use Daynight to manage concrete work
 An agent's file reads, commands, and routine checks are session steps, not separate tasks.
 
 Use the owning task for solution, architecture, and design reviews.
-Before requesting user review, save the complete current material in that task's description or attachments, read it back to confirm access, then provide the task ID or a verified URL and attachment paths.
+Before requesting user review, save the complete current material in its owning resource, read it back to confirm access, then provide the discussion Task ID, owning resource ID or verified URL, and attachment paths. For a Goal, shared requirements, architecture and whole-Goal acceptance belong to the Goal; the producing Task identifies the Goal ID and paths.
 Current material, accepted decisions, and necessary rationale follow the [task content standard](task-content.md); chat summaries and repository or PR links may supplement, but cannot replace, the material.
 Report actual failures when the CLI, service, project, or upload is unavailable.
 

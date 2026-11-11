@@ -1,4 +1,6 @@
 import { createImageCaptureSource } from "./capture-source.js";
+import { captureSourceReservations } from "./capture-reservations.js";
+export type { CaptureSourceLease } from "./capture-reservations.js";
 import { openNativeMediaSpool, type NativeMediaSpool } from "./native-spool.js";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./release-error.js";
@@ -8,18 +10,21 @@ import type Database from "better-sqlite3";
 import { constants, chmodSync, closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, linkSync, mkdirSync, openSync, readSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { IMAGE_LIMITS, canonicalImageJson, imageDecimal, imageId, parseImageReadRequest, parseImageUploadSpec, type ImageReadChunk, type ImageUploadSpec, type LocalImagePreparation, type PreparedImageChunk, type SessionInput, type ValidatedImage, parseNativeImageSource } from "../../../session/image-values.js";
+import { IMAGE_LIMITS, canonicalImageJson, imageDecimal, imageId, parseImageCaptureReceipt, parseImageReadRequest, parseImageUploadSpec, parseValidatedImage, type ImageReadChunk, type ImageUploadSpec, type LocalImagePreparation, type PreparedImageChunk, type ImageCaptureRequest, type DisplayMime, type SessionInput, type ValidatedImage, parseNativeImageSource } from "../../../session/image-values.js";
 import { parseSessionResource, sessionBinding, type SessionResource } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
 import type { PendingContent, ControlledResourceLease } from "../pending-content.js";
-import { writeDurableJson } from "../pending-content.js";
+import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { NativeInput, NativeImagePart } from "../providers/types.js";
 import { bundledImageDecoder, type ImageDecoder } from "./image-decoder.js";
 
 type Preparation = { spec: ImageUploadSpec; filename: string; receipt: LocalImagePreparation; decoding: boolean };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
-export type CaptureStageInput = { captureId: string; attemptId: string; imageId: string; inputPath: string; byteLength: string; sha256: string };
+export type CaptureStageInput = { captureId: string; attemptId: string; imageId: string; inputPath: string; byteLength: string; sha256: string; declaredMediaType?: DisplayMime | null };
+export type ControllerMediaBlockLease = { close(): void };
+export type CaptureReadPolicyLease = { verify(): void; close(): void };
+export type CaptureReadPolicy = (request: ImageCaptureRequest) => CaptureReadPolicyLease;
 export type NativeInputLease = { readonly input: NativeInput; verify(): void; retain(): void; close(): void };
 const syncDirectory = (directory: string) => { if (process.platform !== "win32") { const fd = openSync(directory, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } } };
 const checkedDirectory = (directory: string) => {
@@ -52,6 +57,13 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   const wireReservations = new Map<string, number>();
   const wireSpools = new Set<NativeMediaSpool>();
   const checkOpen = () => { if (closed) throw new Error("Controller media store is closed."); };
+  const mediaBlocks = new Set<object>();
+  const tryAcquireMediaBlock = (): ControllerMediaBlockLease | null => {
+    checkOpen();
+    if (mediaBlocks.size >= 2) return null;
+    const token = {}; mediaBlocks.add(token);
+    return { close() { mediaBlocks.delete(token); } };
+  };
   const get = (uploadId: string): Preparation => transactions.read(() => {
     imageId(uploadId);
     const row = db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(uploadId) as { value: string } | undefined;
@@ -74,19 +86,28 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   const refreshMediaBudget = (next: number) => transactions.read(() => {
     const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
     const reservations = new Map(rows.map(row => JSON.parse(row.value) as Preparation).filter(p => p.receipt.state !== "released").map(p => [path.join(root, p.filename), Number(p.spec.byteLength)]));
-    for (const capture of captureInFlight.values()) reservations.set(capture.filename, capture.byteLength);
+    for (const [filename, bytes] of sourceReservations.reservations()) reservations.set(filename, bytes);
+    for (const capture of captureInFlight.values()) reservations.set(capture.filename, Math.max(reservations.get(capture.filename) ?? 0, capture.byteLength));
     for (const [filename, bytes] of wireReservations) reservations.set(filename, bytes);
     // Unknown files retain their actual charge after interrupted preparation or
     // capture. Native names share only private immutable original inodes.
     const mediaBytes = controllerMediaDiskBytes([root, path.join(content.root, "blobs")], reservations);
     ledger.reserve(mediaBytes + next + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES);
+    const actualBytes = controllerMediaDiskBytes([root, path.join(content.root, "blobs")], new Map());
+    return Math.max(0, mediaBytes - actualBytes) + next;
   });
   const checkBudgets = (next: number) => transactions.read(() => {
     metadataBudget.assert(16384);
     const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
     if (rows.length >= 10000 || rows.reduce((sum, row) => sum + Buffer.byteLength(row.value), 0) + 16384 > 128 * 1024 * 1024) throw new Error("Image preparation metadata budget exceeded.");
-    refreshMediaBudget(next);
-    const space = statfsSync(root, { bigint: true }); if (space.bavail * space.bsize < 536_870_912n + BigInt(next)) throw new Error("Controller media storage free-space budget exceeded.");
+    const unwrittenBytes = refreshMediaBudget(next);
+    const space = statfsSync(root, { bigint: true }); if (space.bavail * space.bsize < 536_870_912n + BigInt(unwrittenBytes)) throw new Error("Controller media storage free-space budget exceeded.");
+  });
+  const sourceReservations = captureSourceReservations({ db, transactions, root, checkOpen, checkBudgets, acquireBlock: tryAcquireMediaBlock,
+    assertAttempt: (captureId, attemptId) => { captureSource.assertImageCaptureAttempt(captureId, attemptId); },
+    assertMetadata: () => { metadataBudget.assert(16384, true); }, sync: () => syncDirectory(root),
+    joinStage: async (captureId, attemptId) => { await captureInFlight.get(`${captureId}:${attemptId}`)?.promise.catch(() => {}); },
+    stageRetained: (captureId, attemptId) => transactions.read(() => !!db.prepare("SELECT 1 FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`)),
   });
   const createSpool = (maximumBytes: number): NativeMediaSpool => {
     checkOpen();
@@ -98,9 +119,9 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         const previous = wireReservations.get(filename);
         wireReservations.set(filename, bytes);
         try {
-          refreshMediaBudget(0);
+          const unwrittenBytes = refreshMediaBudget(0);
           const space = statfsSync(root, { bigint: true });
-          if (space.bavail * space.bsize < 536_870_912n + BigInt(Math.max(0, bytes - (previous ?? 0)))) throw new Error("Controller media storage free-space budget exceeded.");
+          if (space.bavail * space.bsize < 536_870_912n + BigInt(unwrittenBytes)) throw new Error("Controller media storage free-space budget exceeded.");
         } catch (error) {
           if (previous === undefined) wireReservations.delete(filename); else wireReservations.set(filename, previous);
           throw error;
@@ -243,11 +264,12 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const source = occurrence.native_source === null ? null : parseNativeImageSource(JSON.parse(occurrence.native_source));
     if (source && (source.provider !== ticket.provider || source.nativeSessionId !== snapshot().nativeSessionId)) throw new Error("Image capture native target_changed.");
     const old = transactions.read(() => db.prepare("SELECT image_id,validated FROM image_captures WHERE capture_id=?").get(captureKey) as { image_id: string; validated: string } | undefined);
-    if (old) { const result = JSON.parse(old.validated) as ValidatedImage; if (old.image_id !== input.imageId || result.sha256 !== input.sha256 || result.byteLength !== input.byteLength) throw new Error("Image capture identity conflict."); return result; }
+    if (old) { const result = JSON.parse(old.validated) as ValidatedImage; if (old.image_id !== input.imageId || result.sha256 !== input.sha256 || result.byteLength !== input.byteLength || input.declaredMediaType != null && result.mediaType !== input.declaredMediaType) throw new Error("Image capture identity conflict."); return result; }
     const pending = captureInFlight.get(captureKey); if (pending) throw new Error("Image capture is already in progress; query the original capture.");
     if (decoderCount >= 1) throw new Error("Controller image decoder capacity is unavailable.");
-    checkBudgets(Number(input.byteLength));
-    const filename = `${randomUUID()}.part`, targetPath = path.join(root, filename), controller = new AbortController(); decoderCount++;
+    const reservedStage = sourceReservations.stagePath(input.captureId, input.attemptId, input.inputPath);
+    checkBudgets(reservedStage ? 0 : Number(input.byteLength));
+    const filename = reservedStage ? path.basename(reservedStage) : `${randomUUID()}.part`, targetPath = path.join(root, filename), controller = new AbortController(); decoderCount++;
     const promise = (async () => {
       let retained = false;
       try {
@@ -261,6 +283,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         } finally { closeSync(source); }
         syncDirectory(root);
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: targetPath, expectedByteLength: input.byteLength, expectedSha256: input.sha256 }, controller.signal);
+        if (input.declaredMediaType != null && validated.mediaType !== input.declaredMediaType) throw Object.assign(new Error("Image capture format differs from the declared source type."), { code: "invalid_image" });
         if (controller.signal.aborted) throw controller.signal.reason;
         const fd = openSync(targetPath, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(targetPath, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); metadataBudget.assert(16384, true); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
@@ -269,16 +292,81 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     })();
     captureInFlight.set(captureKey, { controller, promise, filename: targetPath, byteLength: Number(input.byteLength) }); return promise;
   };
-  const readCapture = async (input: { captureId: string; attemptId: string; sha256: string; byteLength: string; offset: string; limit: number }): Promise<PreparedImageChunk> => {
+  const readCapture = async (input: { captureId: string; attemptId: string; sha256: string; byteLength: string; offset: string; limit: number }, acquirePolicy?: CaptureReadPolicy, deliver?: (chunk: PreparedImageChunk) => void): Promise<PreparedImageChunk> => {
     checkOpen(); imageId(input.captureId); imageId(input.attemptId); imageDecimal(input.offset, true);
-    captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId);
+    const request = captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId);
+    if (request.locator.kind === "local" && !acquirePolicy) throw new Error("Image local source read requires its current policy lease.");
     const captureKey = `${input.captureId}:${input.attemptId}`;
     const row = transactions.read(() => db.prepare("SELECT filename,validated FROM image_captures WHERE capture_id=?").get(captureKey) as { filename: string; validated: string } | undefined);
     if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename)) throw new Error("Image capture is unavailable.");
     const resource = JSON.parse(row.validated) as ValidatedImage;
     if (input.sha256 !== resource.sha256 || input.byteLength !== resource.byteLength || BigInt(input.offset) > BigInt(resource.byteLength) || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > IMAGE_LIMITS.chunkBytes) throw new Error("Image capture read integrity differs.");
-    const fd = openSync(path.join(root, row.filename), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { const stat = fstatSync(fd); if (!stat.isFile() || String(stat.size) !== resource.byteLength) throw new Error("Image capture is corrupt."); const count = Math.min(input.limit, Number(BigInt(resource.byteLength) - BigInt(input.offset))), bytes = Buffer.alloc(count); if (count && readSync(fd, bytes, 0, count, Number(input.offset)) !== count) throw new Error("Image capture is corrupt."); return { preparationId: input.attemptId, byteLength: resource.byteLength, sha256: resource.sha256, offset: input.offset, data: bytes.toString("base64"), eof: BigInt(input.offset) + BigInt(count) === BigInt(resource.byteLength) }; } finally { closeSync(fd); }
+    const policy = acquirePolicy?.(request);
+    const verifyPolicy = () => {
+      const verified: unknown = policy?.verify();
+      if (verified !== undefined) {
+        if (verified instanceof Promise) void verified.catch(() => {});
+        throw new Error("Image source read policy must verify synchronously.");
+      }
+    };
+    let fd: number | undefined;
+    try {
+      if (request.locator.kind === "local" && !policy) throw new Error("Image local source read requires its current policy lease.");
+      verifyPolicy();
+      fd = openSync(path.join(root, row.filename), constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || String(stat.size) !== resource.byteLength) throw new Error("Image capture is corrupt.");
+      const count = Math.min(input.limit, Number(BigInt(resource.byteLength) - BigInt(input.offset))), bytes = Buffer.alloc(count);
+      if (count && readSync(fd, bytes, 0, count, Number(input.offset)) !== count) throw new Error("Image capture is corrupt.");
+      const result = { preparationId: input.attemptId, byteLength: resource.byteLength, sha256: resource.sha256, offset: input.offset, data: bytes.toString("base64"), eof: BigInt(input.offset) + BigInt(count) === BigInt(resource.byteLength) };
+      // Deliver while the policy lease is held. A Promise return alone leaves
+      // a revocation gap before the transport's awaiting continuation.
+      verifyPolicy();
+      deliver?.(result);
+      return result;
+    } finally { if (fd !== undefined) closeSync(fd); policy?.close(); }
+  };
+  const adoptCaptureResource = (captureId: string, attemptId: string, input: SessionResource): void => {
+    checkOpen(); imageId(captureId); imageId(attemptId);
+    const resource = parseSessionResource(input);
+    const row = transactions.read(() => {
+      const request = captureSource.assertImageCaptureAttempt(captureId, attemptId);
+      const capture = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture:${captureId}`) as { value: string };
+      const saved = JSON.parse(capture.value) as { receipt: unknown };
+      if (saved.receipt === null) throw new Error("Image capture adoption requires its durable committed receipt.");
+      const receipt = parseImageCaptureReceipt(saved.receipt, parseSessionResource);
+      if (receipt.state !== "committed") throw new Error("Image capture adoption requires its durable committed receipt.");
+      if (receipt.captureId !== captureId || receipt.attemptId !== attemptId || canonicalImageJson(receipt.occurrence) !== canonicalImageJson(request.occurrence) || receipt.resourceId !== resource.resourceId || canonicalImageJson(receipt.resource) !== canonicalImageJson(resource)) throw new Error("Image capture committed resource identity differs.");
+      const validated = db.prepare("SELECT image_id,filename,validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { image_id: string; filename: string; validated: string } | undefined;
+      if (validated && validated.image_id !== request.occurrence.imageId) throw new Error("Image capture validated source identity differs.");
+      return validated;
+    });
+    if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename)) throw new Error("Image capture validated source is unavailable.");
+    const validated = parseValidatedImage(JSON.parse(row.validated));
+    const actual = { mediaType: resource.mediaType, byteLength: resource.byteLength, sha256: resource.sha256, width: resource.width, height: resource.height, frameCount: resource.frameCount };
+    if (canonicalImageJson(validated) !== canonicalImageJson(actual)) throw new Error("Image capture committed resource differs from its validated identity.");
+    const block = tryAcquireMediaBlock();
+    if (!block) throw Object.assign(new Error("source_capacity: Controller media block capacity is unavailable."), { code: "source_capacity" });
+    try {
+      const previous = content.resources.get(resource.resourceId)?.resource;
+      if (previous?.status === "available") {
+        if (canonicalImageJson(previous) !== canonicalImageJson(resource)) throw new Error("Image capture saved resource identity differs.");
+        // Saved originals are authoritative. Replays verify their bytes and never
+        // repair a missing or corrupt original by reading the source again.
+        const lease = content.acquireResource(resource.resourceId), digest = createHash("sha256");
+        try {
+          for (let offset = 0; offset < Number(resource.byteLength);) {
+            const bytes = lease.read(String(offset), IMAGE_LIMITS.chunkBytes);
+            if (!bytes.length) throw new Error("Image capture saved resource is corrupt.");
+            digest.update(bytes); offset += bytes.length;
+          }
+          if (digest.digest("hex") !== resource.sha256) throw new Error("Image capture saved resource is corrupt.");
+        } finally { lease.close(); }
+        return;
+      }
+      checkBudgets(Number(resource.byteLength));
+      content.importResourceFile(resource, path.join(root, row.filename));
+    } finally { block.close(); }
   };
   const acquireInput = async (input: SessionInput, operationId: string): Promise<NativeInputLease> => {
     checkOpen(); imageId(operationId); const images = input.content.filter(part => part.type === "image");
@@ -357,7 +445,8 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       releaseImported(); throw error;
     }
   };
-  return { prepare, write, complete, release, readPrepared, read, stageCapture, readCapture, acquireInput, preparationPath, createSpool,
+  return { prepare, write, complete, release, readPrepared, read, stageCapture, readCapture, adoptCaptureResource, acquireInput, preparationPath, createSpool,
+    reserveCaptureSource: sourceReservations.reserve, releaseCaptureSource: sourceReservations.release, tryAcquireMediaBlock,
     nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; checkedDirectory(directory); return directory; },
     reserveNativeIndex: (additional: number): void => { checkOpen(); metadataBudget.assert(additional); },
     captureStatus: (captureId: string, attemptId: string): ValidatedImage | null => {
@@ -369,7 +458,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       if (ledgerClosed) return; closed = true;
       const pending = [...inFlight.values(), ...captureInFlight.values()];
       for (const item of pending) item.controller.abort(new Error("Controller media stopped."));
-      await Promise.allSettled(pending.map(item => item.promise));
+      await Promise.allSettled([...pending.map(item => item.promise), sourceReservations.stop()]);
       const failures: unknown[] = [];
       for (const spool of wireSpools) try { spool.remove(); } catch (error) { failures.push(error); }
       if (failures.length) throw new AggregateError(failures, "Native media readers or files remain after shutdown.");

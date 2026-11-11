@@ -19,10 +19,10 @@ pnpm --dir "$DAYNIGHT_MODULE_ROOT/../.." web:build
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 
-for stress_package in ./internal/server ./internal/server/task ./internal/core/session/protocol/v2 ./internal/core/filestorage/local; do
+for stress_package in ./internal/server ./internal/server/task ./internal/server/mcp ./internal/core/session/protocol/v2 ./internal/core/filestorage/local; do
   go test -v -tags stress -run '^TestStress' -race -count=1 -timeout=10m "$stress_package"
 done
 
 # Composed runner takeover retains real TLS and PostgreSQL under the existing
 # controlled-transport build; ordinary service tests remain database-independent.
-go test -v -tags=stress,webhooktest -run '^TestWebhookTwoInstanceTakeoverAndFencingStress$' -race -count=1 -timeout=3m ./internal/server
+go test -v -tags=stress,webhooktest -run '^TestWebhookTwoInstanceTakeoverAndFencingStress$' -race -count=1 -timeout=3m ./internal/service/webhook

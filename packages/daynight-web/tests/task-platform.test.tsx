@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import userEvent from '@testing-library/user-event';
@@ -18,9 +19,9 @@ const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Platform tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { assignedTo: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, requiredPlatform: null, status: 'todo', version: 9007199254740993n,
+const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, requiredPlatform: null, status: 'todo', version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
-const graphTask = (value: TaskDetail): GraphTask => ({ assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
+const graphTask = (value: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
   startedAt: value.startedAt, completedAt: value.completedAt, cancelledAt: value.cancelledAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -28,7 +29,7 @@ const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (value: TaskDetail, revision = 1) => {
   const graph: TaskGraph = { observedAt: time, project, tasks: [graphTask(value)], summary: { proposed: 0, total: 1,
     todo: value.status === 'todo' ? 1 : 0, inProgress: value.status === 'in_progress' ? 1 : 0, done: value.status === 'done' ? 1 : 0, cancelled: 0, ready: value.ready ? 1 : 0, blocked: value.status === 'todo' && !value.ready ? 1 : 0 } };
-  const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, [value]);
   return result;
 };
@@ -54,7 +55,7 @@ describe('confirmed status-row platform selection', () => {
   it('shows one header select and submits only confirmation while retaining the confirmed value', async () => {
     const { sync } = await open(); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise);
     expect(select().closest('.task-detail-status-row')).not.toBeNull();
-    expect(screen.getAllByRole('combobox')).toHaveLength(1);
+    expect(within(select().closest('.task-detail-status-row')!).getAllByRole('combobox', { name: 'Execution platform' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Save platform' })).toBeNull();
     expect(document.querySelector('.task-detail-badges .task-platform')).toBeNull();
     expect(select()).toHaveValue('');

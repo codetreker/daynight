@@ -1,6 +1,6 @@
 {
   "name": "@codetreker/daynight",
-  "version": "0.51.0",
+  "version": "0.52.0",
   "description": "A client command toolkit for development workflows",
   "repository": {
     "type": "git",
@@ -38,9 +38,12 @@
     "koffi": "3.3.4",
     "mime": "4.1.1",
     "read-cmd-shim": "6.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
     "semver": "7.8.5",
     "sharp": "0.35.5",
     "smol-toml": "1.9.1",
+    "unified": "11.0.5",
     "which": "6.0.1",
     "ws": "8.22.0",
     "yaml": "2.9.1"

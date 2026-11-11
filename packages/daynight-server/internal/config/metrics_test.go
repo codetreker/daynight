@@ -3,13 +3,15 @@ package config
 import (
 	"errors"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
 
 func TestMetricsAddress(t *testing.T) {
 	for _, value := range []string{"", "127.0.0.1:0", "192.0.2.1:8788", "0.0.0.0:65535", "[::1]:8788", "[::]:0"} {
 		t.Run(value, func(t *testing.T) {
 			c, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_LISTEN_ADDR": "127.0.0.1:0", "DAYNIGHT_METRICS_LISTEN_ADDR": value}))
-			if err != nil || c.MetricsListenAddress != value {
+			if err != nil || c.Monitoring.Metrics.MetricsListenAddress != value {
 				t.Fatalf("metrics address %q: %+v, %v", value, c, err)
 			}
 		})
@@ -28,8 +30,8 @@ func TestMetricsAddress(t *testing.T) {
 	} {
 		t.Run(tc.value, func(t *testing.T) {
 			_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_METRICS_LISTEN_ADDR": tc.value}))
-			var failure *ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_METRICS_LISTEN_ADDR" || failure.Rule != tc.rule || failure.Cause != nil {
+			var failure *configvalue.ConfigurationError
+			if !errors.As(err, &failure) || failure.Field != "metrics_listen_address" || failure.Rule != tc.rule || failure.Cause != nil {
 				t.Fatalf("metrics address %q: %#v", tc.value, err)
 			}
 		})

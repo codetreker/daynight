@@ -1,24 +1,62 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { nearestOverlayOwner } from '../../app/overlay';
 import { browserNavigation, type DraftScope } from '../../app/navigation';
 import { parseRoute } from '../../app/router';
+import { readResourceHistory } from '../../app/page-history';
+import { isRetiredResourceEntry } from '../../app/use-page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { TaskConfirmation } from './TaskConfirmation';
 
-type DraftContext = { readonly scope: DraftScope; readonly signal: AbortSignal; readonly survives: (url: URL) => boolean };
+type ResourceHost = { readonly projectId: string; readonly rootId: string; readonly kind: 'root' | 'root-child' | 'external' | 'external-child'; readonly parentId?: string };
+const ResourceHostContext = createContext<ResourceHost | null>(null);
+
+export const ResourcePageDraftHost = ({ projectId, taskId, children }: { readonly projectId: string; readonly taskId: string; readonly children: ReactNode }) => {
+  const host = useMemo<ResourceHost>(() => ({ projectId, rootId: taskId, kind: 'root' }), [projectId, taskId]);
+  return <ResourceHostContext.Provider value={host}>{children}</ResourceHostContext.Provider>;
+};
+
+export const ResourceExternalDraftHost = ({ parentId, children }: { readonly parentId: string; readonly children: ReactNode }) => {
+  const host = useContext(ResourceHostContext);
+  const value = useMemo<ResourceHost | null>(() => host === null ? null : { ...host, kind: 'external', parentId }, [host, parentId]);
+  return <ResourceHostContext.Provider value={value}>{children}</ResourceHostContext.Provider>;
+};
+
+export const ResourceChildDraftHost = ({ children }: { readonly children: ReactNode }) => {
+  const host = useContext(ResourceHostContext);
+  const value = useMemo<ResourceHost | null>(() => host === null ? null : { ...host, kind: host.kind === 'root' ? 'root-child' : 'external-child' }, [host]);
+  return <ResourceHostContext.Provider value={value}>{children}</ResourceHostContext.Provider>;
+};
+
+type DraftContext = { readonly scope: DraftScope; readonly signal: AbortSignal; readonly survives: (url: URL, view?: unknown, entryId?: string) => boolean };
 const Context = createContext<DraftContext | null>(null);
 
 export const TaskDraftBoundary = ({ projectId, taskId, page, children }: {
   readonly projectId: string; readonly taskId: string; readonly page: boolean; readonly children: ReactNode;
 }) => {
   const identity = useTaskCacheScope();
+  const host = useContext(ResourceHostContext);
   const value = useMemo<DraftContext>(() => ({
     scope: { identity, projectId, taskId }, signal: identity.signal,
-    survives: (url) => {
+    survives: (url, view, entryId) => {
       const target = parseRoute(url.pathname, url.search);
-      return page && (target.kind === 'task' || target.kind === 'attachment') && target.projectId === projectId && target.taskId === taskId;
+      const samePage = (target.kind === 'task' || target.kind === 'attachment') && target.projectId === projectId;
+      if (host === null) return page && samePage && target.taskId === taskId;
+      if (!samePage || target.taskId !== host.rootId || host.projectId !== projectId) return false;
+      if (host.kind === 'root') return page && taskId === host.rootId;
+      // Same-resource URL entries carry the current nested readers when initialized.
+      if (view === undefined) return true;
+      try {
+        const selection = readResourceHistory(view, identity.userId, projectId, host.rootId);
+        if (selection === null) return false;
+        if (entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
+        if (host.kind === 'root-child') return selection.goalChildren?.task?.id === taskId;
+        const external = selection.externalGoal;
+        if (external === null || external.id !== host.parentId) return false;
+        return host.kind === 'external' ? taskId === host.parentId : external.goalChildren?.task?.id === taskId;
+      } catch { return false; }
     },
-  }), [identity, projectId, taskId, page]);
+  }), [identity, projectId, taskId, page, host]);
   useLayoutEffect(() => identity.subscribe((event) => {
     if (event.projectId === projectId && event.accessRevoked) browserNavigation().retireScope(value.scope);
   }), [identity, projectId, value]);
@@ -36,6 +74,12 @@ export const useDirtyTaskDraft = (draft: { readonly isDirty: () => boolean; read
   }), [context]);
 };
 
+export const useRequestTaskDraftAction = () => {
+  const context = useContext(Context);
+  if (context === null) throw new Error('Task drafts require the current task draft boundary.');
+  return (action: () => void): void => browserNavigation().requestScopeAction(context.scope, action);
+};
+
 export const useDraftNavigationDecision = () => {
   const owner = browserNavigation();
   return useSyncExternalStore(owner.subscribeDecision, owner.decision);
@@ -46,12 +90,15 @@ export const useRetireTaskDraft = (retired: boolean): void => {
   useLayoutEffect(() => { if (retired) browserNavigation().retireScope(context.scope); }, [retired, context]);
 };
 
+const confirmationOwners = new Set<HTMLElement>();
+
 export const DraftNavigationConfirmation = ({ owner, fallbackFocus, taskTitle }: {
   readonly owner: RefObject<HTMLElement | null>; readonly fallbackFocus: RefObject<HTMLElement | null>; readonly taskTitle: string;
 }) => {
   const decision = useDraftNavigationDecision();
+  useLayoutEffect(() => { const element = owner.current; if (element === null) return; confirmationOwners.add(element); return () => { confirmationOwners.delete(element); }; }, [owner]);
   const { messages: { inspection: { draftNavigation: m } } } = useI18n();
-  if (decision === null) return null;
+  if (decision === null || owner.current === null || nearestOverlayOwner(confirmationOwners) !== owner.current) return null;
   return <TaskConfirmation title={m.title} question={m.question} explanation={m.explanation} taskTitle={taskTitle}
     confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.close} destructive owner={owner} fallbackFocus={fallbackFocus}
     onCancel={browserNavigation().cancel} onConfirm={browserNavigation().confirm} />;

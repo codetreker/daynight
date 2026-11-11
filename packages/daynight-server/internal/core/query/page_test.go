@@ -42,7 +42,7 @@ func TestListCursorBindingAndFormat(t *testing.T) {
 			}
 			version := float64(1)
 			if scope.Kind == "tasks" {
-				version = 2
+				version = 3
 			}
 			if fields["version"] != version {
 				t.Fatalf("version = %v", fields["version"])
@@ -241,6 +241,25 @@ func TestTaskListCursorBindsPlatformSpecificTier(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("accepted cursor from another platform tier")
 			}
+		}
+	}
+}
+
+func TestTaskListCursorBindsAutomaticCandidate(t *testing.T) {
+	id := "f47ac10b-58cc-11cf-a447-001122334455"
+	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, candidate := range []bool{false, true} {
+		scope := ListScope{Kind: "tasks", ProjectID: id, AutomaticCandidate: candidate}
+		cursor, err := EncodeListCursor(scope, when, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ListPage(model.PageRequest{Limit: 1, Cursor: &cursor}, scope); err != nil {
+			t.Fatal(err)
+		}
+		scope.AutomaticCandidate = !candidate
+		if _, err := ListPage(model.PageRequest{Limit: 1, Cursor: &cursor}, scope); err == nil {
+			t.Fatal("accepted cursor for another candidate selection")
 		}
 	}
 }

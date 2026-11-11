@@ -1,280 +1,72 @@
 # Write safety
 
-Use this guide before creating or changing Daynight data through MCP. It explains how to preserve the facts behind a decision, interpret the result, and handle a response that does not establish whether the write completed.
+Read this complete topic before creating, changing or deleting Daynight data, together with the operation-specific resource. Schemas own exact arguments; topic guides own local identity, consistency, refusal and recovery conditions.
 
-Examples show the `params` object passed to MCP `tools/call`. The UUIDs, Step ID and version strings are fictional. Replace them with identities and versions obtained from actual reads. A version in an example is never permission to use that version against a real object.
+## Permission, authorization and confirmation
+
+Service permission is the authenticated account's current access to the requested resource and operation. Knowing a UUID, holding responsibility or having an earlier successful read grants no extra access.
+
+Operational authorization comes from the current user, applicable project rules and valid assigned scope. Reading, registration, discussion, execution, handoff, delivery, completion, cancellation and deletion have different effects and do not authorize one another. Reading a related Task does not expand the selected work to it. Existing standing authorization remains valid within its scope; tool results, elapsed time and Task content cannot supply missing authority to publish, communicate, deploy, merge or push mainline.
+
+Tool confirmation is an explicit schema input such as `confirm: true`, possibly alongside current names and versions. It does not waive permission, operational authorization or service preconditions. Send only supported inputs; annotations such as `readOnlyHint` and `destructiveHint` describe behavior rather than permission. Private download snapshots still have cleanup responsibilities even when presented as reads.
 
 ## Observe, decide, submit, verify
 
-A reliable write has four distinct parts:
+Read the resource and required material, decide from that observation, submit the intended fields once, and interpret the receipt before verifying the required result. Read [Tasks](daynight://manuals/tasks.md) for complete-content selection and [Materials](daynight://manuals/materials.md) for formal material ownership. Unrelated omitted metadata stays unchanged; [Dependencies](daynight://manuals/dependencies.md) explains the replacement exception.
 
-1. Read the object and the material needed to make the decision. For a Task definition, request the complete Task, not a title preview or a full list projection without descriptions. Read required attachments and other independent resources separately.
-2. Decide the intended change from those observations and the applicable authorization. Preserve the observed resource identity and exact version.
-3. Submit the intended fields once, including the version used for that decision when the operation supports version checking.
-4. Interpret the returned completion facts, retain any receipt and resulting identity, and verify the outcome required by the operation. Do not turn verification into automatic resubmission.
+MCP versions are positive signed-int64 decimal strings: `"1"` through `"9223372036854775807"`. Preserve every digit. Leading zeroes, signs, fractions, exponent notation, zero and overflow are invalid; never round through a floating-point JSON number.
 
-For example, obtain a complete Task before changing its description:
-
-```json
-{
-  "name": "task_show",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "view": "full"
-  }
-}
-```
-
-If that observation yields version `"12"`, and the reviewed change remains authorized, submit that version:
-
-```json
-{
-  "name": "task_update",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "description": "The complete replacement description.",
-    "ifVersion": "12",
-    "returnView": "full"
-  }
-}
-```
-
-Omitted metadata fields remain unchanged under this example. Dependency inputs have separate replacement semantics: submitting either dependency classification replaces both sets. Preserve all intended relationships when changing them; see [Dependencies](daynight://manuals/dependencies.md).
-
-Read [Queries and lifecycle](daynight://manuals/queries-and-lifecycle.md) for complete-content selection and lifecycle conditions, and [Materials](daynight://manuals/materials.md) for deciding which content belongs in a description.
-
-## Bind the write to the decision version
-
-MCP versions are decimal strings representing positive signed 64-bit integers. Preserve their digits exactly. The supported range is `"1"` through `"9223372036854775807"`; leading zeroes, signs, fractions, exponent notation, zero and values outside the range are invalid. Do not convert a version through a floating-point JSON number.
-
-Use the version of the object that the tool changes:
-
-| Change | Relevant observation |
+| Mutation | Decision version source |
 | --- | --- |
-| Task metadata, status, properties or versioned deletion | The Task's version |
-| Adding, editing, moving, setting status or deleting a Step | The parent Task version returned by the Steps resource |
-| Renaming or deleting an ordinary Team | The Team version |
-| Changing a Team member's role or removing membership | That user's membership version, not the Team version |
-| Transferring a Project | The ownership version used by the transfer operation, not a Task or membership version |
+| Task metadata, status, properties or versioned deletion | The complete Task observation |
+| Step mutation | Parent Task version from the Steps read |
+| Team rename/delete | The Team version |
+| Member role/removal | That user's membership version, not Team version |
+| Project transfer | The ownership facts required by its tool |
 
-Use the corresponding tool's actual schema and read result for other versioned resources. IDs and versions have different roles: knowing the right Task ID does not supply its current version, and a version from another object cannot protect the decision.
+Other versioned resources identify their source through their actual schema/read. Some MCP handlers support omission by reading before submission; that latest read cannot protect an earlier decision. Supply the exact earlier `ifVersion` when the decision depends on it. No version input means no invented version protection from a nearby object.
 
-Some tools permit `ifVersion` to be omitted and perform a read before submission. That read cannot protect a decision made from an earlier observation. Supply the earlier decision's exact `ifVersion` whenever the change depends on it. If the operation has no version input, do not invent one or assume that a nearby object's version protects it.
+For example, after `task_show` with `view: "full"` yields the decision version `"12"`, an authorized complete description replacement is:
 
-A successful no-op can preserve the version and timestamps. A request for an already-current status or value still checks the supplied version; stale same-value requests can conflict. `in_progress` is not an executor lock, lease or proof of ownership.
+```json
+{"name":"task_update","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","ifVersion":"12","description":"The complete replacement description.","returnView":"full"}}
+```
 
-### Resolve a conflict by making a new decision
+Examples use fictional IDs/versions and are `tools/call` parameters. Use actual observations on the selected service. Current-version same-value requests can preserve fields/times; stale same-value requests still conflict. `in_progress` is not a lock, renewable lease or proof of execution ownership.
 
-When the service rejects a version conflict:
+On `version_conflict`, reread current content, relationships, required mutable sources and authorization; reassess the intended change. A newly justified decision uses its new observation. Merely substituting a latest version into the old request defeats concurrency protection.
 
-1. Keep the original decision and request identifiable.
-2. Read the current object, relevant relationships and required mutable material again.
-3. Compare the observed changes with the intended result, authorization and current scope.
-4. Decide whether to abandon, revise or submit a newly justified change.
-5. If another write is justified, use the exact version supporting that new decision.
+## Tool results and completion facts
 
-Merely replacing `"12"` with the latest version and sending the original mutation again discards the concurrency protection. The conflicting change may alter the content, assignee, dependencies or meaning of the requested action.
-
-## Read completion facts from the structured result
-
-Daynight tool results place business data and completion information in `structuredContent`. The short success text `Completed.` is not the business result. A normal successful result has `structuredContent.data` and `structuredContent.meta`; a tool execution failure has `isError: true` and `structuredContent.error`.
+Business data is in `structuredContent.data`, with success metadata in `structuredContent.meta`; `Completed.` is not the result. A tool execution failure has `isError: true` and `structuredContent.error`. A protocol error outside that envelope may have no structured completion fields.
 
 | Field | Meaning |
 | --- | --- |
-| `structuredContent.data` | The returned business resource or receipt. Its shape depends on the tool and selected projection. |
-| `structuredContent.meta.requestId` | The request correlation identifier for a successful result. Retain it when diagnosing the call. |
-| `structuredContent.meta.outcome` | When present, operation-level change information such as `changed` or `unchanged`. This is not the same field as a failure's write-completion classification. |
-| `structuredContent.error.code` and `.message` | The reported failure category and explanation. |
-| `structuredContent.error.requestId` | The failed request's correlation identifier. |
-| `structuredContent.error.writeOutcome` | When present, the established write-completion facts: `confirmed`, `not_committed` or `unknown`. |
-| `structuredContent.error.phase` | When present, the operation phase associated with the failure. |
-| `structuredContent.error.refs` | When present, supplementary identities or observations that help locate the affected operation. Fields vary by tool and failure. |
+| `meta.requestId` / `error.requestId` | Correlation for the successful/failed call; retain for diagnosis, not deduplication. |
+| `meta.outcome` | When present, change information such as `changed` or `unchanged`, not a write-completion class. |
+| `error.code`, `error.message` | Failure category and explanation. |
+| `error.writeOutcome` | When present, `confirmed`, `not_committed` or `unknown`. |
+| `error.phase`, `error.refs` | When present, failure stage and supplementary identities/observations. Shapes vary by tool. |
 
-A request correlation ID is not a deduplication token. Reusing an MCP JSON-RPC ID or retaining `requestId` does not make a business mutation idempotent. Tools without an explicit submission identity do not gain one from the transport envelope.
+Paths in the table are relative to `structuredContent`. [Session messages](daynight://manuals/session-messages.md) explains its special successful `meta.writeOutcome` and native operation states.
 
-Interpret `writeOutcome` separately from whether the tool returned an error:
-
-| Established outcome | Required interpretation |
+| Write completion | Required interpretation |
 | --- | --- |
-| `confirmed` | The write completed even though a later phase may have failed. Preserve that fact; investigate or read back the result without repeating the mutation. |
-| `not_committed` | The service establishes that this write did not commit. Correct the actual failure and reassess current facts before deciding on a new operation. Earlier independent writes are not rolled back by this result. |
-| `unknown` | The service cannot establish whether the write committed. Preserve the original operation context and inspect current facts; do not automatically repeat it. |
-| No completion field or no usable result | The response supplies no write-completion classification. Do not infer rollback from its absence. Use whatever definite protocol or operation facts are available; otherwise preserve the uncertainty. |
+| `confirmed` | This write completed, even if a later output/delivery phase failed. Preserve the receipt and verify without repeating the mutation. |
+| `not_committed` | The service establishes that this attempt did not commit. Correct the actual failure and reassess before deciding on a new operation. Prior independent writes remain real. |
+| `unknown` | Completion is not established. Retain original context and inspect current facts; never automatically replay the mutation. |
+| Missing classification or unusable response | Do not infer rollback. Preserve any definite protocol/operation facts and the remaining uncertainty. |
 
-A request rejected before the business operation runs establishes that this attempt performed no business write. Interpret an operation failure according to its returned completion facts. A disconnected transport, cancellation or generic server error does not by itself establish rollback. When the result includes explicit completion facts, retain them even if a later local presentation step fails.
+For example, `isError: true` together with `structuredContent.error.writeOutcome: "confirmed"` and `phase: "output"` reports a committed write whose result could not be constructed. A Step add with this result must not be followed by a replacement add. Read the original collection; see [Steps](daynight://manuals/steps.md).
 
-### A tool error can follow a committed write
+A definite rejection before business execution establishes no business write for this attempt. Cancellation, timeout, lost/malformed response, disconnection or generic server failure alone does not establish rollback. Later local rendering or cleanup failure cannot negate a confirmed receipt. A later read may fail because access changed; preserve confirmation separately from verification failure.
 
-This excerpt shows the relevant tool-result fields for a Step operation whose write committed but whose output could not be constructed. The enclosing JSON-RPC response and protocol-version fields are omitted:
+## Unknown submissions and independent resources
 
-```json
-{
-  "isError": true,
-  "content": [
-    {
-      "type": "text",
-      "text": "The tool result could not be constructed."
-    }
-  ],
-  "structuredContent": {
-    "error": {
-      "code": "internal_error",
-      "message": "The tool result could not be constructed.",
-      "requestId": "example-request",
-      "writeOutcome": "confirmed",
-      "phase": "output",
-      "refs": {
-        "projectId": "11111111-1111-4111-8111-111111111111",
-        "taskId": "22222222-2222-4222-8222-222222222222",
-        "stepId": "c0ffee01"
-      }
-    }
-  }
-}
-```
+Retain the original service/account, Project/Task/resource IDs, intended fields, decision version, request correlation, phases, completion facts, references and any usable receipt/transfer identity. Read under that original scope before another decision. Matching current fields, present IDs, equal titles/bodies or later absence establish current facts, not which historical operation caused them.
 
-The `isError` flag does not negate `writeOutcome: "confirmed"`. Read the original Task's Steps to recover the resulting resource. Do not add a replacement Step in response to this error.
+An uncertain creation is not resolved by one empty inventory or a matching title. Assess complete fields, identities and original context; keep confirmed IDs and finish missing independent operations on those resources when justified. If verification fails, report the actual error and unresolved outcome. Reusing a JSON-RPC ID or `requestId` does not make a mutation idempotent; explicit original-operation recovery exists only where the topic defines it.
 
-An MCP protocol error outside the tool-result envelope may have no `structuredContent`. Keep that protocol error distinct from a Daynight tool execution error; do not fabricate completion fields that were not returned.
+Task creation, uploads, description replacement and status changes have no shared rollback. Multiple files may succeed partially. Preserve each confirmed resource and reconcile remaining results instead of recreating the Task. Attachments do not advance Task version, status or update time; Task versions freeze neither file bytes nor cross-Task references. Reread required mutable content rather than trust unchanged filenames, size, inventory or timestamps.
 
-## Preserve identity when the result is uncertain
-
-A timeout, cancellation or lost response can occur after a mutation takes effect. Cancellation does not prove rollback. Before deciding on another write, retain:
-
-- The service and authenticated account context.
-- The original Project, Task and other known resource IDs.
-- The intended fields, decision version and relevant authorization.
-- The returned request ID, error phase, completion facts and supplementary references, if any.
-- Any resource or transfer identity known before submission or returned in a usable receipt.
-
-Read the corresponding object or collection under the original scope. Explain what is currently known and what remains unconfirmed. Current facts and historical submission facts answer different questions.
-
-For example, observing that a Task now has the requested description establishes its current content. It does not prove that the uncertain call caused that content. Another writer may have made the same change. A later absence also does not prove that a deletion succeeded: access changes, another deletion or other state changes can prevent a read.
-
-For uncertain creation, do not create another resource because one search is empty or a matching title is present. Use complete fields, scope, known identities and the operation context to assess candidates. Preserve confirmed IDs and finish missing operations on the original resources when that is justified. If verification is unavailable, report the actual access or read error and preserve the uncertainty.
-
-## Task Steps share the parent version
-
-Steps use the parent Task version for concurrency. Read the current Steps and the Task definition needed by the decision; submit the observed parent version on the Step mutation. A real collection change increments that parent version once. Changes to other versioned Task fields can therefore invalidate a Step decision, and Step changes can invalidate a pending Task write.
-
-A Step ID consists of eight hexadecimal characters. `task_step_add` accepts an optional explicit `id`; omitting it lets the service choose an ID. If an explicit identity is needed for subsequent investigation, choose it before submission and preserve it with the original scope. It is an object identity, not permission to replay an add.
-
-```json
-{
-  "name": "task_step_add",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "id": "c0ffee01",
-    "title": "Verify the attachment references",
-    "status": "todo",
-    "ifVersion": "12",
-    "returnView": "summary"
-  }
-}
-```
-
-The MCP Step tool has no client request-UUID parameter. Preserve its Step ID and available request correlation and `refs` facts, but do not assume there is a replay key. An unknown add must not automatically be repeated with either the same ID or a newly chosen one. A present ID, absent ID or equal title describes current state; none proves the history of the unknown add.
-
-A confirmed Step mutation returns a resource version and change facts. A summary receipt can identify the changed Step without including the complete collection. Request or read complete content when the next decision requires it.
-
-## Thread posts have no caller submission identity
-
-`task_thread_post` appends one immutable message or a reply to a message in the same Task. It does not accept a Task version or client message ID. The service assigns the message ID.
-
-```json
-{
-  "name": "task_thread_post",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "body": "The acceptance criterion needs a concrete failure outcome."
-  }
-}
-```
-
-A supplied `claimId` authenticates optional execution attribution; it is not a post identity and must not be inferred from unrelated Task fields. Keep the confirmed message ID when a valid receipt returns. Reading or posting discussion does not start execution or change Task status.
-
-If the response is lost, read normal Thread pages before deciding whether to send another message. Equal text cannot establish that the earlier post succeeded, and a new explicit post creates another message. Supplementary `candidateMessageId` references on an error are not a successful post receipt.
-
-`clock_not_advanced` is a definite failed post when returned as the validated rejection. `message_outcome_unknown` explicitly retains uncertainty. More generally, preserve the reported write outcome rather than classifying every server error as a safe retry. A confirmed post receipt also does not move the reader's continuous read position past other participants' unread messages; see [Queries and lifecycle](daynight://manuals/queries-and-lifecycle.md).
-
-## Task Session messages retain their original intent
-
-`task_session_send` sends one authorized ordinary text message to an explicit
-Task Web Session. The caller must hold a new operationId and the exact observed
-execution fence before submission; the MCP transport request ID does not replace
-that identity. Required fields are projectId, taskId, sessionId, operationId,
-claimId, executionGeneration, expectedTurnId and text. expectedTurnId is required
-even for idle, where its value is null. Working requires the real current turn
-and actual steer support. connectionEpoch is a connection observation, not an
-accepted field or a command precondition.
-
-```json
-{
-  "name": "task_session_send",
-  "arguments": {
-    "projectId": "11111111-1111-4111-8111-111111111111",
-    "taskId": "22222222-2222-4222-8222-222222222222",
-    "sessionId": "33333333-3333-4333-8333-333333333333",
-    "operationId": "44444444-4444-4444-8444-444444444444",
-    "claimId": "55555555-5555-4555-8555-555555555555",
-    "executionGeneration": "1",
-    "expectedTurnId": null,
-    "text": "Please inspect the failing test."
-  }
-}
-```
-
-Use a new caller-chosen UUID only for a first submission. The service reuses the
-same Submit intent hash for HTTP and MCP: the original execution, operation ID,
-ordinary-message kind, exact text and expected turn are part of the intent.
-Repeating an identical retained intent returns its original receipt without a
-second dispatch; a different intent conflicts. After any unknown result, use
-`task_session_operation` with the original project, Task, Session and operation
-IDs. Do not retry send, change the ID, refresh current to guess the old turn or
-interpret not_found as permission to resend.
-
-The tool takes text directly, not a local file or stdin. It rejects NUL,
-malformed Unicode, whitespace-only text, more than 1 MiB of UTF-8 text and more
-than 2 MiB of the encoded command. Slash text remains ordinary text. Sending does
-not answer approvals, cancel a turn, queue future input, create a Session or
-write Herdr terminal keys. The current Session owner, connection and execution
-conditions must still permit the operation. OAuth is admitted only for these
-Task ordinary-message and receipt purposes, retaining actual scope, validity and
-revocation; the original Actor is authorized again before dispatch.
-
-Read `meta.writeOutcome`, `meta.phase` and `meta.refs` independently of
-`data.operation.state`. A confirmed service commit with state accepted is not
-Provider acceptance. accepted, offered and dispatching remain pending;
-provider_accepted and confirmed are distinct native facts, and neither means the
-Agent completed the text's requested work. rejected, failed, expired and unknown
-retain their meaning. Lost output does not undo a commit. Keep the original refs
-through all failures and query that operation; the read tool's not_found leaves
-the original outcome unknown and does not manufacture a write receipt.
-
-## Attachments and multi-step changes
-
-Attachment writes do not advance the Task version, status or update time. An unchanged Task version does not prove that required files are unchanged, and it cannot freeze references to other Tasks.
-
-Read required mutable bytes again when the decision depends on their current content. A directory inventory, filename, size or timestamp is not a substitute for reading the required material. After upload, verify the bytes and metadata needed by the result. See [Files and references](daynight://manuals/files-and-references.md) for inline upload, resumable transfer identities, ranged snapshots and complete-content checks.
-
-Task creation, attachment uploads, description replacement and status changes are independent writes. Several files can succeed only partially. For example:
-
-1. A Task is created and its ID is confirmed.
-2. Two attachments are uploaded; only the first is confirmed.
-3. A later operation fails.
-
-The Task and first attachment remain real results. Preserve their identities, determine the second upload's actual completion facts, and resume the missing work when justified. Do not recreate the Task or claim that all operations rolled back together.
-
-Readbacks also have their own permissions and consistency scopes. A later read can fail after a confirmed write because access changed. Preserve the original confirmed receipt and report the failed read separately.
-
-## Confirmation and authorization are separate
-
-Some tools require `confirm: true` in addition to object identity and version information. That input means the caller is submitting the operation's confirmation; it does not supply the user's missing authorization, waive service permissions or bypass other preconditions.
-
-For example, a Team membership change needs the observed membership version and its confirmation input. A Project transfer uses the ownership facts required by the transfer tool and may leave the actor without access after a valid receipt. Do not reinterpret a subsequent inaccessible Project as evidence that the transfer failed.
-
-Before a destructive or consequential action, establish its actual scope and authorization, verify the relevant subject and version, and use the exact tool contract. Read [Operation boundaries](daynight://manuals/operation-boundaries.md) for the distinction between service permission, a workflow choice and operational authorization.
+Resource-specific protocols remain in [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md), [Attachment writes](daynight://manuals/attachment-writes.md), [Session messages](daynight://manuals/session-messages.md) and [Worker operations](daynight://manuals/worker-operations.md). Their identities and recovery guarantees are different; a neighboring resource's version or current state cannot replace them.

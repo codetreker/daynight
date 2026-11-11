@@ -18,8 +18,9 @@
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
 请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal。
 读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。普通上传、覆盖和删除使用持有
-Task SHARE 锁的事务，在获取锁后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
-再检查 Task 删除状态、路径，执行文件操作并通过同一事务写入元数据，直至事务完成才释放 Task 锁。
+目标和 Parent SHARE 锁的事务，按 UUID 顺序取得最终锁并在新语句复核 Parent；Parent 变化返回
+`resource_conflict`，不追加锁或重放。随后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
+再检查 Task 有效删除状态、路径，执行文件操作并通过同一事务写入元数据，直至事务完成才释放资源锁。
 该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
@@ -508,7 +509,7 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 `useAttachments` 控制器，概览描述导航与完整 `TaskAttachmentsPanel` 共用它。
 弹窗及独立页面因此使用相同目录、刷新、上传、文件菜单、删除确认和预览。独立
 导航由外层记录页签与文件状态，路由恢复应用选择，并在附件路径定位时补充展开
-其祖先；弹窗继续使用本地选择。树内选择及成功上传引起的地址回写不产生新的目录
+其祖先；独立资源页的子 Task 和外部 Goal 弹窗由阅读载荷控制选择，项目页弹窗继续使用本地选择。树内选择及成功上传引起的地址回写不产生新的目录
 定位，页签变化也不重新打开用户已收起的目录。同任务的页签与文件变化保留主体、
 附件控制器、目录展开、侧栏位置及草稿，跨任务或身份
 变化按原有请求生命周期释放。所选文件删除后仍保留 URL 路径，完整清单确认缺失
@@ -601,18 +602,17 @@ DELETE 的 204 空响应；错误响应继续使用 JSON DTO 和字节预算。
 
 ## 配置、部署与备份
 
-服务使用必填 `DAYNIGHT_STORAGE_ROOT`，为 LocalStorage 指定明确的根目录。
-当前启动以 `local.New` 准备根目录，向工厂提供 `server.Dependencies{Store, Files}`，
-在监听前完成验证；后续启动失败与 HTTP 排空后均关闭已取得的文件根句柄。
-启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。该必填
-配置适用于所有服务启动调用方，包括 Compose、镜像目录权限、Go 子进程测试及
-实际服务组合验证。
-物理目录不进入 API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
+服务为 LocalStorage 使用所选 Daynight root 下的 `storage` 作为默认目录；
+`storage.root` 可在 YAML 中设置，`DAYNIGHT_STORAGE_ROOT` 可显式覆盖。相对路径
+以 Daynight root 为基准。启动以 `local.New` 准备根目录，向工厂提供
+`server.Dependencies{Store, Files}`，在监听前完成验证；后续启动失败与 HTTP
+排空后均关闭已取得的文件根句柄。无法访问或创建目录时启动失败。物理目录不进入
+API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
 
-两套 Compose 均将项目作用域的 `attachment-data` 命名卷挂载到
-`/var/lib/daynight/storage`，并以该路径设置 `DAYNIGHT_STORAGE_ROOT`。生产镜像已为
-UID/GID `10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非
-root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture 使用其所属独立目录。
+两套 Compose 显式选择 `/var/lib/daynight` root，并将项目作用域的
+`attachment-data` 命名卷挂载到其 `storage` 目录。生产镜像已为 UID/GID
+`10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非 root
+服务直接写入，不增加 root entrypoint。Go fixture 使用其所属独立 root。
 
 localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保留，显式
 `down --volumes` 同时销毁两者。dev-ci 每次隔离 Compose 项目拥有独立的 PG 与
@@ -666,7 +666,7 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - CLI：实际构建入口的上传、完整列表、文本和二进制 stdout、背压、取消、管道中断、
   既有 project 选择、帮助及补全。
 - Web：详情页签与状态保留、共用完整附件页的两种展示、独立模式地址同步与前进后退、
-  嵌入模式选择不写历史、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
+  项目页嵌入模式选择保持本地、独立页子层选择的前进后退、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
   结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
@@ -697,7 +697,7 @@ MCP 附件列表使用普通批量数据库读取及完整项的条数分页；c
 
 上传块的 UUID、偏移、长度、hash 和私有对象地址分别持久保存；回执与预留消费在同一短事务提交。重复块只有身份、偏移、长度和 hash 均一致才返回已有回执。新块在预留或写私有对象前检查累计实际字节不超过 5 MiB。提交先检查声明长度、已确认偏移和上限，再验证整体 hash，保留目标暂存容量，并以原 transfer 的唯一 operation 进入 committing。已确认块按偏移流式读取，完整文件无需物化到内存；最终发布的共享 reader 也独立检查上限。5 MiB 可由 begin、十个 512 KiB chunk 和 commit 完成，普通 MCP 请求外壳仍限 4 MiB。
 
-每次外部调用重新检查当前凭据和任务权限。分块写入先锁 transfer，再锁 Task 并以新语句检查 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住 Task 并再次检查 Project 和 Task 生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
+每次外部调用重新检查当前凭据和任务权限，私有传输保留其凭据及项目授权的加锁准入。分块写入先锁 transfer，再按资源锁计划锁目标和 Parent 并以新语句检查 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住目标和 Parent 并再次检查 Project 和 Task 生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
 
 私有文件操作持有与数据库事务独立的跨进程 namespace gate，获取后重新检查状态和权限。清理先持久化 `cleanup_pending`、取消本实例操作，再等待同一 gate 并删除整个受限命名空间；文件删除失败保留清理责任和账目。租约失效不会释放活着的文件 permit。提交操作失联时保留 `unknown` 和原操作标识，原 permit 持有者仍可记录同一操作后来取得的可证结果，包括 Project 删除前已提交的正式附件结果；这不重新准入已删除 Project。Project 删除后的临时分块仍按私有传输机制清理，清理范围仅限私有命名空间，不删除或改写正式附件。启动扫描和每十分钟的有界维护可跨重启续扫；应用关闭时取消并等待维护器和持有的操作，再释放底层存储。普通状态查询不占文件 I/O 槽，也不等待共享容量账本。决策及权衡见[私有传输生命周期](../../.agents/notes/implemented/architecture/2026-11-06-private-transfer-lifecycle.md)。
 

@@ -51,3 +51,30 @@ test("the default initialization deadline remains pending until 30000 ms then re
     expect(vi.getTimerCount()).toBe(0);
   } finally { rpc.dispose(); vi.useRealTimers(); }
 });
+
+test.each(["invalid JSON", "oversized frame", "close", "stdout end", "dispose"])("native RPC synchronously revokes consumers once on %s", async failure => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
+  const revoke = vi.fn();
+  const rpc = new NativeRpc(child, () => {}, 200, revoke);
+  const pending = rpc.request("hooks/list", {});
+  const rejected = expect(pending).rejects.toBeInstanceOf(Error);
+  if (failure === "invalid JSON") child.stdout.write("not JSON\n");
+  else if (failure === "oversized frame") child.stdout.write(" ".repeat(16 * 1024 * 1024 + 1) + "\n");
+  else if (failure === "close") child.emit("close");
+  else if (failure === "stdout end") child.stdout.emit("end");
+  else rpc.dispose();
+  expect(revoke).toHaveBeenCalledTimes(1);
+  await rejected;
+  child.emit("close"); rpc.dispose();
+  expect(revoke).toHaveBeenCalledTimes(1);
+  await expect(rpc.request("hooks/list", {})).rejects.toThrow("closed");
+});
+
+test("a failed native revocation callback still settles every pending request", async () => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
+  const rpc = new NativeRpc(child, () => {}, 200, () => { throw new Error("consumer failed"); });
+  const first = expect(rpc.request("hooks/list", {})).rejects.toThrow("Invalid native protocol");
+  const second = expect(rpc.request("thread/read", {})).rejects.toThrow("Invalid native protocol");
+  expect(() => child.stdout.write("invalid\n")).not.toThrow();
+  await Promise.all([first, second]); rpc.dispose();
+});

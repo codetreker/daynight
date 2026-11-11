@@ -21,6 +21,31 @@ func (s *Reader) Task(ctx context.Context, projectID, id string) (model.Task, er
 	return pg.ReadTaskWithLock(ctx, s.tx, projectID, id, "")
 }
 
+// taskResourceFilter applies typed selection before pagination. A nil parent
+// selects all parents; none selects unassigned tasks.
+func taskResourceFilter(taskType model.TaskType, parent *string, args *[]any) (string, error) {
+	if taskType == "" {
+		taskType = model.TaskTypeTask
+	}
+	if taskType != model.TaskTypeTask && taskType != model.TaskTypeGoal {
+		return "", fmt.Errorf("invalid task type")
+	}
+	*args = append(*args, taskType)
+	filter := fmt.Sprintf(" AND t.type=$%d::text", len(*args))
+	if parent != nil {
+		if *parent == "none" {
+			return filter + " AND t.parent_id IS NULL", nil
+		}
+		id, err := model.CanonicalID(*parent)
+		if err != nil || id != *parent {
+			return "", fmt.Errorf("invalid parent ID")
+		}
+		*args = append(*args, id)
+		filter += fmt.Sprintf(" AND t.parent_id=$%d::uuid", len(*args))
+	}
+	return filter, nil
+}
+
 func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQuery) (store.TaskPage, error) {
 	afterTime, afterID := pg.PageValues(query.Page)
 	var limit any = query.Page.Limit + 1
@@ -49,15 +74,25 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	default:
 		return store.TaskPage{}, pg.QueryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
 	}
-	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM tasks t`+join+`
-  WHERE t.project_id = $1 AND t.deleted_at IS NULL
+	resourceFilter, err := taskResourceFilter(query.Type, query.Parent, &arguments)
+	if err != nil {
+		return store.TaskPage{}, pg.QueryError("list tasks", err)
+	}
+	candidateFilter := ""
+	if query.AutomaticCandidate {
+		candidateFilter = ` AND t.type = 'task' AND (t.parent_id IS NULL OR EXISTS (
+			SELECT 1 FROM tasks parent WHERE parent.id=t.parent_id AND parent.project_id=t.project_id
+			AND parent.type='goal' AND parent.deleted_at IS NULL AND parent.status NOT IN ('done', 'cancelled')))`
+	}
+	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM task_resource_rows t`+join+`
+  WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL
   AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
   AND ($4::text IS NULL OR t.status = $4)
   AND ($5::boolean IS NULL OR `+pg.TaskReady+` = $5)
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
   AND ($9::boolean IS NULL OR (t.required_platform IS NOT NULL) = $9)
-  `+assignmentCondition+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
+  `+assignmentCondition+resourceFilter+candidateFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}

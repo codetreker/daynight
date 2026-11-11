@@ -1,3 +1,4 @@
+import { ExecutionSourceConflictError, type TerminalCleanupContext } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createHash } from "node:crypto";
 import * as inputSessionModule from "../../../src/commands/worker/herdr/input-session.js";
@@ -37,6 +38,8 @@ import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import type { HerdrInputRecord } from "../../../src/commands/worker/herdr/input-types.js";
 import type { NativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
 
+const cleanupScope = (owner: { projectId: string; taskId: string; claimId: string; worktreeId: string }): TerminalCleanupContext => ({ attempt: { owner, attemptId: "fixture" }, onExecutionStopped: () => {} });
+
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const root = fileURLToPath(new URL("../../../../../.tmp/herdr-durable-integration/", import.meta.url));
 const directories: string[] = [], facades = new Set<WorkerHerdrAdapter>(), readers = new Set<HerdrLifecycleStore>(), operations: Operation[] = [];
@@ -55,7 +58,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   mkdirSync(context.cwd, { recursive: true });
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
   const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), configurationFile: path.join(directory, "configuration.json"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: path.resolve("/state/h"), logsDirectory: path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
-  let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, cancelledAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+  let task: Task = { type: "task", parentId: null, id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, cancelledAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
@@ -194,6 +197,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
+        observeExecutionStop: async target => ({ kind: "unknown", target, error: new Error("Not used by native lifecycle"), observedAt: Date.now() }),
         pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
         prepareWorkspace: async (_context, _title, _operation, startup) => { expect(startup).toEqual(shellSettings.managed ? { shellNonce: uuid(900 + state.ordinal) } : undefined); events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => { if (settings.observeFailure !== undefined) { const failure = settings.observeFailure; settings.observeFailure = undefined; throw failure; } if (inputs.length >= settings.observeFailureAfterCount && settings.observeAfterInputFailure !== undefined) { const failure = settings.observeAfterInputFailure; settings.observeAfterInputFailure = undefined; throw failure; } return observation(); },
@@ -403,13 +407,50 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.read().runs[0]!.nativeLaunch).toBe("requested"); expect(f.read().runs[0]!.run.stopProof).toBeNull();
   });
 
+  it("reports the committed native stop before selection cleanup joins", async () => {
+    let release!: () => void, notified!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const notification = new Promise<void>(resolve => { notified = resolve; });
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} });
+    f.register(); const binding = await f.prepare(); await f.start(binding);
+    settle.mockImplementationOnce(() => barrier);
+    const notices = vi.fn(() => notified());
+    const scope = { attempt: { owner: f.context, attemptId: "attempt" }, onExecutionStopped: notices };
+    const result = f.facade.lifecycle!.cleanup(f.context, "Cleanup now", operation(), scope);
+    try {
+      await notification;
+      expect(f.read().runs.at(-1)?.run.stopProof).not.toBeNull();
+      expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+      expect(notices).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({ kind: "stopped", execution: expect.objectContaining({ backend: "herdr-native" }) }) }));
+      expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "stopped", execution: { backend: "herdr-native" } });
+      expect(await f.facade.lifecycle!.observeExecutionStop({ ...f.context, worktreeId: uuid(999) }, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
+    } finally { release(); await result; }
+  });
+
+  it("reports a replacement preparation as a conflict after the original stop", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "stopped" });
+    f.mutateRecord(record => { record.preparation = { instanceId: uuid(991), instanceDirectory: path.join(f.context.cwd, "replacement"), phase: "prepared", daemon: null }; });
+    expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
+  });
+
+  it("reports never-started only from an exact empty lifecycle", async () => {
+    const f = fixture(); f.register();
+    expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "not-started", owner: expect.objectContaining({ claimId: f.context.claimId, worktreeId: f.context.worktreeId }) });
+    expect(await f.facade.lifecycle!.observeExecutionStop({ ...f.context, worktreeId: uuid(999) }, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
+  });
+
   it("fences terminal cleanup, archive disposal and never-started retirement on selection stop proof", async () => {
     const settle = vi.fn().mockResolvedValue(undefined);
     const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register(); await f.prepare();
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
     const proof = f.read().runs[0]!.run.stopProof;
     settle.mockRejectedValue(new Error("selection cleanup unconfirmed"));
-    await expect(f.facade.lifecycle!.cleanup!(f.context, "cleanup", operation())).rejects.toThrow("selection cleanup unconfirmed");
+    const onExecutionStopped = vi.fn();
+    await expect(f.facade.lifecycle!.cleanup!(f.context, "cleanup", operation(), { ...cleanupScope(f.context), onExecutionStopped })).rejects.toThrow("selection cleanup unconfirmed");
+    expect(onExecutionStopped).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({ kind: "stopped" }) }));
     const remove = vi.fn().mockResolvedValue(undefined), target = { ...f.context, sessionId: f.read().sessionId };
     await expect(f.facade.lifecycle!.archive!.dispose({ ...target, operationId: uuid(99), action: "delete", confirmed: true }, operation(), remove)).rejects.toThrow("selection cleanup unconfirmed");
     await expect(f.facade.lifecycle!.archive!.advance(f.context, operation())).rejects.toThrow("selection cleanup unconfirmed");
@@ -626,13 +667,13 @@ describe("durable Herdr facade with real SQLite", () => {
   it("revokes manual input before cleanup and never appends a cleanup prompt", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     f.facade.input!.suspend(f.context);
-    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation(), cleanupScope(f.context))).toBe(false);
     expect(f.inputs).toHaveLength(1); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("suppresses a paused cleanup prompt while stopping the original run", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const task = await f.readTask(); f.changeTask({ properties: { ...task.properties, paused: true } });
-    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation(), cleanupScope(f.context))).toBe(false);
     expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
@@ -658,14 +699,14 @@ describe("durable Herdr facade with real SQLite", () => {
   it("skips a known-menu cleanup notification while still stopping the original native run", async () => {
     const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
     f.settings.nativeScreen = "› 1. GPT-6.1 Terra\nenter default · s session · esc back";
-    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation(), cleanupScope(f.context))).toBe(false);
     expect(f.inputs).toHaveLength(1); expect(f.settings.nativeWrites).toBe(2);
     expect(f.read().runs.at(-1)?.admission).toBeNull();
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("sends eligible cleanup through the same input journal before controlled stop", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
-    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(true);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation(), cleanupScope(f.context))).toBe(true);
     expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }, { initial: false, body: "Cleanup now" }]);
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
@@ -1435,7 +1476,12 @@ it("keeps a blocked macOS recovery input fixed and respects a later task pause",
     f.changeTask({ properties: originalTask.properties });
     await driver.advance(input); await driver.advance(input);
     expect(f.inputs).toHaveLength(2);
-    expect(f.inputs[1]).toEqual({ initial: false, body: "Continue the original assigned task under its existing authorization.\n\n----- begin user prompt -----\ncaptured\n----- end user prompt -----" });
+    expect(f.inputs[1]).toMatchObject({ initial: false });
+    expect(f.inputs[1]!.body).toContain("inspect the current task, repository rules and available evidence");
+    expect(f.inputs[1]!.body).toContain("no feasible alternative preserves the confirmed goal and constraints");
+    expect(f.inputs[1]!.body).toContain("If allowAgents is false, stop immediately");
+    expect(f.inputs[1]!.body).toContain("----- begin user prompt -----\ncaptured\n----- end user prompt -----");
+    expect(f.inputs[1]!.body).not.toContain("later");
     expect(f.launches).toHaveLength(2);
   } finally { store.close(); }
 });

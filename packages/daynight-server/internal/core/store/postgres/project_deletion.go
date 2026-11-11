@@ -90,8 +90,8 @@ func (s *deletionSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 func (s *deletionSnapshot) Summary(ctx context.Context) (store.ProjectDeletionSummary, error) {
 	var out store.ProjectDeletionSummary
 	err := s.tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE status NOT IN ('done', 'cancelled')),
-        (SELECT count(*) FROM task_attachments a JOIN tasks at ON at.id=a.task_id AND at.project_id=a.project_id WHERE at.project_id=$1 AND at.deleted_at IS NULL)
-        FROM tasks WHERE project_id=$1 AND deleted_at IS NULL`, s.projectID).Scan(&out.TaskCount, &out.UnfinishedTaskCount, &out.AttachmentCount)
+        (SELECT count(*) FROM task_attachments a JOIN task_resource_rows at ON at.id=a.task_id AND at.project_id=a.project_id WHERE at.project_id=$1 AND at.effective_deleted_at IS NULL)
+        FROM task_resource_rows WHERE project_id=$1 AND effective_deleted_at IS NULL`, s.projectID).Scan(&out.TaskCount, &out.UnfinishedTaskCount, &out.AttachmentCount)
 	if err != nil {
 		return out, pg.QueryError("read project deletion summary", err)
 	}

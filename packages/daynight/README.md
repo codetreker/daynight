@@ -212,8 +212,8 @@ daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped
 daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
-daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
-daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
+daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task thread read <task-id> [--before-id <message-id> | --after-id <message-id>] [--count=N] [--details] [--project <project-id>]
 daynight task thread post <task-id> --body <text> [--reply-to <message-id>] [--claim-id <claim-id>] [--project <project-id>]
@@ -244,14 +244,15 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English CLI usage manual from the
-current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
-Set-status, Move and Delete, and Webhook management. Other capabilities are discovered
-through `daynight --help`, with exact options in each subcommand's help. The
-output preserves the manual's original bytes, including YAML
-frontmatter and the final newline. The document has no package-relative
-references to read separately.
+`--skill` prints the complete standalone English CLI usage manual from the
+current package. The build generates it from the same topic sources installed
+with `using-daynight`, in a fixed order with topic and section links converted
+to internal anchors. It covers connection and Projects, Tasks, Steps, materials,
+write safety, Session reads and messages, Webhooks and Worker operations. Exact
+arguments remain in each subcommand's help. The output preserves the generated
+artifact's bytes, including YAML frontmatter and the final newline. The document
+has no package-relative references to read separately and requires no installed
+skill or individual topic files.
 
 The option must be the sole argument. Extra arguments or another option exit
 with status 2 and empty stdout before the manual is read. A missing file, read
@@ -260,15 +261,22 @@ validation complete before output; an output failure can leave partial stdout.
 The command requires no login, Git repository, configuration, launcher or
 interactive terminal, and creates no files.
 
-The `using-daynight` skill installs the same product manual for an Agent. Repository
-workflow and Worker execution constraints remain separate from this manual.
+The topic files are the only edited product-manual source; there is no separately
+maintained aggregate. Repository workflow and Worker execution constraints remain
+separate from this manual.
 
 ## Agent skill installation
 
-The public skill contains a short navigation entry and the complete manual, also
-available offline with `daynight --skill`. The Worker supplies its execution
-constraints and original assignment in its prompt; each repository's rules and
-actual authorization govern delivery.
+The public skill contains a short navigation entry and independently readable
+topic files. The entry directs an Agent to the files needed for its requested
+operation; writes also require the common write-safety rules and the target
+resource's conditions and recovery rules. `daynight --skill` exposes the complete
+generated manual offline. Installation validates every required topic and its
+internal file and section links before replacing a target. Whole-directory
+replacement removes obsolete references as well as local edits.
+
+The Worker supplies its execution constraints and original assignment in its
+prompt; each repository's rules and actual authorization govern delivery.
 
 Install the skill through an interactive terminal:
 
@@ -814,16 +822,16 @@ A positive exact full ID match ranks before a title match; fragments do not.
 Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
 `title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
-`--allow-agents`, and `--compatible-platform` intersect the expression; search
+`--allow-agents`, `--compatible-platform`, `--type`, and `--parent` intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
 Search reads and validates every page before producing output, preserving the
-server's order. Text shows the full Task ID and title, status, chain representative
-or `none`, positive match fields, and a description snippet when present. A
+server's order. Text shows the full Task ID and title, type, parent, status, actual
+parent Goal or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
+`type`, `parentId`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -839,12 +847,17 @@ Implement OAuth sign-in for the web workspace. Deliver the callback flow and
 visible failure recovery; preserve the existing session and provider rules.
 Complete when a valid login opens the workspace and a rejected login can retry.'
 daynight task create --title "Build the sign-in page" --depends-on <design-task-id> --external-depends-on <authentication-task-id>
+daynight task create --type goal --title "Improve installation"
+daynight task create --type goal --title "Unassigned Goal" --clear-assigned-to
+daynight task create --title "Document prerequisites" --parent <goal-id> --status todo
 daynight task ready
-daynight task ready --limit 5 --json
+daynight task ready --parent <goal-id> --limit 5 --json
 daynight task ready --allow-agents true --compatible-platform linux --json
 daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
+daynight task list --type goal --json
+daynight task list --parent none --json
 daynight task list --status in_progress --json
 daynight task list --status in_progress --group-by chain --assigned-to me --json
 daynight task list --ready --assigned-to me --json
@@ -854,6 +867,8 @@ daynight task properties <task-id> --json
 daynight task properties --schema --json
 daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Fix synchronization"}]' --if-version <observed-version>
 daynight task remove-property <task-id> pullRequests --if-version <observed-version>
+daynight task update <task-id> --parent <goal-id> --if-version <version>
+daynight task update <task-id> --parent none --if-version <version>
 daynight task update <task-id> --description=
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
@@ -862,7 +877,7 @@ daynight task update <task-id> --clear-required-platform --if-version <version>
 daynight task create --title "Review installation" --assigned-to <user-uuid>
 daynight task update <task-id> --assigned-to <user-uuid> --if-version <version>
 daynight task update <task-id> --clear-assigned-to --if-version <version>
-daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
 daynight task graph <task-id> --json
@@ -902,12 +917,35 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Creation uses `allowAgents=false` and unrestricted
-`requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
+Task resources require `type` (`task` or `goal`) and a nullable `parentId`. Create,
+list and search default to `task`; `--type goal` selects a Goal. List, search and
+ready accept `--parent <goal-id|none>`: omission does not filter by parent, `none`
+selects Tasks without a Goal, and a Goal UUID selects its direct children. Filters apply
+before pagination and persist across pages. Create defaults to no parent; on update,
+omission preserves the current parent. `--parent none` sends null, and a Goal UUID
+sets the parent. A Goal cannot have a parent. Membership does not change Task
+identity, status, assignee, materials, dependencies or their classifications.
+
+A Goal uses `todo`, `in_progress`, `done` or `cancelled` and is never ready. Full
+Goal reads include progress; its Session registration is `not_applicable`. Graph
+nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources
+without exposing their details. Ready remains a dependency fact; it does not apply
+the additional parent-state restrictions used for automatic claims.
+
+Before creating a Goal in `done` or `cancelled`, or setting a Goal to either status, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Status and delete read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
+
+Ordinary Task creation defaults to `proposed`; `--status proposed|todo` explicitly
+selects the initial state, so confirmed internal multi-step work can start in todo.
+Goal creation defaults to `todo` and accepts `todo`, `in_progress`, `done` and
+`cancelled`. Both default to the signed-in assignee; `--assigned-to <user-uuid>`
+overrides it, and `--clear-assigned-to` explicitly creates an unassigned resource.
+These two options conflict.
+Ordinary creation uses `allowAgents=false` and unrestricted `requiredPlatform=null`
+unless explicitly set. Goal execution fields are not applicable. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `proposed`, `todo`, `in_progress`, `done` or `cancelled`. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
-reopening and direct completion; cancellation is irreversible and does not prove
-delivery. Cancelled records and materials remain readable.
+sets `proposed`, `todo`, `in_progress`, `done` or `cancelled` for ordinary Tasks. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
+reopening and direct completion; ordinary Task cancellation is irreversible and does not prove
+delivery. Goal-specific lifecycle effects remain subject to the service's business checks. Cancelled records and materials remain readable unless effective parent deletion hides them.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -916,7 +954,7 @@ and is never inferred from a task or environment. Without it, ordinary status
 setting is unchanged. Release and continuation of released work use their protected
 operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
-without it, the CLI reads once immediately before submitting. No write retries
+without it, the CLI reads the target before submitting. No write retries
 occur. A controller-bounded worker assignment executes its supplied claim in the
 provided worktree, finishes with the explicit claim ID after delivery, and leaves
 system worktree cleanup and next-task selection to its controller. Version is
@@ -1099,13 +1137,14 @@ only those external edges. IDs are canonicalized and sorted; malformed and
 case-equivalent duplicate/cross-declared UUIDs fail before configuration or
 network access. `--clear-dependencies` sends two empty sets and conflicts with
 either dependency option. An update needs at least one mutable
-field. Create/update accept `--assigned-to <user-uuid>`; update also accepts
-`--clear-assigned-to` to send null. CLI creation without `--assigned-to` reads
-the signed-in account through `/me` and submits its UUID. An explicit UUID skips
-that identity lookup. A failed or cancelled lookup prevents creation; the CLI
-does not substitute an unassigned task. Update omission preserves the existing
-assignee. Direct API callers retain optional assignment and may create unassigned
-tasks by omitting `assignedTo` or sending null. The set/clear options conflict, and invalid UUIDs or combinations fail before
+field. Create/update accept `--assigned-to <user-uuid>` or `--clear-assigned-to`
+to send null. Ordinary Task creation with neither option reads the signed-in
+account through `/me` and submits its UUID; a failed or cancelled lookup prevents
+creation. Goal creation with neither option omits `assignedTo`, and the service
+defaults it to the caller. An explicit UUID or null skips the lookup. Update
+omission preserves the existing assignee. Direct API ordinary Task creation may
+omit `assignedTo` or send null to create an unassigned Task; Goal creation uses
+explicit null for that result. The set/clear options conflict, and invalid UUIDs or combinations fail before
 configuration, Git or HTTP access. Writes accept UUIDs, not the list tokens
 me/unassigned. A real assignment change atomically sets allowAgents=false; an
 equal assignment causes no permission reset; a pure equal update preserves
@@ -1270,7 +1309,7 @@ User signal cancellation exits 130. JSON retains the
 original body or explicit content reference; text retains readable line breaks
 while escaping terminal controls. Session reads do not execute message content,
 start Agents, change claims or grant sending permission. The bundled
-[Session inspection guide](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-reads.md)
 describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
@@ -1327,7 +1366,7 @@ identity in bounded output. Provider acceptance and confirmation do not mean the
 Agent completed the requested work. Local receipt-save or output failure does
 not undo service acceptance or authorize another POST.
 
-The [Session intervention reference](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-messages.md)
 describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties
@@ -1920,7 +1959,7 @@ service uses its last valid report time for the 120-second offline threshold and
 task status.
 
 Current execution monitoring is reported separately every 30 seconds. It shows
-observed scheduling, activities, capacity and bounded failure summaries; unknown
+observed scheduling, activities, capacity and bounded failure summaries. Claim failures with trusted bindings may include a project-relative worktree location or a fixed unavailable reason; unknown
 or stale data does not mean the Worker is idle. Monitoring failures do not stop
 heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 defines its freshness, permissions and retention.
@@ -2160,6 +2199,58 @@ not require parsing stale managed YAML values. `model: null` clears the model;
 omitted Project override fields preserve inheritance, while `args: []` clears
 arguments explicitly.
 
+`worker.toolPaths` accepts local selections for `codex`, `copilot` and `herdr`.
+The parser returns a complete choice for all three tools; an omitted mapping,
+omitted tool or per-tool `null` selects automatic discovery. An empty or
+whitespace-only string is invalid. The mapping itself must be an object and
+rejects other tool names. For example:
+
+```yaml
+worker:
+  toolPaths:
+    codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
+    copilot: null
+    herdr: /opt/homebrew/bin/herdr
+```
+
+These choices are currently parsed locally. Worker Task/Bot launches, existing
+probes and cloud configuration do not consume them yet; saving this mapping does
+not establish that a tool path is applied. Explicit paths must be absolute on
+the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+characters. Windows paths need a drive or complete UNC share. Values retain all
+spaces and punctuation: the parser does not trim, normalize, expand `~` or
+environment variables, split arguments, or access the filesystem. Provide one
+complete file path; native arguments remain in their existing configuration.
+The shared resolver owns existence, executable format and interpreter checks.
+
+For resolver callers, automatic Codex and Herdr selection searches the captured
+Worker PATH. Automatic Copilot selects the bundled native runtime in Web context
+and the captured PATH in Herdr context; explicit choices select only that entry's
+installation. Supported Node entries use the frozen Worker Node executable, so
+an nvm CLI path does not select the Node beside it. Standard npm Node shims are
+validated as complete known templates and unpacked without executing shell code.
+Official Copilot entries resolve the native package within that installation.
+Official Codex entries retain their loader and record its selected native; the
+registered loader bytes cover releases 0.142.5, 0.145.0 and 0.156.1. Unknown loader
+or shim formats fail with `unsupported_launcher`; a supported Node entry or
+native executable can be selected directly.
+
+Official Codex launches use the frozen Worker Node with
+`["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`.
+The loader bytes remain unchanged. These Node options prevent `NODE_PATH` and
+symlink-preserving module resolution from changing which native package the
+loader selects. Ordinary Node scripts retain Node plus their canonical script
+path. Static package lookup follows the actual loader directory's ancestor
+`node_modules` directories and builds the native path from the canonical package
+manifest location; a candidate from another installation is rejected. Before
+launch, verification repeats this static selection from the frozen entry as well
+as checking recorded files, so installing a higher-priority package invalidates
+the selection even when the previous vendor binary remains unchanged.
+
+Resolution starts no process and does not validate the tool's version or protocol. The
+[Worker design](../../docs/design/daynight-worker.md#本地工具路径选择) describes
+the launch identity and verification responsibilities.
+
 The initial candidate resolves each repository remote and optional projectId to
 an existing service Project, preserving native override intent. Use projectId
 when remote discovery is ambiguous. A local binding requires a valid path when
@@ -2168,7 +2259,7 @@ resetting files or branches. A Project without a prepared binding stays pending.
 Credentials belong in native authentication configuration, outside repository
 URLs and argument lists.
 
-Entry paths are absolute or relative to the configuration directory, never the
+Repository entry paths are absolute or relative to the configuration directory, never the
 launch directory. They do not expand tilde or accept Windows drive-relative
 paths. Duplicate repositories/Projects and overlapping repository/state paths
 are errors. maxConcurrent is positive, recoveryLimit is nonnegative, and
@@ -2417,16 +2508,26 @@ They do not create another generation or send the assignment. A successful
 launch still requires durable native process identity before input admission;
 an unknown response or a crash cannot authorize another launch or replay.
 
-Startup, recovery and continuation prompts require autonomous decisions within
-the task scope and existing authorization. Human intervention requires specific
-information, a decision, authorization or an action that the agent cannot supply
-within that scope and authority. Before waiting for that intervention, the
-managed agent sets its own task's `paused` property to true with an observed
-exact version and confirms the same assignment and pause before waiting. It
-reports the issue and retains session context; the user chooses how to respond.
-After verifying resolution, the original assignment and permission to resume,
-it clears the pause and confirms false or absence before continuing. Independent
-user restrictions still apply. The [Worker execution contract](../../docs/spec/daynight-worker.md)
+Startup, macOS recovery or continuation, and periodic ping prompts share an
+autonomous execution policy. The agent checks the task, repository constraints
+and evidence, adjusts its approach, steps and task decisions, investigates failed
+approaches and chooses feasible alternatives, and records significant deviations
+and their reasons. It preserves confirmed business goals, scope, acceptance,
+external commitments and authorization. Ordinary information gaps, unavailable
+tools, failed approaches, recoverable errors and obsolete steps alone do not
+trigger a pause.
+
+A request for a specific human decision requires an evidenced severe design
+conflict: confirmed requirements or architecture constraints cannot all be met,
+no feasible compatible alternative exists, and resolution requires changing a
+confirmed constraint. Before waiting, the agent records the evidence, affected
+requirements, alternatives considered and decision needed, then sets its own
+task's `paused` property to true with an observed exact version and confirms the
+same assignment and pause. It retains session context; the user chooses how to
+respond. After verifying resolution, the original assignment and permission to
+resume, it clears the pause and confirms false or absence before continuing.
+Independent user pauses, restrictions and revocations, `allowAgents=false`, and
+claim or assignment changes remain binding. The [Worker execution contract](../../docs/spec/daynight-worker.md)
 owns readback, failure and conflict handling.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt
@@ -3472,7 +3573,9 @@ Ctrl+C stops new work and polling, terminates current managed execution, waits
 for operations and closes SQLite before releasing the instance lock. Agents must
 run tools in the foreground and stop their services before returning. Normal
 unforced exit and drained streams are evidence under that contract. POSIX uses
-current process groups; Windows cancels live trees with `taskkill /T /F`.
+current process groups; Windows skill discovery and review phases stop their
+held Jobs and join captured process objects and direct streams. The legacy
+unowned helper retains its separate ancestry checks and termination policy.
 Uncertain termination retains the lock and interrupted state.
 
 Startup checks the PID in an existing `~/.daynight/instance.lock` with a

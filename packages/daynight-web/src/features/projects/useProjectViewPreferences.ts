@@ -25,7 +25,7 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
 };
 
 export type ProjectSection = "overview" | "tasks";
-export type TaskView = "standalone" | "chains";
+export type TaskView = "standalone" | "chains" | "goals";
 export type GraphDirection = "horizontal" | "vertical";
 
 const projectSectionPreference = (value: unknown): ProjectSection => {
@@ -34,7 +34,7 @@ const projectSectionPreference = (value: unknown): ProjectSection => {
 };
 
 const taskViewPreference = (value: unknown): TaskView => {
-  if (value !== "standalone" && value !== "chains") throw new Error("Invalid project task view preference.");
+  if (value !== "standalone" && value !== "chains" && value !== "goals") throw new Error("Invalid project task view preference.");
   return value;
 };
 

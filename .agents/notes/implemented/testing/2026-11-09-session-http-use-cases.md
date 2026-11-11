@@ -21,8 +21,10 @@ HTTP unit responsibilities follow the
 
 ## Decision
 
-The regular `internal/server/session` suite executes actual routes with direct
-Session use-case mocks. The private
+The [protocol component decision](2026-11-11-session-protocol-component-ownership.md)
+retains real Session service and engine collaborators for protocol scenarios
+whose fences and sequencing depend on them. Adapter-only tests execute actual
+routes with direct Session use-case mocks. The private
 [service binding](../../../../packages/daynight-server/internal/server/session/service_calls.go)
 projects existing production methods into typed callbacks. Test-only aliases
 provide those same calls without constructing a real service, engine or DAO.
@@ -63,7 +65,7 @@ The receiving proof owners are explicit:
 
 - The [service completion witness](../../../../packages/daynight-server/internal/service/session/archive_preflight_order_test.go) checks lower work and returned transaction completion before the finisher, preserving outcome and error identity.
 - Core witnesses retain [preflight before residency](../../../../packages/daynight-server/internal/core/session/archive_preflight_order_test.go) and [terminal initial-delivery state and proposed writes](../../../../packages/daynight-server/internal/core/session/terminal_initial_delivery_witness_test.go).
-- Store witnesses retain [failed-disconnect rollback and its cause](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go), [return of the only physical connection](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go), and [zero legacy content rows after native ledger writes](../../../../packages/daynight-server/internal/core/store/postgres/session/operation_contract_test.go).
+- Store witnesses retain [failed-disconnect rollback and its cause](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go), [return of the only physical connection](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go), and [zero legacy content rows after native ledger writes](../../../../packages/daynight-server/internal/core/store/postgres/session/session_lifecycle_test.go).
 - The [Attachment HTTP witness](../../../../packages/daynight-server/internal/server/attachment/body_completion_socket_test.go) retains consumed-body metadata failure and next-request keepalive through direct lower calls and actual TCP.
 
 `TestServerAPISessionNormalFlow` uses the real production Server, authentication,

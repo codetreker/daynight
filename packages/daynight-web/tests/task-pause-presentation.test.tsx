@@ -1,3 +1,4 @@
+import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
@@ -19,13 +20,13 @@ const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({
-  id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
+  type: 'task', parentId: null, id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
   version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: time, updatedAt: time, ...changes,
 });
 const seeds = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)], properties: { paused: true } }),
   summary(3, { status: 'in_progress', properties: { paused: true } }), summary(4, { properties: { paused: false } }), summary(5)];
-const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
+const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let sessionScope: TaskCacheScope;
 let sessionStore: TaskSessionSummaryStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
@@ -34,6 +35,7 @@ const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView={activeView}
+  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
   standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} />;
@@ -65,6 +67,7 @@ describe('paused task discovery', () => {
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
     const view = renderWithLocale(<ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="standalone"
+      goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
       unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
       standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
@@ -112,12 +115,12 @@ describe('paused task discovery', () => {
     installGraphMeasurements();
     const tasks = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { status: 'in_progress', dependsOn: [id(1)], properties: { paused: true } })];
     const view = renderWithLocale(workspace(snapshot(tasks), 'chains', id(1)), { locale: 'en', taskCache: true });
-    const counts = () => [...view.container.querySelectorAll('.task-pause-count')].map((element) => element.textContent);
+    const counts = () => [...document.querySelectorAll('.task-pause-count')].map((element) => element.textContent);
     await screen.findByRole('dialog');
     expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
     view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)), 'chains', id(1)));
     expect(counts()).toEqual([]);
-    expect(view.container.querySelectorAll('.task-node-paused')).toHaveLength(2);
+    expect(screen.getByRole('dialog').querySelectorAll('.task-node-paused')).toHaveLength(2);
     view.rerender(workspace(snapshot(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)), 'chains', id(1)));
     expect(counts()).toEqual(['1 paused', '1 paused', '1 paused']);
   });

@@ -14,6 +14,7 @@ import type { CanvasNode, CanvasPoint } from './layout';
 
 export type TaskNodeData = {
   task: GraphTask;
+  ownerLabel?: string | null;
   kind: 'main' | 'external';
   center: CanvasPoint;
   size: Pick<CanvasNode, 'width' | 'height'>;
@@ -27,13 +28,14 @@ export type TaskNodeData = {
 
 export type TaskFlowNode = Node<TaskNodeData, 'task'>;
 
-const TaskNodeContent = memo(({ task, kind, execution }: Pick<TaskNodeData, 'task' | 'kind'> & { readonly execution: TaskExecution | null }) => {
+const TaskNodeContent = memo(({ task, kind, ownerLabel, execution }: Pick<TaskNodeData, 'task' | 'kind' | 'ownerLabel'> & { readonly execution: TaskExecution | null }) => {
   const { messages: { graph: m, common } } = useI18n();
   const paused = useTaskPaused(task.id);
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   return <>
     <span className="task-node-meta">
       <span className="task-node-id">{task.id.slice(0, 8)}</span>
+      {ownerLabel != null && <span className="task-node-owner" title={ownerLabel}>{ownerLabel}</span>}
       <span className="task-node-meta-labels">{paused && <TaskPausedBadge compact />}<TaskAgentPermissionBadge allowAgents={task.allowAgents} compact /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} compact />{execution?.overdue && <TaskExecutionWarning />}</span>
     </span>
     <span className="task-node-title">{title}</span>
@@ -104,10 +106,10 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   return (
     <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-task-status={data.task.status} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
       <button type="button" ref={body} className="task-node-body nodrag nopan"
-        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
+        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${data.ownerLabel == null ? '' : `, ${data.ownerLabel}`}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
         aria-describedby={execution === null ? undefined : descriptionId}
         aria-pressed={inspection === 'selected'} onClick={inspect} onFocus={revealOnFocus}>
-        <TaskNodeContent task={data.task} kind={data.kind} execution={execution} />
+        <TaskNodeContent task={data.task} kind={data.kind} ownerLabel={data.ownerLabel ?? null} execution={execution} />
       </button>
       {execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}
       <button type="button" className="task-node-details nodrag nopan" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} onClick={open} onFocus={revealOnFocus}>{m.details}</button>

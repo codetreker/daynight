@@ -27,7 +27,7 @@ var _ store.ThreadDAO = (*ThreadAccess)(nil)
 const threadClockBudget = 100 * time.Millisecond
 
 func (tx *ThreadAccess) LockTaskPresence(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
-	return pg.TaskPresence(ctx, tx.tx, projectID, taskID, " FOR SHARE")
+	return pg.LockTaskResource(ctx, tx.tx, projectID, taskID, false)
 }
 
 func (tx *ThreadAccess) Credential(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {

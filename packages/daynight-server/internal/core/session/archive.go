@@ -35,7 +35,8 @@ func scopeArchiveTask(ctx context.Context, tx *operationTx, project, id string, 
 	// Retain task-before-session lock ordering: deletion freezes the session in
 	// the same transaction, so finalization sees either side of that transition.
 	persisted, deleted, err := tx.dao.LockArchiveTask(ctx, project, id)
-	return task{Worker: persisted.Worker, Status: persisted.Status, StartupReport: persisted.StartupReport}, deleted, err
+	persisted.Deleted = deleted
+	return taskFromStore(persisted), deleted, err
 }
 func archiveStatus(ctx context.Context, tx *operationTx, id string) (sp.ArchiveStatus, string, error) {
 	return tx.dao.SessionArchive(ctx, id)
@@ -167,7 +168,7 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 			if r.Snapshot.Lifecycle != "archived" {
 				return conflict()
 			}
-		} else if active(t, r) || (r.Snapshot.Lifecycle == "active" && t.Status == "in_progress") {
+		} else if active(t, r) || (r.Snapshot.Lifecycle == "active" && !t.Deleted && t.Status == "in_progress") {
 			return conflict()
 		}
 		var err error

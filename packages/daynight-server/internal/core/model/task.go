@@ -2,6 +2,13 @@ package model
 
 import "time"
 
+type TaskType string
+
+const (
+	TaskTypeTask TaskType = "task"
+	TaskTypeGoal TaskType = "goal"
+)
+
 type TaskStatus string
 
 const (
@@ -26,7 +33,17 @@ func (status TaskStatus) RequiresSatisfiedPrerequisites() bool {
 
 func (status TaskStatus) IsExecutable() bool { return status == TaskTodo }
 
+type GoalProgress struct {
+	Total      int64 `json:"total"`
+	Done       int64 `json:"done"`
+	Cancelled  int64 `json:"cancelled"`
+	Unfinished int64 `json:"unfinished"`
+}
+
 type Task struct {
+	Progress          *GoalProgress
+	Type              TaskType
+	ParentID          *string
 	ID                string
 	ProjectID         string
 	Title             string

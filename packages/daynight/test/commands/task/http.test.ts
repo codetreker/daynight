@@ -18,7 +18,7 @@ const claimId = "abcdefab-4444-4222-8333-123456789abc";
 const accountId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -58,6 +58,77 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it.each([
+    { args: ["--type", "goal"], input: { type: "goal" }, parentId: null, assignedTo: accountId, type: "goal" },
+    { args: ["--type", "goal", "--parent", "none", "--clear-assigned-to"], input: { type: "goal", parentId: null, assignedTo: null }, parentId: null, assignedTo: null, type: "goal" },
+    { args: ["--type", "goal", "--assigned-to", otherId.toUpperCase(), "--status", "in_progress"], input: { type: "goal", assignedTo: otherId, status: "in_progress" }, parentId: null, assignedTo: otherId, type: "goal" },
+    { args: ["--parent", otherId.toUpperCase()], input: { parentId: otherId, assignedTo: accountId }, parentId: otherId, assignedTo: accountId, type: "task" },
+    { args: ["--parent", "none"], input: { parentId: null, assignedTo: accountId }, parentId: null, assignedTo: accountId, type: "task" },
+  ])("sends create presence fields and renders the returned $type", async ({ args, input, parentId, assignedTo, type }) => {
+    const goal = type === "goal";
+    const status = input.status ?? (goal ? "todo" : "proposed");
+    const created = { ...task, type, parentId, assignedTo, status, ready: false,
+      startedAt: status === "in_progress" ? time : null,
+      ...(goal ? { progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } } : {}) };
+    const f = await fixture((_request, response) => { response.setHeader("Daynight-User-ID", accountId); respond(response, created, 201); });
+    await f.run(["create", "--title", "Title", ...args]);
+    const writes = f.requests.filter(({ method }) => method === "POST");
+    expect(writes).toHaveLength(1);
+    expect(parseApiJson(writes[0]!.body)).toEqual({ title: "Title", ...input });
+    expect(f.requests.some(({ path }) => path === "/api/v1/me")).toBe(!goal);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain(`Type: ${type}`);
+  });
+
+  it.each([
+    ["--type", "goal", "--parent", otherId],
+    ["--type", "goal", "--status", "proposed"],
+    ["--status", "done"],
+    ["--parent", "invalid"],
+    ["--assigned-to", otherId, "--clear-assigned-to"],
+  ])("rejects invalid create options before sending a request: %s", async (...args) => {
+    const f = await fixture(() => { throw new Error("Unexpected request"); });
+    await expect(f.run(["create", "--title", "Title", ...args])).rejects.toThrow();
+    expect(f.requests).toEqual([]);
+  });
+
+  it.each([
+    { args: ["--parent", otherId.toUpperCase()], parent: otherId },
+    { args: ["--parent", "none"], parent: null },
+  ])("sends parent-only update with the caller's exact version: $parent", async ({ args, parent }) => {
+    const f = await fixture((_request, response) => respond(response, { ...task, parentId: parent }));
+    await f.run(["update", taskId, ...args, "--if-version", "9223372036854775807"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PATCH"]);
+    expect(parseApiJson(f.requests[1]!.body)).toEqual({ version: 9_223_372_036_854_775_807n, parentId: parent });
+  });
+
+  it("preserves parent and dependency classifications when parent is omitted from an update", async () => {
+    const current = { ...task, parentId: otherId, dependsOn: [claimId], externalDependsOn: [claimId], ready: false, blockedBy: [claimId] };
+    const f = await fixture((request, response) => respond(response, request.method === "GET" ? current : { ...current, title: "Changed" }));
+    await f.run(["update", taskId, "--title", "Changed"]);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, title: "Changed" });
+  });
+
+  it.each(["none", otherId.toUpperCase()])("carries type and parent %s across list pages and the ready request", async parent => {
+    const cursor = "next page+/=?";
+    const parentId = parent === "none" ? null : otherId;
+    const f = await fixture((request, response) => respond(response, request.query.has("ready") ? { items: [], nextCursor: null } : request.query.has("cursor") ? { items: [{ ...task, id: claimId, parentId }], nextCursor: null } : { items: [{ ...task, parentId }], nextCursor: cursor }));
+    await f.run(["list", "--type", "task", "--parent", parent, "--json"]);
+    const selection = parent === "none" ? "none" : otherId;
+    expect(f.requests.slice(1).map(({ query }) => Object.fromEntries(query))).toEqual([
+      { type: "task", parentId: selection, limit: "100", include: "session" },
+      { type: "task", parentId: selection, limit: "100", include: "session", cursor },
+    ]);
+    f.requests.length = 0;
+    await f.run(["ready", "--parent", parent, "--allow-agents", "true", "--limit", "1", "--json"]);
+    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ parentId: selection, ready: "true", allowAgents: "true", limit: "1" });
+  });
+
+  it("sends an explicit Goal list filter", async () => {
+    const f = await fixture((_request, response) => respond(response, { items: [], nextCursor: null }));
+    await f.run(["list", "--type", "goal", "--json"]);
+    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ type: "goal", limit: "100", include: "session" });
+  });
+
   it("keeps assigned responsibility and complete active worker ownership through a same-assignee update", async () => {
     const active = { ...task, status: "in_progress", ready: false, startedAt: time, allowAgents: true, assignedTo: accountId, properties: { worker: { ...worker, userId: accountId }, pullRequests: [] } } as const;
     const f = await fixture((_request, response) => respond(response, active));
@@ -159,7 +230,7 @@ describe("task commands over HTTP", () => {
     await f.run(["delete", taskId.toUpperCase(), ...(removeDepends ? ["--remove-depends"] : []), ...(version === undefined ? [] : ["--if-version", version])]);
     expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
       `GET /api/v1/projects/${projectId}`,
-      ...(version === undefined ? [`GET /api/v1/projects/${projectId}/tasks/${taskId}`] : []),
+      `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
       `DELETE /api/v1/projects/${projectId}/tasks/${taskId}`,
     ]);
     expect(f.requests.at(-1)!.body).toBe(`{"version":${version === undefined ? task.version : version}${removeDepends ? ",\"removeDepends\":true" : ""}}`);
@@ -168,15 +239,16 @@ describe("task commands over HTTP", () => {
 
   it("leaves dependency refusal authoritative to the server until removal is explicitly authorized", async () => {
     const f = await fixture((request, response) => {
+      if (request.method === "GET") { respond(response, task); return; }
       const body = parseApiJson(request.body) as { version: bigint; removeDepends?: boolean };
       if (body.removeDepends === true) { response.writeHead(204); response.end(); }
       else respond(response, { error: { code: "dependency_unsatisfied", message: "Other tasks depend on this task.", requestId: "incoming-dependencies", details: { taskIds: [otherId] } } }, 409);
     });
     await expect(f.run(["delete", taskId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ code: "dependency_unsatisfied", details: { taskIds: [otherId] }, confirmedRefusal: true });
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "DELETE"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
     await f.run(["delete", taskId, "--remove-depends", "--if-version", "9007199254740993"]);
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE", "GET", "DELETE"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "DELETE", "GET", "GET", "DELETE"]);
     expect(f.requests.at(-1)!.body).toBe('{"version":9007199254740993,"removeDepends":true}');
     expect(f.context.stdout).toHaveBeenCalledOnce();
   });
@@ -187,17 +259,17 @@ describe("task commands over HTTP", () => {
     { code: "invalid_transition", status: 409 },
     { code: "task_deleted", status: 410 },
   ])("preserves deletion refusal $code without replay", async ({ code, status }) => {
-    const f = await fixture((_request, response) => respond(response, { error: { code, message: "Deletion refused", requestId: "delete-refused", details: { taskIds: [otherId] } } }, status));
+    const f = await fixture((request, response) => request.method === "GET" ? respond(response, task) : respond(response, { error: { code, message: "Deletion refused", requestId: "delete-refused", details: { taskIds: [otherId] } } }, status));
     await expect(f.run(["delete", taskId, "--if-version", "1"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, code, status, requestId: "delete-refused", details: { taskIds: [otherId] }, confirmedRefusal: true });
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "DELETE"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("reports a lost deletion response with consent %s as unconfirmed without resubmitting", async (removeDepends) => {
-    const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
+    const f = await fixture((request, response, raw) => { if (request.method === "GET") respond(response, task); else raw.socket.destroy(); });
     await expect(f.run(["delete", taskId, ...(removeDepends ? ["--remove-depends"] : []), "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, outcomeUnconfirmed: true });
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, ...(removeDepends ? { removeDepends: true } : {}) });
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "DELETE"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
@@ -218,14 +290,14 @@ describe("task commands over HTTP", () => {
     expect(f.requests.at(-1)!.body).toBe(`{"version":9007199254740993,"status":"${status}"}`);
     f.requests.length = 0;
     await f.run(["set-status", taskId, status, "--if-version", "9223372036854775807"]);
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(f.requests.at(-1)!.body).toBe(`{"version":9223372036854775807,"status":"${status}"}`);
   });
 
   it("reports an unconfirmed status write after dispatch without retrying", async () => {
-    const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
+    const f = await fixture((request, response, raw) => { if (request.method === "GET") respond(response, task); else raw.socket.destroy(); });
     await expect(f.run(["set-status", taskId, "done", "--if-version", "1"])).rejects.toMatchObject({ operation: "task.set-status", projectId, taskId, outcomeUnconfirmed: true });
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
@@ -240,7 +312,7 @@ describe("task commands over HTTP", () => {
 
     await f.run(["set-status", taskId.toUpperCase(), "done", `--claim-id=${claimId.toUpperCase()}`, ...(versionArgument === undefined ? [] : ["--if-version", versionArgument])]);
 
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", ...(versionArgument === undefined ? ["GET"] : []), "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(f.requests.at(-1)!.path).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/status`);
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: versionArgument === undefined ? task.version : 9_223_372_036_854_775_807n, status: "done", claimId });
     expect(f.context.stdout).toHaveBeenCalledOnce();
@@ -254,33 +326,34 @@ describe("task commands over HTTP", () => {
     { code: "forbidden", status: 403 },
     { code: "dependency_unsatisfied", status: 409 },
   ])("preserves worker completion refusal $code without fallback or replay", async ({ code, status }) => {
-    const f = await fixture((_request, response) => respond(response, { error: { code, message: "Completion refused.", requestId: "claim-completion-refused" } }, status));
+    const f = await fixture((request, response) => request.method === "GET" ? respond(response, task) : respond(response, { error: { code, message: "Completion refused.", requestId: "claim-completion-refused" } }, status));
 
     await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "worker.complete", projectId, taskId, status, code, confirmedRefusal: true, outcomeUnconfirmed: false });
 
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, status: "done", claimId });
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
   it.each(["disconnect", "server failure"])("keeps worker completion %s unconfirmed without a retry", async (failure) => {
-    const f = await fixture((_request, response, raw) => {
+    const f = await fixture((request, response, raw) => {
+      if (request.method === "GET") { respond(response, task); return; }
       if (failure === "disconnect") raw.socket.destroy();
       else respond(response, { error: { code: "internal_error", message: "Completion outcome unavailable.", requestId: "claim-completion-unknown" } }, 500);
     });
 
     await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "1"])).rejects.toMatchObject({ operation: "worker.complete", projectId, taskId, outcomeUnconfirmed: true });
 
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
   it("rejects a completion response for a different claim as an unknown outcome", async () => {
-    const f = await fixture((_request, response) => respond(response, { ...task, version: 2n, status: "done", ready: false, completedAt: time, properties: { worker: { ...worker, claimId: otherId, state: "completed" }, pullRequests: [] } }));
+    const f = await fixture((request, response) => respond(response, request.method === "GET" ? task : { ...task, version: 2n, status: "done", ready: false, completedAt: time, properties: { worker: { ...worker, claimId: otherId, state: "completed" }, pullRequests: [] } }));
 
     await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "1"])).rejects.toMatchObject({ operation: "worker.complete", phase: "protocol", outcomeUnconfirmed: true });
 
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PUT"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
@@ -375,8 +448,8 @@ describe("task commands over HTTP", () => {
   it("renders complete graph data and exposes generic read failures", async () => {
     let failed = false;
     const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [
-      { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
-      { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
+      { type: "task", parentId: null, id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
+      { type: "task", parentId: null, id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time },
     ] };
     const f = await fixture((_request, response) => {
       if (failed) respond(response, { error: { code: "internal_error", message: "Read failed", requestId: "graph-read" } }, 500);

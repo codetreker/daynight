@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
@@ -83,12 +84,24 @@ func unavailableObservation(observed time.Time, reason string) sp.TaskSessionObs
 	return sp.TaskSessionObservation{SchemaVersion: 1, Observation: "unavailable", Registration: "unknown", Reason: reason, Send: sp.TaskSessionSend{Reason: reason}, ObservedAt: &observed, Error: &sp.OperationError{Code: reason, Message: "Session observation is unavailable; query this task again."}}
 }
 
+func goalObservation(observed time.Time) sp.TaskSessionObservation {
+	allowed := false
+	freshUntil := observed.Add(sessioncore.HeartbeatTimeout)
+	return sp.TaskSessionObservation{SchemaVersion: 1, Observation: "observed", Registration: "not_applicable", Reason: "no_execution", Send: sp.TaskSessionSend{Allowed: &allowed, Reason: "no_execution"}, ObservedAt: &observed, FreshUntil: &freshUntil}
+}
+
 // observeBatch retains each selected Task even when observation fails. Sources
 // are read from the same authorized snapshot and are never substituted by a
 // later Task execution. Live facts remain separately fenced by the observer.
 func (s *Observations) observeBatch(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []model.Task, observed time.Time) (map[string]sp.TaskSessionObservation, bool, error) {
 	result := make(map[string]sp.TaskSessionObservation, len(tasks))
 	partial := false
+	for _, task := range tasks {
+		if task.Type == model.TaskTypeGoal {
+			result[task.ID] = goalObservation(observed)
+		}
+	}
+	tasks = observableExecutionTasks(tasks)
 	for start := 0; start < len(tasks); start += 200 {
 		end := min(start+200, len(tasks))
 		batch := tasks[start:end]

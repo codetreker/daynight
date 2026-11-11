@@ -40,14 +40,18 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	project := testProject()
 	project.ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	root := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	result := model.TaskGraph{Project: project, ObservedAt: stamp, Summary: model.TaskGraphSummary{Total: 6, Proposed: 1, Todo: 2, InProgress: 1, Done: 2, Ready: 1, Blocked: 1}, Tasks: []model.GraphTask{
-		{ID: root, TitlePreview: "root-private-title", Status: model.TaskDone, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
-		{ID: "55555555-5555-4555-8555-555555555555", TitlePreview: "active-private-title", Status: model.TaskInProgress, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp},
+		{ID: root, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "root-private-title", Status: model.TaskDone, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: "active-private-title", Status: model.TaskInProgress, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp},
 		{ID: "66666666-6666-4666-8666-666666666666", TitlePreview: strings.Repeat("🙂", 160), TitleTruncated: true, Status: model.TaskTodo, Ready: true, DependsOn: []string{root}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 		{ID: "77777777-7777-4777-8777-777777777777", TitlePreview: "blocked-private-title", Status: model.TaskTodo, DependsOn: []string{"55555555-5555-4555-8555-555555555555", root}, BlockedBy: []string{"55555555-5555-4555-8555-555555555555"}, CreatedAt: stamp, UpdatedAt: stamp},
 		{ID: "88888888-8888-4888-8888-888888888888", TitlePreview: "done-private-title", Status: model.TaskDone, DependsOn: []string{root}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
 		{ID: "99999999-9999-4999-8999-999999999999", TitlePreview: "proposed-private-title", Status: model.TaskProposed, CreatedAt: stamp, UpdatedAt: stamp},
 	}}
+	for i := range result.Tasks {
+		result.Tasks[i].Type = model.TaskTypeTask
+	}
 	handler.Tasks.GraphFunc = func(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
 		if principal != handler.principal || projectID != project.ID || taskID != strings.ToUpper(root) || ctx.Err() != nil {
 			t.Fatalf("graph arguments: %+v %s %s", principal, projectID, taskID)
@@ -61,7 +65,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	}
 	for i, task := range graph.Tasks {
 		expected := result.Tasks[i]
-		if task.ID != expected.ID || task.TitlePreview != expected.TitlePreview || task.TitleTruncated != expected.TitleTruncated || task.Status != string(expected.Status) || task.Ready != expected.Ready || task.AllowAgents != expected.AllowAgents || !slices.Equal(task.DependsOn, expected.DependsOn) || !slices.Equal(task.ExternalDependsOn, expected.ExternalDependsOn) || !slices.Equal(task.BlockedBy, expected.BlockedBy) || task.DependsOn == nil || task.BlockedBy == nil || task.CreatedAt != expected.CreatedAt || task.UpdatedAt != expected.UpdatedAt || !reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) || !reflect.DeepEqual(task.CancelledAt, expected.CancelledAt) {
+		if task.ID != expected.ID || task.Type != string(expected.Type) || !reflect.DeepEqual(task.ParentID, expected.ParentID) || task.TitlePreview != expected.TitlePreview || task.TitleTruncated != expected.TitleTruncated || task.Status != string(expected.Status) || task.Ready != expected.Ready || task.AllowAgents != expected.AllowAgents || !slices.Equal(task.DependsOn, expected.DependsOn) || !slices.Equal(task.ExternalDependsOn, expected.ExternalDependsOn) || !slices.Equal(task.BlockedBy, expected.BlockedBy) || task.DependsOn == nil || task.BlockedBy == nil || task.CreatedAt != expected.CreatedAt || task.UpdatedAt != expected.UpdatedAt || !reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) || !reflect.DeepEqual(task.CancelledAt, expected.CancelledAt) {
 			t.Fatalf("projection %d=%+v want=%+v", i, task, expected)
 		}
 	}
@@ -79,7 +83,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 		t.Fatalf("summary=%+v", raw.Summary)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 16 {
+		if len(task) != 18 {
 			t.Fatalf("fields=%+v", task)
 		}
 		for _, field := range []string{"title", "description", "version", "projectId", "properties", "pullRequests"} {
@@ -87,6 +91,9 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 				t.Fatalf("unexpected detail %s", field)
 			}
 		}
+	}
+	if string(raw.Tasks[0]["type"]) != `"task"` || string(raw.Tasks[0]["parentId"]) != `"`+parent+`"` || string(raw.Tasks[1]["parentId"]) != "null" {
+		t.Fatalf("typed graph fields: %+v %+v", raw.Tasks[0], raw.Tasks[1])
 	}
 	for _, fragment := range []string{`"component":"task_graph"`, `"project_id":"` + project.ID + `"`, `"node_count":6`, `"edge_count":5`, `"duration":`, `"request_id":"project-test"`} {
 		if !strings.Contains(logs.String(), fragment) {
@@ -320,4 +327,44 @@ func TestTaskHTTPTodoReadContractWithoutGenericStatusWrites(t *testing.T) {
 	if len(graph.Tasks) != 1 || !graph.Tasks[0].Ready || len(graph.Tasks[0].BlockedBy) != 0 {
 		t.Fatalf("ready graph=%+v", graph)
 	}
+}
+
+func TestTaskHTTPAssignmentGraphProjections(t *testing.T) {
+	f := newTaskHTTPFixture(t)
+	unassigned := f.target
+	unassigned.Title, unassigned.AssignedTo = "Unassigned prerequisite", nil
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
+	assigned := f.target
+	assigned.Title = "Assigned successor"
+	assigned.DependsOn, assigned.BlockedBy = []string{unassigned.ID}, []string{unassigned.ID}
+	assigned.Ready = false
+	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"status": "todo", "title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), []model.Task{unassigned})
+	rows := []model.Task{unassigned, assigned}
+	check := func(expected map[string]*string) {
+		f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: rows}})
+		response := projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), "")
+		decodeResponse[api.TaskPage](t, response, http.StatusOK)
+		assertHTTPAssignmentResources(t, response.Body.Bytes(), "items", expected)
+		f.expectGraph(unassigned.ID, []model.GraphTask{assignmentHTTPGraphRow(rows[0]), assignmentHTTPGraphRow(rows[1])})
+		response = projectRequest(f.handler, http.MethodGet, graphPath(f.project.ID, unassigned.ID), "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("Graph: %d %s", response.Code, response.Body)
+		}
+		assertHTTPAssignmentResources(t, response.Body.Bytes(), "tasks", expected)
+		for _, row := range rows {
+			f.expectRead(row)
+			response = projectRequest(f.handler, http.MethodGet, taskPath(assignmentHTTPAPI(t, row)), "")
+			decodeResponse[api.Task](t, response, http.StatusOK)
+			assertHTTPAssignmentResources(t, response.Body.Bytes(), "", map[string]*string{row.ID: expected[row.ID]})
+		}
+	}
+	check(map[string]*string{unassigned.ID: nil, assigned.ID: &f.principal.UserID})
+	after := platformHTTPResult(unassigned, unassigned)
+	after.AssignedTo = &f.principal.UserID
+	unassigned = assignmentHTTPUpdate(f, unassigned, after, map[string]any{"assignedTo": f.principal.UserID}, nil, true)
+	after = platformHTTPResult(assigned, assigned)
+	after.AssignedTo = nil
+	assigned = assignmentHTTPUpdate(f, assigned, after, map[string]any{"assignedTo": nil}, []model.Task{unassigned}, true)
+	rows = []model.Task{unassigned, assigned}
+	check(map[string]*string{unassigned.ID: &f.principal.UserID, assigned.ID: nil})
 }

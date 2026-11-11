@@ -11,6 +11,17 @@ type Owner = { entryId: string; nativeMessageId: string; original: boolean; turn
 const unavailable = (code = "native_source_unavailable"): NativeImagePayload => ({ kind: "unavailable", error: { code, message: "The original native image is unavailable." } });
 const safeSlots = (slots: readonly NativeImageSlot[]): NativeImageSlot[] => slots.map(slot => ({ ...slot, payload: slot.payload.kind === "pending" ? slot.payload : unavailable() }));
 
+// Qualify native containers before projecting image placeholders or fallback text.
+function userMessageFormat(content: readonly unknown[]): "markdown" | "plain" {
+  let texts = 0;
+  for (const raw of content) {
+    const part = record(raw);
+    if (part.type === "text" && typeof part.text === "string") texts++;
+    else if (part.type !== "image" && part.type !== "localImage") return "plain";
+  }
+  return texts === 1 ? "markdown" : "plain";
+}
+
 /** Explicit native containers share one position-preserving image publisher. */
 export class CodexImageProjection {
   private readonly tools = new Map<string, { entry: Tool; slots: NativeImageSlot[] }>();
@@ -22,7 +33,8 @@ export class CodexImageProjection {
       slots.push({ index, label: "Native image", native: { provider: "codex", nativeSessionId: this.sessionId, nativeMessageId: match.nativeMessageId, nativePartId: `content/${index}` }, original: { imageId: part.imageId, resourceId: part.resourceId }, payload: { kind: "resource", resourceId: part.resourceId } });
       return { type: "text" as const, text: "" };
     });
-    this.publisher.publish({ entryId: match.entryId, revision: "1", kind: "user_message", content }, slots);
+    this.publisher.publish({ entryId: match.entryId, revision: "1", kind: "user_message", content }, slots,
+      { complete: true, format: userMessageFormat(input.content), truncated: input.content.some(part => part.type === "text" && part.text.length > 200_000) });
     return this.inputs.confirm(match);
   }
   private payload(value: unknown, local = false): NativeImagePayload {
@@ -69,11 +81,11 @@ export class CodexImageProjection {
         else if (part.type === "image" || part.type === "localImage") image(part.type === "localImage" ? part.path : part.url, `content/${index}`, index, part.type === "localImage");
         else text(`[Unsupported native content: ${string(part.type) || "unknown"}]`);
       }
-      this.publisher.publish({ ...base, kind: "user_message", content: parts }, slots);
+      this.publisher.publish({ ...base, kind: "user_message", content: parts }, slots, { complete: completed, format: userMessageFormat(item.content as unknown[]), truncated });
       if (matched) this.inputs.confirm(matched);
       return true;
     }
-    if (!completed && old?.entry.status !== undefined && old.entry.status !== "running") { this.publisher.publish(old.entry, safeSlots(old.slots)); return true; }
+    if (!completed && old?.entry.status !== undefined && old.entry.status !== "running") { this.publisher.publish(old.entry, safeSlots(old.slots), { complete: true, format: "plain", truncated: old.entry.truncated }); return true; }
     if (type === "imageView") image(item.path, "path", undefined, true);
     else if (type === "imageGeneration") {
       // fileId has no documented byte-read contract in this supported profile.
@@ -100,13 +112,14 @@ export class CodexImageProjection {
     const failed = ["failed", "declined", "cancelled"].includes(string(item.status)) || !!item.error || !!item.failure || item.success === false;
     const input = item.arguments !== undefined ? readable(item.arguments) : old?.entry.input ?? (type === "functionCallOutput" ? "Native function output; original call identity unavailable." : type);
     const entry: Tool = { ...base, kind: "tool_call", callId: id, name: string(item.tool) || string(item.name) || old?.entry.name || type, input: limited(input), output: parts, status: old?.entry.status === "failed" ? "failed" : failed ? "failed" : completed || old?.entry.status === "completed" ? "completed" : "running", truncated: truncated || input.length > 200_000 };
-    this.tools.set(id, { entry, slots: safeSlots(slots) }); this.publisher.publish(entry, slots); return true;
+    this.tools.set(id, { entry, slots: safeSlots(slots) }); this.publisher.publish(entry, slots, { complete: entry.status !== "running", format: "plain", truncated: entry.truncated }); return true;
   }
   toolDelta(id: string, delta: string): boolean {
     const old = this.tools.get(id); if (!old) return false;
     const output = [...old.entry.output], textIndex = output.findIndex((part, index) => part.type === "text" && !old.slots.some(slot => slot.index === index));
-    if (textIndex >= 0) { const part = output[textIndex]!; if (part.type === "text") output[textIndex] = { type: "text", text: limited(part.text + delta) }; }
-    else output.push({ type: "text", text: limited(delta) });
-    old.entry = { ...old.entry, output }; this.publisher.publish(old.entry, safeSlots(old.slots)); return true;
+    let truncated = old.entry.truncated;
+    if (textIndex >= 0) { const part = output[textIndex]!; if (part.type === "text") { const text = part.text + delta; truncated ||= text.length > 200_000; output[textIndex] = { type: "text", text: limited(text) }; } }
+    else { truncated ||= delta.length > 200_000; output.push({ type: "text", text: limited(delta) }); }
+    old.entry = { ...old.entry, output, truncated }; this.publisher.publish(old.entry, safeSlots(old.slots), { complete: old.entry.status !== "running", format: "plain", truncated }); return true;
   }
 }

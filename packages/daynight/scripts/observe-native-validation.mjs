@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
 // Process snapshots and wrapper metadata exclude argv and environment.
@@ -53,7 +53,7 @@ const wait = (milliseconds, signal) => new Promise(resolve => {
 const logPredicate = '(process == "kernel" OR process == "runningboardd" OR process == "launchd") AND (eventMessage CONTAINS[c] "kill" OR eventMessage CONTAINS[c] "terminat" OR eventMessage CONTAINS[c] "memory pressure" OR eventMessage CONTAINS[c] "memorystatus" OR eventMessage CONTAINS[c] "jetsam")';
 
 /** Observe an unchanged command. Probe failure never replaces the command's exit result. */
-export async function observeValidation({ output, command, platform = process.platform, probe = runProbe, processIntervalMs = 5000, memoryIntervalMs = 15000 }) {
+export async function observeValidation({ output, command, signalIntents = false, platform = process.platform, probe = runProbe, processIntervalMs = 5000, memoryIntervalMs = 15000 }) {
   if (!command?.length || command.some(value => typeof value !== "string") || !output) throw new Error("An output directory and command are required.");
   let observerErrors = 0, outputAvailable = true;
   const failedWrite = error => {
@@ -69,7 +69,15 @@ export async function observeValidation({ output, command, platform = process.pl
   };
   const startedAt = new Date().toISOString(), startSeconds = Math.floor(Date.now() / 1000);
   record({ kind: "observer-start", wrapperPid: process.pid, platform, processIntervalMs, memoryIntervalMs, probeTimeoutMs: 2000, logTimeoutMs: 10000 });
-  const child = spawn(command[0], command.slice(1), { stdio: "inherit", shell: false });
+  const options = { stdio: "inherit", shell: false };
+  if (signalIntents) {
+    const preload = fileURLToPath(new URL("./signal-intents.cjs", import.meta.url));
+    // Load before existing preloads so diagnostic I/O does not re-enter their
+    // mutable wrappers. Their options and relative execution order are retained.
+    options.env = { ...process.env, DAYNIGHT_SIGNAL_INTENTS_DIRECTORY: path.resolve(output, "signals"), NODE_OPTIONS: `--require=${JSON.stringify(preload)} ${process.env.NODE_OPTIONS ?? ""}`.trim() };
+    record({ kind: "signal-intents-enabled", directory: "signals", coverage: "Node processes that load the inherited preload; intent is not delivery." });
+  }
+  const child = spawn(command[0], command.slice(1), options);
   let spawnError = null;
   const completion = new Promise(resolve => {
     child.on("error", error => { spawnError = errorDetails(error); });
@@ -126,11 +134,13 @@ export async function observeValidation({ output, command, platform = process.pl
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
+  const signalIntents = args[0] === "--signal-intents";
+  if (signalIntents) args.shift();
   if (args[0] !== "--output" || !args[1] || args[2] !== "--" || !args[3]) {
-    process.stderr.write("Usage: node observe-native-validation.mjs --output <directory> -- <command> [arguments...]\n");
+    process.stderr.write("Usage: node observe-native-validation.mjs [--signal-intents] --output <directory> -- <command> [arguments...]\n");
     process.exitCode = 2;
   } else {
-    try { process.exitCode = (await observeValidation({ output: args[1], command: args.slice(3) })).exitCode; }
+    try { process.exitCode = (await observeValidation({ output: args[1], command: args.slice(3), signalIntents })).exitCode; }
     catch (error) { process.stderr.write(`Native validation wrapper failed: ${JSON.stringify(errorDetails(error))}\n`); process.exitCode = 1; }
   }
 }

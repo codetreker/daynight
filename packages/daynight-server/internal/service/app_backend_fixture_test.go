@@ -499,7 +499,7 @@ func appTestOpeners(t *testing.T, c config.Config, b *appBackend) appOpeners {
 			if err := b.record("openFiles", 1); err != nil {
 				return nil, err
 			}
-			if root != c.StorageRoot {
+			if root != c.Storage.Root {
 				return nil, b.unexpected("storage root")
 			}
 			storage, err := local.New(root)
@@ -520,7 +520,7 @@ func appTestOpeners(t *testing.T, c config.Config, b *appBackend) appOpeners {
 			if err := b.record("openDatabase", 1); err != nil {
 				return nil, err
 			}
-			if url != c.DatabaseURL {
+			if url != c.Database.URL {
 				return nil, b.unexpected("database URL")
 			}
 			if _, ok := ctx.Deadline(); !ok {

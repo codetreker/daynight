@@ -1,0 +1,76 @@
+import { canonicalId } from '../api/validation';
+import { isAttachmentPath } from '../api/parse';
+import type { TaskDetailNavigation } from './router';
+
+export type AccountTab = 'profile' | 'tokens' | 'prompt';
+export type WorkerSection = 'overview' | 'configuration';
+export type ResourceReading = { readonly id: string; readonly navigation: TaskDetailNavigation };
+export type GoalChildren = { readonly graphRootId: string | null; readonly task: ResourceReading | null };
+export type ResourcePageReading = {
+  readonly goalChildren: GoalChildren | null;
+  readonly externalGoal: (ResourceReading & { readonly witness: string; readonly goalChildren: GoalChildren | null }) | null;
+};
+type HistoryEnvelope<Key extends string, Selection> = {
+  readonly version: 1;
+  readonly userId: string;
+  readonly pageKey: Key;
+  readonly selection: Selection;
+};
+export type PageHistoryState = HistoryEnvelope<'account', { readonly tab: AccountTab }>
+  | HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
+  | HistoryEnvelope<`resource:${string}/${string}`, ResourcePageReading>;
+
+const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const validId = (value: unknown): value is string => typeof value === 'string' && canonicalId(value) === value;
+const validNavigation = (value: unknown): value is TaskDetailNavigation => record(value) && exact(value, ['tab', 'path']) &&
+  (value.tab === 'overview' || value.tab === 'steps' || value.tab === 'attachments' || value.tab === 'discussion' || value.tab === 'session') &&
+  (value.path === null || typeof value.path === 'string' && isAttachmentPath(value.path));
+const validResource = (value: unknown): value is ResourceReading => record(value) && exact(value, ['id', 'navigation']) && validId(value.id) && validNavigation(value.navigation);
+const validChildren = (value: unknown): value is GoalChildren => record(value) && exact(value, ['graphRootId', 'task']) &&
+  (value.graphRootId === null || validId(value.graphRootId)) && (value.task === null || validResource(value.task));
+const resourceKey = (projectId: string, taskId: string): `resource:${string}/${string}` => `resource:${projectId}/${taskId}`;
+
+/** Empty selections contain no resource data, only the absence of nested readers. */
+export const emptyResourceReading = (): ResourcePageReading => ({ goalChildren: null, externalGoal: null });
+
+/** Returns null for a missing or differently scoped selection; rejects malformed state. */
+export function readAccountHistory(value: unknown, userId: string): AccountTab | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== 'account') return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['tab']) || (selection.tab !== 'profile' && selection.tab !== 'tokens' && selection.tab !== 'prompt')) throw new Error('Invalid account navigation state.');
+  return selection.tab;
+}
+
+export const accountHistory = (userId: string, tab: AccountTab): PageHistoryState => ({ version: 1, userId, pageKey: 'account', selection: { tab } });
+
+/** Read only the selection for the current identity and resource; malformed matching state is an error. */
+export function readResourceHistory(value: unknown, userId: string, projectId: string, taskId: string): ResourcePageReading | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || !validId(value.userId) || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== resourceKey(projectId, taskId)) return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['goalChildren', 'externalGoal']) ||
+    !(selection.goalChildren === null || validChildren(selection.goalChildren))) throw new Error('Invalid resource navigation state.');
+  const external = selection.externalGoal;
+  if (external !== null && (!record(external) || !exact(external, ['id', 'navigation', 'witness', 'goalChildren']) ||
+    !validId(external.id) || !validNavigation(external.navigation) || !validId(external.witness) ||
+    !(external.goalChildren === null || validChildren(external.goalChildren)))) throw new Error('Invalid resource navigation state.');
+  return selection as ResourcePageReading;
+}
+
+export const resourceHistory = (userId: string, projectId: string, taskId: string, selection: ResourcePageReading): PageHistoryState =>
+  ({ version: 1, userId, pageKey: resourceKey(projectId, taskId), selection });
+
+export function readWorkerHistory(value: unknown, userId: string, workerId: string): WorkerSection | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== `worker:${workerId}`) return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['workerId', 'section']) || selection.workerId !== workerId || (selection.section !== 'overview' && selection.section !== 'configuration')) throw new Error('Invalid worker navigation state.');
+  return selection.section;
+}
+
+export const workerHistory = (userId: string, workerId: string, section: WorkerSection): PageHistoryState => ({ version: 1, userId, pageKey: `worker:${workerId}`, selection: { workerId, section } });

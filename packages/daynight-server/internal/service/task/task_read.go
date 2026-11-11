@@ -48,8 +48,17 @@ func (s *Tasks) read(ctx context.Context, principal model.Principal, projectID, 
 			return err
 		}
 		var err error
-		result.Task, missing, err = taskcore.ReadTask(ctx, snapshot.TaskDAO(), projectID, id)
-		if err != nil || missing != nil || !withEpoch {
+		reader := snapshot.TaskDAO()
+		result.Task, missing, err = taskcore.ReadTask(ctx, reader, projectID, id)
+		if err != nil || missing != nil {
+			return err
+		}
+		values := []model.Task{result.Task}
+		if err = decorateGoalProgress(ctx, reader, projectID, values); err != nil {
+			return err
+		}
+		result.Task = values[0]
+		if !withEpoch {
 			return err
 		}
 		result.Epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, projectID)
@@ -73,8 +82,8 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 		return TaskPage{}, err
 	}
 	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{
-		PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready,
-		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID,
+		PageRequest: request.PageRequest, Type: request.Type, Parent: request.Parent, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready,
+		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID,
 	})
 	if err != nil {
 		return TaskPage{}, err
@@ -89,8 +98,12 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 			return err
 		}
 		var err error
-		result, missing, err = s.listOperations.readList(ctx, snapshot.TaskDAO(), projectID, selection)
-		return err
+		reader := snapshot.TaskDAO()
+		result, missing, err = s.listOperations.readList(ctx, reader, projectID, selection)
+		if err != nil || missing != nil {
+			return err
+		}
+		return decorateGoalProgress(ctx, reader, projectID, result.Items)
 	})
 	if err != nil {
 		return TaskPage{}, fmt.Errorf("list tasks: %w", err)

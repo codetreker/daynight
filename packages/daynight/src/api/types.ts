@@ -1,4 +1,5 @@
-import type { TaskCreationStatus, TaskStatus } from "../task/status.js";
+import type { ToolPathTelemetry } from "./worker-tool-paths.js";
+import type { TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
 export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
@@ -263,6 +264,7 @@ export type WorkerRuntimeConfiguration = {
   readonly projects: readonly { readonly projectId: string; readonly native: WorkerRuntimeNative | null }[];
 };
 export type WorkerTelemetry = {
+  readonly toolPaths?: ToolPathTelemetry;
   readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
@@ -316,6 +318,8 @@ export type TaskPropertySchema = { readonly properties: Readonly<Record<string, 
 
 export type Task = {
   readonly id: string;
+  readonly type: "task" | "goal";
+  readonly parentId: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
@@ -334,9 +338,13 @@ export type Task = {
   readonly externalDependsOn: readonly string[];
   readonly blockedBy: readonly string[];
   readonly ready: boolean;
+  readonly progress?: GoalProgress;
 };
 
-export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "version" | "properties"> & {
+export type GoalProgress = { readonly total: number; readonly done: number; readonly cancelled: number; readonly unfinished: number };
+
+export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "version" | "properties" | "progress" | "type"> & {
+  readonly type: "task";
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
 };
@@ -364,7 +372,9 @@ export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: strin
 export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
-  readonly status?: TaskCreationStatus;
+  readonly type?: "task" | "goal";
+  readonly parentId?: string | null;
+  readonly status?: TaskStatus;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
   readonly description?: string;
@@ -374,6 +384,7 @@ export type CreateTaskInput = {
 };
 export type UpdateTaskInput = {
   readonly version: bigint;
+  readonly parentId?: string | null;
   readonly allowAgents?: boolean;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
@@ -411,18 +422,23 @@ export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly previousClaimId: string;
 };
 export type TaskFilters = {
+  readonly type?: "task" | "goal";
+  readonly parentId?: string | null;
   readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
   readonly allowAgents?: boolean;
   readonly compatiblePlatform?: TaskPlatform;
   readonly platformSpecific?: boolean;
+  readonly automaticCandidate?: boolean;
   readonly workerId?: string;
 };
-export type TaskSearchInput = Omit<TaskFilters, "workerId" | "platformSpecific"> & { readonly query: string };
+export type TaskSearchInput = Omit<TaskFilters, "workerId" | "platformSpecific" | "automaticCandidate"> & { readonly query: string };
 export type TaskSearchField = "id" | "title" | "description";
 export type TaskSearchItem = {
   readonly id: string;
+  readonly type: "task" | "goal";
+  readonly parentId: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly status: TaskStatus;
@@ -432,7 +448,7 @@ export type TaskSearchItem = {
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;

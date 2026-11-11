@@ -34,6 +34,7 @@ func (s selectedObservationSources) TaskSessionSources(_ context.Context, _ stri
 	return values, nil
 }
 func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []model.Task) (store.SnapshotScope, error) {
+	tasks = observableExecutionTasks(tasks)
 	selected := selectedObservationSources{values: make(map[string]store.TaskSessionSource, len(tasks)), failures: map[string]error{}}
 	for start := 0; start < len(tasks); start += 200 {
 		end := min(start+200, len(tasks))
@@ -56,4 +57,14 @@ func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, proj
 		}
 	}
 	return selectedObservationSnapshot{reader: selected}, nil
+}
+
+func observableExecutionTasks(tasks []model.Task) []model.Task {
+	result := make([]model.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Type != model.TaskTypeGoal {
+			result = append(result, task)
+		}
+	}
+	return result
 }

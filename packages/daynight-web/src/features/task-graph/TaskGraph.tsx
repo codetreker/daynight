@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
+import type { TaskSummary } from '../../api/types';
 import { Background, BackgroundVariant, Controls, getViewportForBounds, ReactFlow, useReactFlow, useStore, type Viewport } from '@xyflow/react';
 import { getTaskNodeHeight, layoutGraph, type CanvasLayout, type GraphDirection } from './layout';
 import { projectChain, tracePrerequisites, type GraphIndex, type ChainProjection } from './model';
@@ -11,6 +12,7 @@ import '@xyflow/react/dist/style.css';
 
 type TaskGraphProps = {
   index: GraphIndex;
+  summaries?: ReadonlyMap<string, TaskSummary>;
   direction?: GraphDirection;
   onDirectionChange?: (direction: GraphDirection) => void;
   directionIssue?: 'read' | 'invalid' | 'write' | undefined;
@@ -81,7 +83,7 @@ const InitialViewport = ({ geometry, rootId, folded, action, resetButton }: { ge
 
 type CanvasProps = TaskGraphProps & { topologyKey: string; selectedTaskId: string | null; onInspectTask: (id: string) => void; clearInspection: () => void; geometry: CanvasLayout; projection: ChainProjection; visibleIds: ReadonlySet<string>; expansions: ReadonlyMap<string, TaskExpansions>; action: ViewportAction | null; onExpandTask: (id: string, direction: TaskExpansionDirection) => void; onResetOverview: () => void };
 
-const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
+const TaskCanvas = ({ index, summaries, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
   const { messages: { graph: m } } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
@@ -103,13 +105,19 @@ const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpen
     style: { width: node.width, height: node.height },
     data: {
       task: index.nodes.get(node.id)!, kind: node.kind,
+      ownerLabel: summaries === undefined ? null : (() => {
+        const parentId = index.nodes.get(node.id)!.parentId;
+        if (parentId === null) return m.unassignedGoal;
+        const goal = summaries.get(parentId);
+        return goal?.type === 'goal' ? m.goalOwner({ title: `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}` }) : m.unavailableGoal({ id: parentId });
+      })(),
       center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
       size: { width: node.width, height: node.height },
       onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask,
       revealRequest: action?.kind === 'expand' && action.anchorId === node.id ? action.sequence : null,
       expansions: expansions.get(node.id)!,
     },
-  })), [geometry, index, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
+  })), [geometry, index, summaries, m, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
   const canvas = useMemo(() => (
     <ReactFlow<TaskFlowNode>
       id={`flow-${rootId}`}

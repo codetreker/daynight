@@ -1,10 +1,12 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { readRegistrationIndex, registrationsFor, scanRepositoryWorktrees, type RegistrationIndex, type WorktreeScan } from "./worktree-scan.js";
 import { resolveGitDirectory } from "./worktree-paths.js";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { runRepositoryGit } from "../../repository/git.js";
+import { startOwnedRepositoryGit, RepositoryGitCleanupPendingError, type GitSettlement, type OwnedRepositoryGit } from "../../repository/git-owned.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
@@ -22,6 +24,9 @@ type Owner = ResourceOwner & { leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
+
+/** The Git manager and execution backends share the selected task target. */
+export const selectedWorktreePath = (repositoryRoot: string, taskId: string): string => path.join(repositoryRoot, ".worktrees", "daynight", taskId);
 const prefix = "daynight-worker:";
 const removing = new Set<string>();
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -69,10 +74,34 @@ const markerOwner = (marker: string): Owner => {
 };
 const sameCoordinates = (owner: Owner, identity: ResourceOwner): boolean => Object.entries(coordinates(identity)).every(([key, value]) => owner[key as keyof Owner] === value);
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; removeDirectory?: typeof rm }) => {
+export type WorkerGitPending = { error: RepositoryGitCleanupPendingError; attemptId: string; projectId: string; owner?: ResourceOwner; command: "clone" | "fetch" | "worktree-add" | "update-ref" | "worktree-remove" };
+class WorkerGitCleanupError extends AggregateError {}
+
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
+  const startOwnedGit = options.startOwnedGit ?? startOwnedRepositoryGit;
   const removeDirectory: typeof rm = options.removeDirectory ?? (target => unlink(target));
+  const closing = new AbortController();
+  const preparations = new Set<Promise<unknown>>();
+  const handles = new Set<OwnedRepositoryGit>();
+  let disposed: Promise<void> | undefined;
+  const tracked = <T>(operation: Operation, action: (operation: Operation) => Promise<T>): Promise<T> => {
+    if (closing.signal.aborted) return Promise.reject(closing.signal.reason);
+    const signal = AbortSignal.any([operation.signal, closing.signal]);
+    const check = (): void => { operation.check(); signal.throwIfAborted(); };
+    const scoped: Operation = {
+      signal, limits: operation.limits, check,
+      remainingMs: () => { check(); return operation.remainingMs(); },
+      remainingBytes: () => { check(); return operation.remainingBytes(); },
+      consume: bytes => { check(); operation.consume(bytes); },
+      dispose: () => {},
+    };
+    const promise = Promise.resolve().then(() => { check(); return action(scoped); });
+    preparations.add(promise);
+    void promise.then(() => preparations.delete(promise), () => preparations.delete(promise));
+    return promise;
+  };
   let hooks: Promise<string> | null = null;
   const hookDirectory = async (): Promise<string> => {
     if (hooks === null) hooks = (async () => {
@@ -82,15 +111,41 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     })();
     return hooks;
   };
-  const git = async (cwd: string, args: readonly string[], operation: Operation, timeoutMs?: number): Promise<string> => {
+  const git = async (cwd: string, args: readonly string[], operation: Operation, timeoutMs?: number, mutation?: Omit<WorkerGitPending, "error" | "attemptId">): Promise<string> => {
     operation.check();
     const environment: Record<string, undefined> = {};
     for (const name of Object.keys(process.env)) {
       const key = name.toUpperCase();
       if (["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CURL_VERBOSE"].includes(key) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key) || key.startsWith("GIT_TRACE")) environment[name] = undefined;
     }
-    const result = await runGit(cwd, ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args], operation, { environment, timeoutMs: timeoutMs === undefined ? operation.limits.requestMs : timeoutMs });
-    return line(result.stdout);
+    const commandArgs = ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args];
+    operation.check();
+    const commandOptions = { environment, timeoutMs: timeoutMs === undefined ? operation.limits.requestMs : timeoutMs };
+    if (mutation === undefined) return line((await runGit(cwd, commandArgs, operation, commandOptions)).stdout);
+    const attemptId = randomUUID();
+    const command = startOwnedGit(cwd, commandArgs, operation, commandOptions);
+    handles.add(command);
+    try {
+      const outcome = await command.outcome;
+      const reportingErrors: unknown[] = [];
+      if (outcome.kind === "cleanup-pending") {
+        try { options.reportPending?.({ ...mutation, attemptId, error: outcome.error }); }
+        catch (error) { reportingErrors.push(error); }
+      }
+      const settlement = await command.joined;
+      if (outcome.kind === "cleanup-pending") {
+        try { options.reportSettled?.({ ...mutation, attemptId, error: outcome.error }, settlement); }
+        catch (error) { reportingErrors.push(error); }
+      }
+      const error = outcome.kind === "success" ? undefined : outcome.error;
+      const errors = [...settlement.cleanupErrors, ...reportingErrors];
+      if (errors.length > 0) throw new WorkerGitCleanupError(error === undefined ? errors : [error, ...errors], "Repository Git local cleanup or reporting failed.", error === undefined ? undefined : { cause: error });
+      if (error !== undefined) throw error;
+      if (outcome.kind !== "success") throw new Error("Repository Git returned an invalid outcome.");
+      return line(outcome.result.stdout);
+    } finally {
+      try { await command.joined; } finally { handles.delete(command); }
+    }
   };
   const validateOrigin = async (root: string, repoUrl: string, operation: Operation): Promise<void> => {
     const remote = await git(root, ["config", "--get-all", "remote.origin.url"], operation);
@@ -112,7 +167,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const bindingFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeBinding => {
     const identity = coordinates(owner);
     if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
-    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: path.join(repository.root, ".worktrees", "daynight", identity.taskId), branch: `daynight/${identity.taskId}` };
+    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: selectedWorktreePath(repository.root, identity.taskId), branch: `daynight/${identity.taskId}` };
   };
   const readers = { directory, ordinaryFile, markerOwner: (marker: string) => coordinates(markerOwner(marker)) };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>
@@ -215,7 +270,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       return { enumerationComplete: false, validated: [], quarantined: [], unknown: [{ error }] };
     }
   };
-  return {
+  const manager = {
     prepareRepository: async (project: WorkerProject, operation: Operation): Promise<WorkerRepository> => {
       operation.check();
       repositoryIdentity(project.repoUrl);
@@ -225,7 +280,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         await mkdir(root);
         const reserved = await directory(root);
         try {
-          await git(path.dirname(root), ["clone", "--origin=origin", `--template=${await hookDirectory()}`, "--", project.repoUrl, root], operation, 120_000);
+          await git(path.dirname(root), ["clone", "--origin=origin", `--template=${await hookDirectory()}`, "--", project.repoUrl, root], operation, 120_000, { projectId: project.projectId, command: "clone" });
         } catch (error) {
           // Remove only our unchanged, empty reservation; partial clones and replacements remain for inspection.
           try {
@@ -260,7 +315,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       let fetchedRef: string | undefined;
       let baseCommit: string | undefined;
       if (!existing) {
-        await git(repository.root, ["fetch", "--no-recurse-submodules", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", "--", "origin", `+HEAD:${baseRef}`], operation, 120_000);
+        await git(repository.root, ["fetch", "--no-recurse-submodules", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", "--", "origin", `+HEAD:${baseRef}`], operation, 120_000, { projectId: project.projectId, owner, command: "fetch" });
       }
       let binding: WorktreeBinding;
       try {
@@ -276,19 +331,19 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         if (leaf === null) throw new Error("The reserved task worktree directory disappeared.");
         const marker = `${prefix}${JSON.stringify({ ...coordinates(owner), leaf, root: repository.rootIdentity, common: repository.commonIdentity } satisfies Owner)}`;
         const branchArgs = !existing ? ["-b", before.binding.branch, "--", before.binding.worktreePath, baseCommit!] : ["--", before.binding.worktreePath, before.binding.branch];
-        await git(repository.root, ["worktree", "add", "--lock", "--reason", marker, ...branchArgs], operation);
+        await git(repository.root, ["worktree", "add", "--lock", "--reason", marker, ...branchArgs], operation, undefined, { projectId: project.projectId, owner, command: "worktree-add" });
         const after = await inspectWorktree(project, owner, repository, operation, false);
         if (after.leaf === null || after.registration === null) throw new Error("Git did not create the expected owned task worktree.");
         await ensureStableIdentity(project, owner, repository, operation, after);
         binding = after.binding;
       } catch (error) {
         if (fetchedRef !== undefined) {
-          try { await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation); }
+          try { await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation, undefined, { projectId: project.projectId, owner, command: "update-ref" }); }
           catch (cleanupError) { throw new AggregateError([error, cleanupError], "Task worktree creation and base reference cleanup failed.", { cause: error }); }
         }
         throw error;
       }
-      if (fetchedRef !== undefined) await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation);
+      if (fetchedRef !== undefined) await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation, undefined, { projectId: project.projectId, owner, command: "update-ref" });
       return binding;
     },
     removeEmptyReservation: async (project: WorkerProject, taskId: string, operation: Operation): Promise<void> => {
@@ -385,9 +440,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         result = await inspectWorktree(project, owner, repository, operation, true);
         if (result.leaf !== null) throw new Error("The original task worktree directory still exists after removal.");
         if (result.registration !== null) {
-          try { await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation); }
+          try { await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation, undefined, { projectId: project.projectId, owner, command: "worktree-remove" }); }
           catch (error) {
-            operation.check();
+            if (error instanceof RepositoryGitCleanupPendingError || error instanceof WorkerGitCleanupError) throw error;
+            try { operation.check(); }
+            catch (cancellation) { if (cancellation === error) throw error; throw new AggregateError([error, cancellation], "Worktree removal failed before cancellation.", { cause: error }); }
             const observed = await inspectWorktree(project, owner, repository, operation, true);
             if (observed.leaf !== null || observed.registration !== null) throw error;
           }
@@ -398,7 +455,28 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         removing.delete(key);
       }
     },
-    dispose: async (): Promise<void> => { if (hooks !== null) { await rm(await hooks, { recursive: true }); hooks = null; } },
+  };
+  return {
+    prepareRepository: (project: WorkerProject, operation: Operation) => tracked(operation, scoped => manager.prepareRepository(project, scoped)),
+    prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped)),
+    removeEmptyReservation: (project: WorkerProject, taskId: string, operation: Operation) => tracked(operation, scoped => manager.removeEmptyReservation(project, taskId, scoped)),
+    verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),
+    enrollWorktreeIdentity: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.enrollWorktreeIdentity(project, owner, scoped)),
+    findWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.findWorktree(project, owner, scoped)),
+    scanWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.scanWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
+    listWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
+    removeWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeWorktree(project, owner, scoped)),
+    dispose: (): Promise<void> => {
+      if (disposed !== undefined) return disposed;
+      closing.abort(new Error("Worker Git manager is closing."));
+      for (const handle of handles) handle.requestStop();
+      disposed = (async () => {
+        await Promise.allSettled([...preparations]);
+        await Promise.all([...handles].map(handle => handle.joined));
+        if (hooks !== null) { await rm(await hooks, { recursive: true }); hooks = null; }
+      })();
+      return disposed;
+    },
   };
 };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;

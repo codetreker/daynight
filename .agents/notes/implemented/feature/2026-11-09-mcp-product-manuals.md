@@ -10,9 +10,11 @@ does not provide the detailed operating knowledge needed after authentication.
 
 ## Decision
 
-Publish seven complete English topics as fixed Markdown Resources embedded in
-the server, with short protocol instructions and absolute links between topics.
-The manifest and content are validated before registration. Each read obtains a
+The original publication organized seven complete English topics as fixed
+Markdown Resources embedded in the server, with short protocol instructions and
+absolute links between topics. The [operation-topic decision](../architecture/2026-11-11-mcp-topic-manuals.md)
+replaces that broad catalog while preserving this publication mechanism. The
+manifest and content are validated before registration. Each read obtains a
 shared Control permit before constructing its result and holds it through both
 handler completion and HTTP delivery. Valid credentials suffice; no Project
 membership or business mutation is involved. The [server design](../../../../docs/design/daynight-server.md#http-传输准入)
@@ -33,8 +35,9 @@ manual reads in a batch.
 
 ## Consequences
 
-Manual updates ship with the service. Clients can discover topics or read known
-URIs directly, but must request current content after an update. Control limits
+Manual updates ship with the service. Clients discover the current catalog and
+request current content after an update; the operation-topic decision owns topic
+boundaries and removed URI behavior. Control limits
 successful manual reads, not SDK list paths or total batch memory; saturation
 returns a protocol error rather than a partial manual. The public installation
 page remains separately available before authentication.

@@ -65,6 +65,23 @@
             "full"
           ],
           "default": "summary"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "task",
+            "goal"
+          ],
+          "default": "task",
+          "description": "Select ordinary tasks (default) or Goals."
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
         }
       },
       "required": [
@@ -432,6 +449,20 @@
                       "blockedByCount": {
                         "type": "integer",
                         "minimum": 0
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "task",
+                          "goal"
+                        ]
+                      },
+                      "parentId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "uuid"
                       }
                     },
                     "required": [
@@ -447,9 +478,49 @@
                       "projection",
                       "titlePreview",
                       "titleTruncated",
-                      "blockedByCount"
+                      "blockedByCount",
+                      "type",
+                      "parentId"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "goal"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "status": {
+                              "enum": [
+                                "todo",
+                                "in_progress",
+                                "done",
+                                "cancelled"
+                              ]
+                            },
+                            "parentId": {
+                              "type": "null"
+                            },
+                            "ready": {
+                              "const": false
+                            },
+                            "allowAgents": {
+                              "const": false
+                            },
+                            "requiredPlatform": {
+                              "type": "null"
+                            },
+                            "blockedByCount": {
+                              "const": 0
+                            }
+                          }
+                        }
+                      }
+                    ]
                   },
                   {
                     "type": "object",
@@ -843,6 +914,48 @@
                           "type": "string",
                           "format": "uuid"
                         }
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "task",
+                          "goal"
+                        ]
+                      },
+                      "parentId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "uuid"
+                      },
+                      "progress": {
+                        "type": "object",
+                        "properties": {
+                          "total": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "done": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "cancelled": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "unfinished": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "total",
+                          "done",
+                          "cancelled",
+                          "unfinished"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -865,9 +978,65 @@
                       "cancelledAt",
                       "dependsOn",
                       "externalDependsOn",
-                      "blockedBy"
+                      "blockedBy",
+                      "type",
+                      "parentId"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "goal"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "status": {
+                              "enum": [
+                                "todo",
+                                "in_progress",
+                                "done",
+                                "cancelled"
+                              ]
+                            },
+                            "parentId": {
+                              "type": "null"
+                            },
+                            "ready": {
+                              "const": false
+                            },
+                            "allowAgents": {
+                              "const": false
+                            },
+                            "requiredPlatform": {
+                              "type": "null"
+                            },
+                            "dependsOn": {
+                              "maxItems": 0
+                            },
+                            "externalDependsOn": {
+                              "maxItems": 0
+                            },
+                            "blockedBy": {
+                              "maxItems": 0
+                            }
+                          },
+                          "required": [
+                            "progress"
+                          ]
+                        },
+                        "else": {
+                          "not": {
+                            "required": [
+                              "progress"
+                            ]
+                          }
+                        }
+                      }
+                    ]
                   }
                 ]
               }
@@ -1013,6 +1182,14 @@
             "full"
           ],
           "default": "summary"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
         }
       },
       "required": [
@@ -1693,6 +1870,19 @@
                           "member",
                           "external"
                         ]
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "task"
+                        ]
+                      },
+                      "parentId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "uuid"
                       }
                     },
                     "required": [
@@ -1713,7 +1903,9 @@
                       "dependsOn",
                       "externalDependsOn",
                       "blockedBy",
-                      "relation"
+                      "relation",
+                      "type",
+                      "parentId"
                     ],
                     "additionalProperties": false
                   }

@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
@@ -31,14 +31,18 @@ vi.mock("node:timers/promises", async original => {
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive, probeStoppedControllerArchive: mocks.archiveProbe }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr/durable.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/herdr/durable.js")>();
+  return { ...actual, createDurableWorkerHerdr: (...args: Parameters<typeof actual.createDurableWorkerHerdr>) => mocks.durable.getMockImplementation() ? mocks.durable(...args) : actual.createDurableWorkerHerdr(...args) };
+});
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
-vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
+vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
@@ -90,9 +94,11 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
+  mocks.webBackend.mockReturnValue({});
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
@@ -109,7 +115,7 @@ beforeEach(async () => {
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), archiveYield: () => false, updateConfiguration: update, shutdown }));
 });
 afterEach(async () => {
   for (const { signal } of runs) signal.abort();
@@ -131,11 +137,14 @@ describe("worker runtime configuration reporting", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       const pathname = new URL(String(url)).pathname, headers = new Headers(options!.headers);
       const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
-      const desired = mode ? { ...target, value: { ...target.value, agentControlMode: "web" } } : target;
+      // Stable tool support keeps this fixture's renegotiation specific to control mode.
+      const tools = headers.get("Daynight-Worker-Tool-Paths") === "1";
+      const desired = { ...target, value: { ...target.value, ...(mode ? { agentControlMode: "web" } : {}), ...(tools ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
         "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
         ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
         ...(mode ? { "Daynight-Worker-Control-Mode": "1" } : {}),
+        ...(tools ? { "Daynight-Worker-Tool-Paths": "1" } : {}),
       } });
       if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
       if (pathname.endsWith("/configuration")) {
@@ -484,7 +493,7 @@ describe("worker runtime configuration reporting", () => {
       await nativeTimer.setTimeout(0, undefined, options);
       if (mocks.coordinator.mock.calls.length !== 0) { now += milliseconds; appliedDelays.push(milliseconds); }
     });
-    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
     await start(f);
     expect(attempts.slice(0, 3).map(attempt => attempt.label)).toEqual(["broken", "second", "third"]);
     const retryTimes = attempts.filter(attempt => attempt.label === "broken").map(attempt => attempt.at);
@@ -547,7 +556,7 @@ describe("worker runtime configuration reporting", () => {
     const stopProject = vi.fn(async () => { await stopping.promise; throw new Error("private stop output"); });
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({
       tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }),
-      updateConfiguration: update, stopProject, shutdown,
+      archiveYield: () => false, updateConfiguration: update, stopProject, shutdown,
     }));
     const running = start(f);
     await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(1)] })));
@@ -621,7 +630,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, value: { ...target.value, pollIntervalMs: longInterval } };
     prepare.mockImplementation(() => prepared.promise);
     const tick = vi.fn(async () => {});
-    mocks.coordinator.mockImplementation(() => ({ tick, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick, archiveYield: () => false, updateConfiguration: update, shutdown }));
     const waitingSignal = (): AbortSignal | undefined => mocks.delay.mock.calls.filter(([milliseconds]) => milliseconds === longInterval).at(-1)?.[2]?.signal;
     const running = start(f);
     await eventually(() => expect(prepare).toHaveBeenCalledOnce());
@@ -769,6 +778,195 @@ describe("worker runtime configuration reporting", () => {
 });
 
 
+it("defers archive backfill after each coordinator tick and resumes without repeated deferral logs", async () => {
+  const f = await fixture();
+  let round = 0;
+  const reads: number[] = [], archived: number[] = [], deferredRounds: number[] = [];
+  const yielding = [true, true, false, true, true, false];
+  const completed = [11, 12].map(id => ({
+    projectId: uuid(1), taskId: uuid(id + 10), claimId: uuid(id + 20), serverOrigin: "https://daynight.example",
+    webExecution: { executionId: uuid(id), launchId: uuid(id), sessionId: uuid(id), executionGeneration: "1", launchSubmission: "submitted" },
+  }));
+  mocks.completed.mockImplementation(() => { reads.push(round); return completed; });
+  mocks.ticket.mockImplementation(async (_home, launchId) => {
+    const task = completed.find(task => task.webExecution.launchId === launchId)!;
+    return { serverOrigin: task.serverOrigin, claimId: task.claimId, ...task.webExecution };
+  });
+  mocks.archive.mockImplementation(async () => { archived.push(round); return { state: "ready" }; });
+  mocks.emit.mockImplementation(event => { if (event.kind === "session-archive-deferred") deferredRounds.push(round); });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => { round++; }, archiveYield: () => yielding[round - 1], updateConfiguration: update, shutdown,
+  }));
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_milliseconds, _value, options) => {
+    if (round >= yielding.length) f.signal.abort();
+    await timers.setTimeout(0, undefined, options);
+  });
+  await start(f);
+  expect(reads).toEqual([3, 6]);
+  expect(archived).toEqual([3, 6]);
+  expect(deferredRounds).toEqual([1, 4]);
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "reconciliation-error")).toEqual([]);
+});
+
+it("rechecks archive deferral before starting a scheduled maintenance round", async () => {
+  const f = await fixture();
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  const decisionChanged = deferred<void>();
+  let yielding = false, changeQueued = false;
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const gate = deferred<void>(); polls.push({ gate, signal });
+    await Promise.race([gate.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => {}, updateConfiguration: update, shutdown,
+    archiveYield: () => {
+      if (!changeQueued) {
+        changeQueued = true;
+        queueMicrotask(() => { yielding = true; decisionChanged.resolve(); });
+      }
+      return yielding;
+    },
+  }));
+  const running = start(f);
+  await decisionChanged.promise;
+  await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  expect(mocks.completed).not.toHaveBeenCalled();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
+  yielding = false;
+  polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
+  await eventually(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort(); await running;
+});
+
+it("continues polling during one historical upload and joins its finalizer before stopping", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), cancelled = deferred<void>(), releaseFinalizer = deferred<void>();
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  const order: string[] = [];
+  let ticks = 0, yielding = false;
+  let options!: WorkerCoordinatorOptions;
+  let storeClose!: ReturnType<typeof vi.spyOn>;
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    try {
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => { order.push("upload-aborted"); cancelled.resolve(); resolve(); }, { once: true }));
+      signal.throwIfAborted();
+    } finally {
+      await releaseFinalizer.promise;
+      order.push("upload-finalized");
+    }
+  });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const poll = deferred<void>(); polls.push({ gate: poll, signal });
+    await Promise.race([poll.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    storeClose = vi.spyOn(options.store, "close");
+    return { tick: async () => { ticks++; }, archiveYield: () => yielding, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
+  });
+  mocks.webClose.mockImplementation(() => { order.push("web-store-closed"); });
+  const running = start(f);
+  await entered.promise;
+  yielding = true;
+  for (let i = 0; i < 2; i++) {
+    await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+    const poll = polls.findLast(poll => !poll.signal.aborted)!;
+    const before = ticks;
+    poll.gate.resolve();
+    await eventually(() => expect(ticks).toBeGreaterThan(before));
+    await eventually(() => expect(polls.some(next => next !== poll && !next.signal.aborted)).toBe(true));
+  }
+  expect(ticks).toBeGreaterThanOrEqual(3);
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(order).not.toContain("upload-aborted");
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
+  f.signal.abort();
+  await cancelled.promise;
+  await eventually(() => expect(order).toContain("coordinator-stopped"));
+  expect(options.monitoring!.capture("1").lifecycle).toBe("stopping");
+  expect(mocks.webClose).not.toHaveBeenCalled();
+  expect(storeClose).not.toHaveBeenCalled();
+  releaseFinalizer.resolve();
+  await running;
+  expect(order.indexOf("upload-finalized")).toBeLessThan(order.indexOf("web-store-closed"));
+  expect(storeClose).toHaveBeenCalledOnce();
+  expect(options.monitoring!.capture("1").lifecycle).toBe("stopped");
+  expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+});
+
+it("reports an inventory failure against worker archive maintenance and recovers on a later poll", async () => {
+  const f = await fixture(), failure = new Error("completed inventory unavailable");
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  let options!: WorkerCoordinatorOptions;
+  mocks.completed.mockImplementation(() => { throw failure; });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const gate = deferred<void>(); polls.push({ gate, signal });
+    await Promise.race([gate.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    return { tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown };
+  });
+  const running = start(f);
+  await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure })));
+  const current = options.monitoring!.capture("1").currentFailures;
+  expect(current).toContainEqual(expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: { kind: "worker" } }));
+  mocks.completed.mockReturnValue([]);
+  await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
+  await eventually(() => expect(options.monitoring!.capture("1").currentFailures.some(item => item.phase === "archive-backfill")).toBe(false));
+  f.signal.abort(); await running;
+});
+
+it("retains a non-cancellation failure from the upload finalizer during shutdown", async () => {
+  const f = await fixture(), entered = deferred<void>(), failure = new Error("upload finalizer failed");
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    throw failure;
+  });
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
+  const running = start(f), rejected = expect(running).rejects.toBe(failure);
+  await entered.promise;
+  f.signal.abort(); await rejected;
+  expect(mocks.webClose).toHaveBeenCalledOnce();
+  expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure }));
+});
+
+it("reports historical Web archive failures against the original frozen checkout", async () => {
+  const f = await fixture();
+  const originalRoot = path.join(f.homeDirectory, "original-checkout");
+  const originalWorktree = path.join(f.homeDirectory, "retained-worktree");
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", repositoryPath: originalRoot, resources: { worktree: { repositoryPath: originalRoot, worktreePath: originalWorktree } }, webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
+  const running = start(f);
+  try {
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
+    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    expect(options.store.getProject({ projectId: uuid(1) })?.localPath).toBe(path.join(f.homeDirectory, "repo"));
+    const failure = options.monitoring!.capture("1").currentFailures.find(item => item.phase === "archive-backfill")!;
+    expect(failure.worktree).toEqual({ kind: "project-relative", path: "../retained-worktree" });
+    expect(JSON.stringify(failure)).not.toContain(f.homeDirectory);
+  } finally { f.signal.abort(); await running; }
+});
+
 it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
   const f = await fixture();
   target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
@@ -780,7 +978,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   const probes: number[] = [];
   mocks.archiveProbe.mockImplementation(async (): Promise<ArchiveProbeResult> => {
     probes.push(now - startTime);
-    if (outcome === "cancelled") { f.signal.abort(); throw new Error("probe cancelled"); }
+    if (outcome === "cancelled") { f.signal.abort(); f.signal.signal.throwIfAborted(); }
     if (probes.length > 1 && outcome === "probe-error") throw new Error("metadata unavailable");
     return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
   });
@@ -789,7 +987,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
-    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   if (outcome === "cancelled") {
@@ -820,7 +1018,7 @@ it("retains backfill blocker and probe deadline across runtime restart without c
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
   let stop = f.signal, rounds = 0;
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
   await start(f);
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
   const readState = () => {
@@ -889,7 +1087,7 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     store = options.store;
     if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
-    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   const read = openWorkerStore(f.paths.databaseFile);
@@ -908,4 +1106,137 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
       expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
     }
   } finally { read.close(); }
+});
+
+it("runs the next round on a stop wake while historical and current cleanup remain pending", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), cleanup = deferred<void>();
+  let ticks = 0;
+  let options!: WorkerCoordinatorOptions;
+  const polls: AbortSignal[] = [];
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+    entered.resolve();
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+  });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    polls.push(signal);
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
+    options = value;
+    return { tick: async () => { ticks++; if (ticks === 1) void cleanup.promise; }, archiveYield: () => false, updateConfiguration: update, shutdown: async () => { await cleanup.promise; return true; } };
+  });
+  const running = start(f);
+  await entered.promise;
+  await eventually(() => expect(polls.some(signal => !signal.aborted)).toBe(true));
+  const before = ticks;
+  options.requestReconcile!();
+  await eventually(() => expect(ticks).toBeGreaterThan(before));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort();
+  cleanup.resolve();
+  await running;
+});
+
+it("admits another task through the real coordinator after a stop wake with both cleanups pending", async () => {
+  const f = await fixture(), timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+  const stopEntered = deferred<void>(), stopRelease = deferred<void>(), archiveEntered = deferred<void>(), removeEntered = deferred<void>(), removeRelease = deferred<void>(), promptsReceived = deferred<void>();
+  const owner = { projectId: uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
+  const repo = path.join(f.homeDirectory, "repo"), binding = { repositoryPath: repo, commonDirectory: path.join(repo, ".git"), worktreePath: path.join(repo, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
+  const oldBinding = { session: "w", workspaceId: "old-workspace", paneId: "old-pane", terminalId: "old-terminal" };
+  await mkdir(repo, { recursive: true }); await mkdir(f.paths.workerDirectory, { recursive: true });
+  const seed = openWorkerStore(f.paths.databaseFile);
+  seed.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: repo });
+  seed.close();
+  const resources = new Map<string, any>();
+  const worktrees = new Map<string, any>();
+  const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false, originalEnded = false;
+  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+  const candidates = [task(owner.taskId), task(uuid(30))];
+  const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
+  const tasks = {
+    pendingStops: () => [], listResources: async () => [...resources.values()],
+    observeExecutionStop: async (target: any) => ({ ...(stopped && target.claimId === owner.claimId ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "original" } } : { kind: "unknown", target, error: new Error("not stopped") }), observedAt: Date.now() }),
+    submitPrompt: async (context: any, nativeBinding: any) => ({ submission: "submitted", observation: { ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null } }),
+    stopAndClose: async (context: any) => { if (context.claimId === owner.claimId) { stopEntered.resolve(); await stopRelease.promise; stopped = true; } resources.delete(context.claimId); },
+    prepareWorkspace: async (context: any) => { trace.push("workspace"); const nativeBinding = { session: "w", workspaceId: "new-workspace", paneId: "new-pane", terminalId: "new-terminal" }; resources.set(context.claimId, { owner: context, workspaceId: nativeBinding.workspaceId, panes: [{ binding: nativeBinding, cwd: context.cwd, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(33) }, stateChangeSeq: 1, completionSeq: 0 }] }); return nativeBinding; },
+    start: started, syncWorkspaceName: async () => {},
+  };
+  const herdr = { tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} };
+  mocks.herdr.mockReturnValue(herdr);
+  mocks.durable.mockReturnValue(herdr);
+  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
+    prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.taskId), branch: `daynight/${target.taskId}` }; worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
+    removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); },
+  });
+  mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: () => null, listCompletedTasks: mocks.completed });
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => { archiveEntered.resolve(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted(); });
+  const polls: { signal: AbortSignal; release: () => void; settled: boolean }[] = [];
+  mocks.delay.mockImplementation(async (ms: number, value: unknown, options?: { signal?: AbortSignal }) => {
+    if (ms !== 60_000) return timers.setTimeout(ms === 1_000 ? 1 : ms, value, options);
+    const signal = options!.signal!; let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const poll = { signal, release, settled: false }; polls.push(poll);
+    try { await Promise.race([gate, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]); signal.throwIfAborted(); }
+    finally { poll.settled = true; }
+  });
+  const remote = mocks.remote();
+  Object.assign(remote, { ownInventory: async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: projects.map(project => project.projectId), unavailableProjectIds: [] }),
+    candidates: async function* () { if (originalEnded) for (const candidate of candidates) if (![...grants.values()].some(value => value.id === candidate.id)) yield candidate; },
+    claim: async (candidate: any, descriptor: any) => { const granted = { ...candidate, status: "in_progress", ready: false, version: 2n, properties: { worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(6), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } } }; grants.set(descriptor.claimId, granted); return granted; },
+    readTask: async (_project: string, id: string) => [...grants.values()].find(value => value.id === id),
+    update: async (current: any, patch: any) => { const next = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker, ...patch } } }; grants.set(next.properties.worker.claimId, next); return next; },
+    reportConfiguration: async (...args: any[]) => { const receipt = await report(args[0], args[1], args[2], args[3]); const selectors = args[4] ?? []; if (selectors.some(({ key }: any) => key.scope === "project")) promptsReceived.resolve(); return { ...receipt, prompts: { ok: true, results: selectors.map(({ key }: any) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } })) } }; },
+  });
+  let actualOptions!: WorkerCoordinatorOptions;
+  mocks.coordinator.mockImplementation(value => { actualOptions = value; return createWorkerCoordinator(value); });
+  const bounded = async <T>(stage: string, value: Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([value, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${stage}.`)), 8_000); })]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  const running = start(f);
+  try {
+    await bounded("historical archive", archiveEntered.promise);
+    await eventually(() => expect(polls.some(poll => !poll.settled && !poll.signal.aborted)).toBe(true));
+    const initialPoll = polls.findLast(poll => !poll.settled && !poll.signal.aborted)!;
+    actualOptions.store.activateTask(actualOptions.store.registerPending({ ...owner, agent: "codex" }));
+    resources.set(owner.claimId, { owner, workspaceId: oldBinding.workspaceId, panes: [{ binding: oldBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(23) }, stateChangeSeq: 1, completionSeq: 1 }] });
+    worktrees.set(owner.claimId, { owner, binding }); originalEnded = true;
+    initialPoll.release();
+    await Promise.all([bounded("original stop", stopEntered.promise), bounded("prompt receipt", promptsReceived.promise)]);
+    await eventually(() => expect(actualOptions.promptSource?.current(owner.projectId)).not.toBeNull());
+    await eventually(() => expect(polls.some(poll => poll !== initialPoll && !poll.settled && !poll.signal.aborted)).toBe(true));
+    stopRelease.resolve();
+    await bounded("original worktree removal", removeEntered.promise);
+    await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture("1"), grants: [...grants.values()].map(value => value.id) })); });
+    expect([...grants.values()].map(value => value.id)).toEqual([uuid(30)]);
+    expect(worktrees.has(owner.claimId)).toBe(true);
+    expect(mocks.archive).toHaveBeenCalledOnce();
+  } finally { stopRelease.resolve(); removeRelease.resolve(); f.signal.abort(); await running; }
+}, 20_000);
+
+it("retains Web stop observation causes and claim identity through runtime diagnostics", async () => {
+  const f = await fixture();
+  const running = start(f);
+  try {
+    await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const backendOptions = mocks.webBackend.mock.calls[0]![0] as { emit: (event: { kind: string; message: string; task: { projectId: string; taskId: string; claimId: string; worktreeId: string }; component: string; phase: string; attemptId: string; runKey: string; error: unknown }) => void };
+    const owner = { projectId: uuid(1), taskId: uuid(60), claimId: uuid(61), worktreeId: uuid(62) };
+    const cause = new Error("original process failure"), error = new Error("observation failed", { cause });
+    const metadata = { component: "cleanup", phase: "agent-stop", attemptId: uuid(63), runKey: "original run" };
+    backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
+    expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", identity: owner, ...metadata, error });
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    const task = coordinatorOptions.store.registerPending({ ...owner, agent: "codex" });
+    backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
+    expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", task, identity: owner, ...metadata, error });
+  } finally { f.signal.abort(); await running; }
 });

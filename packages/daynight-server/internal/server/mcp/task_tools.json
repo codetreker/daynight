@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a proposed Task with automation disabled; explicit status may be proposed or todo; omitted assignee is the current account.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -16,15 +16,22 @@
           "type": "string"
         },
         "assignedTo": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "uuid"
         },
         "requiredPlatform": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "enum": [
             "windows",
             "linux",
-            "macos"
+            "macos",
+            null
           ]
         },
         "dependsOn": {
@@ -56,16 +63,95 @@
           "type": "string",
           "enum": [
             "proposed",
-            "todo"
+            "todo",
+            "in_progress",
+            "done",
+            "cancelled"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "task",
+            "goal"
           ],
-          "default": "proposed"
+          "default": "task"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
         }
       },
       "required": [
         "projectId",
         "title"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "goal"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "todo",
+                  "in_progress",
+                  "done",
+                  "cancelled"
+                ]
+              },
+              "parentId": {
+                "type": "null"
+              },
+              "dependsOn": {
+                "maxItems": 0
+              },
+              "externalDependsOn": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "required": [
+                "requiredPlatform"
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "proposed",
+                  "todo"
+                ]
+              },
+              "assignedTo": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "requiredPlatform": {
+                "type": "string",
+                "enum": [
+                  "windows",
+                  "linux",
+                  "macos"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "annotations": {
       "readOnlyHint": false,
@@ -532,6 +618,20 @@
                 "blockedByCount": {
                   "type": "integer",
                   "minimum": 0
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "task",
+                    "goal"
+                  ]
+                },
+                "parentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
                 }
               },
               "required": [
@@ -547,9 +647,49 @@
                 "projection",
                 "titlePreview",
                 "titleTruncated",
-                "blockedByCount"
+                "blockedByCount",
+                "type",
+                "parentId"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "type": {
+                        "const": "goal"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "todo",
+                          "in_progress",
+                          "done",
+                          "cancelled"
+                        ]
+                      },
+                      "parentId": {
+                        "type": "null"
+                      },
+                      "ready": {
+                        "const": false
+                      },
+                      "allowAgents": {
+                        "const": false
+                      },
+                      "requiredPlatform": {
+                        "type": "null"
+                      },
+                      "blockedByCount": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              ]
             },
             {
               "type": "object",
@@ -946,6 +1086,48 @@
                     "type": "string",
                     "format": "uuid"
                   }
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "task",
+                    "goal"
+                  ]
+                },
+                "parentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "progress": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "done": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cancelled": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "unfinished": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "done",
+                    "cancelled",
+                    "unfinished"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -969,9 +1151,65 @@
                 "cancelledAt",
                 "dependsOn",
                 "externalDependsOn",
-                "blockedBy"
+                "blockedBy",
+                "type",
+                "parentId"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "type": {
+                        "const": "goal"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "todo",
+                          "in_progress",
+                          "done",
+                          "cancelled"
+                        ]
+                      },
+                      "parentId": {
+                        "type": "null"
+                      },
+                      "ready": {
+                        "const": false
+                      },
+                      "allowAgents": {
+                        "const": false
+                      },
+                      "requiredPlatform": {
+                        "type": "null"
+                      },
+                      "dependsOn": {
+                        "maxItems": 0
+                      },
+                      "externalDependsOn": {
+                        "maxItems": 0
+                      },
+                      "blockedBy": {
+                        "maxItems": 0
+                      }
+                    },
+                    "required": [
+                      "progress"
+                    ]
+                  },
+                  "else": {
+                    "not": {
+                      "required": [
+                        "progress"
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           ]
         },
@@ -1137,6 +1375,14 @@
             "full"
           ],
           "default": "summary"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "description": "Omit to retain, null to clear, or a Goal UUID to assign."
         }
       },
       "required": [
@@ -1178,6 +1424,11 @@
         {
           "required": [
             "externalDependsOn"
+          ]
+        },
+        {
+          "required": [
+            "parentId"
           ]
         }
       ]
@@ -1277,7 +1528,7 @@
   },
   {
     "name": "task_set_status",
-    "description": "Set Task status; cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim.",
+    "description": "Set Task status. For ordinary Tasks, cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1434,7 +1685,7 @@
   },
   {
     "name": "task_delete",
-    "description": "Soft-delete a Task. Existing stored data and attachments are retained.",
+    "description": "Soft-delete a Task. Existing stored data and attachments are retained. Deleting a Goal hides it and all its children without removing their parent links; active executions stop later through existing cleanup.",
     "inputSchema": {
       "type": "object",
       "properties": {

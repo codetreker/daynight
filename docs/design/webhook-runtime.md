@@ -4,13 +4,13 @@
 
 应用使用共享 PostgreSQL 事务、身份认证及同一个管理路由模块组装 Webhook 配置、历史和重投。启动前检查明确支持的不可变 policy，以及当前 endpoint 的签名 key 和 revision 等待行；缺失或不一致使启动失败。目标配置、Delivery 目标快照和签名秘密直接从数据库读取，存储格式及严格解码由[管理设计](webhook-management.md)和[捕获设计](webhook-capture.md)规定。
 
-`DAYNIGHT_WEBHOOK_ENABLED` 默认为 `0`，所有使用同一数据库的实例须采用一致开关和受支持的 policy 版本。关闭时不领取新网络请求，不允许新建或扩大配置；按当前权限读取和限制性清理仍可用。既有有效 endpoint 的来源事务继续捕获责任，恢复和维护继续运行，原期限和预算不会暂停。endpoint 自身暂停期间不匹配的新历史不会在恢复时补发。目录的 `dispatchEnabled` 表示配置，不能代替运行健康。
+`webhook.enabled` 默认为 `false`，环境变量 `DAYNIGHT_WEBHOOK_ENABLED` 可覆盖，所有使用同一数据库的实例须采用一致开关和受支持的 policy 版本。关闭时不领取新网络请求，不允许新建或扩大配置；按当前权限读取和限制性清理仍可用。既有有效 endpoint 的来源事务继续捕获责任，恢复和维护继续运行，原期限和预算不会暂停。endpoint 自身暂停期间不匹配的新历史不会在恢复时补发。目录的 `dispatchEnabled` 表示配置，不能代替运行健康。
 
 构造不启动 Webhook goroutine；应用运行根启动发送和维护并监督其永久故障。readiness 同时检查数据库和后台故障。关闭先停止领取，随后 drain HTTP 和 Session，取消并等待在途投递及维护，最后释放共享依赖；所有阶段共用最多十秒预算。无法确认使用者停止时返回错误并保留依赖；进程被强制终止后未确认的 Attempt 依原 lease 恢复，不能推断外部请求的结果。网络策略、持久 lease 和 late 观测见[投递设计](webhook-delivery.md)，清理锁序见[保留设计](webhook-retention.md)。
 
 ## 启用与维护
 
-实际部署须提供服务、数据库、身份、存储和网络配置。Webhook 使用 `DAYNIGHT_WEBHOOK_ENABLED` 控制配置扩张和网络领取；容器编排应保留至少 20 秒停止宽限以容纳内部预算及进程退出：
+实际部署须提供服务、数据库、身份、存储和网络配置。Webhook 使用 `webhook.enabled` 或环境变量 `DAYNIGHT_WEBHOOK_ENABLED` 控制配置扩张和网络领取；容器编排应保留至少 20 秒停止宽限以容纳内部预算及进程退出：
 
 ```yaml
 services:

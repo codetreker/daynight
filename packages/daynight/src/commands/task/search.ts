@@ -8,12 +8,13 @@ import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import { isNonemptyText } from "../../platform/text.js";
 import type { TaskCommandDependencies } from "./command.js";
+import { parseParent } from "./parent.js";
 
 type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 
 // Both renderers consume the same explicit projection, independently of wire additions.
 const projectResults = (items: readonly TaskSearchItem[]): TaskSearchItem[] => items.map((item) => ({
-  id: item.id, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
+  id: item.id, type: item.type, parentId: item.parentId, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
   context: item.context === null ? null : { taskId: item.context.taskId, title: item.context.title },
   match: { fields: [...item.match.fields], descriptionSnippet: item.match.descriptionSnippet },
 }));
@@ -23,6 +24,8 @@ const renderText = (project: string, items: readonly TaskSearchItem[]): string =
   if (items.length === 0) return `${header}No matching tasks.\n`;
   return `${header}Found ${items.length} matching ${items.length === 1 ? "task" : "tasks"}.\n\n${items.map((item) => [
     `ID: ${terminalText(item.id)}`,
+    `Type: ${item.type}`,
+    `Parent: ${item.parentId === null ? "none" : terminalText(item.parentId)}`,
     `Title: ${terminalText(item.title)}`,
     `Status: ${terminalText(item.status)}`,
     `Goal: ${item.context === null ? "none" : `${terminalText(item.context.taskId)}  ${terminalText(item.context.title)}`}`,
@@ -45,7 +48,10 @@ export const runTaskSearchCommand = async (command: Command, context: CliContext
   const status = command.options.get("--status") as TaskFilters["status"];
   const compatiblePlatform = command.options.get("--compatible-platform") as TaskFilters["compatiblePlatform"];
   const allowAgents = command.options.get("--allow-agents") as string | undefined;
+  const type = command.options.get("--type") as "task" | "goal" | undefined;
+  const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
   const filters: TaskFilters = {
+    ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }),
     ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }),
     ...(command.options.has("--ready") ? { ready: true } : {}),
     ...(allowAgents === undefined ? {} : { allowAgents: allowAgents === "true" }),

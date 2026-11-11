@@ -56,6 +56,15 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration sources", () => {
+  it("imports complete tool choices from the same parsed local source", async () => {
+    const f = await fixture({ worker: { toolPaths: { codex: path.join(path.parse(process.cwd()).root, "tools with spaces", "codex"), copilot: null } } });
+    const local = parseWorkerLocalConfiguration(f.source, f.paths);
+    const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
+    expect(seed.toolPaths).toEqual(local.toolPaths);
+    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
   it.each([undefined, "web"])("imports the effective local control mode without rewriting YAML: %s", async agentControlMode => {
     const f = await fixture({ worker: agentControlMode === undefined ? {} : { agentControlMode } });
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
@@ -75,7 +84,7 @@ describe("Worker cloud configuration sources", () => {
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
     const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
     const local = await readWorkerLocalConfiguration(f.paths);
-    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web" });
+    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
     expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow();
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toBeUndefined();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);

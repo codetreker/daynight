@@ -59,7 +59,7 @@ ProjectPage 持有当前图资源的 `openChainWitness`、详情资源和列表�
 
 `TaskDetailSurface` 组合已有详情 hook、关系跳转、PR 和附件组件；`TaskDetailDialog` 提供弹窗外壳，独立页面使用相同主体。样式由 `task-detail.css` 的 `task-detail-*` 命名空间拥有。普通模式外壳相对可用视口居中，宽度 `min(960px, 100% − 2 × gutter)`，桌面 `gutter = 24px`，600px 及以下为 12px；最大高度为 `min(880px, 100dvh − 2 × gutter)`。标题栏、详情页签和关闭按钮处于面板滚动内容之外。实际任务标题直接作为顶栏 `h2` 和对话框可访问名称，加载与首次失败使用状态标题；正文头部只保留状态和操作控件；tooltip 与限时气泡的机制由[详情提示设计](daynight-web.md#任务详情提示)拥有，不参与页签和阅读区的高度分配。完整标题自身有界、可聚焦并支持原生键盘滚动；已加载标题文字右侧放置不收缩的复制图标按钮，保持标题和按钮间距，顶栏保留全屏切换、“…”菜单与关闭入口，当前状态菜单位于标题下的公共状态行、平台切换之前；“…”紧邻关闭按钮左侧，收纳按当前任务/页签/附件生成的真实新标签链接和任务删除，独立页菜单只提供删除。菜单先关闭并聚焦“…”按钮，再打开既有删除确认，取消确认可恢复到仍存在的入口；菜单的键盘导航和外部关闭独立于详情的 Escape 层级。详情通过共享 `LocaleProvider` 沿用应用当前语言。默认“概览”正文独立滚动，包含描述、PR 与元数据/关系；完整 ID 旁与标题旁统一使用 `TaskCopyButton`，以两个错位叠放方框表示复制，保留双语 `aria-label` 和原生 `title`。组件直接调用 Clipboard API 写入完整原值，pending 时禁用按钮，成功与失败使用 `TaskDetailNotice`；标题实例按 project/task 与标题值绑定，ID 实例按完整 ID 绑定，卸载使迟到结果失效。复制失败保留可选原文和重试；桌面为阅读主栏与 265px 侧栏，850px 及以下侧栏收为 225px，600px 及以下堆叠。附件页签占用全部正文宽度，在所有宽度下保持左列表、右预览；尺寸链及唯一右侧滚动所有者由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。长文本换行，代码和表格只在所属区域横向滚动。描述使用共享 Markdown 视图和现有附件导航，详情加载与错误继续由详情资源拥有。
 
-继续复用body portal、共享滚动锁、背景inert、焦点循环、遮罩关闭和分层Esc。Discussion消息详情独占子层键盘，并向Surface报告焦点占用；[Thread Web设计](task-thread-web.md#阅读键盘与验证)拥有该子层的关闭与焦点归还。附件菜单与原生删除确认在详情子树内拥有当前层键盘处理，Escape 关闭该层并保留详情；具体行为由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。清理 inert、滚动锁和监听器的同步阶段与 DOM 移除后恢复焦点的阶段保持既有职责。原入口消失或处于隐藏的项目任务区时，不以 DOM 仍连接作为可聚焦证据。优先选择仍可见图浮层的关闭控件，否则使用当前可见任务或页签控件；概览或空项目中没有任务入口时恢复当前项目页签或标题。任务关系切换不卸载外壳，不中途恢复到旧入口。外壳不引入图重挂载。`dialogFocusables` 与实际对话框中的同源附件 frame 共用可见控件枚举，frame 的文档与活动键盘所有者共同决定监听生命周期，重载、owner 变化和卸载均释放旧监听。独立完整详情页普通模式使用浏览器键盘行为，全屏模式使用下述阅读工作区所有者；附件的完整清单、渲染与滚动仍由[附件设计](daynight-task-attachments.md#独立附件阅读页)拥有。
+`DetailFrame` 提供共享的 section/main 外壳、受控的 `KeptMountedSlot` 和全屏滚动恢复；Task 业务及 Session、Steps 控制器仍由各自组件持有。`useDetailOverlay` 管理焦点、键盘与计数滚动锁；`OverlayOwnerContext` 沿 React 树跨 portal 传递父层，注册子层时以 inert 租约隔离父层。只有注册树的顶层消费详情 Escape/Tab，重叠租约全部释放后才恢复父层。Discussion 消息详情和确认框注册为子层；[Thread Web设计](task-thread-web.md#阅读键盘与验证)拥有消息详情的关闭与焦点归还。附件菜单与原生删除确认在详情子树内拥有当前层键盘处理，Escape 关闭该层并保留详情；具体行为由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。清理 inert、滚动锁和监听器的同步阶段与 DOM 移除后恢复焦点的阶段保持既有职责。原入口消失或处于隐藏的项目任务区时，不以 DOM 仍连接作为可聚焦证据。优先选择仍可见图浮层的关闭控件，否则使用当前可见任务或页签控件；概览或空项目中没有任务入口时恢复当前项目页签或标题。任务关系切换不卸载外壳，不中途恢复到旧入口。外壳不引入图重挂载。`dialogFocusables` 与实际对话框中的同源附件 frame 共用可见控件枚举，frame 的文档与活动键盘所有者共同决定监听生命周期，重载、owner 变化和卸载均释放旧监听；子层占有键盘时 frame 桥接让出事件。独立完整详情页普通模式使用浏览器键盘行为，全屏模式使用下述阅读工作区所有者；附件的完整清单、渲染与滚动仍由[附件设计](daynight-task-attachments.md#独立附件阅读页)拥有。
 
 ## 全屏阅读工作区
 
@@ -91,7 +91,7 @@ fullscreen 状态，向 `TaskDetailSurface` 传递活动值和变更操作。关
 全屏切换不重复申请这些资源。独立页全屏隐藏辅助顶栏，标题栏保留返回已知项目路径
 的入口，退出恢复辅助顶栏；普通页 Escape 不执行 history 推测或窗口关闭。
 
-Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 root 和 `onEscape`。
+Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 root、当前层资格和 `onEscape`。
 弹窗始终提供，独立页仅全屏时提供。已加载 frame 的文档和 owner 变化会更新监听，
 不依赖 reload；具体 document 清理、边界 Tab 和原生 PDF 的限制由
 [附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。此扩展与居中/独立页
@@ -102,7 +102,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 `TaskDetailPage` 在工作空间与详情弹窗外组合 `TaskDetailSurface`，保留完整内容与
 已有操作。页面外壳提供返回项目、语言选择及满视口尺寸；主体使用同一份描述、PR、
 状态菜单、关系、元数据、自动执行许可、暂停展示与解除、执行平台及附件组件。`TaskDetailDialog`
-继续拥有 body portal、inert、滚动锁、焦点循环、Escape 与关闭恢复；这些模态能力
+提供 body portal，共享详情弹层拥有 inert、滚动锁、焦点循环、Escape 与关闭恢复；这些模态能力
 不属于普通独立页面；共享主体根据当前入口与阅读模式注册语义键盘所有者。状态行的平台选择、控件锁定 tooltip 与独立浮层反馈
 沿用当前详情实现；状态、许可与平台通过同一个确认 union 和精确版本审查拥有者
 提交，附件删除继续使用既有确认层。具体平台复核与错误反馈由
@@ -111,7 +111,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
 `tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|attachments|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
+默认为附件；显式 `tab=overview|attachments|steps|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。
@@ -119,8 +119,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 独立外壳拥有任务关系、页签和附件选择的导航。显式交互通过 `navigate()` 请求准入后写入
 目标 URL，Back/Forward 由应用导航所有者在采用目标前决定草稿去留；相同 Task 的
 页签和附件往返保留主体。确认历史目标不再写历史，同一状态不重复生成条目。
-弹窗使用本地状态，关系切换和关闭同样在修改状态前请求准入；历史编号、取消恢复和
-未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
+独立页以身份、项目和根资源绑定轻量阅读载荷，保存根 Goal 的图和子 Task，以及外部 Goal 对话框及其子层选择。URL 继续拥有根页签和文件；每个受控条目初始化时以 replace 保存选择，用户阅读变化以 push 提交，关闭经既有保护后以 replace 清除相应子层。遍历只应用已准入载荷，不重放用户操作。`TypedDetail` 在确认 Goal 类型后接入受控子层；`TaskDetailDialog` 透传页签与文件选择，项目页调用者仍使用本地选择。页面载荷只保存资源 ID、图根和阅读导航，不保存资源内容、权限、草稿或 DOM；焦点入口和阅读工作区仍由原组件持有。异常载荷显示导航错误，不用于打开其他资源。相同 Task 只有在资源、父宿主和呈现方式均保留时才视为同一草稿工作区；身份或历史退休仍撤销旧资源。历史编号、取消恢复和未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 弹窗通过标题栏“…”菜单中的新标签真实链接导出当前选择，附件
 预览的新标签入口也进入完整详情并定位该文件。两个窗口不交换任务对象、图快照、
 草稿或确认状态。
@@ -182,10 +181,10 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-skill.md#文档职责与任务资料)
 拥有，阅读层不维护另一套栏目或强制证据位置。description 明确当前责任与资料入口，
 未指定附件交付时正文完整无需主附件；Goal 需求阶段的完整 `spec.md` 和 managed 必需
-附件不能由正文替代。共享要求、设计和原型引用实际来源，架构 description 直接注明
-需求 task ID、spec 路径及适用原型，并实际读取已确认内容。
+附件不能由正文替代。Goal 持有共享需求、设计和整体验收，阶段 task 保留生产责任、Goal ID 和路径；架构 description 直接注明
+需求生产 task ID、Goal ID、spec 路径及适用原型，并实际读取已确认内容。
 
-每个 Goal 交付正文直接列出架构任务 ID 及各必需来源：来源 description 全文或适用
+每个 Goal 交付正文直接列出架构生产任务 ID、共享资料拥有者 Goal ID 及各必需来源：来源 description 全文或适用
 章节、真实附件完整路径，或保留所属架构任务身份的不可变仓库引用。正文来源通过
 `task show` 读取，间接后继同样保留入口；登记时核验，实施前读取所列输入。资料引用
 不新增执行依赖，也不复制整套共享材料。真实资源确认上传后才加入引用，链接按实际

@@ -60,7 +60,10 @@ IPC disconnect.
 The shared native boundary lives in `platform/windows-job.ts` and uses the
 existing dynamically loaded `koffi` dependency. The Bot Job lease reuses that
 boundary without adopting the review completion protocol. The older unowned
-review helper retains its ancestry checks and diagnostics independently.
+review helper retains its ancestry checks and diagnostics independently. The
+[repository Git reversal](../simplification/2026-11-11-revert-native-windows-git.md)
+restores that runner's separate tree-termination policy; it does not change this
+review ownership decision.
 
 ## Alternatives
 

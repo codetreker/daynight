@@ -10,6 +10,7 @@ import * as grants from '../src/api/oauth-grants';
 import { messagesByLocale } from '../src/i18n/messages';
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { AccountPage } from '../src/features/management/AccountPage';
+import { browserNavigation } from '../src/app/navigation';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
@@ -74,6 +75,8 @@ const createForm = async (name = 'new device', expiry: string | null = null) => 
 };
 
 beforeEach(() => {
+  browserNavigation().dispose();
+  history.replaceState(null, '', '/account');
   vi.resetAllMocks();
   vi.mocked(getProject).mockImplementation(async (id) => ({ id, name: "Very long project name" } as Project));
   actorRole = 'admin';
@@ -225,7 +228,7 @@ describe('account credentials', () => {
     const late = deferred<readonly PersonalAccessToken[]>(); vi.mocked(auth.listTokens).mockReturnValue(late.promise);
     const view = account(); click('访问凭据');
     const signal = vi.mocked(auth.listTokens).mock.calls[0]![0];
-    view.rerender(<AccountPage user={{ ...user, id: 'new-account', name: 'New account' }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
+    view.rerender(<AccountPage user={{ ...user, id: '00000000-0000-4000-8000-000000000202', name: 'New account' }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
     expect(signal.aborted).toBe(true); expect(screen.getByText('New account')).toBeInTheDocument();
     await act(async () => late.resolve([token])); expect(screen.queryByText('MacBook')).toBeNull();
   });

@@ -1,6 +1,7 @@
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskSync } from "../src/api/client";
@@ -57,7 +58,7 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
@@ -114,7 +115,7 @@ beforeEach(() => {
   graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+    if (id === X) return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
     return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
@@ -156,6 +157,40 @@ describe("project dashboard", () => {
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
     expect(listButton("另一任务链")).toBeTruthy();
     expect(input).toHaveFocus();
+  });
+
+  it("clears an applied search when the draft is deleted, cancelling an in-flight read", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
+    const hit = { id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await findListButton("另一任务链");
+    const ordinaryStatus = screen.getByLabelText("状态");
+    fireEvent.change(ordinaryStatus, { target: { value: "todo" } });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    await user.type(input, "缓存{Enter}");
+    await screen.findByRole("button", { name: "打开任务：搜索命中" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(2));
+    const signal = vi.mocked(searchTasks).mock.calls[1]![4];
+    await user.keyboard("{Control>}a{/Control}未提交");
+    expect(screen.getByText("搜索结果：缓存")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开任务：搜索命中" })).toBeTruthy();
+    expect(signal.aborted).toBe(false);
+    await user.keyboard("{Control>}a{/Control}{Backspace}");
+    expect(input).toHaveValue(""); expect(input).toHaveFocus();
+    expect(signal.aborted).toBe(true);
+    expect(document.querySelector(".task-search-results")).toBeNull();
+    expect(document.querySelector(".task-search-filters")).toBeNull();
+    expect(taskTabs().getByRole("tab", { name: "任务链" })).toBeVisible();
+    expect(screen.getByLabelText("状态")).toHaveValue("todo");
+    expect(listButton("另一任务链")).toBeTruthy();
+    await act(async () => { pending.resolve({ projectId, total: 1, items: [{ ...hit, title: "迟到结果" }], nextCursor: null }); });
+    expect(screen.queryByRole("button", { name: "打开任务：迟到结果" })).toBeNull();
+    expect(document.querySelector(".task-search-results")).toBeNull();
+    expect(searchTasks).toHaveBeenCalledTimes(2);
   });
 
   it("reports syntax errors and selects the Unicode location in the submitted expression", async () => {
@@ -399,10 +434,9 @@ describe("project dashboard", () => {
     fireEvent.click(await findNodeButton("节点 后续任务"));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(detail().getByRole("button", { name: "刷新全图" }));
-    await screen.findByRole("heading", { name: "还没有任务" });
-    await waitFor(() => expect(document.activeElement).toBe(sectionTabs().getByRole("tab", { name: "任务列表" })));
-    expect(number("任务总数")).toBe("0");
-    expect(screen.queryByTestId("root-list")).toBeNull();
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    await waitFor(() => expect(document.activeElement).toBe(taskTabs().getByRole("tab", { name: "任务链" })));
+    expect(screen.getByTestId("root-list")).toBeEmptyDOMElement();
   });
 
   it("clears project-specific display immediately when the project prop changes", async () => {
@@ -420,7 +454,8 @@ describe("project dashboard", () => {
   it("renders an empty project as zero statistics and an explicit empty state", async () => {
     graphRequest.mockResolvedValue(graph([]));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
+    expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
     expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
     expect(screen.getByText("完成比例 0%")).toBeTruthy();
   });
@@ -441,7 +476,7 @@ describe("project dashboard", () => {
 
   it("shows generic read failures and rejects malformed graph snapshots", async () => {
     graphRequest.mockRejectedValueOnce(new ApiError("server", 500, "internal_error", "graph-read-failed"))
-      .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
+      .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [B] } : task) });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByRole("heading", { name: "项目加载失败" })).toBeTruthy();
@@ -591,7 +626,7 @@ describe("transient task chain dialogs", () => {
   it("does not auto-open a chain when an empty project gains tasks", async () => {
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "还没有任务" });
+    await waitFor(() => expect(number("任务总数")).toBe("0"));
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
     await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);

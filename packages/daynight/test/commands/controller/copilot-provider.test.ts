@@ -1,21 +1,29 @@
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import type { ChildProcess } from "node:child_process";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
 import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
-import type { ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
-const sdk = vi.hoisted(() => ({ provenGeometry: false, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
+import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
+import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
+import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
+const sdk = vi.hoisted(() => ({ provenGeometry: false, authority: null as any, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 vi.mock("../../../src/commands/controller/providers/copilot-image-profile.js", async original => {
   const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-image-profile.js")>();
   return { ...actual, copilotImageProfile(sdkVersion: string, cliVersion: string) {
     const profile = actual.copilotImageProfile(sdkVersion, cliVersion);
     return profile && sdk.provenGeometry ? { geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : profile;
   } };
+});
+vi.mock("../../../src/commands/controller/providers/copilot-read-authority-artifacts.js", () => ({ prepareCopilotAuthorityArtifacts: async () => sdk.authority ? { entry: "/controlled/copilot/index.js", cleanup: async () => {} } : undefined }));
+vi.mock("../../../src/commands/controller/providers/copilot-read-authority.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-read-authority.js")>();
+  return { ...actual, CopilotReadAuthority: vi.fn(function (...args: ConstructorParameters<typeof actual.CopilotReadAuthority>) { return sdk.authority ?? new actual.CopilotReadAuthority(...args); }) };
 });
 const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/copilot-bridge.js")>(), startCopilotBridge(options: { port: number; token: string }) {
@@ -24,6 +32,7 @@ vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", async or
 }, sendCopilotBridgeImages: (native: unknown, input: unknown) => sdk.imageSend(native, input) }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: processMock.spawn }));
 import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
+import { CopilotReadCorrelation, copilotReadMarker } from "../../../src/commands/controller/providers/copilot-read-authority-correlation.js";
 import { CopilotImages } from "../../../src/commands/controller/providers/copilot-images.js";
 
 const event = (type: string, data: unknown = {}, agentId?: string) => ({ id: randomUUID(), timestamp: new Date().toISOString(), parentId: null, type, data, ...(agentId ? { agentId } : {}) });
@@ -40,14 +49,220 @@ function setup() {
     plan: { readSqlTodos: vi.fn(async () => ({ rows: [] as { id?: string; title?: string; description?: string; status?: string }[] })) }, interruptMainTurn: vi.fn(async () => ({ interrupted: true })), permissions: { configure: vi.fn(async () => ({ success: true })), handlePendingPermissionRequest: vi.fn(async () => ({ success: true })) },
   } };
   const capture = async (config: typeof captured) => { captured = config; native.sessionId = config.sessionId; return native; };
-  const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => ({})) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
+  const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => { if (child.exitCode === null && child.signalCode === null) { child.exitCode = 0; child.emit("exit", 0, null); child.emit("close", 0, null); } return {}; }) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
   sdk.construct.mockReturnValue(client);
   const entries: ProviderEntry[] = [], states: ProviderState[] = [], observed: string[] = [], spawned: unknown[] = [];
   const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
   return { child, client, native, entries, states, options, observed, spawned, emit: (e: unknown) => captured.onEvent(e), config: () => captured };
 }
-beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
+beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.authority = null; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+
+async function sourceAuthorityFixture() {
+  const { CopilotReadAuthority, copilotAuthorityProtocol } = await vi.importActual<typeof import("../../../src/commands/controller/providers/copilot-read-authority.js")>("../../../src/commands/controller/providers/copilot-read-authority.js");
+  const policies: (NativeReadPolicy | null)[] = [], readPaths: string[] = [], cwd = process.cwd(), child = fixture.child;
+  let readBarrier: { entered(): void; waiting: Promise<void> } | undefined;
+  const state = { modelId: "first", reasoningEffort: "low", readAllowed: true };
+  const model = {
+    getCurrent: vi.fn(async () => ({ modelId: state.modelId, reasoningEffort: state.reasoningEffort })),
+    list: vi.fn(async () => ({ list: ["first", "second"].map(id => ({ id, supportedReasoningEfforts: ["low", "high"] })) })),
+    switchTo: vi.fn(async ({ modelId }: { modelId: string }) => { state.modelId = modelId; return { deferred: false }; }),
+    setReasoningEffort: vi.fn(async ({ reasoningEffort }: { reasoningEffort: string }) => { state.reasoningEffort = reasoningEffort; return {}; }),
+  };
+  const skills = { ensureLoaded: vi.fn(async () => {}), list: vi.fn(async () => ({ skills: [] })) };
+  Object.assign(fixture.native.rpc, { model, skills });
+  const setApproveAll = vi.fn(async () => ({ success: true })); Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const nativeRead: CopilotAuthorityNative = {
+    sessionAuthMetadataJson: () => JSON.stringify({ type: "user", host: "https://github.com", login: "fixture" }),
+    hookSessionSnapshot: async sessionId => JSON.stringify({ sessionId, cwd, hooks: [], hookCount: 0, warnings: [], repositoryLoaded: true, repositoryDiagnostics: [] }),
+    hookProcessorCallbackRegistrations: () => [],
+    sessionInvokeJson: async (sessionId, method, params) => {
+      if (method === "session.metadata.snapshot") return JSON.stringify({ ok: true, result: { sessionId, workingDirectory: cwd, isRemote: false } });
+      if (method === "session.permissions.getMode") return JSON.stringify({ ok: true, result: { mode: "manual" } });
+      if (method !== "session.contentExclusion.checkPaths") throw new Error(`Unexpected Read method: ${method}`);
+      if (readBarrier) { readBarrier.entered(); await readBarrier.waiting; }
+      const { paths } = JSON.parse(params!); return JSON.stringify({ ok: true, result: { available: true, checks: paths.map((path: string) => ({ path, excluded: false })) } });
+    },
+    sessionRoutePermissionJson: async (_sessionId, params) => {
+      const request = JSON.parse(params).permissionRequest;
+      if (request.kind !== "read") throw new Error("Unexpected permission kind");
+      readPaths.push(request.path); return JSON.stringify({ route: "result", result: { kind: state.readAllowed ? "approved" : "denied-by-rules" } });
+    },
+  };
+  Object.assign(child, { connected: true, send(request: import("../../../src/commands/controller/providers/copilot-read-authority.js").CopilotReadRequest, callback: (error: Error | null) => void) {
+    callback(null);
+    void (async () => {
+      let allowed = false;
+      try {
+        if (request.checkpoint) await checkCopilotRead(nativeRead, request.sessionId, request.cwd, request.checkpoint);
+        else await bindCopilotRead(nativeRead, request.sessionId, request.cwd);
+        allowed = true;
+      } catch { /* The controlled transport returns the native checkpoint decision. */ }
+      child.emit("message", { protocol: copilotAuthorityProtocol, execution: request.execution, sequence: request.sequence, digest: request.digest, allowed, key: request.sequence === 0 && allowed ? "1".repeat(64) : null });
+    })();
+    return true;
+  } });
+  const publish = (policy: NativeReadPolicy | null) => policies.push(policy);
+  sdk.authority = new CopilotReadAuthority({ child: child as unknown as ChildProcess, cwd, publish });
+  const checkpoint: LocalImageCheckpoint = { stage: "initial", proof: { requested: { locator: "image.png", path: "image.png" }, root: { cwd, identity: { kind: "posix", dev: "1", ino: "1" }, traversal: [] }, traversal: [], opened: null } };
+  const drain = vi.fn(async () => {}), { executable: _executable, ...options } = fixture.options;
+  const provider = await openCopilotProvider({ ...options, onNativeReadPolicy: publish, drainNativeReadPolicy: drain });
+  const policy = policies.at(-1)!;
+  if (!policy) { await provider.close(); throw new Error("The provider did not publish its Read policy."); }
+  const blockCheckpoint = () => {
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }), waiting = new Promise<void>(resolve => { release = resolve; });
+    readBarrier = { entered, waiting }; return { started, release };
+  };
+  skills.ensureLoaded.mockClear(); skills.list.mockClear(); setApproveAll.mockClear();
+  return { provider, policy, checkpoint, policies, readPaths, state, model, skills, setApproveAll, drain, blockCheckpoint, revision: () => fixture.states.at(-1)!.controls!.revision };
+}
+
+// The qualified Copilot Read ABI consumes POSIX checkpoints.
+const sourceAuthorityTest = test.skipIf(process.platform === "win32");
+sourceAuthorityTest.each([["model", "second"], ["effort", "high"]])("Copilot %s settings preserve fresh local-source checkpoint decisions", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    await expect(f.provider.setSetting!(id, value, randomUUID(), f.revision())).resolves.toEqual({ disposition: "handled" });
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === id)?.value).toBe(value);
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    expect(f.policies.at(-1)).toBe(f.policy);
+    f.state.readAllowed = false;
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(f.readPaths).toEqual(Array(3).fill(path.join(process.cwd(), "image.png")));
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([["model", "second"], ["effort", "high"]])("Copilot %s setting readback never reloads native skills", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.provider.setSetting!(id, value, randomUUID(), f.revision());
+    expect(f.skills.ensureLoaded).not.toHaveBeenCalled(); expect(f.skills.list).not.toHaveBeenCalled();
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot deferred model switches require readback before setting confirmation", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    f.model.switchTo.mockResolvedValue({ deferred: true }); vi.useFakeTimers();
+    let confirmed = false;
+    const setting = f.provider.setSetting!("model", "second", randomUUID(), f.revision()).then(result => { confirmed = true; return result; });
+    await vi.advanceTimersByTimeAsync(0); expect(confirmed).toBe(false);
+    f.state.modelId = "second"; await vi.advanceTimersByTimeAsync(1001);
+    expect(await setting).toEqual({ disposition: "handled" });
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    expect(f.policies.at(-1)).toBe(f.policy); expect(f.drain).not.toHaveBeenCalled();
+    expect(f.skills.ensureLoaded).not.toHaveBeenCalled(); expect(f.skills.list).not.toHaveBeenCalled();
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each(["revision", "value"])("Copilot invalid setting %s revokes source authority before returning", async failure => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    await expect(f.provider.setSetting!("model", failure === "value" ? "unlisted" : "second", randomUUID(), failure === "revision" ? "0" : f.revision())).rejects.toThrow();
+    expect(f.model.switchTo).not.toHaveBeenCalled(); expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([["tool_approval", "allow"], ["unknown", "value"]])("Copilot %s updates revoke pending checkpoints and drain before dispatch", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  let releaseDrain!: () => void;
+  const drained = new Promise<void>(resolve => { releaseDrain = resolve; }), blocked = f.blockCheckpoint();
+  try {
+    const checking = f.policy.authorizeCheckpoint(f.checkpoint).catch(error => error);
+    await blocked.started;
+    f.drain.mockImplementation(() => drained);
+    const setting = f.provider.setSetting!(id, value, randomUUID(), f.revision()).catch(error => error);
+    expect(await checking).toMatchObject({ code: "source_forbidden" });
+    expect(f.policies.at(-1)).toBeNull();
+    expect(f.drain).toHaveBeenCalledOnce(); expect(f.setApproveAll).not.toHaveBeenCalled();
+    const reply = once(fixture.child, "message"); blocked.release(); await reply;
+    releaseDrain();
+    if (id === "tool_approval") expect(await setting).toEqual({ disposition: "handled" });
+    else expect(await setting).toBeInstanceOf(Error);
+    expect(f.model.switchTo).not.toHaveBeenCalled();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { blocked.release(); releaseDrain(); await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([
+  ["model", "second", "reject"], ["effort", "high", "reject"],
+  ["model", "second", "readback"], ["effort", "high", "readback"],
+])("Copilot %s update %s (%s) keeps source capture fail-closed", async (id, value, failure) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    if (id === "model") f.model.switchTo.mockImplementation(async () => { if (failure === "reject") throw new Error("Native update rejected"); return { deferred: false }; });
+    else f.model.setReasoningEffort.mockImplementation(async () => { if (failure === "reject") throw new Error("Native update rejected"); return {}; });
+    await expect(f.provider.setSetting!(id, value, randomUUID(), f.revision())).rejects.toThrow();
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(f.readPaths).toHaveLength(1);
+    await expect(f.provider.send(textNativeInput("Text remains available"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot delayed effort completion cannot revive authority after the update deadline", async () => {
+  const f = await sourceAuthorityFixture(); let complete!: () => void;
+  try {
+    f.model.setReasoningEffort.mockImplementation(({ reasoningEffort }) => new Promise(resolve => { complete = () => { f.state.reasoningEffort = reasoningEffort; resolve({}); }; }));
+    vi.useFakeTimers();
+    const setting = f.provider.setSetting!("effort", "high", randomUUID(), f.revision()), failed = expect(setting).rejects.toThrow("not confirmed");
+    await vi.advanceTimersByTimeAsync(30_001); await failed;
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    complete(); await f.provider.refreshControls!();
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === "effort")?.value).toBe("high");
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { complete?.(); await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot deferred model timeout cannot revive authority on a later readback", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    f.model.switchTo.mockResolvedValue({ deferred: true }); vi.useFakeTimers();
+    const setting = f.provider.setSetting!("model", "second", randomUUID(), f.revision()), failed = expect(setting).rejects.toThrow("not confirmed");
+    await vi.advanceTimersByTimeAsync(30_001); await failed;
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    f.state.modelId = "second"; await f.provider.refreshControls!();
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === "model")?.value).toBe("second");
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("a native permission change during an effort update still revokes source authority", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    f.model.setReasoningEffort.mockImplementation(async ({ reasoningEffort }) => { f.state.reasoningEffort = reasoningEffort; fixture.emit(event("session.permissions_changed", { mode: "assisted" })); return {}; });
+    await f.provider.setSetting!("effort", "high", randomUUID(), f.revision());
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("an unknown Copilot command still revokes source authority and drains", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    await expect(f.provider.executeCommand!("unknown", "", randomUUID(), f.revision(), null)).rejects.toThrow();
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+test("Copilot still stops its owned runtime when image draining fails", async () => {
+  const error = new Error("Image cleanup failed"), policies: unknown[] = [];
+  const provider = await openCopilotProvider({ ...fixture.options, onNativeReadPolicy: policy => policies.push(policy), drainNativeReadPolicy: async () => { throw error; } });
+  await expect(provider.close()).rejects.toBe(error);
+  expect(fixture.native.disconnect).toHaveBeenCalledOnce();
+  expect(fixture.child.exitCode).toBe(0); expect(fixture.child.kill).not.toHaveBeenCalled();
+  expect(policies).toEqual([null]);
+  expect(fixture.states.at(-1)?.activity).toBe("stopped");
+});
+
 test("new Copilot selection cannot pass startup after the native catalog is unavailable", async () => {
   const result = await openCopilotProvider({ ...fixture.options, model: "requested", validateNativeSelection: true }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
   try { expect(result.error).toBeInstanceOf(Error); expect(fixture.native.send).not.toHaveBeenCalled(); }
@@ -154,7 +369,7 @@ test("Copilot owns a token-authenticated local runtime, preserves private profil
   expect(fixture.config()).toMatchObject({ streaming: true, skillDirectories: ["/native/project/skills"] });
   expect(fixture.client.rpc.skills.getDiscoveryPaths).toHaveBeenCalledWith({ projectPaths: [process.cwd()] });
   expect(fixture.config().model).toBeUndefined(); expect(fixture.config().reasoningEffort).toBeUndefined();
-  await provider.close(); expect(fixture.child.kill).toHaveBeenCalled(); expect(fixture.states.at(-1)?.activity).toBe("stopped");
+  await provider.close(); expect(fixture.child.exitCode).toBe(0); expect(fixture.child.kill).not.toHaveBeenCalled(); expect(fixture.states.at(-1)?.activity).toBe("stopped");
 });
 
 test("Copilot reports native skill discovery failures while keeping the session usable", async () => {
@@ -265,25 +480,26 @@ test("Copilot joins its owned runtime after media cleanup fails and retries the 
   const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValueOnce(failure).mockResolvedValue(undefined);
   try {
     await expect(provider.close()).rejects.toBe(failure);
-    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalledOnce();
-    expect(fixture.child.signalCode).toBe("SIGTERM"); expect(fixture.states.at(-1)?.activity).toBe("stopped");
+    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).not.toHaveBeenCalled();
+    expect(fixture.child.exitCode).toBe(0); expect(fixture.states.at(-1)?.activity).toBe("stopped");
     await expect(provider.close()).resolves.toBeUndefined(); expect(closeImages).toHaveBeenCalledTimes(2);
-    expect(fixture.child.kill).toHaveBeenCalledOnce();
+    expect(fixture.child.kill).not.toHaveBeenCalled();
   } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
 });
 
 test("Copilot preserves media and runtime shutdown errors without reporting an unjoined runtime as stopped", async () => {
   const provider = await openCopilotProvider(fixture.options), mediaFailure = new Error("Fixture media removal failed"), runtimeFailure = new Error("Fixture process termination failed");
   const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValue(mediaFailure);
+  vi.useFakeTimers(); fixture.client.rpc.runtime.shutdown.mockImplementation(async () => ({}));
   fixture.child.kill.mockImplementation(() => { throw runtimeFailure; });
   fixture.emit(event("permission.requested", { requestId: "cleanup-permission", permissionRequest: { kind: "shell", fullCommandText: "echo fixture" } }));
   try {
-    const error = await provider.close().catch(error => error);
+    const closing = provider.close().catch(error => error); await vi.advanceTimersByTimeAsync(1500); const error = await closing;
     expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual(expect.arrayContaining([mediaFailure, runtimeFailure]));
     expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalled();
     expect(fixture.states.some(state => state.activity === "stopped")).toBe(false);
     expect(fixture.states.at(-1)).toMatchObject({ activity: "unknown", capabilities: { send: false, steer: false, cancel: false, respond: false } });
-  } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
+  } finally { fixture.child.exitCode = 0; fixture.child.emit("exit", 0, null); closeImages.mockRestore(); await provider.close().catch(() => {}); }
 });
 
 test("Copilot late ACK confirms only the timed-out invocation in its still-owned runtime", async () => {
@@ -589,4 +805,56 @@ test("the installed Copilot profile refuses image input without a proven geometr
     await provider.send(textNativeInput("Still text"), randomUUID(), null);
     expect(fixture.native.send).toHaveBeenCalledOnce();
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+
+test.each(["complete", "incomplete", "wrong-request", "expired", "during-replay", "unavailable", "repeated-expiry"])("Copilot bounded permission prepass preserves %s cross-page history", async mode => {
+  const sessionId = randomUUID(), key = "a".repeat(64), sourcePath = "/controlled/image.png";
+  const marker = copilotReadMarker(key, sessionId, randomUUID(), 1, "b".repeat(64), sourcePath);
+  const request = { kind: "read" as const, path: sourcePath, intention: marker };
+  const requested = event("permission.requested", { requestId: "internal", permissionRequest: request, promptRequest: { intention: marker } });
+  const signing = new CopilotReadCorrelation(key, sessionId); signing.issue(marker, sourcePath);
+  const rejection = signing.reject(request, { sessionId })!;
+  expect(signing.suppress(requested)).toBe(true);
+  const refusal = await rejection;
+  const completed = event("permission.completed", { requestId: mode === "wrong-request" ? "different" : "internal", result: { kind: "denied-interactively-by-user", feedback: refusal.feedback } });
+  const ordinary = event("permission.requested", { requestId: "ordinary", permissionRequest: { kind: "shell", fullCommandText: "echo ordinary" }, promptRequest: { intention: "Ordinary native permission" } });
+  const ordinaryDone = event("permission.completed", { requestId: "ordinary", result: { kind: "denied-interactively-by-user" } });
+  const history = [requested, ordinary, event("user.message", { content: "keep ordinary history" }), ...(mode === "incomplete" ? [] : [completed]), ordinaryDone];
+  const correlation = new CopilotReadCorrelation(key, sessionId);
+  const prepareHistory = vi.fn((events: readonly unknown[]) => correlation.prepareHistory(events));
+  sdk.authority = { install: async () => {}, invalidate: vi.fn(), observe: vi.fn(), rejectPermission: (value: unknown, context: unknown) => correlation.reject(value, context), prepareHistory, suppressPermissionEvent: (value: unknown, historical: boolean) => correlation.suppress(value, historical) };
+  let expired = false, injected = false;
+  fixture.native.rpc.eventLog.read.mockImplementation(async (input: any) => {
+    const selected = input.types ? history.filter(item => input.types.includes(item.type) && (mode !== "during-replay" || item !== requested && item !== completed)) : history;
+    if (mode === "during-replay" && !input.types && !injected) {
+      injected = true; correlation.issue(marker, sourcePath);
+      const rejecting = (fixture.config().onPermissionRequest as (request: unknown, context: unknown) => Promise<unknown>)(request, { sessionId });
+      fixture.emit(requested); await rejecting; fixture.emit(completed);
+    }
+    if (input.types && (mode === "unavailable" || mode === "repeated-expiry")) return { events: [], cursor: "unknown", hasMore: false, cursorStatus: mode === "unavailable" ? "unknown" : "expired" };
+    if (mode === "expired" && input.types && input.cursor && !expired) { expired = true; return { events: [], cursor: "expired", hasMore: false, cursorStatus: "expired" }; }
+    const index = Number(input.cursor ?? 0);
+    return { events: selected.slice(index, index + 1), cursor: String(index + 1), hasMore: index + 1 < selected.length, cursorStatus: "ok" };
+  });
+  const { executable: _executable, ...options } = fixture.options;
+  const provider = await openCopilotProvider({ ...options, resumeNativeSessionId: sessionId, onNativeReadPolicy() {} });
+  try {
+    const interactions = fixture.entries.filter(entry => entry.kind === "interaction");
+    const internal = interactions.filter(entry => entry.interaction.title === marker);
+    const unavailable = mode === "unavailable" || mode === "repeated-expiry";
+    expect(internal.map(entry => entry.interaction.state)).toEqual(mode === "complete" || mode === "expired" || mode === "during-replay" ? [] : unavailable ? ["expired", "resolved"] : ["expired"]);
+    expect(interactions.filter(entry => entry.interaction.title === "Ordinary native permission").map(entry => entry.interaction.state)).toEqual(["expired", "resolved"]);
+    expect(fixture.entries).toContainEqual(expect.objectContaining({ kind: "user_message", content: [{ type: "text", text: "keep ordinary history" }] }));
+    if (unavailable) {
+      expect(prepareHistory).not.toHaveBeenCalled(); expect(sdk.authority.invalidate).toHaveBeenCalledOnce();
+      await expect(provider.send(textNativeInput("ordinary text remains available"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    } else {
+      expect(prepareHistory).toHaveBeenCalledOnce();
+      expect(prepareHistory.mock.calls[0]![0]).toEqual(history.filter(item => item.type.startsWith("permission.") && (mode !== "during-replay" || item !== requested && item !== completed)));
+    }
+    expect(fixture.native.getEvents).not.toHaveBeenCalled();
+    expect(fixture.native.rpc.eventLog.read.mock.calls.every(([input]) => input.max === 1 && input.includeEphemeral === false)).toBe(true);
+    expect(fixture.states.at(-1)?.activity).toBe(unavailable ? "working" : "idle");
+  } finally { await provider.close(); }
 });

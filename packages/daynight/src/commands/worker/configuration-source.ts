@@ -11,7 +11,8 @@ import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
 import { parseServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
-import { pathsOverlap } from "../../platform/filesystem.js";
+import { pathsOverlap, type PathApi } from "../../platform/filesystem.js";
+import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { RepositoryIdentityError, repositoryIdentity } from "../../repository/identity.js";
 import { validateRepositoryRoot } from "../../repository/location.js";
 import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
@@ -23,6 +24,7 @@ export { resolveCloudNative } from "./config.js";
 export type WorkerLocalConfiguration = ServerConfiguration & WorkerLocalNativeOverrides & {
   readonly source: string | undefined;
   readonly repositoryRoot: string;
+  readonly toolPaths: ToolPaths;
   readonly agentControlMode: AgentControlMode;
 };
 
@@ -49,14 +51,14 @@ const readSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<str
   catch (error) { if (error instanceof MissingConfigurationFileError) return undefined; throw error; }
 };
 
-export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths): WorkerLocalConfiguration => {
+export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => {
   const worker = workerMapping(sourceMapping(source, paths));
   const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
   if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
-    ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot")
+    ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
-  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
+  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
 };
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
@@ -189,13 +191,14 @@ export const parseWorkerCloudBootstrap = async (
   signal.throwIfAborted();
   return parseWorkerCloudValue({
     agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
+    toolPaths: parseLocalToolPaths(worker.toolPaths),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, true);
+  }, true, { controlMode: true, toolPaths: true });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>

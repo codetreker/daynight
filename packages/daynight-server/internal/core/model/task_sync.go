@@ -12,6 +12,8 @@ const (
 )
 
 type TaskViewRecord struct {
+	Type              TaskType
+	ParentID          *string
 	Properties        TaskProperties
 	ID                string
 	TitlePreview      string
@@ -30,6 +32,12 @@ type TaskViewRecord struct {
 	CancelledAt       *time.Time
 }
 
+type TaskDependencyState struct {
+	TaskVersion int64
+	BlockedBy   []string
+	Ready       bool
+}
+
 type TaskSync struct {
 	Mode             string
 	Epoch            string
@@ -37,6 +45,7 @@ type TaskSync struct {
 	ActorAccess      ProjectAccess
 	ObservedAt       time.Time
 	Tasks            []TaskViewRecord
+	DependencyStates map[string]TaskDependencyState
 	AssigneeVersions []TaskAssigneeVersion
 	Sessions         map[string]SessionListState
 }

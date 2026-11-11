@@ -1,0 +1,46 @@
+# Copy to a private root's config/config.yml and replace required values.
+# config.local.yml and explicitly set DAYNIGHT_* environment variables override it.
+server:
+  listen_address: "127.0.0.1:8787"
+  public_origin: "https://daynight.example.com" # required
+  startup_timeout: 10s
+  shutdown_timeout: 10s
+  allow_http_test_origin: false
+
+database:
+  url: "postgres://daynight:replace-me@postgres/daynight?sslmode=require" # required
+
+storage:
+  root: "storage"
+
+monitoring:
+  redis_url: ""
+  metrics_listen_address: ""
+
+uniauth:
+  url: "https://auth.example.com" # required
+  app_id: "daynight" # required
+  app_secret: "replace-me" # required; keep private
+  callback_url: "https://daynight.example.com/auth/callback" # required
+  allow_loopback_http: false
+
+mcp:
+  allowed_origins: []
+  temp_budget_bytes: 8589934592
+  reserved_free_bytes: 1073741824
+
+oauth:
+  preregistered_clients: {}
+
+webhook:
+  enabled: false
+
+task_sync:
+  overlap: 10s
+
+# Omit this entire section to disable image decoding.
+image_decoder:
+  node_path: "/usr/local/bin/node"
+  helper_path: "/opt/daynight/image-validation/image-validation-helper.js"
+  manifest_path: "/opt/daynight/image-validation/image-validation-manifest.json"
+  temporary_directory: "storage/.image-validation"

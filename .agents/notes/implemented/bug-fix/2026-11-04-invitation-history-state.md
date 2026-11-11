@@ -15,7 +15,8 @@ that distinction remains necessary.
 
 ## Decision
 
-Navigation markers serialize only their existing segment and index. The
+Navigation markers serialize the segment, index, entry identity and any admitted
+page selection, never URLs or invitation credentials. The
 window-owned navigation instance keeps exact URL matches in memory, replaces the
 entry on application replacement and fragment cleanup, and clears the table
 when starting a new segment or disposing. URLs and invitation credentials never

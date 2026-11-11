@@ -9,16 +9,30 @@
 
 [Goal 流程设计](daynight-goal-workflow.md)拥有需求讨论、方案讨论、确认后实际拆分、
 实施和整体验收的阶段协议。普通任务与
-Goal 阶段使用同一自足正文与资料所有权规则，需求讨论另交付完整 `spec.md` 必需附件。
-共享输入按来源 task ID 与明确的
+Goal 阶段使用同一自足正文与资料所有权规则，需求讨论负责交付 Goal 所有的完整 `spec.md` 必需附件。
+共享输入按生产 task ID、资料拥有者 Goal ID 与明确的
 description 全文/适用章节、真实附件完整路径或已核验不可变仓库引用读取；阶段结果不能
 成为开始其生产阶段的前提。
 
 ## 一个入口与按需加载
 
-公开 `using-daynight` 由短 `SKILL.md` 与唯一 `references/manual.md` 组成。构建将同一手册
-原字节复制到 bundle 和 `dist/commands/skill/usage.md`；终端读取不依赖配置、Git 或登录。
-入口按能力导航，不选择任务工作流。手册保持 YAML metadata、自包含主题和本地锚点。
+公开 `using-daynight` 由短 `SKILL.md` 与九份独立主题引用组成。入口按操作目的直接导航
+相关文件，并明确写操作需同时读取通用写安全规则和对应资源的前提与例外；它不选择任务
+工作流。主题分别拥有连接与项目、任务、Steps、资料、写入安全、Session 读取、Session
+消息、Webhook 与 Worker 操作，通用解释保持单一归属。
+
+`commands/skill/manual.ts` 的 `manualTopicFiles` 固定主题清单和顺序；
+`manual-assembly.ts` 的 `assembleManual` 从这些唯一内容源生成
+`dist/commands/skill/usage.md`。每份主题以单一一级标题开始，章节使用普通 Markdown
+标题；内容、围栏代码和内联链接按当前主题格式处理。汇总将标题下降一级，为主题和章节
+生成带主题前缀的显式锚点，并将相对文件及章节链接改为汇总内链接。缺少主题、非法
+UTF-8、空白内容、标题冲突、未关闭代码围栏或无效内部引用使构建失败；资源复制前先完成
+校验。该机制只承担固定主题的组合，不解析任意文档格式。
+
+安装 bundle 保留每份主题的原字节；离线汇总是构建产物，不维护第二套手写正文。
+`--skill` reader 只读取该产物，保留完整离线输出与原有错误边界，不依赖配置、Git、登录
+或安装后的引用文件。[主题手册决策](../../.agents/notes/implemented/architecture/2026-11-11-daynight-topic-manual.md)
+记录独立读取与构建转换的取舍。
 
 本仓库的 [development-workflow](../../.agents/skills/development-workflow/SKILL.md) 按需导航
 任务内容、创建、Goal、依赖、handoff、执行、交付与终验收。Worker 的编译运行约束独立于
@@ -29,8 +43,7 @@ description 全文/适用章节、真实附件完整路径或已核验不可变�
 
 产品手册说明对象、操作及失败；仓库流程的 [task-content](../../.agents/skills/development-workflow/references/task-content.md)
 拥有任务定义、成果与 Session 的边界和资料充分性。需求、设计、输入、实施步骤与验收保存在
-所属任务；讨论方法、执行安排与操作授权留在 Session。Goal 的共享来源保持原任务身份。创建默认
-`proposed`；内部已确认的方案后继和交付子任务新建时显式使用 `--status todo`，登记不启动执行。
+所属任务；讨论方法、执行安排与操作授权留在 Session。Goal 持有共享需求、设计和整体验收；阶段 task 保留生产责任与 Goal ID、完整路径。普通任务创建默认 `proposed`；Goal 内需求讨论、已确认的方案后继和交付子任务新建时显式使用 `--status todo`，登记不启动执行。
 
 ## 终验收与开发交付
 
@@ -41,7 +54,7 @@ description 全文/适用章节、真实附件完整路径或已核验不可变�
 自身最终状态写入，共用验收准备条件，不维护第二套验收协议。
 
 终验收对整个已确认任务或 Goal 及其已确认变更给出需求对照结论，成果包含缺陷、
-未验证项、必要对象版本、支持结论所需的关键观察及重要限制。材料保存在所属任务，
+未验证项、必要对象版本、支持结论所需的关键观察及重要限制。Goal 的整体验收结论保存在 Goal，验收 task 保留责任和来源；其他成果保存在所属任务。
 不要求增加机器回执 schema 或证据平台，managed 验收仍须上传证据附件。Goal 中的验收任务同样提供具体检查方法作为自身实施方案，说明如何核对需求与实际组合成果；执行命令历史、临时工具安排和排障过程留在 session。用户明确要求交付的验证方案按其成果职责保存。人工、已有检查和临时辅助脚本按实际
 需要组合，临时脚本遵守项目临时目录和资源清理规则。
 
@@ -52,7 +65,7 @@ description 全文/适用章节、真实附件完整路径或已核验不可变�
 
 ## 移交审查与许可
 
-`handoff.md` 只接受明确指定的移交对象。proposed 不属于自动执行候选，审查不改变其状态或许可；改为 todo 需要使用方明确决定，不能由开启 allowAgents 隐含确认。先读完整 task 和 worker 信息，再按共享内容标准读取真正必要的资料、来源任务和上下游契约，检查当前阶段的内容充分性。每个交付任务必须已定义问题、选定方案、详细设计、实施步骤和验收；缺任一要素或仍需调研以确定方案时不通过。Goal 交付任务另按 Goal 协议复查四项内容、拆分边界及与 Goal 和方案的一致性。它能依据已有确认信息整理尚未启用的 todo，并在许可更新前补齐、读回和重审；需要的实质决定按已有确认要求解决。没有来源的要求或决定、责任重叠和交付衔接缺口作为具体问题返回，不能隐含地交给执行者决定。任务群逐项审核；这不重新证明整个 Goal 覆盖，不发现额外工作，也不授权重分任务或修改依赖。
+`handoff.md` 只接受明确指定的移交对象。proposed 不属于自动执行候选，审查不改变其状态或许可；改为 todo 需要使用方明确决定，不能由开启 allowAgents 隐含确认。先读完整 task 和 worker 信息，再按共享内容标准读取真正必要的资料、来源任务和上下游契约，检查当前阶段的内容充分性。每个交付任务必须已定义问题、选定方案、详细设计、实施步骤和验收；缺任一要素或仍需调研以确定方案时不通过。Goal 交付任务另按 Goal 协议复查四项内容、拆分边界及与 Goal 和方案的一致性。它能依据已有确认信息整理尚未启用的 todo，并在许可更新前补齐、读回和重审；需要的实质决定按已有确认要求解决。没有来源的要求或决定、责任重叠和交付衔接缺口作为具体问题返回，不能隐含地交给执行者决定。Goal 移交按 Parent 枚举直接普通孩子，跨 Goal 依赖不扩大移交范围，Goal 负责人不赋予代改他人任务的权限；逐项审核负责人、许可、proposed、平台和依赖。任务群逐项审核；这不重新证明整个 Goal 覆盖，不发现额外工作，也不授权重分任务或修改依赖。
 
 资料更新和内容核验先于许可更新。最终审查所依据的 task version 传给现有
 `task update --allow-agents true`；可在同一更新提交最终 description，不携带无关字段。
@@ -157,7 +170,7 @@ WSL Linux 仍为 Linux。普通指定任务保留人工路径，但不借此把�
 | 轻量命令登记 | [命令表](../../packages/daynight/src/cli/commands.ts)延迟加载运行时，帮助只访问元数据 |
 | 交互输入 | [CliPrompt](../../packages/daynight/src/cli/prompts.ts)共享 ask/select/selectMany，选择器按需加载 |
 | 取消生命周期 | [cancellation.ts](../../packages/daynight/src/cli/cancellation.ts)管理终端信号、取消与关闭 |
-| 资源打包 | [copy-resources.ts](../../packages/daynight/scripts/copy-resources.ts)明确列举公开与 review 两个完整 bundle，并复制数据库 owner 的 SQL 目录；不扫描仓库 skill |
+| 资源打包 | [copy-resources.ts](../../packages/daynight/scripts/copy-resources.ts)明确列举公开与 review 两个完整 bundle，并复制数据库 owner 的 SQL 目录；公共主题生成完整离线手册，不扫描仓库 skill |
 | 物理路径 | [filesystem.ts](../../packages/daynight/src/platform/filesystem.ts)解析已有祖先和未创建部分 |
 | worktree 定位 | [git.ts](../../packages/daynight/src/repository/git.ts)只定位根，安装不依赖 origin 或服务 |
 | 打包验收 | [installed-cli.ts](../../packages/daynight/test/fixtures/installed-cli.ts)真实打包安装与 launcher fixture |
@@ -211,8 +224,10 @@ server/review 配置，不要求 origin 或项目关联。支持目录和重载�
 随原设计 PR 保留，仅为历史观察，不是跨宿主版本的保证。
 
 安装先捕获包内完整 bundle 一次，验证 SKILL.md UTF-8、固定 frontmatter 名称
-`using-daynight`、非空 description 和仅目录/普通文件的树，并要求精确 `references/manual.md` 是有效 UTF-8 的非空白普通文件；其他文件保持原始字节。
-构建与验收校验相对引用，运行时不引入 Markdown 解析器。所有目标使用相同捕获字节。
+`using-daynight`、非空 description 和仅目录/普通文件的树。固定主题清单中的每份引用都须
+为有效 UTF-8 的非空白普通文件，并通过与构建相同的标题及内部链接校验；其他文件保持
+原始字节。验证失败时尚未替换任何目标。所有目标使用相同捕获字节，安装与离线输出均
+不依赖额外 Markdown 库。
 
 预检后按 Agent 顺序串行处理唯一物理目标：
 
@@ -239,11 +254,12 @@ server/review 配置，不要求 origin 或项目关联。支持目录和重载�
 现有 Agent catalog、物理路径规划、bundle 校验及顺序替换器，不引入安装 registry。
 自更新先验证包和新 CLI，再调用该入口；当前或领先版本也调用，以修复落后的 skill。
 独立进程保证模块及资源都来自已安装包，避免旧进程模块缓存与新包混用。
-该内部进程的 Git 调用继承外层更新进程拥有的进程组；独立 Git 调用仍拥有自己的组。
+该内部进程的 POSIX Git 调用继承外层更新进程拥有的进程组；独立 Git 调用仍拥有自己的组。
 外层在中断、超时和内部进程退出时清理所拥有的组，避免内部 Git 逃离清理范围。
 Windows 子进程保留调用者的控制台连接，使继承的标准输入、输出和错误句柄可用；
-中断和超时仍通过 `taskkill /PID /T /F` 终止其进程树。POSIX 子进程单独建立进程组。
-强制终止不能承诺 stage 清理或原子回滚。
+中断和超时通过 `taskkill /PID /T /F` 处理其进程树。该结果不能证明逃逸后代已经结束，
+repository Git 的执行与清理边界见[Git 定位与仓库身份](daynight-project-task.md#git-定位与仓库身份)。
+POSIX 外层子进程单独建立进程组。强制终止不能承诺 stage 清理或原子回滚。
 
 检测使用用户主目录和调用目录所属 Git worktree 根。先沿调用目录祖先检查 `.git`
 标记，存在时通过既有有界 Git 能力解析自身根；无标记只检查 User，读取错误继续抛出。
@@ -289,12 +305,16 @@ sibling 与另一 scope。迁移增加旧名称存在、leaf 链接、清理失�
 parent/leaf 链接、安装/清理路径嵌套、部分失败、监听清理和 completion 回归。Windows
 必须有原生结果；Linux 投影不能替代 `.cmd`、ConPTY 或平台链接证据。
 
-静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
-作为 bundle 资源链接；打包产物和安装副本保留这些内容，并与源码完整字节比较。既有
+静态打包检查验证入口 frontmatter、固定主题清单、打包 allowlist，以及全部实际本地链接的
+存在和 bundle 内归属。主题组合另验证标题、章节锚点、代码围栏和完整离线输出的内部
+链接；这些是资源结构检查，不以正文特定措辞证明指令有效。验证边界见
+[skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。
+围栏代码中的任务 Markdown 示例属于写作示例，不作为 bundle 资源链接；打包产物和安装
+副本保留这些内容，并与源码完整字节比较。既有
 project/task/attachment 套件验证命令语义，创建、更新和 JSON 读取包含中英文、CRLF、
 围栏代码、GFM 与链接的描述，确认原始字符串及精确版本完整替换。独立情境演练另外核对
 裸调用、缺少创建许可、已有范围内许可、普通指定执行与显式 managed 路由、
-具体工作项与临时执行步骤的区分、唯一初始需求任务、仅登记与明确开始讨论、正文完整
+具体工作项与临时执行步骤的区分、空 Goal、Parent 归属、共享资料 owner、跨 Goal handoff、唯一初始需求任务、仅登记与明确开始讨论、正文完整
 但缺 spec、上传失败、附件不可读或未确认时阻断、确认当前 spec 后先登记 todo 架构
 再完成需求、后继登记失败保持前置 in_progress、已有后继复用、终端任务无后继、确认后覆盖
 附件须重确认、方案正文直接索引需求来源且先读内容、确认后实际拆分、实质修订重确认、讨论与 PR 交付区分、部分登记恢复、Markdown

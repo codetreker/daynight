@@ -15,7 +15,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/archived/simplifica
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
 CLI同步保留`startedAt`、`completedAt`、`cancelledAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
-服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
+服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。资源要求 type 和可空 parentId；Goal full 解析 progress 和不适用的执行观测，图只接受普通 Task 并保留不可见前置的 ID。
 [Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取、Add、Update、Set-status 与 Move；它不将完整 Steps 加入普通 Task 投影。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
@@ -140,8 +140,8 @@ Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受�
 单响应与 256 MiB 总读取预算，并保留取消。它校验主体、项目、响应字段、总数、
 重复 ID 和 cursor，全部页面成功后才输出；`search_changed` 不自动重放。
 
-文本与JSON来源相同精简搜索结果；JSON显式保留id/projectId/title/status/cancelledAt/context/match，文本保持状态与命中呈现，避免服务端
-新增字段自动泄入输出。标题和链代表标题完整保留，文本使用终端可见转义；描述
+文本与JSON来源相同精简搜索结果；JSON显式保留id/type/parentId/projectId/title/status/cancelledAt/context/match，文本保持类型、parent、状态与命中呈现，避免服务端
+新增字段自动泄入输出。任务标题和实际父 Goal 标题完整保留，文本使用终端可见转义；描述
 只使用服务端提供的正向命中摘要。搜索不是完整 Task 读取，也不复用普通列表的
 默认状态过滤或重排。[搜索需求](../spec/daynight-project-task.md#项目任务搜索)拥有
 CLI 的行为与错误，服务端机制由[搜索设计](daynight-task-search.md)拥有。
@@ -230,8 +230,18 @@ URL，由 Git 处理 `insteadOf`；不读取 push URL、不自行实现 Git 配�
 较小者，stdout、stderr 分别最多捕获 1 MiB；超限或取消时终止任务拥有的执行。
 读取索引时以 `-c core.fsmonitor=false` 关闭外部 fsmonitor，避免优化工具继承管道
 或启动后台工作。POSIX 使用并等待独占进程组，Windows 使用系统目录下的
-`taskkill /T /F` 处理所属进程树。终止与管道收尾最多额外占用 2 秒；无法确认时
-保留原始错误并报告进程终止未确认，不能无限等待继承的输出句柄。
+`taskkill /PID /T /F` 处理所属进程树。taskkill 成功、根进程关闭或管道关闭都不能证明
+逃逸后代已经结束，尤其不能覆盖父进程退出后脱离树遍历的后代。终止命令与管道收尾各有
+1 秒预算；无法确认时保留原始错误并报告进程终止未确认，不能无限等待继承的输出句柄。
+取舍见[原生 Windows Git 回退决策](../../.agents/notes/implemented/simplification/2026-11-11-revert-native-windows-git.md)。
+
+独立的 owned Git 端口复用同一命令、环境、限额及脱敏策略，同时分别返回有界
+`outcome` 与 `joined`。`joined` 只在原 Git 子进程、已创建输出流及已启动的异步
+Windows taskkill 子进程和其输出流实际 close 后返回 `local-closed`；清理期限到期
+可先报告 `cleanup-pending`，但不会销毁流或放弃这些责任。超限后停止保存输出并继续
+排空，停止和流错误仍可观察。`local-closed` 不证明逃逸或脱离 stdio 的后代停止，
+这些后代仍可能在资源交接后写入。普通读取继续使用有界 API；端口本身不改变 Worker
+调用方。取舍见[本地收尾决策](../../.agents/notes/implemented/architecture/2026-11-11-owned-repository-git-local-closure.md)。
 
 repo 正规化对本地 origin、每个列表 repoUrl 和详情 repoUrl 使用同一函数。返回值
 是可持久化的 `repoIdentity` 字符串；它不是替换原始 repoUrl 的提交字段。
@@ -397,8 +407,8 @@ flowchart TD
 | `task step set-status <id> <step-id> <status>` | 显式版本一次 PUT 单项 /status；默认先完整 GET Steps，200 返回完整确认资源 |
 | `task step move <id> <step-id>` | 显式版本一次 PUT 单项 /position；默认先完整 GET Steps，200 返回完整确认顺序 |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
-| `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
-| `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
+| `task set-status <id> <status> [--claim-id <claim-id>] [--force]` | 先 GET task 识别类型，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
+| `task delete <id> [--remove-depends] [--force]` | 先 GET task 识别类型，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
 | `task graph <task-id>` | `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}`；taskId 为必填且唯一 query |
 | `task attachment put <id> <file>` | `PUT /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，流式请求体，接受 200/201 元数据 |
 | `task attachment list <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}/attachments`，按路径身份读完分页 |
@@ -519,7 +529,7 @@ Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 
 同一选择结果，因此分页边界不会改变组间优先顺序。此机制复用既有 API 筛选和分页，
 不增加服务排序或多状态查询契约。
 
-API响应与命令choices接受proposed、todo、in_progress、done、cancelled；取消不可恢复。创建默认proposed，可显式选择proposed或todo；普通set-status不增加阶段顺序。
+普通 Task 的 API 响应与命令 choices 接受 proposed、todo、in_progress、done、cancelled；普通 Task 的取消不可恢复。创建默认proposed，可显式选择proposed或todo；普通set-status不增加阶段顺序。
 graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I/O 前失败。
 `ApiClient.getTaskGraph(projectId, taskId)` 将规范化 ID 作为 taskId query 提交，解码器同时
 核对请求 project 和目标任务。返回集合必须恰好是目标所在普通依赖无向分量，加上该分量
@@ -529,7 +539,7 @@ graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I
 graph summary返回total、proposed、todo、inProgress、done、cancelled、ready、blocked，统计所有返回节点；
 图文本不显示旧统计。
 列表默认保留未完成任务，按in_progress、ready todo、其他todo、proposed、done/cancelled终态稳定分组。
-元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
+元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。状态和删除命令预读类型与身份，显式版本原样提交，省略版本时使用预读版本。Goal 完成、取消和删除在 stderr 展示影响并要求交互确认或 `--force`；force 只跳过提示。删除由专用 delete 提交精确版本；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
 平台 DTO 要求 requiredPlatform 字段存在且为null/windows/linux/macos，不在读取器补默认。
 create/update 的 --required-platform 设置枚举，update --clear-required-platform 发送null并互斥；

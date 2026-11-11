@@ -1,8 +1,9 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement, ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import type { AttachmentRecordSlots } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
@@ -12,6 +13,8 @@ import { dialogFocusables } from '../src/features/task-detail/focus';
 import { buildGraphIndex } from '../src/features/task-graph/model';
 import { TEST_VIEWER_ID, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { createTaskSessionWorld } from './helpers/taskSessions';
+import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../src/app/overlay';
+import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
 
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
@@ -33,11 +36,11 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const projectId = id(100);
 const timestamp = '2026-10-20T09:00:00.123456789Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
-const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
-const node = (task: TaskDetail): GraphTask => ({ assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
+const node = (task: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
   status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
 });
@@ -51,7 +54,7 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },
   };
-  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
   snapshotDetails.set(value, tasks);
   return value;
 };
@@ -96,6 +99,62 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('gives a nested task portal keyboard ownership and restores its parent focus and scroll lock', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
+    await world.sync([detail()]);
+    document.body.style.overflow = 'scroll';
+    const parentKey = vi.fn();
+    const Parent = () => {
+      const owner = useRef<HTMLElement>(null);
+      const opener = useRef<HTMLButtonElement>(null);
+      const [openChild, setOpenChild] = useState(false);
+      useBodyScrollLock(true);
+      useLayoutEffect(() => {
+        const element = owner.current!;
+        const release = registerOverlay(element, root);
+        const keydown = (event: KeyboardEvent) => {
+          if (isTopOverlay(element) && (event.key === 'Escape' || event.key === 'Tab')) {
+            parentKey(event.key);
+            event.preventDefault();
+          }
+        };
+        document.addEventListener('keydown', keydown);
+        return () => { document.removeEventListener('keydown', keydown); release(); };
+      }, []);
+      return <OverlayOwnerContext value={owner}>
+        <section ref={owner} aria-label="Parent layer"><button ref={opener} onClick={() => setOpenChild(true)}>Open child</button></section>
+        {openChild && <TaskDetailDialog {...props()} onClose={() => setOpenChild(false)} onRestoreFocus={() => opener.current?.focus()} />}
+      </OverlayOwnerContext>;
+    };
+    const view = renderWithLocale(<Parent />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    const parent = screen.getByRole('region', { name: 'Parent layer' });
+    const opener = screen.getByRole('button', { name: 'Open child' });
+    opener.focus(); fireEvent.click(opener);
+    await screen.findByRole('heading', { name: '任务 1' });
+    const child = screen.getByRole('dialog');
+    expect(parent).toHaveAttribute('inert');
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    const focusables = dialogFocusables(child);
+    const first = focusables[0]!, last = focusables[focusables.length - 1]!;
+    last.focus(); fireEvent.keyDown(last, { key: 'Tab' });
+    expect(first).toHaveFocus();
+    first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+    expect(parentKey).not.toHaveBeenCalled();
+    fireEvent.keyDown(last, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(parentKey).not.toHaveBeenCalled();
+    expect(parent).not.toHaveAttribute('inert');
+    expect(opener).toHaveFocus();
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(opener, { key: 'Escape' });
+    expect(parentKey).toHaveBeenCalledExactlyOnceWith('Escape');
+    view.unmount();
+    expect(root).not.toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('scroll');
+  });
   it('keeps discard confirmation above the modal detail focus owner', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
       ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
@@ -424,6 +483,8 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('combobox', { name: '执行平台' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('combobox', { name: '所属 Goal' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
     await user.tab();

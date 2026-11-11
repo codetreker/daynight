@@ -12,6 +12,11 @@ costs, which cannot safely share a text-only projection shortcut.
 
 ## Decision
 
+The original design covered all three adapters. The later
+[provider scope decision](2026-11-11-image-provider-scope.md) limits current image
+delivery and acceptance to Codex and Copilot. Existing Claude adapters and
+history remain compatible, and unknown image qualification still refuses input.
+
 The adopted [provider design](../../../../docs/design/session-image-providers.md)
 uses separate native encoders and evidence matchers, with one shared operation,
 occurrence and immutable-resource contract. The original decision established
@@ -24,6 +29,13 @@ ordered base64 sources and profile-proven root execution evidence, and Copilot
 uses blob attachments and the original send Promise's durable messageId. An
 unknown result retains the original operation and pins without replay. Model
 consumption is verified separately from native acceptance.
+
+Codex preserves Markdown eligibility for a single trusted text block alongside
+native images in accepted input and history. Completion still requires native
+terminal evidence or the durable input intent. Multiple text blocks remain
+unmapped rather than being joined into a new source body. The text part and
+native image slots keep their identities and acceptance receipts; the presence
+of an image does not make an otherwise trusted Markdown body plain text.
 
 History uses persistent source mappings and bounded provider-specific readers.
 Copilot preserves an already-public native slot when an exact late receipt

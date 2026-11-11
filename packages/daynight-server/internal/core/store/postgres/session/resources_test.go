@@ -2,19 +2,392 @@ package session_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
-func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.T) {
-	db := isolatedStore(t)
+func TestSessionImageStore(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	suite.run(t, "ExternalCaptureWritesCompareExactObservedState", testExternalCaptureWritesCompareExactObservedState)
+	suite.run(t, "FailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement", testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement)
+	suite.run(t, "ExternalSourceHashPrunesExplicitBoundaryAndOldEpoch", testExternalSourceHashPrunesExplicitBoundaryAndOldEpoch)
+	suite.run(t, "ExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies", testExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies)
+	suite.run(t, "PendingMediaOffersRejectCorruptCandidateWithoutPartialResults", testPendingMediaOffersRejectCorruptCandidateWithoutPartialResults)
+	suite.run(t, "PendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows/task", func(t *testing.T, db *postgres.Store) {
+		testPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t, db, "task")
+	})
+	suite.run(t, "PendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows/test_execution", func(t *testing.T, db *postgres.Store) {
+		testPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t, db, "test execution")
+	})
+	suite.run(t, "MediaPayloadRepresentationRewriteUsesExactObservedState", testMediaPayloadRepresentationRewriteUsesExactObservedState)
+	suite.run(t, "CompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult", testCompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult)
+	suite.run(t, "UnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists", testUnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists)
+	suite.run(t, "MediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors", testMediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors)
+	suite.run(t, "MediaRateStatePersistsIndependentOwnersAndCategories", testMediaRateStatePersistsIndependentOwnersAndCategories)
+	suite.run(t, "ResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts", testResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts)
+	suite.run(t, "ResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults", testResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults)
+	suite.run(t, "MediaRequestReadRejectsCorruptPersistedTypedMetadata", testMediaRequestReadRejectsCorruptPersistedTypedMetadata)
+	suite.run(t, "ResourceCancelledObservationDoesNotCreateState", testResourceCancelledObservationDoesNotCreateState)
+	suite.run(t, "UnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls", testUnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls)
+	suite.run(t, "UploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory/spec", func(t *testing.T, db *postgres.Store) {
+		testUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t, db, "spec")
+	})
+	suite.run(t, "UploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory/receipt", func(t *testing.T, db *postgres.Store) {
+		testUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t, db, "receipt")
+	})
+	suite.run(t, "UploadSettlementPreservesClosedTransactionAndCancellationErrors", testUploadSettlementPreservesClosedTransactionAndCancellationErrors)
+	suite.run(t, "ResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion", testResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion)
+	suite.run(t, "UploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup", testUploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup)
+	suite.run(t, "SavedResourceVisibilityRequiresActorOrPublishedReference", testSavedResourceVisibilityRequiresActorOrPublishedReference)
+	suite.run(t, "ExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion", testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion)
+	suite.run(t, "ExternalMediaLedgerReconnectCaptureAndAdmission", testExternalMediaLedgerReconnectCaptureAndAdmission)
+}
+
+func testExternalCaptureWritesCompareExactObservedState(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
+	request := sp.ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "content", SourceKey: uuid.NewString()}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
+	resource := uuid.NewString()
+	initial := store.SessionCaptureRecord{SessionID: id, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: uuid.NewString(), Revision: "3", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resource}}
+	// These are explicit persisted facts from a completed original staging release
+	// and a later reservation, without executing the core retry decision here.
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		return d.(store.SessionResourceDAO).SaveSessionUpload(t.Context(), store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: uuid.NewString(), Spec: sp.ImageUploadSpec{UploadID: request.AttemptID, ImageID: request.Occurrence.ImageID, ByteLength: "10"}, ExpiresAt: time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour), Receipt: sp.ImageUploadReceipt{State: "failed"}, StorageReleased: true})
+	})
+	save := func(row store.SessionCaptureRecord) error {
+		_, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+			return scope.SessionDAO().(store.SessionResourceDAO).SaveSessionCapture(t.Context(), row)
+		})
+		return err
+	}
+	read := func(want store.SessionCaptureRecord) {
+		t.Helper()
+		want.Expected = nil
+		sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+			loaded, err := d.(store.SessionResourceDAO).SessionCaptureByImage(t.Context(), id, request.Occurrence.ImageID)
+			if err == nil && !reflect.DeepEqual(loaded, want) {
+				t.Fatalf("capture persisted a different request, receipt, validation or precondition: got=%+v want=%+v", loaded, want)
+			}
+			return err
+		})
+	}
+	refused := func(row store.SessionCaptureRecord) {
+		t.Helper()
+		var refusal *model.Fault
+		if err := save(row); !errors.As(err, &refusal) || refusal.Code != "resource_conflict" {
+			t.Fatalf("capture write did not expose a conflicting precondition: %v", err)
+		}
+	}
+	if err := save(initial); err != nil {
+		t.Fatal(err)
+	}
+	read(initial)
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		usage, err := d.(store.SessionResourceDAO).SessionResourceUsage(t.Context(), id)
+		if err == nil && (usage.ReservedBytes != sp.MaxImageBytes || usage.ReservedResources != 1) {
+			t.Fatal("original released staging lost or doubled the current capture reservation", usage)
+		}
+		return err
+	})
+	refused(initial)
+	validated := sp.ValidatedImage{MediaType: "image/png", ByteLength: "10", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Width: 2, Height: 3, FrameCount: 1}
+	copying := initial
+	copying.Expected = &store.SessionCaptureState{Receipt: initial.Receipt}
+	copying.Receipt.State, copying.Receipt.Revision, copying.Validated = "copying", "4", &validated
+	if err := save(copying); err != nil {
+		t.Fatal("NULL validation precondition did not match", err)
+	}
+	read(copying)
+	refused(copying)
+	read(copying)
+	committed := copying
+	committed.Expected = &store.SessionCaptureState{Receipt: copying.Receipt, Validated: &validated}
+	committed.Receipt.State, committed.Receipt.Revision = "committed", "5"
+	committed.Receipt.Resource = &sp.Resource{Revision: "1", ResourceID: resource, Status: "available"}
+	for _, kind := range []string{"request", "receipt", "validation", "missing"} {
+		t.Run(kind, func(t *testing.T) {
+			changed := committed
+			expected := *committed.Expected
+			changed.Expected = &expected
+			switch kind {
+			case "request":
+				changed.Request.Locator.URL = "https://replacement.example/image.png"
+			case "receipt":
+				changed.Expected.Receipt.Revision = "1"
+			case "validation":
+				other := validated
+				other.Width++
+				changed.Expected.Validated = &other
+			case "missing":
+				changed.Request.CaptureID = uuid.NewString()
+			}
+			refused(changed)
+			read(copying)
+		})
+	}
+	rejected := errors.New("reject capture transaction")
+	completion, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+		if err := scope.SessionDAO().(store.SessionResourceDAO).SaveSessionCapture(t.Context(), committed); err != nil {
+			return err
+		}
+		return rejected
+	})
+	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, rejected) {
+		t.Fatal("capture rollback lost its outcome or cause", completion, err)
+	}
+	read(copying)
+	if err := save(committed); err != nil {
+		t.Fatal("exact receipt and validation precondition did not match", err)
+	}
+	read(committed)
+	for _, identity := range []string{"source", "image", "attempt"} {
+		t.Run("unique "+identity, func(t *testing.T) {
+			duplicate := initial
+			duplicate.Request.CaptureID = uuid.NewString()
+			duplicate.Request.Occurrence.ImageID = uuid.NewString()
+			duplicate.Request.Occurrence.SourceKey = uuid.NewString()
+			duplicate.Request.AttemptID = uuid.NewString()
+			switch identity {
+			case "source":
+				duplicate.Request.Occurrence.SourceKey = request.Occurrence.SourceKey
+			case "image":
+				duplicate.Request.Occurrence.ImageID = request.Occurrence.ImageID
+			case "attempt":
+				duplicate.Request.AttemptID = initial.Receipt.AttemptID
+			}
+			duplicate.Receipt.CaptureID, duplicate.Receipt.AttemptID, duplicate.Receipt.Occurrence = duplicate.Request.CaptureID, duplicate.Request.AttemptID, duplicate.Request.Occurrence
+			refused(duplicate)
+			read(committed)
+		})
+	}
+}
+
+func testExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		return d.(store.SessionArchiveDAO).SaveSessionArchiveBundle(t.Context(), store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "active", Revision: 1, Identity: []byte(`{}`), Resources: []byte(`[]`), Ledger: []byte(`{}`)})
+	})
+	var baseline int64
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		u, e := d.(store.SessionResourceDAO).SessionResourceUsage(t.Context(), id)
+		baseline = u.GlobalReservedBytes
+		return e
+	})
+	files := []store.ArchiveBundleFile{
+		{SessionID: id, FileID: uuid.NewString(), Purpose: "history", SHA256: string(bytes.Repeat([]byte("a"), 64)), ByteLength: 100, AcceptedOffset: 100, State: "complete", Path: "original/history"},
+		{SessionID: id, FileID: uuid.NewString(), Purpose: "timeline", SHA256: string(bytes.Repeat([]byte("b"), 64)), ByteLength: 300, State: "receiving", Path: "original/timeline"},
+	}
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		for _, file := range files {
+			if e := d.(store.SessionArchiveDAO).SaveSessionArchiveFile(t.Context(), file); e != nil {
+				return e
+			}
+		}
+		u, e := d.(store.SessionResourceDAO).SessionResourceUsage(t.Context(), id)
+		if e == nil && (u.GlobalReservedBytes != baseline+500 || u.ReservedBytes != 0 || u.ReservedResources != 0) {
+			t.Fatal("temporary archive metadata copies omitted or charged as image resources", u, baseline)
+		}
+		return e
+	})
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		for _, file := range files {
+			file.StagingReleased = true
+			file.State, file.AcceptedOffset = "complete", file.ByteLength
+			if e := d.(store.SessionArchiveDAO).SaveSessionArchiveFile(t.Context(), file); e != nil {
+				return e
+			}
+		}
+		u, e := d.(store.SessionResourceDAO).SessionResourceUsage(t.Context(), id)
+		if e == nil && u.GlobalReservedBytes != baseline {
+			t.Fatal("released metadata stage still reserved", u, baseline)
+		}
+		return e
+	})
+}
+
+func testResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
+	ctx := t.Context()
+	resource := uuid.NewString()
+	upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: resource, Spec: sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), Name: "original.png", MediaType: "image/png", ByteLength: "8", SHA256: archiveHashOf("original")}, ExpiresAt: time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour), Receipt: sp.ImageUploadReceipt{State: "receiving", AcceptedOffset: "0"}}
+	ref := store.SessionResourceReference{SessionID: id, ResourceID: resource, Kind: "message", ReferenceID: "original-message"}
+	fence := sp.ControllerFence{Fence: sp.Fence{SessionID: id, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"}
+	media := store.SessionMediaRequest{SessionID: id, RequestID: uuid.NewString(), Action: "read", Fence: fence, Body: []byte(`{}`), Complete: true, Error: &sp.ImageError{Code: "source_unavailable", Message: "Original source unavailable."}}
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		d := base.(store.SessionResourceDAO)
+		found, e := d.SessionResourceReferenceExists(ctx, ref)
+		if e != nil || found {
+			t.Fatal("absent pin returned present", found, e)
+		}
+		found, e = d.SessionImageUploadExists(ctx, id, upload.Spec.ImageID)
+		if e != nil || found {
+			t.Fatal("absent image returned present", found, e)
+		}
+		if e = d.SaveSessionUpload(ctx, upload); e != nil {
+			return e
+		}
+		if e = d.InsertSessionResource(ctx, store.SessionResourceRecord{SessionID: id, Resource: sp.Resource{ResourceID: resource, Status: "pending", Name: "original.png"}}); e != nil {
+			return e
+		}
+		if e = d.AddSessionResourceReference(ctx, ref); e != nil {
+			return e
+		}
+		return base.(store.SessionMediaDAO).SaveSessionMediaRequest(ctx, media)
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		d := base.(store.SessionResourceDAO)
+		found, e := d.SessionResourceReferenceExists(ctx, ref)
+		if e != nil || !found {
+			t.Fatal("committed pin missing", found, e)
+		}
+		found, e = d.SessionImageUploadExists(ctx, id, upload.Spec.ImageID)
+		if e != nil || !found {
+			t.Fatal("committed image missing", found, e)
+		}
+		changed := upload
+		changed.Spec.Name = "replacement.png"
+		if e = d.SaveSessionUpload(ctx, changed); e == nil {
+			t.Fatal("immutable upload accepted changed original")
+		} else {
+			var fault *model.Fault
+			if !errors.As(e, &fault) || fault.Code != "resource_conflict" {
+				return e
+			}
+		}
+		changedMedia := media
+		changedMedia.Action = "release"
+		if e = base.(store.SessionMediaDAO).SaveSessionMediaRequest(ctx, changedMedia); e == nil {
+			t.Fatal("immutable media accepted changed action")
+		} else {
+			var fault *model.Fault
+			if !errors.As(e, &fault) || fault.Code != "resource_conflict" {
+				return e
+			}
+		}
+		return nil
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		u, e := base.(store.SessionResourceDAO).SessionUpload(ctx, id, upload.Spec.UploadID)
+		if e != nil {
+			return e
+		}
+		if u.Spec != upload.Spec {
+			t.Fatal("rejected replacement changed committed original", u)
+		}
+		m, e := base.(store.SessionMediaDAO).SessionMediaRequest(ctx, id, media.RequestID)
+		if e != nil {
+			return e
+		}
+		if m.Action != media.Action || !m.Complete || m.Error == nil || *m.Error != *media.Error {
+			t.Fatal("terminal remote failure did not survive committed readback", m)
+		}
+		return nil
+	})
+}
+
+func testResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
+	tx, e := db.Pool.Begin(t.Context())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Rollback(t.Context()); e != nil {
+		t.Fatal(e)
+	}
+	base := pgsession.New(tx)
+	resources := base.(store.SessionResourceDAO)
+	media := base.(store.SessionMediaDAO)
+	checks := []struct {
+		name string
+		read func() error
+	}{
+		{"resources", func() error {
+			rows, e := resources.ListSessionResources(t.Context(), id)
+			if len(rows) != 0 {
+				t.Fatal("closed transaction supplied inventory")
+			}
+			return e
+		}},
+		{"pending media", func() error {
+			rows, e := media.PendingSessionMediaRequests(t.Context(), sp.Fence{SessionID: id})
+			if len(rows) != 0 {
+				t.Fatal("closed transaction supplied pending media")
+			}
+			return e
+		}},
+		{"usage", func() error { _, e := resources.SessionResourceUsage(t.Context(), id); return e }},
+		{"upload save", func() error {
+			return resources.SaveSessionUpload(t.Context(), store.SessionUploadRecord{SessionID: id})
+		}},
+		{"media save", func() error {
+			return media.SaveSessionMediaRequest(t.Context(), store.SessionMediaRequest{SessionID: id})
+		}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if e := check.read(); !errors.Is(e, pgx.ErrTxClosed) {
+				t.Fatal("closed transaction result lost its cause", e)
+			}
+		})
+	}
+}
+
+func testMediaRequestReadRejectsCorruptPersistedTypedMetadata(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
+	ctx := t.Context()
+	request := uuid.NewString()
+	for _, kind := range []string{"fence", "error"} {
+		t.Run(kind, func(t *testing.T) {
+			fence, errorBody := `{"sessionId":"`+id+`","claimId":"`+uuid.NewString()+`","executionGeneration":"1","connectionEpoch":"1"}`, `{"code":"source_unavailable","message":"Original source unavailable."}`
+			if kind == "fence" {
+				fence = `{"connectionEpoch":2}`
+			} else {
+				errorBody = `{"code":3}`
+			}
+			if _, e := db.Pool.Exec(ctx, `INSERT INTO session_media_requests(session_id,request_id,action,fence,body,error,complete) VALUES($1,$2,'read',$3,'{}',$4,true) ON CONFLICT(session_id,request_id) DO UPDATE SET fence=EXCLUDED.fence,error=EXCLUDED.error`, id, request, fence, errorBody); e != nil {
+				t.Fatal(e)
+			}
+			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+				if _, e := base.(store.SessionMediaDAO).SessionMediaRequest(ctx, id, request); e == nil {
+					t.Fatal("corrupt persisted typed metadata became valid")
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func testResourceCancelledObservationDoesNotCreateState(t *testing.T, db *postgres.Store) {
+	_, _ = prepareImageSession(t, db)
+	missing := uuid.NewString()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	tx, e := db.Pool.Begin(t.Context())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer rollbackSessionTestTransaction(t, tx)
+	if _, e = pgsession.New(tx).(store.SessionResourceDAO).SessionResourceUsage(ctx, missing); !errors.Is(e, context.Canceled) {
+		t.Fatal("cancelled admission was reported successful", e)
+	}
+	var count int
+	if e = db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM session_resource_state WHERE session_id=$1`, missing).Scan(&count); e != nil || count != 0 {
+		t.Fatal("cancelled observation allocated resource state", count, e)
+	}
+}
+
+func testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.T, db *postgres.Store) {
 	_, actor, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -178,8 +551,7 @@ func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.
 	})
 }
 
-func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
-	db := isolatedStore(t)
+func testExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T, db *postgres.Store) {
 	_, actor, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)

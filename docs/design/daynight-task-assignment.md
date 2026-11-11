@@ -6,7 +6,7 @@
 
 `model.Task`、`store.TaskWrite` 和 HTTP Task/summary/graph DTO 使用可空 `AssignedTo`。数据库列为 `tasks.assigned_to uuid NULL`；响应的 assignedTo 不使用 omitempty。它是普通 Task 元数据，properties 的静态定义与独立行模型保持原有职责。
 
-迁移 `028_task_assignment.sql` 增加列及 `(project_id, assigned_to, created_at, id) WHERE deleted_at IS NULL` 索引。既有行包括软删除行取得 NULL，其他任务事实与历史迁移 checksum 不变；不添加外键或历史身份推断。负责人查询直接复用该索引，不增加 DDL。
+迁移 `028_task_assignment.sql` 增加列及 `(project_id, assigned_to, created_at, id) WHERE deleted_at IS NULL` 索引。既有行包括软删除行取得 NULL，其他任务事实与历史迁移 checksum 不变；不添加外键或历史身份推断。`063_task_assignment_all_index.sql` 保留该部分索引，并增加相同列顺序的完整索引，供通过 `task_resource_rows` 按负责人读取或解析的查询选择。完整索引包含软删除和父 Goal 已删除的行，查询仍通过 `effective_deleted_at IS NULL` 过滤可见性。索引增加存储和写入维护；迁移在事务中构建索引，期间阻塞相关写入，构建时间随数据规模变化。
 
 ## 输入与完整候选
 
@@ -49,7 +49,7 @@ HTTP 单值 assignedTo 输入在 service 边界转换为显式 all/unassigned/us
 
 Snapshot.Tasks 按规范选择使用静态 SQL 片段：all 不增加条件，unassigned 使用 assigned_to IS NULL，user 使用绑定的 UUID 等值。输入值只作参数，不拼接 SQL。条件在 ORDER/LIMIT 之前；worker inventory 分支同样先应用显式原生条件，再执行既有 worker 解码、归属匹配和最终 limit+1。worker 自动候选选择 me，在游标核验前解析为固定认证账号的 userId；完整既有 worker 库存省略负责人条件，继续为 all。
 
-page.go 仅为 kind=tasks 编码和要求 cursor version 2，并保存必需的规范选择 all/unassigned/user:UUID。项目列表使用独立 kind 与版本 2，绑定主体和项目列表范围；账号级 Worker 列表使用版本 1。二者均不编码任务选择字段；workerId 筛选的 Task 页仍是 tasks version 2。任务旧版本拒绝，而 me 与对应 UUID 在规范 scope 相同时可续页。项目、状态、ready、许可、平台、workerUser/workerId 和位置仍绑定原 scope。
+page.go 仅为 kind=tasks 编码和要求 cursor version 3，并保存必需的规范选择 all/unassigned/user:UUID，以及 type 和 parent 筛选。项目列表使用独立 kind 与版本 2，绑定主体和项目列表范围；账号级 Worker 列表使用版本 1。二者均不编码任务选择字段；workerId 筛选的 Task 页仍是 tasks version 3。任务旧版本拒绝，而 me 与对应 UUID 在规范 scope 相同时可续页。项目、状态、ready、许可、平台、workerUser/workerId 和位置仍绑定原 scope。
 
 ## 项目内人员读取
 
@@ -61,7 +61,7 @@ store/postgres/internal/project_access.go 拥有单主体准入和批量查询�
 
 ### 完整目录
 
-从 ProjectAccessRelation 的原始 user_id 与当前项目未软删除 tasks 的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，只有软删除任务的引用不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
+从 ProjectAccessRelation 的原始 user_id 与当前项目有效可见任务的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，仅被自身或父 Goal 已删除的任务引用时不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
 
 ### 限定解析
 

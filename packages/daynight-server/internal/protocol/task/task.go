@@ -18,9 +18,12 @@ import (
 )
 
 type REST struct {
+	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Properties        map[string]json.RawMessage `json:"properties"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
+	Type              model.TaskType             `json:"type"`
+	ParentID          *string                    `json:"parentId"`
 	Title             string                     `json:"title"`
 	Description       string                     `json:"description"`
 	Status            string                     `json:"status"`
@@ -43,6 +46,8 @@ type REST struct {
 type SyncRecord struct {
 	Properties        map[string]json.RawMessage `json:"properties"`
 	ID                string                     `json:"id"`
+	Type              model.TaskType             `json:"type"`
+	ParentID          *string                    `json:"parentId"`
 	TitlePreview      string                     `json:"titlePreview"`
 	TitleTruncated    bool                       `json:"titleTruncated"`
 	Status            string                     `json:"status"`
@@ -65,7 +70,7 @@ func RESTSyncRecord(t model.TaskViewRecord) SyncRecord {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	return SyncRecord{Properties: properties(t.Properties, false), ID: t.ID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
+	return SyncRecord{Properties: properties(t.Properties, false), ID: t.ID, Type: t.Type, ParentID: t.ParentID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
 		Status: string(t.Status), Version: strconv.FormatInt(t.Version, 10), DependsOn: array(t.DependsOn, false), ExternalDependsOn: array(t.ExternalDependsOn, false),
 		RequiredPlatform: platform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt)}
@@ -89,7 +94,7 @@ func restTask(t model.Task, extended, copyValues bool) (REST, error) {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	result := REST{ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
+	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
 	if extended {
 		return result, nil
 	}
@@ -140,9 +145,12 @@ func EncodeREST(w io.Writer, t model.Task, extended bool, max int64) (int64, err
 }
 
 type MCPFull struct {
+	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Projection        string                     `json:"projection"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
+	Type              model.TaskType             `json:"type"`
+	ParentID          *string                    `json:"parentId"`
 	Title             string                     `json:"title"`
 	Description       string                     `json:"description"`
 	Properties        map[string]json.RawMessage `json:"properties"`
@@ -169,6 +177,8 @@ type MCPSummary struct {
 	Projection       string              `json:"projection"`
 	ID               string              `json:"id"`
 	ProjectID        string              `json:"projectId"`
+	Type             model.TaskType      `json:"type"`
+	ParentID         *string             `json:"parentId"`
 	TitlePreview     string              `json:"titlePreview"`
 	TitleTruncated   bool                `json:"titleTruncated"`
 	Status           model.TaskStatus    `json:"status"`
@@ -192,11 +202,11 @@ func MCPTaskSummary(t model.Task) MCPSummary {
 		}
 		title = title[:end]
 	}
-	return MCPSummary{Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
+	return MCPSummary{Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
 }
 func mcpTask(t model.Task, copyValues bool) MCPFull {
 	properties := properties(t.Properties, copyValues)
-	return MCPFull{Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description, Properties: properties,
+	return MCPFull{Progress: t.Progress, Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
 		Status: t.Status, Version: strconv.FormatInt(t.Version, 10), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues),
 		ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues),

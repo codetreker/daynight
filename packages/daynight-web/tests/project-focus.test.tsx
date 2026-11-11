@@ -28,7 +28,7 @@ const rootId = '20000000-0000-0000-0000-000000000001';
 const selectedId = '20000000-0000-0000-0000-000000000002';
 const remainingId = '20000000-0000-0000-0000-000000000003';
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, blockedBy: dependsOn,
   ready: dependsOn.length === 0, createdAt: timestamp, updatedAt: timestamp,
 });
@@ -185,7 +185,8 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(document.querySelector('.task-chain-dialog')).toBe(graphDialog);
-    expect(root).not.toHaveAttribute('inert');
+    expect(root).toHaveAttribute('inert');
+    expect(graphDialog).not.toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(graphClose);
     await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
@@ -202,13 +203,14 @@ describe('project dialog focus restoration', () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await screen.findByRole('heading', { name: '还没有任务' });
-    await waitFor(() => expect(screen.getByRole('tab', { name: '任务列表' })).toHaveFocus());
+    await screen.findByRole('heading', { name: '暂无任务链' });
+    await waitFor(() => expect(screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expectModalReleased();
     expect(screen.getByText('所选任务已不在新的任务图中，详情已关闭。')).toBeVisible();
     expect(within(screen.getByRole('region', { name: '项目任务统计', hidden: true })).getAllByText('0', { selector: '.stat-number' })).toHaveLength(7);
-    expect(screen.queryByRole('region', { name: '任务依赖链' })).toBeNull();
+    expect(screen.getByRole('region', { name: '任务依赖链' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Goal' })).toBeVisible();
   });
 
   it('focuses a surviving row without opening its graph after refresh removes the selected chain', async () => {
@@ -228,8 +230,9 @@ describe('project dialog focus restoration', () => {
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(trigger).toHaveFocus());
-    expect(root).not.toHaveAttribute('inert');
+    expect(root).toHaveAttribute('inert');
     expect(document.querySelector('.task-chain-dialog')).toBeVisible();
+    expect(document.querySelector('.task-chain-dialog')).not.toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(document.querySelector('.task-chain-close')!);
     await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveFocus());

@@ -22,7 +22,7 @@ func observationActor() model.Principal {
 	return model.Principal{UserID: workActor, CredentialID: workProject, Kind: model.PATCredential}
 }
 func TestObservedReadsPreserveSelectedTaskAndCoreOperationBoundaries(t *testing.T) {
-	service, _, _, database := workServiceFixture(t)
+	service, reader, _, database := workServiceFixture(t)
 	task := observationTask()
 	actor := observationActor()
 	calls := 0
@@ -38,12 +38,12 @@ func TestObservedReadsPreserveSelectedTaskAndCoreOperationBoundaries(t *testing.
 		t.Fatalf("get %#v %v calls=%d", got, err, calls)
 	}
 	service.operations.list = func(_ context.Context, _ taskcore.ReadDAO, pid string, selection taskcore.ListSelection) (store.TaskPage, *model.Fault, error) {
-		if pid != workProject || selection.Query.Page.Limit != 1 {
+		if pid != workProject || selection.Query.Page.Limit != 1 || !selection.Query.AutomaticCandidate || !selection.Scope.AutomaticCandidate {
 			t.Fatal("wrong list selection")
 		}
 		return store.TaskPage{Items: []model.Task{task}, HasMore: true}, nil, nil
 	}
-	list, err := service.ObserveList(t.Context(), actor, workProject, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
+	list, err := service.ObserveList(t.Context(), actor, workProject, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AutomaticCandidate: true})
 	if err != nil || len(list.Items) != 1 || list.Items[0].Task.ID != task.ID || list.NextCursor == nil || list.Partial {
 		t.Fatalf("list %#v %v", list, err)
 	}
@@ -53,8 +53,14 @@ func TestObservedReadsPreserveSelectedTaskAndCoreOperationBoundaries(t *testing.
 		}
 		return taskcore.MCPListPage{Items: []store.TaskPriorityItem{{Task: task, TitleTruncated: true, BlockedByCount: 4}}}, nil
 	}
+	reader.bodies = func(ctx context.Context, project string, ids []string) ([]model.Task, error) {
+		if ctx != t.Context() || project != workProject || len(ids) != 1 || ids[0] != task.ID {
+			t.Fatal("wrong batched body request")
+		}
+		return []model.Task{task}, nil
+	}
 	mcp, err := service.ObservedMCPList(t.Context(), actor, workProject, taskcore.MCPListRequest{Limit: 1, View: "full"})
-	if err != nil || len(mcp.Items) != 1 || mcp.Items[0].Item.BlockedByCount != 4 || !mcp.Items[0].Item.TitleTruncated || calls != 2 {
+	if err != nil || len(mcp.Items) != 1 || mcp.Items[0].Item.BlockedByCount != 4 || !mcp.Items[0].Item.TitleTruncated || calls != 1 {
 		t.Fatalf("MCP %#v %v calls=%d", mcp, err, calls)
 	}
 	database.completion = errors.New("completion")

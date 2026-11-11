@@ -159,6 +159,9 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 		if header.DeletedAt != nil {
 			return taskcore.NotFound(model.ErrTaskDeleted)
 		}
+		if err := taskcore.CheckStepsForType(header.Type); err != nil {
+			return err
+		}
 		return operation(snapshot.TaskDAO(), header)
 	})
 	if err != nil {

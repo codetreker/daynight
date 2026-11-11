@@ -290,7 +290,13 @@ func (d *DAO) admissionSources(ctx context.Context, id, expectedEndpoint string,
 	if err != nil && err != pgx.ErrNoRows {
 		return out, pg.QueryError("lock webhook source task", err)
 	}
-	out.TaskPresent = err == nil && deleted == nil
+	if err == nil && deleted == nil {
+		// Lock the physical row first; the resource view includes a nullable parent join.
+		if err = d.tx.QueryRow(ctx, `SELECT effective_deleted_at FROM task_resource_rows WHERE id=$1 AND project_id=$2`, *taskID, projectID).Scan(&deleted); err != nil {
+			return out, pg.QueryError("read webhook source task visibility", err)
+		}
+		out.TaskPresent = deleted == nil
+	}
 	var team string
 	err = d.tx.QueryRow(ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1 FOR SHARE`, projectID).Scan(&team)
 	if err != nil && err != pgx.ErrNoRows {

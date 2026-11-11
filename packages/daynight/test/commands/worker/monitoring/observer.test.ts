@@ -10,13 +10,22 @@ import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-erro
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
 import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
-import { classifyFailure, diagnostic, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
+import { classifyFailure, diagnostic, MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
 import { createMonitoringObserver, goJsonBytes } from "../../../../src/commands/worker/monitoring/observer.js";
 import type { DiagnosticCode } from "../../../../src/commands/worker/monitoring/types.js";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const identity = (index: number) => ({ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", taskId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", claimId: `cccccccc-cccc-4ccc-8ccc-${index.toString(16).padStart(12, "0")}` });
 const secret = "secret /private/path prompt $(command output)";
+
+it("reports confirmed archive contention without exposing the original failure", () => {
+  const cause = new WorkerCleanupError("archive", Object.assign(new Error(secret), { status: 429, code: "resource_busy" }));
+  const error = new MonitoringArchiveBusyEvidence(cause);
+  expect(error.cause).toBe(cause);
+  expect(classifyFailure(error)).toEqual({ type: "operation", code: "rate-limited", cause: "The operation was rate limited.", causeTruncated: false });
+  expect(classifyFailure(error, true)).toEqual(diagnostic("outcome-unknown"));
+  expect(classifyFailure(new Error("archive busy, short retry"))).toEqual(diagnostic("unknown"));
+});
 
 describe("worker monitoring observer", () => {
   it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {
@@ -336,4 +345,35 @@ it.each(["archive_incomplete", "projection_gap"] as const)("reports typed archiv
   const error = new ArchiveRepairRequiredError(code); error.message = secret;
   expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic("recovery-blocked"));
   expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
+});
+
+describe("failure worktree snapshots", () => {
+  it("copies locations and preserves them through retry-only updates", () => {
+    const observer = createMonitoringObserver({ runId });
+    const scope = { kind: "claim", ...identity(1) } as const;
+    const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
+    const worktree = { kind: "project-relative" as const, path: ".worktrees/a" };
+    observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree });
+    worktree.path = "changed";
+    const first = observer.capture("1");
+    expect(first.currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
+    if (first.currentFailures[0]?.worktree?.kind === "project-relative") first.currentFailures[0].worktree.path = "mutated";
+    observer.updateFailureRetry(id, "running");
+    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
+  });
+  it("reduces largest Go-encoded paths before discarding failures and restores later snapshots", () => {
+    const observer = createMonitoringObserver({ runId });
+    for (let i = 0; i < 32; i++) {
+      const scope = { kind: "claim", ...identity(i) } as const;
+      const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
+      observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree: { kind: "project-relative", path: "<".repeat(4096) } });
+    }
+    const captured = observer.capture("1");
+    expect(captured.currentFailures).toHaveLength(32);
+    expect(captured.detailCoverage).toBe("partial");
+    expect(captured.currentFailures.some(f => f.worktree?.kind === "unavailable")).toBe(true);
+    expect(goJsonBytes({ expectedRevision: runId, observation: captured })).toBeLessThanOrEqual(256 * 1024);
+    for (const f of captured.currentFailures.slice(1)) observer.discardFailure(f.operationId);
+    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: "<".repeat(4096) });
+  });
 });

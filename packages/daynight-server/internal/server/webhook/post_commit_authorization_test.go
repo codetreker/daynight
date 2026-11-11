@@ -12,7 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -71,7 +72,7 @@ func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			identityService := identity.New(f.db, nil, testOrigin+"/auth/callback")
-			authenticator, err := auth.NewAuthentication(identityService, config.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
+			authenticator, err := auth.NewAuthentication(identityService, authconfig.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
 			if err != nil {
 				t.Fatal(err)
 			}

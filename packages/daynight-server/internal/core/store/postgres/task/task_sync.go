@@ -17,19 +17,10 @@ func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, 
 }
 
 func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *time.Time, previewCharacters int) ([]model.TaskViewRecord, error) {
-	if lower != nil {
-		// PostgreSQL stores microseconds; rounding upward preserves the exact >=
-		// selection when pgx would otherwise truncate a nanosecond lower bound.
-		// https://github.com/jackc/pgx/blob/5e583fa7aabfa88b796292f849fc9d7d75ac159d/pgtype/timestamptz.go#L173
-		boundary := lower.Truncate(time.Microsecond)
-		if boundary.Before(*lower) {
-			boundary = boundary.Add(time.Microsecond)
-		}
-		lower = &boundary
-	}
-	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
+	lower = taskSyncLowerBound(lower)
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.type, t.parent_id::text, left(t.title, $2), char_length(t.title) > $2,
 		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
-		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
+		FROM task_resource_rows t WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
 	if err != nil {
 		return nil, pg.QueryError("read task sync", err)
@@ -38,7 +29,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	tasks := make([]model.TaskViewRecord, 0)
 	for rows.Next() {
 		var task model.TaskViewRecord
-		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
+		if err := rows.Scan(&task.ID, &task.Type, &task.ParentID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, pg.QueryError("read task sync", err)
 		}
@@ -65,4 +56,51 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		tasks[index].Properties = properties[tasks[index].ID]
 	}
 	return tasks, nil
+}
+
+func taskSyncLowerBound(lower *time.Time) *time.Time {
+	if lower != nil {
+		// PostgreSQL stores microseconds; rounding upward preserves the exact >=
+		// selection when pgx would otherwise truncate a nanosecond lower bound.
+		// https://github.com/jackc/pgx/blob/5e583fa7aabfa88b796292f849fc9d7d75ac159d/pgtype/timestamptz.go#L173
+		boundary := lower.Truncate(time.Microsecond)
+		if boundary.Before(*lower) {
+			boundary = boundary.Add(time.Microsecond)
+		}
+		lower = &boundary
+	}
+	return lower
+}
+
+func (s *Reader) TaskSyncDependencyStates(ctx context.Context, projectID string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+	// Changes to a retained prerequisite affect its visible owners even when
+	// the prerequisite is hidden or the owner itself has not changed.
+	rows, err := s.tx.Query(ctx, `WITH changed AS MATERIALIZED (
+		SELECT id FROM tasks WHERE project_id=$1 AND ($2::timestamptz IS NULL OR updated_at >= $2)
+	), selected AS (
+		SELECT id FROM changed
+		UNION SELECT d.task_id FROM changed c JOIN task_dependencies d
+			ON d.project_id=$1 AND d.depends_on_task_id=c.id
+		WHERE $2::timestamptz IS NOT NULL
+	)
+	SELECT t.id::text, t.version, `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
+	FROM selected JOIN task_resource_rows t ON t.project_id=$1 AND t.id=selected.id
+	WHERE t.type='task' AND t.effective_deleted_at IS NULL`, projectID, taskSyncLowerBound(lower))
+	if err != nil {
+		return nil, pg.QueryError("read task sync dependency states", err)
+	}
+	defer rows.Close()
+	states := make(map[string]model.TaskDependencyState)
+	for rows.Next() {
+		var id string
+		var state model.TaskDependencyState
+		if err := rows.Scan(&id, &state.TaskVersion, &state.BlockedBy, &state.Ready); err != nil {
+			return nil, pg.QueryError("read task sync dependency states", err)
+		}
+		states[id] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, pg.QueryError("read task sync dependency states", err)
+	}
+	return states, nil
 }

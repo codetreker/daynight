@@ -72,7 +72,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite")); stores.add(webStore);
   const frozen = webStore.register({ projectId: retainedProjectId, taskId, claimId, worktreeId, project: retainedProject, serverOrigin, workerId, userId,
     configuration: { agent: "codex", agentControlMode: "web", model: "retained-model", args: [], recoveryLimit: 2 } }, Date.now());
-  const task: Task = {
+  const task: Task = { type: "task", parentId: null,
     id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
@@ -113,7 +113,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   expect(store.listProjects()).toEqual([retainedProject]); expect(store.getTask(localTask)).toEqual(localTask);
   expect(webStore.getTask(localTask)).toEqual(frozen); expect(await readFile(ownedFile, "utf8")).toBe("retained unfinished work\n");
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
-  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId: retainedProjectId, taskId, claimId, worktreeId }), "shutdown", expect.any(Number), expect.any(AbortSignal), true), { timeout: 3500, interval: 10 });
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId: retainedProjectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), signal: expect.any(AbortSignal), immediateStop: true }), { timeout: 3500, interval: 10 });
   const before = report.mock.calls.length;
   await vi.advanceTimersByTimeAsync(30_000); await vi.waitFor(() => expect(report.mock.calls.length).toBeGreaterThan(before));
   expect(settled).toBe(false); expect(await readFile(paths.configFile, "utf8")).toBe(source);

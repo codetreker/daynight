@@ -90,7 +90,7 @@ func TestObservedListSuppressesResultsAfterReadAndSnapshotFailures(t *testing.T)
 func TestObservedMCPListSuppressesFailedSelectionExpansionAndRecheck(t *testing.T) {
 	for _, stage := range []string{"anonymous", "list error", "full error", "full refusal", "cursor encoding", "snapshot clock", "fresh credentials"} {
 		t.Run(stage, func(t *testing.T) {
-			service, _, observer, database := workServiceFixture(t)
+			service, reader, observer, database := workServiceFixture(t)
 			principal := observationActor()
 			input := taskcore.MCPListRequest{Limit: 1, View: "summary"}
 			failure := errors.New("MCP selection failed")
@@ -111,19 +111,19 @@ func TestObservedMCPListSuppressesFailedSelectionExpansionAndRecheck(t *testing.
 				}
 				return taskcore.MCPListPage{Items: []store.TaskPriorityItem{{Task: selected}}, HasMore: stage == "cursor encoding"}, nil
 			}
-			service.operations.task = func(_ context.Context, _ taskcore.ReadDAO, project, id string) (model.Task, *model.Fault, error) {
+			reader.bodies = func(_ context.Context, project string, ids []string) ([]model.Task, error) {
 				fullCalls++
-				if project != workProject || id != selected.ID {
+				if project != workProject || len(ids) != 1 || ids[0] != selected.ID {
 					t.Fatal("full expansion changed selection")
 				}
 				if stage == "full error" {
-					return model.Task{}, nil, failure
+					return nil, failure
 				}
 				if stage == "full refusal" {
-					return model.Task{}, refusal, nil
+					return nil, refusal
 				}
 				t.Fatal("unexpected full expansion")
-				return model.Task{}, nil, nil
+				return nil, nil
 			}
 			switch stage {
 			case "anonymous":

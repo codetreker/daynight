@@ -12,9 +12,9 @@ The same fixtures also repeated schema initialization and tool registration.
 
 Some protocol scenarios were the only callers of lower admission and cleanup
 branches. Replacing their fixtures without identifying those observations would
-lose defect detection even if package coverage remained high. The common
-[dependency decision](2026-11-08-go-test-dependency-boundaries.md) establishes the
-required collaborator boundary.
+lose defect detection even if package coverage remained high. The earlier
+[dependency decision](2026-11-08-go-test-dependency-boundaries.md) established
+the direct-operation boundary used by these tests.
 
 ## Decision
 
@@ -73,10 +73,27 @@ keeps its real lifecycle, permits and chunk stream while controlling DAO,
 transaction and directly invoked attachment-operation results; Store and process
 witnesses retain receipt persistence and crash recovery.
 
-The MCP test binary clears database and UniAuth fixture variables before test
-execution. Full module validation can provide infrastructure to its physical
-owners without lending it to these protocol units. Native body-timeout tests
-assert the 15-second production default and use a 200-millisecond instance value
+Project, Team and Invitation organization scenarios additionally execute the
+real Service and Core with controlled DAO facts through an Entry host that
+registers only those adapters. Root retains its full production catalog and
+default authentication proofs. The later
+[component ownership decision](2026-11-11-go-component-test-ownership.md)
+explains the behavior and cost basis for that boundary. Bot's completed-response
+loss scenario also uses real Service and Core with controlled DAO facts and an
+Entry host registering only Bot tools. Its SDK transport consumes each completed
+response before discarding it; a separate reader observes explicitly supplied
+Bot facts. Attachment and transfer scenarios likewise use real Service, Core,
+local files and SDK with controlled DAO facts; they retain deletion, response
+loss and download snapshot proofs. Root retains the shared MCP and REST
+application lifecycle, PAT isolation and revocation. These controlled facts do
+not establish persistence.
+
+The ordinary MCP test binary clears database and UniAuth fixture variables before
+test execution. The separate stress build retains the database variable for its
+real PostgreSQL Step capacity witness. Full module validation can provide
+infrastructure to its physical owners without lending it to these protocol units.
+Native body-timeout tests assert the 15-second production default and use a
+200-millisecond instance value
 through the same logical body deadline and actual socket deadline. The timeout
 response, connection close and input-slot release remain observable.
 

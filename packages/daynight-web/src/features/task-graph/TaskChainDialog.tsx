@@ -1,10 +1,13 @@
 import { TaskPauseCount, usePausedTaskIds } from "../task-pause/TaskPause";
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { tabbable } from 'tabbable';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
+import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../../app/overlay';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
+import type { TaskSummary } from '../../api/types';
 import { TaskGraph } from './TaskGraph';
 import { useGraphDirection } from '../projects/useProjectViewPreferences';
 import '../../styles/graph.css';
@@ -17,9 +20,12 @@ type TaskChainDialogProps = {
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly onClose: () => void;
   readonly onRestoreFocus: () => void;
+  readonly renderNested?: (owner: RefObject<HTMLElement | null>) => ReactNode;
+  readonly onRootChange?: (element: HTMLElement | null) => void;
+  readonly summaries?: ReadonlyMap<string, TaskSummary>;
 };
 
-export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNavigateExternalTask, onClose, onRestoreFocus }: TaskChainDialogProps) => {
+export const TaskChainDialog = ({ projectId, index, summaries, rootId, onOpenTask, onNavigateExternalTask, onClose, onRestoreFocus, renderNested, onRootChange }: TaskChainDialogProps) => {
   const { messages: { graph: m, common } } = useI18n();
   const { direction, onDirectionChange, issue } = useGraphDirection(projectId, rootId);
   const task = index.nodes.get(rootId)!;
@@ -29,6 +35,7 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
   const pausedCount = pausedSummaryTaskIds([...component.memberIds].map((id) => index.nodes.get(id)!), pausedTaskIds).size;
   const [fullscreen, setFullscreen] = useState(false);
   const dialog = useRef<HTMLElement>(null);
+  const setDialog = useCallback((element: HTMLElement | null) => { dialog.current = element; onRootChange?.(element); }, [onRootChange]);
   const close = useRef<HTMLButtonElement>(null);
   const fullscreenButton = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(onRestoreFocus);
@@ -36,28 +43,15 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
   const titleId = useId();
   const backdropPressed = useRef(false);
   const focusedControl = useRef<HTMLElement | null>(null);
+  const parentOverlay = useContext(OverlayOwnerContext);
   useBodyScrollLock(true);
 
   useLayoutEffect(() => {
-    const background: { element: Element; inert: string | null }[] = [];
-    // Body portals remain available for task details above the graph dialog.
-    let current: Element = dialog.current!;
-    while (current.parentElement !== null && current.parentElement !== document.body) {
-      for (const sibling of current.parentElement.children) {
-        if (sibling === current) continue;
-        background.push({ element: sibling, inert: sibling.getAttribute('inert') });
-        sibling.setAttribute('inert', '');
-      }
-      current = current.parentElement;
-    }
+    const parent = parentOverlay?.current ?? document.getElementById('root');
+    const release = registerOverlay(dialog.current!, parent);
     close.current!.focus({ preventScroll: true });
-    return () => {
-      for (const { element, inert } of background) {
-        if (inert === null) element.removeAttribute('inert');
-        else element.setAttribute('inert', inert);
-      }
-    };
-  }, []);
+    return release;
+  }, [parentOverlay]);
 
   useLayoutEffect(() => {
     if (focusedControl.current !== null && !focusedControl.current.isConnected && document.activeElement === document.body) close.current!.focus({ preventScroll: true });
@@ -71,7 +65,7 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
   }, []);
   const fullscreenControl = useMemo(() => ({ active: fullscreen, onToggle: toggleFullscreen, buttonRef: fullscreenButton }), [fullscreen, toggleFullscreen]);
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.defaultPrevented) return;
+    if (event.defaultPrevented || !isTopOverlay(dialog.current!)) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -91,9 +85,9 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
     }
   };
 
-  return <div className="task-chain-backdrop" onPointerDown={(event) => { backdropPressed.current = event.target === event.currentTarget; }} onClick={(event) => { if (backdropPressed.current && event.target === event.currentTarget) onClose(); backdropPressed.current = false; }}>
+  return createPortal(<OverlayOwnerContext value={dialog}><div className={`task-chain-backdrop${parentOverlay === null ? "" : " task-chain-backdrop-nested"}`} onPointerDown={(event) => { backdropPressed.current = event.target === event.currentTarget; }} onClick={(event) => { if (backdropPressed.current && event.target === event.currentTarget && isTopOverlay(dialog.current!)) onClose(); backdropPressed.current = false; }}>
     <section className={`task-chain-dialog${fullscreen ? ' task-chain-dialog-fullscreen' : ''}`} id={`task-graph-${rootId}`}
-      role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={dialog} onKeyDown={onKeyDown} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
+      role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={setDialog} onKeyDown={onKeyDown} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
       <header className="task-chain-header">
         <span className="task-chain-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></span>
         <div className="task-chain-heading">
@@ -103,7 +97,7 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNaviga
         </div>
         <button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </header>
-      <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreenControl} />
+      <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreenControl} />
     </section>
-  </div>;
+  </div>{renderNested?.(dialog)}</OverlayOwnerContext>, document.body);
 };

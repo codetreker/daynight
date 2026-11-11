@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphTask, TaskGraph } from '../src/api/types';
@@ -10,7 +11,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const start = '2026-10-20T10:00:00Z';
 const epoch = Date.parse(start);
 const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
-const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null,
+const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ type: 'task', parentId: null, assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status: 'done', dependsOn: ['Goal'], externalDependsOn: [],
   blockedBy: [], ready: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: start, updatedAt: start, ...changes,
@@ -25,7 +26,7 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
       done: tasks.filter((item) => item.status === 'done').length + 1, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },
   };
-  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>

@@ -79,8 +79,8 @@ separate from command availability; the
 
 The public introduction explains the product before sign-in; its example can be
 used without an account. The **[setup guide](https://daynight.cc/setup)** walks
-through installation and agent setup. Use the latest patch of Node.js 22 or newer,
-then install the CLI and sign in:
+through independent MCP and CLI with Agent skill paths. To use the CLI, install
+the latest patch of Node.js 22 or newer, then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight
@@ -116,10 +116,11 @@ Read project and task usage from the installed package:
 daynight --skill
 ```
 
-This prints one standalone project/task reference for coding agents, including
-version-safe writes, dependencies, properties and attachments. Use
-`daynight --help` for other capabilities. Reading requires no login, configuration
-or interactive terminal.
+This prints the complete standalone product manual, generated from the same
+topic sources installed for coding agents. It covers project and task operations,
+Steps, materials, write safety, Sessions, Webhooks and Worker operations. Reading
+requires no login, configuration, installed skill or interactive terminal. Use
+each command's `--help` for exact arguments.
 
 For agent integration, install a supported coding agent, then run:
 
@@ -131,7 +132,8 @@ Select the detected agents and User or Project scope, then follow the installer'
 reload instructions. For example, ask your agent: “Use using-daynight to register
 a task for this project: improve the installation instructions.” The
 [skill guide](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-explains Daynight product operations.
+routes the Agent directly to the topic files needed for the requested product
+operation, including shared write-safety rules for mutations.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
@@ -482,10 +484,9 @@ result scope and evidence limits.
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
 delivery. This repository manages concrete work in Daynight; use the
 [`using-daynight` manual](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-for product operations and follow the [development workflow](.agents/skills/development-workflow/SKILL.md). Use
-[`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
-a bounded change request into a clear task, choose its required operating
-system, and hand it off to a Worker. Use
+for product operations. Follow the [development workflow](.agents/skills/development-workflow/SKILL.md)
+to prepare a clear task, select its required operating system, and hand it off to
+a Worker when authorized. Use
 [`optimize-unit-tests`](.agents/skills/optimize-unit-tests/SKILL.md) to reduce test
 runtime, resource use and CI completion time while preserving defect detection.
 See the [repository skills](.agents/skills/) for decision notes, scope choices

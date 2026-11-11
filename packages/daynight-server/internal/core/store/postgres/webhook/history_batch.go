@@ -72,7 +72,7 @@ func (d *DAO) HistoryBatch(ctx context.Context, owner wm.Owner, endpoint, actor 
 		ep.id IS NOT NULL,ep.deleted_at,ep.destination_revision,statement_timestamp()
 	FROM candidates d
 	LEFT JOIN webhook_events e ON e.id=d.event_id
-	LEFT JOIN tasks t ON t.id=e.task_id AND t.project_id=e.project_id AND t.deleted_at IS NULL
+	LEFT JOIN task_resource_rows t ON t.id=e.task_id AND t.project_id=e.project_id AND t.effective_deleted_at IS NULL
 	LEFT JOIN projects p ON p.id=d.project_id
 	LEFT JOIN project_ownership po ON po.project_id=p.id
 	LEFT JOIN teams team ON team.id=po.team_id

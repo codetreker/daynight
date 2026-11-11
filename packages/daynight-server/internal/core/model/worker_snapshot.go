@@ -57,6 +57,7 @@ type WorkerAssistantHost struct {
 }
 
 type WorkerTelemetry struct {
+	ToolPaths            *ToolPathTelemetry          `json:"toolPaths,omitempty"`
 	RuntimeConfiguration *WorkerRuntimeConfiguration `json:"runtimeConfiguration,omitempty"`
 	AssistantHost        *WorkerAssistantHost        `json:"assistantHost,omitempty"`
 	Machine              WorkerMachine               `json:"machine"`

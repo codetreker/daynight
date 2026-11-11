@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -64,7 +65,7 @@ func newAttachmentFixtureWithTimeout(t *testing.T, files filestorage.Storage, ou
 	f.mutations = &mutationMock{unexpectedDAO: reject}
 	identity := &authenticationMock{unexpectedDAO: reject, principal: principal, hash: secret.Hash(f.handler.token)}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	auth, err := authhttp.NewAuthentication(identityservice.New(identity, nil, "https://daynight.example/api/v1/auth/callback"), config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	auth, err := authhttp.NewAuthentication(identityservice.New(identity, nil, "https://daynight.example/api/v1/auth/callback"), authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,6 +565,14 @@ func (s *unexpectedProjectReader) TransferRole(context.Context, string, string, 
 
 type unexpectedTaskReader struct{ unexpectedDAO }
 
+func (s *unexpectedTaskReader) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
+	s.reject("TaskBodies")
+	panic("unreachable")
+}
+func (s *unexpectedTaskReader) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	s.reject("GoalProgresses")
+	panic("unreachable")
+}
 func (s *unexpectedTaskReader) Task(context.Context, string, string) (model.Task, error) {
 	s.reject("Task")
 	panic("unreachable")
@@ -750,5 +759,10 @@ func (s *unexpectedTaskReader) TaskWorkGroups(context.Context, string, store.Tas
 }
 func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
 	s.reject("TaskWorkTargets")
+	panic("unreachable")
+}
+
+func (s *unexpectedTaskReader) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
+	s.reject("TaskSyncDependencyStates")
 	panic("unreachable")
 }

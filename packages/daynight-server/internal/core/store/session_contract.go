@@ -110,6 +110,8 @@ type TestSessionListItem struct {
 
 type SessionTask struct {
 	Worker        *model.WorkerClaim
+	Type          model.TaskType
+	Deleted       bool
 	Status        string
 	StartupReport *sp.StartupReport
 }
@@ -133,7 +135,7 @@ type SessionDAO interface {
 	SessionBotID(context.Context, string) (*string, error)
 	LockSession(context.Context, string) (SessionRecord, error)
 	SaveSession(context.Context, SessionRecord) error
-	LockTaskRegistration(context.Context, string, string) error
+	LockTaskRegistration(context.Context, string, string) (SessionTask, error)
 	LockTestOwner(context.Context, string) error
 	FindTaskRegistration(context.Context, string, string, string, string) (string, error)
 	FindTestRegistration(context.Context, string, string, string) (string, *string, error)

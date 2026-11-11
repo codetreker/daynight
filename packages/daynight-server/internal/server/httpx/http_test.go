@@ -340,3 +340,120 @@ func TestBodyFailureDoesNotHideTransactionOutcome(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerConfigurationFaultClassificationPreservesTransactionFailures(t *testing.T) {
+	logger := quietLogger()
+	for _, code := range []string{"version_conflict", "configuration_not_initialized", "invalid_input"} {
+		refusal := &model.Fault{Code: code, Message: "Configuration refusal."}
+		for _, failure := range []*store.TransactionError{
+			{Phase: "cleanup", Cause: errors.Join(refusal, errors.New("rollback failure")), Outcome: store.TransactionUnknown, CleanupFailed: true},
+			{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
+			{Phase: "operation", Cause: refusal, Outcome: store.TransactionUnknown},
+		} {
+			if _, ok := KnownFault(failure); ok {
+				t.Fatalf("operational failure classified as business refusal: %+v", failure)
+			}
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/me/workers/11111111-1111-4111-8111-111111111111/configuration", nil)
+			WriteError(response, request, logger, "worker_configuration", "exchange", failure)
+			var responseBody api.ErrorResponse
+			if response.Code != http.StatusInternalServerError || response.Header().Get("Content-Type") != "application/json" || json.Unmarshal(response.Body.Bytes(), &responseBody) != nil {
+				t.Fatalf("operational failure response: %d %s", response.Code, response.Body)
+			}
+			if responseBody.Error.Code != "internal_error" {
+				t.Fatalf("operational failure exposed business code: %+v", responseBody)
+			}
+		}
+		failure := &store.TransactionError{Phase: "operation", Cause: refusal, Outcome: store.TransactionNotCommitted}
+		if fault, ok := KnownFault(failure); !ok || fault != refusal {
+			t.Fatalf("rolled back refusal hidden: %+v %v", fault, ok)
+		}
+	}
+}
+
+func TestSessionContentFaultsRemainExplicitAndRecoverable(t *testing.T) {
+	for code, status := range map[string]int{"controller_offline": http.StatusServiceUnavailable, "relay_instance_unavailable": http.StatusServiceUnavailable, "content_unavailable": http.StatusBadGateway} {
+		t.Run(code, func(t *testing.T) {
+			err := &model.Fault{Code: code, Message: "Connect the original controller to read local content."}
+			if ErrorKind(err) != code {
+				t.Fatal("content failure lost diagnostic category")
+			}
+			response := httptest.NewRecorder()
+			WriteError(response, httptest.NewRequest(http.MethodGet, "/session/timeline", nil), quietLogger(), "session", "read", err)
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(response.Body.Bytes(), &body) != nil || response.Code != status || body.Error.Code != code || body.Error.Message != err.Message {
+				t.Fatalf("fault response %d %s", response.Code, response.Body)
+			}
+		})
+	}
+}
+
+type failingResponseWriter struct{ header http.Header }
+
+func (w *failingResponseWriter) Header() http.Header { return w.header }
+func (*failingResponseWriter) WriteHeader(int)       {}
+func (*failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("private-connection-secret")
+}
+
+func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	for _, err := range []error{
+		errors.Join(model.ErrNotFound, errors.New("private-database-secret")),
+		&model.Fault{Code: "unexpected", Message: "private-service-secret"},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("X-Request-ID", "project-test")
+		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			WriteError(w, request, logger, "project", "get", err)
+		})).ServeHTTP(response, request)
+		assertProjectCorrelation(t, response, http.StatusInternalServerError, "internal_error")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	response := httptest.NewRecorder()
+	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		WriteError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
+	})).ServeHTTP(response, request)
+	value := decodeProjectError(t, response, http.StatusBadRequest)
+	if value.Error.Details == nil || len(value.Error.Details.TaskIDs) != 1 || value.Error.Details.TaskIDs[0] != "task-id" {
+		t.Fatalf("missing error details: %+v", value)
+	}
+	WriteJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	canceled := httptest.NewRecorder()
+	WriteJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
+	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
+		t.Fatalf("already canceled request wrote a response: %s %+v", canceled.Body, canceled.Header())
+	}
+	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"phase":"response"`) {
+		t.Fatalf("write failure not safely diagnosed: %s", &logs)
+	}
+}
+
+func decodeProjectError(t *testing.T, response *httptest.ResponseRecorder, status int) api.ErrorResponse {
+	t.Helper()
+	var result api.ErrorResponse
+	if response.Code != status || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+func assertProjectCorrelation(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	result := decodeProjectError(t, response, status)
+	if result.Error.Code != code || result.Error.Message == "" || result.Error.RequestID != response.Header().Get("X-Request-ID") || result.Error.RequestID != "project-test" {
+		t.Fatalf("unexpected error correlation: %+v", result)
+	}
+}

@@ -5,14 +5,19 @@ import { canonicalId } from "../../api/parse.js";
 import { ProtocolError } from "../../api/validation.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode } from "../../api/types.js";
+import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import { replaceFileAtomically } from "../../platform/files.js";
+import { parseLocalToolPaths, type Tool, type ToolPathChoice, type ToolPaths } from "../../platform/tool-path-choice.js";
 
 export type WorkerConfigurationIdentity = { readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
+export type WorkerConfigurationToolTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
+export type WorkerNativeToolSelectionKeys = Readonly<Partial<Record<Tool, string>>>;
 export type WorkerConfigurationSnapshot = {
   readonly synchronized: boolean;
   readonly desired: WorkerCloudDesired | null;
   readonly observationRevision: string;
   readonly items: readonly WorkerCloudItem[];
+  readonly toolTargets: WorkerConfigurationToolTargets | null;
   readonly effective: {
     readonly agentControlMode: AgentControlMode | null;
     readonly maxConcurrent: number | null;
@@ -36,6 +41,9 @@ export type WorkerConfigurationManagerOptions = {
   readonly identity: WorkerConfigurationIdentity;
   readonly signal: AbortSignal;
   readonly localControlMode?: AgentControlMode;
+  readonly localToolPaths?: ToolPaths;
+  /** Runtime-owned, verified selections for this mode; omitted keys remain unverified. */
+  readonly readToolSelectionKeys?: (native: WorkerCloudNative, mode: AgentControlMode) => WorkerNativeToolSelectionKeys;
   readonly applyNative: (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode) => Promise<void>;
   readonly onChange?: (snapshot: WorkerConfigurationSnapshot) => void;
   readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
@@ -46,11 +54,12 @@ export type WorkerConfigurationManagerOptions = {
   readonly persist?: (file: string, contents: string) => Promise<void>;
 };
 type StoredItem = { readonly value: WorkerCloudItem; readonly attempts: number; readonly failureId: number | null; readonly started: boolean };
-type NativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative };
-type Cache = { readonly schemaVersion: 3; readonly nativeModes: Readonly<Record<string, AgentControlMode>>; readonly identity: WorkerConfigurationIdentity; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly nextFailureId: number; readonly items: readonly StoredItem[] };
-type Job = { readonly revision: string; readonly controller: AbortController; readonly promise: Promise<void> };
+type NativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
+type Cache = { readonly schemaVersion: 4; readonly nativeModes: Readonly<Record<string, AgentControlMode>>; readonly identity: WorkerConfigurationIdentity; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly nextFailureId: number; readonly items: readonly StoredItem[] };
+type Job = { readonly revision: string; readonly controller: AbortController; readonly promise: Promise<void>; readonly proof: NativeProof | null };
 const supportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
-const parseDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits, supportsMode(value));
+const capabilities = (value: WorkerCloudValue | undefined) => ({ controlMode: value !== undefined && Object.hasOwn(value, "agentControlMode"), toolPaths: value !== undefined && Object.hasOwn(value, "toolPaths") });
+const parseDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits, capabilities(value.value));
 const retryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
 class WorkerConfigurationCapacityError extends RangeError {}
 const keyOf = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
@@ -72,10 +81,10 @@ const counter = (value: unknown, minimum: number): number => {
 };
 const parseCache = (source: string, identity: WorkerConfigurationIdentity): { cache: Cache; migrated: boolean } => {
   const raw = decodeWorkerCloudJsonSource(source) as Record<string, unknown>;
-  const data = exactObject(raw, ["schemaVersion", "identity", "desired", "observationRevision", "nextFailureId", "items", ...(raw.schemaVersion === 3 ? ["nativeModes"] : [])]);
+  const data = exactObject(raw, ["schemaVersion", "identity", "desired", "observationRevision", "nextFailureId", "items", ...(raw.schemaVersion === 3 || raw.schemaVersion === 4 ? ["nativeModes"] : [])]);
   const scope = exactObject(data.identity, ["serverOrigin", "userId", "workerId"]);
-  if (data.schemaVersion !== 1 && data.schemaVersion !== 2 && data.schemaVersion !== 3 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
-  const migrated = data.schemaVersion !== 3;
+  if (data.schemaVersion !== 1 && data.schemaVersion !== 2 && data.schemaVersion !== 3 && data.schemaVersion !== 4 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
+  const migrated = data.schemaVersion !== 4;
   const preferenceMigration = data.schemaVersion === 1;
   let desiredSource = data.desired;
   if (preferenceMigration && desiredSource !== null) {
@@ -112,15 +121,25 @@ const parseCache = (source: string, identity: WorkerConfigurationIdentity): { ca
     if (required.some(key => !items.some(item => keyOf(item.value.key) === keyOf(key) && item.value.targetRevision === desired.revision))) throw new TypeError("Worker configuration cache is missing target application results.");
   }
   const nativeModes: Record<string, AgentControlMode> = {};
-  if (!migrated) {
+  if (data.schemaVersion === 3 || data.schemaVersion === 4) {
     if (typeof data.nativeModes !== "object" || data.nativeModes === null || Array.isArray(data.nativeModes)) throw new TypeError("Worker configuration native modes are invalid.");
     for (const [key, mode] of Object.entries(data.nativeModes)) {
       if ((mode !== "herdr" && mode !== "web") || !items.some(item => keyOf(item.value.key) === key && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && item.value.appliedValue !== null)) throw new TypeError("Worker configuration native mode has no matching applied value.");
       nativeModes[key] = mode;
     }
   }
-  return { cache: { schemaVersion: 3, nativeModes, identity: { ...identity }, desired, observationRevision, nextFailureId, items }, migrated };
+  return { cache: { schemaVersion: 4, nativeModes, identity: { ...identity }, desired, observationRevision, nextFailureId, items }, migrated };
 };
+
+const toolTargets = (cache: Cache, local: ToolPaths): WorkerConfigurationToolTargets | null => {
+  const choices = cache.desired?.value.toolPaths;
+  if (choices === undefined) return { source: "local", revision: null, choices: local };
+  if (choices.codex === null || choices.copilot === null || choices.herdr === null) return null;
+  return { source: "cloud", revision: cache.desired!.revision, choices: { codex: choices.codex, copilot: choices.copilot, herdr: choices.herdr } };
+};
+const nativeTools = (native: WorkerCloudNative, mode: AgentControlMode): readonly Tool[] => [
+  ...(native.agent === "codex" || native.agent === "copilot" ? [native.agent] : []), ...(mode === "herdr" ? ["herdr" as const] : []),
+];
 
 export const resolveWorkerCloudProjectNative = (native: WorkerCloudNative, project: WorkerCloudProject): WorkerCloudNative => {
   const overrides = project.nativeOverrides, agent = overrides.agent === undefined ? native.agent : overrides.agent;
@@ -154,7 +173,7 @@ const target = (cache: Cache, key: WorkerCloudItemKey): WorkerCloudItem["applied
 const replaceItem = (cache: Cache, value: StoredItem): Cache => ({ ...cache, items: cache.items.map(item => keyOf(item.value.key) === keyOf(value.value.key) ? value : item) });
 const findItem = (cache: Cache, key: WorkerCloudItemKey): StoredItem | undefined => cache.items.find(item => keyOf(item.value.key) === keyOf(key));
 const hasUnfinishedRemoval = (cache: Cache, projectId: string): boolean => cache.items.some(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId && item.started && item.value.state !== "applied");
-const snapshot = (cache: Cache, synchronized: boolean, validatedNative: ReadonlyMap<string, NativeProof>, localMode: AgentControlMode): WorkerConfigurationSnapshot => {
+const snapshot = (cache: Cache, synchronized: boolean, validatedNative: ReadonlyMap<string, NativeProof>, localMode: AgentControlMode, localTools: ToolPaths, proof: (cache: Cache, native: WorkerCloudNative, mode: AgentControlMode) => NativeProof): WorkerConfigurationSnapshot => {
   const applied = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => findItem(cache, key)?.value.appliedValue ?? null;
   const scalar = (kind: "maxConcurrent" | "pollIntervalMs" | "recoveryLimit"): number | null => {
     const value = applied({ kind });
@@ -163,13 +182,13 @@ const snapshot = (cache: Cache, synchronized: boolean, validatedNative: Readonly
   const mode = cache.desired?.value.agentControlMode == null ? localMode : cache.nativeModes["native:"] ?? null;
   const native = (key: WorkerCloudItemKey): WorkerCloudNative | null => {
     const value = applied(key);
-    return synchronized && cache.desired !== null && typeof value === "object" && value !== null && equal({ mode, native: value }, validatedNative.get(keyOf(key))) ? value : null;
+    return synchronized && cache.desired !== null && mode !== null && typeof value === "object" && value !== null && equal(proof(cache, value, mode), validatedNative.get(keyOf(key))) ? value : null;
   };
   const preference = applied({ kind: "preferPlatformSpecificTasks" });
-  return freeze({ synchronized, desired: cache.desired, observationRevision: cache.observationRevision, items: cache.items.map(item => item.value), effective: {
-    agentControlMode: cache.desired?.value.agentControlMode == null || native({ kind: "native" }) !== null ? mode : null, maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && cache.desired !== null && typeof preference === "boolean" ? preference : null, native: native({ kind: "native" }),
-    projects: synchronized && cache.desired !== null ? cache.desired.value.projects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
-      ready: findItem(cache, { kind: "projectPreparation", projectId: project.projectId })?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !hasUnfinishedRemoval(cache, project.projectId) })) : [],
+  const projects = synchronized && cache.desired !== null ? cache.desired.value.projects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
+    ready: findItem(cache, { kind: "projectPreparation", projectId: project.projectId })?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !hasUnfinishedRemoval(cache, project.projectId) })) : [];
+  return freeze({ synchronized, desired: cache.desired, observationRevision: cache.observationRevision, items: cache.items.map(item => item.value), toolTargets: toolTargets(cache, localTools), effective: {
+    agentControlMode: cache.desired?.value.agentControlMode == null || native({ kind: "native" }) !== null || projects.some(project => project.native !== null) ? mode : null, maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && cache.desired !== null && typeof preference === "boolean" ? preference : null, native: native({ kind: "native" }), projects,
   } });
 };
 const desiredTransition = (cache: Cache, desired: WorkerCloudDesired | null, localMode: AgentControlMode): Cache => {
@@ -215,6 +234,15 @@ const desiredTransition = (cache: Cache, desired: WorkerCloudDesired | null, loc
 export const createWorkerConfigurationManager = async (options: WorkerConfigurationManagerOptions) => {
   options.signal.throwIfAborted();
   const localMode = options.localControlMode ?? "herdr";
+  const localTools = freeze(parseToolPathsBootstrap(options.localToolPaths ?? parseLocalToolPaths(undefined)));
+  const proofFor = (current: Cache, native: WorkerCloudNative, mode: AgentControlMode): NativeProof => {
+    const choices = toolTargets(current, localTools)?.choices, keys = options.readToolSelectionKeys?.(native, mode);
+    return { mode, native, tools: nativeTools(native, mode).map(tool => ({ tool, choice: choices?.[tool] ?? null, selectionKey: keys?.[tool] ?? null })) };
+  };
+  // Legacy native validation establishes no tool-selection authority.
+  const canValidateNative = (proof: NativeProof): boolean => options.readToolSelectionKeys === undefined || proof.tools.every(tool => tool.choice !== null && tool.selectionKey !== null && /^[a-f0-9]{64}$/.test(tool.selectionKey));
+  const matchesProof = (current: Cache, value: WorkerCloudItem["appliedValue"] | undefined, mode: AgentControlMode | undefined, proof: NativeProof | undefined): boolean =>
+    mode !== undefined && typeof value === "object" && value !== null && equal(proofFor(current, value, mode), proof);
   const intendedMode = (current: Cache): AgentControlMode => current.desired?.value.agentControlMode ?? localMode;
   const projectMode = (current: Cache): AgentControlMode | undefined => current.desired?.value.agentControlMode == null ? localMode : current.nativeModes["native:"];
   const now = options.now ?? Date.now, persist = options.persist ?? ((file, contents) => replaceFileAtomically(file, contents, 0o600));
@@ -222,7 +250,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   try { ({ cache, migrated } = parseCache(await readFile(options.file, "utf8"), options.identity)); }
   catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    cache = { schemaVersion: 3, nativeModes: {}, identity: { ...options.identity }, desired: null, observationRevision: "0", nextFailureId: 1, items: [] };
+    cache = { schemaVersion: 4, nativeModes: {}, identity: { ...options.identity }, desired: null, observationRevision: "0", nextFailureId: 1, items: [] };
   }
   cache = freeze(cache);
   await mkdir(path.dirname(options.file), { recursive: true, mode: 0o700 });
@@ -230,7 +258,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   if (migrated) await persist(options.file, `${JSON.stringify(cache)}\n`);
   options.signal.throwIfAborted();
   let validatedNative = new Map<string, NativeProof>();
-  let synchronized = false, published = snapshot(cache, false, validatedNative, localMode), stopped = false, queued = false;
+  let synchronized = false, published = snapshot(cache, false, validatedNative, localMode, localTools, proofFor), stopped = false, queued = false;
   let deferredDesired: WorkerCloudDesired | null = null;
   let tail = Promise.resolve(), fatal: { error: unknown } | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -266,7 +294,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     queued = true;
     queueMicrotask(() => { queued = false; pump(); });
   };
-  const commit = (update: (current: Cache) => Cache, confirm = false, proof?: { key: WorkerCloudItemKey; revision: string; native: WorkerCloudNative; mode: AgentControlMode; accepted: () => boolean }): Promise<void> => {
+  const commit = (update: (current: Cache) => Cache, confirm = false, proof?: NativeProof & { key: WorkerCloudItemKey; revision: string; accepted: () => boolean }): Promise<void> => {
     const operation = tail.then(async () => {
       check();
       let next = update(cache);
@@ -276,12 +304,12 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (changedMode) for (const key of nextValidatedNative.keys()) if (key.startsWith("projectNative:")) nextValidatedNative.delete(key);
       if (proof !== undefined && proof.accepted()) {
         const item = findItem(next, proof.key);
-        if (item?.value.targetRevision === proof.revision && equal(item.value.appliedValue, proof.native) && next.nativeModes[keyOf(proof.key)] === proof.mode && (proof.key.kind === "native" || projectMode(next) === proof.mode)) nextValidatedNative.set(keyOf(proof.key), { mode: proof.mode, native: proof.native });
+        if (item?.value.targetRevision === proof.revision && equal(item.value.appliedValue, proof.native) && next.nativeModes[keyOf(proof.key)] === proof.mode && (proof.key.kind === "native" || projectMode(next) === proof.mode) && equal(proofFor(next, proof.native, proof.mode).tools, proof.tools)) nextValidatedNative.set(keyOf(proof.key), { mode: proof.mode, native: proof.native, tools: proof.tools });
       }
       // Application state and execution authority must describe the same process proof.
       for (const item of next.items) {
         const key = item.value.key;
-        if ((key.kind === "native" || key.kind === "projectNative") && item.value.state === "applied" && target(next, key) !== null && !equal(nextValidatedNative.get(keyOf(key)), { mode: projectMode(next), native: item.value.appliedValue })) next = replaceItem(next, { ...item, value: { ...item.value, state: "pending" } });
+        if ((key.kind === "native" || key.kind === "projectNative") && item.value.state === "applied" && target(next, key) !== null && !matchesProof(next, item.value.appliedValue, projectMode(next), nextValidatedNative.get(keyOf(key)))) next = replaceItem(next, { ...item, value: { ...item.value, state: "pending" } });
       }
       if (next !== cache) {
         // All transitions calculate from this queue's current state; rename alone cannot prevent stale snapshots.
@@ -289,9 +317,10 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         cache = freeze(next);
       }
       if (changedMode) for (const [key, job] of jobs) if (key.startsWith("projectNative:")) job.controller.abort(new Error("Worker control mode changed."));
+      for (const job of jobs.values()) if (job.proof !== null && !equal(job.proof.tools, proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));
       validatedNative = nextValidatedNative;
       if (confirm) synchronized = true;
-      published = snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode);
+      published = snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor);
       options.onChange?.(published);
       kick();
     });
@@ -304,8 +333,9 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     if (key.kind === "agentControlMode") return false;
     if (key.kind === "projectNative") {
       const effectiveMode = projectMode(cache), global = findItem(cache, { kind: "native" });
-      if (cache.desired?.value.agentControlMode != null && !equal(validatedNative.get("native:"), { mode: effectiveMode, native: global?.value.appliedValue })) return false;
-      if (effectiveMode !== intendedMode(cache) && (global?.value.state !== "error" || item.value.appliedValue === null || (cache.nativeModes[keyOf(key)] ?? localMode) !== effectiveMode || equal(validatedNative.get(keyOf(key)), { mode: effectiveMode, native: item.value.appliedValue }))) return false;
+      // Another Provider's changed tool cannot revoke a mode proven in this process.
+      if (cache.desired?.value.agentControlMode != null && (effectiveMode === undefined || validatedNative.get("native:")?.mode !== effectiveMode)) return false;
+      if (effectiveMode !== intendedMode(cache) && (global?.value.state !== "error" || item.value.appliedValue === null || (cache.nativeModes[keyOf(key)] ?? localMode) !== effectiveMode || matchesProof(cache, item.value.appliedValue, effectiveMode, validatedNative.get(keyOf(key))))) return false;
     }
     if (deferredDesired !== null && key.kind !== "projectRemoval") return false;
     if (deferred.has(`${keyOf(key)}:${item.value.targetRevision}`)) return false;
@@ -349,8 +379,10 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (key.kind === "native" || key.kind === "projectNative") {
         // A failed global mode transition permits only history in the proven effective mode.
         if (modeFailure !== null) throw new WorkerConfigurationApplicationError(modeFailure);
+        const proof = proofFor(cache, intended as WorkerCloudNative, mode);
+        if (!canValidateNative(proof)) throw new Error("Worker tool selection has not been verified.");
         await options.applyNative(intended as WorkerCloudNative, controller.signal, mode);
-        validated = { mode, native: intended as WorkerCloudNative };
+        validated = proof;
       }
       else if (key.kind === "projectPreparation") preparationDeferred = await prepare!(key.projectId, controller.signal) === false;
       else if (key.kind === "projectRemoval") await remove!(key.projectId, controller.signal);
@@ -360,8 +392,12 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     if (!outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
       const previous = findItem(cache, key)?.value.appliedValue;
       const previousMode = cache.nativeModes[keyOf(key)] ?? localMode;
-      if (typeof previous === "object" && previous !== null && !equal({ mode: previousMode, native: previous }, validatedNative.get(keyOf(key))) && (key.kind === "native" || previousMode === projectMode(cache))) {
-        try { await options.applyNative(previous, controller.signal, previousMode); validated = { mode: previousMode, native: previous }; }
+      if (typeof previous === "object" && previous !== null && !matchesProof(cache, previous, previousMode, validatedNative.get(keyOf(key))) && (key.kind === "native" || previousMode === projectMode(cache))) {
+        try {
+          const proof = proofFor(cache, previous, previousMode);
+          if (!canValidateNative(proof)) throw new Error("Worker tool selection has not been verified.");
+          await options.applyNative(previous, controller.signal, previousMode); validated = proof;
+        }
         catch {
           // Retain the current target's diagnostic; unusable history cannot establish an effective value.
         }
@@ -369,6 +405,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     }
     if (stopped) { notifyNative({ kind: "cancelled" }); return; }
     if (controller.signal.aborted) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
+    if (validated !== undefined && !equal(validated, proofFor(cache, validated.native, validated.mode))) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
     if (preparationDeferred) {
       await commit(current => {
         const item = findItem(current, key);
@@ -416,8 +453,9 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       const key = keyOf(item.value.key);
       if (jobs.has(key) || !runnable(item)) continue;
       const controller = new AbortController();
+      const proof = item.value.key.kind === "native" || item.value.key.kind === "projectNative" ? proofFor(cache, target(cache, item.value.key) as WorkerCloudNative, intendedMode(cache)) : null;
       const promise = run(item, controller).catch(fail).finally(() => { jobs.delete(key); kick(); });
-      jobs.set(key, { revision: item.value.targetRevision, controller, promise });
+      jobs.set(key, { revision: item.value.targetRevision, controller, promise, proof });
     }
     const deadlines = cache.items.filter(item => item.value.state === "error" && item.value.nextAttemptAt !== null).map(item => Date.parse(item.value.nextAttemptAt!)).filter(deadline => deadline > now());
     if (deadlines.length !== 0) { timer = setTimeout(kick, Math.min(...deadlines) - now()); timer.unref(); }
@@ -447,13 +485,13 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     report: (bootstrap: WorkerCloudValue | null = null): WorkerCloudReport => {
       check();
       if (stopped) throw new Error("Worker configuration manager is stopped.");
-      const report = freeze({ controlModeBootstrap: localMode, bootstrap: cache.desired === null && bootstrap !== null ? parseWorkerCloudValue(bootstrap, true, Object.hasOwn(bootstrap, "agentControlMode")) : null, observation: synchronized && cache.desired !== null ? { baseRevision: cache.observationRevision, desiredRevision: cache.desired.revision, items: cache.items.map(item => item.value) } : null });
+      const report = freeze({ controlModeBootstrap: localMode, toolPathsBootstrap: localTools, bootstrap: cache.desired === null && bootstrap !== null ? parseWorkerCloudValue(bootstrap, true, capabilities(bootstrap)) : null, observation: synchronized && cache.desired !== null ? { baseRevision: cache.observationRevision, desiredRevision: cache.desired.revision, items: cache.items.map(item => item.value) } : null });
       sentFailures.set(report, new Map(cache.items.filter(item => item.failureId !== null).map(item => [keyOf(item.value.key), item.failureId!])));
       return report;
     },
     acknowledge: async (sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void> => {
       if (stopped) throw new Error("Worker configuration manager is stopped.");
-      const parsed = parseWorkerCloudReceipt(receipt, supportsMode(receipt.desired)), acknowledged = sentFailures.get(sent);
+      const parsed = parseWorkerCloudReceipt(receipt, capabilities(receipt.desired?.value)), acknowledged = sentFailures.get(sent);
       if (acknowledged === undefined) throw new Error("Worker configuration report was not captured by this manager.");
       if (parsed.observationAccepted && (sent.observation === null || BigInt(parsed.observationRevision) !== BigInt(sent.observation.baseRevision) + 1n || parsed.desired === null || BigInt(parsed.desired.revision) < BigInt(sent.observation.desiredRevision))) throw new Error("Worker configuration receipt does not acknowledge the submitted observation.");
       await commit(current => {
@@ -499,6 +537,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         if (item === undefined || current.desired?.revision !== revision || item.value.targetRevision !== revision || hasUnfinishedRemoval(current, projectId)) return current;
         return replaceItem(current, { ...item, attempts: 0, value: { ...item.value, appliedValue: true, state: "applied", error: null, nextAttemptAt: null } });
       });
+    },
+    refreshToolSelections: async (): Promise<void> => {
+      check();
+      if (stopped) throw new Error("Worker configuration manager is stopped.");
+      await commit(current => current);
     },
     configureProjectAdapters: async (next: WorkerConfigurationProjectAdapters): Promise<void> => { check(); if (stopped) throw new Error("Worker configuration manager is stopped."); adapters = next; deferred.clear(); kick(); },
     settle: async (): Promise<void> => {

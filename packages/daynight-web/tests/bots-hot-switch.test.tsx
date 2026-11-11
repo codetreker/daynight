@@ -152,6 +152,8 @@ it.each(actions)('freezes $name before the navigation commit and rejects it unti
   let rejected: Promise<void>;
   act(() => {
     f.navigation.navigate(`/bots/${f.bots[1]!.id}`);
+    expect(uuid).toHaveBeenCalledOnce(); // The navigation entry has its own identity.
+    uuid.mockClear();
     expect(screen.getByRole('heading', { name: 'Assistant 1' })).toBeVisible();
     rejected = expect(staleCall()).rejects.toThrow('Session actions are not currently admitted.');
     unchanged();
@@ -160,6 +162,7 @@ it.each(actions)('freezes $name before the navigation commit and rejects it unti
   expect(screen.getByRole('heading', { name: 'Assistant 2' })).toBeVisible();
 
   const pending = f.delay(1); f.choose(1);
+  expect(uuid).toHaveBeenCalledOnce(); uuid.mockClear();
   expect(f.input()).toBe(input);
   await expect(staleCall()).rejects.toThrow('Session actions are not currently admitted.');
   unchanged();

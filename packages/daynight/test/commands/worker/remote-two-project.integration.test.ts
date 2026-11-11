@@ -15,7 +15,7 @@ const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
-const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
+const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
@@ -100,7 +100,7 @@ it("retains identity and request order through two-project inventory, claim and 
       ["GET", `/api/v1/projects/${projectId}`], ["GET", `/api/v1/projects/${second}`],
       ["GET", `/api/v1/projects/${projectId}/tasks?workerId=${workerId}&limit=100`],
       ["GET", `/api/v1/projects/${second}/tasks?workerId=${workerId}&limit=100`],
-      ["GET", `/api/v1/projects/${projectId}/tasks?assignedTo=me&ready=true&allowAgents=true&compatiblePlatform=linux&limit=100`],
+      ["GET", `/api/v1/projects/${projectId}/tasks?assignedTo=me&ready=true&allowAgents=true&compatiblePlatform=linux&automaticCandidate=true&limit=100`],
       ["POST", `/api/v1/projects/${projectId}/tasks/${taskId}/worker-claim`], ["POST", `/api/v1/me/workers/${workerId}/report`],
     ]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);

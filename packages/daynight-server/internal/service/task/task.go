@@ -49,6 +49,8 @@ func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 }
 
 type TaskListRequest struct {
+	Type       model.TaskType
+	Parent     *string
 	AssignedTo *string
 	model.PageRequest
 	Status             *model.TaskStatus
@@ -56,6 +58,7 @@ type TaskListRequest struct {
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
 	PlatformSpecific   *bool
+	AutomaticCandidate bool
 	WorkerID           *string
 }
 
@@ -81,6 +84,9 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 		return model.Task{}, fmt.Errorf("generate task ID: %w", err)
 	}
 	input.Properties = properties
+	if input.Type == model.TaskTypeGoal && !input.AssignedToPresent {
+		input.AssignedTo = &principal.UserID
+	}
 	values, err := taskcore.CreateCandidate(id.String(), input)
 	if err != nil {
 		return model.Task{}, err
@@ -142,12 +148,18 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			}
 			return err
 		}
+		recordTaskWriteMetadata(ctx, mutation)
 		if !mutation.Changed {
 			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 			result = applied.Task
 			if err != nil {
 				return err
 			}
+			values := []model.Task{result}
+			if err := decorateGoalProgress(ctx, tx.TaskDAO(), projectID, values); err != nil {
+				return err
+			}
+			result = values[0]
 			return admitTaskResponse(ctx, result, false)
 		}
 		if mutation.Delete {
@@ -155,11 +167,16 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			if err != nil {
 				return err
 			}
-			if err := sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, model.TaskTodo, nil); err != nil {
-				return err
+			if mutation.Current.Type != model.TaskTypeGoal {
+				if err := sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, model.TaskTodo, nil); err != nil {
+					return err
+				}
 			}
 			if err := tx.ProjectDAO().InvalidateTaskCache(ctx); err != nil {
 				return err
+			}
+			if mutation.Current.Type == model.TaskTypeGoal {
+				return nil
 			}
 			tombstone := applied.Tombstone
 			f := protocol.Fact{Type: protocol.Deleted, ProjectID: tombstone.ProjectID, TaskID: tombstone.ID, TaskVersion: tombstone.Version, OccurredAt: tombstone.DeletedAt, DeletedAt: &tombstone.DeletedAt}
@@ -175,9 +192,14 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 		applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 		result = applied.Task
 		if err == nil {
+			values := []model.Task{result}
+			err = decorateGoalProgress(ctx, tx.TaskDAO(), projectID, values)
+			result = values[0]
+		}
+		if err == nil {
 			err = admitTaskResponse(ctx, result, true)
 		}
-		if err == nil && !mutation.Create {
+		if err == nil && !mutation.Create && result.Type != model.TaskTypeGoal {
 			err = sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, mutation.Values.Status, mutation.Values.Properties)
 		}
 		if err != nil {

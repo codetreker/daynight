@@ -6,6 +6,7 @@ import (
 )
 
 type MCPReadyRequest struct {
+	Parent             *string
 	Limit              int
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
@@ -13,6 +14,10 @@ type MCPReadyRequest struct {
 }
 
 func SelectMCPReady(request MCPReadyRequest) (store.TaskPriorityQuery, error) {
+	kind, parent, err := ResourceFilter(model.TaskTypeTask, request.Parent)
+	if err != nil {
+		return store.TaskPriorityQuery{}, err
+	}
 	if request.Limit < 1 || request.Limit > 20 {
 		return store.TaskPriorityQuery{}, invalidInput("Limit must be between 1 and 20.")
 	}
@@ -24,6 +29,7 @@ func SelectMCPReady(request MCPReadyRequest) (store.TaskPriorityQuery, error) {
 	}
 	status, ready := model.TaskTodo, true
 	return store.TaskPriorityQuery{
+		Type: kind, Parent: parent,
 		AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll},
 		Status:     &status, Ready: &ready, AllowAgents: request.AllowAgents,
 		CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit,

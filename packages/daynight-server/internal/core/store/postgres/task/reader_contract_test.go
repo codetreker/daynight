@@ -36,6 +36,7 @@ func TestTaskReaderStore(t *testing.T) {
 	})
 	suite.run(t, "TaskAssignmentStoreFiltersAndInvalidSelectors", testTaskAssignmentStoreFiltersAndInvalidSelectors)
 	suite.run(t, "TaskPlatformSpecificFiltersBeforePagination", testTaskPlatformSpecificFiltersBeforePagination)
+	suite.run(t, "AutomaticCandidatesFilterBeforePagination", testAutomaticCandidatesFilterBeforePagination)
 	suite.run(t, "WorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion", testWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion)
 	suite.run(t, "TaskPriorityListFiltersBeforeLimitAndFence", testTaskPriorityListFiltersBeforeLimitAndFence)
 	suite.run(t, "TaskPriorityListRejectsInvalidDAOInputs", testTaskPriorityListRejectsInvalidDAOInputs)
@@ -495,11 +496,11 @@ func TestTaskPriorityListStorageFailures(t *testing.T) {
 		name, ddl string
 		fence     bool
 	}{
-		{"fence query", `DROP TABLE tasks`, true},
+		{"fence query", `DROP VIEW task_resource_rows; DROP TABLE tasks`, true},
 		{"list query", `DROP TABLE task_dependencies`, false},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`, false},
 		{"iteration", `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
-			ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+			ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := readerStore(t)
@@ -597,9 +598,9 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	// Failing detail expressions prove that the summary reader never selects bodies.
 	readerExec(t, s, `CREATE FUNCTION reject_sync_detail() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
-		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
-		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
+		ALTER VIEW task_resource_rows RENAME TO resource_source;
+		CREATE VIEW task_resource_rows AS SELECT id, project_id, type, parent_id, title, reject_sync_detail() AS description,
+		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at,effective_deleted_at FROM resource_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
@@ -623,7 +624,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	readerExec(t, s, "UPDATE task_source SET version=version+1 WHERE id=$1", b.ID)
+	readerExec(t, s, "UPDATE tasks SET version=version+1 WHERE id=$1", b.ID)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &stamp, 160)
 		if err != nil || len(tasks) != 3 || tasks[1].Version != 9007199254740994 || tasks[1].UpdatedAt != stamp {
@@ -637,7 +638,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	if err := s.Pool.QueryRow(ctx, "SELECT clock_timestamp()+interval '1 hour'").Scan(&future); err != nil {
 		t.Fatal(err)
 	}
-	readerExec(t, s, "UPDATE task_source SET updated_at=$2 WHERE id=$1", b.ID, future)
+	readerExec(t, s, "UPDATE tasks SET updated_at=$2 WHERE id=$1", b.ID, future)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
 		if err != nil {
@@ -655,9 +656,9 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{
-		{"query", "DROP TABLE tasks"},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
+		{"query", "DROP VIEW task_resource_rows; DROP TABLE tasks"},
+		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
+		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := readerStore(t)
@@ -757,5 +758,80 @@ func (tracer *readerPropertiesTracer) TraceQueryEnd(ctx context.Context, _ *pgx.
 		action := tracer.afterTasks
 		tracer.afterTasks = nil
 		action()
+	}
+}
+
+func testAutomaticCandidatesFilterBeforePagination(t *testing.T, database *postgres.Store) {
+	project := readerProject(t, database, 1)
+	parents := []model.Task{}
+	for i, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled, model.TaskTodo, model.TaskInProgress, model.TaskTodo} {
+		parents = append(parents, readerTask(t, database, project.ID, 30+i, status))
+	}
+	children := []model.Task{}
+	for i := 0; i < 6; i++ {
+		children = append(children, readerTask(t, database, project.ID, 10+i, model.TaskTodo))
+	}
+	instant := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	readerExec(t, database, `UPDATE tasks SET created_at=$1`, instant)
+	for i, parent := range parents {
+		readerExec(t, database, `UPDATE tasks SET type='goal' WHERE id=$1`, parent.ID)
+		readerExec(t, database, `UPDATE tasks SET parent_id=$2 WHERE id=$1`, children[i].ID, parent.ID)
+	}
+	readerExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, parents[4].ID)
+	owner, workerID := readerID(100), readerID(101)
+	for _, index := range []int{0, 1, 4} {
+		claim := &model.WorkerClaim{ClaimID: readerID(110 + index), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
+			Machine: model.WorkerMachine{ID: readerID(102), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: readerID(120 + index), Phase: model.WorkerPreparing, ClaimedAt: instant}
+		readerPutProperty(t, database, children[index].ID, "worker", readerTaskProperties(t, claim)["worker"])
+	}
+	if err := database.ReadSnapshot(context.Background(), func(scope SnapshotScope) error {
+		query := TaskQuery{Page: Page{Limit: 1}, AutomaticCandidate: true}
+		var ids []string
+		for {
+			page, err := scope.TaskDAO().Tasks(t.Context(), project.ID, query)
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != 1 {
+				t.Fatalf("candidate page=%#v", page)
+			}
+			item := page.Items[0]
+			ids = append(ids, item.ID)
+			if !page.HasMore {
+				break
+			}
+			if len(ids) >= 3 {
+				t.Fatalf("unexpected page: %v", ids)
+			}
+			query.Page.After = &Position{CreatedAt: item.CreatedAt, ID: item.ID}
+		}
+		if want := []string{children[2].ID, children[3].ID, children[5].ID}; !reflect.DeepEqual(ids, want) {
+			t.Fatalf("candidates=%v want=%v", ids, want)
+		}
+		ordinary, err := scope.TaskDAO().Tasks(t.Context(), project.ID, TaskQuery{Page: Page{Limit: 10}})
+		if err != nil {
+			return err
+		}
+		var all []string
+		for _, item := range ordinary.Items {
+			all = append(all, item.ID)
+		}
+		if want := []string{children[0].ID, children[1].ID, children[2].ID, children[3].ID, children[5].ID}; !reflect.DeepEqual(all, want) {
+			t.Fatalf("ordinary=%v want=%v", all, want)
+		}
+		inventory, err := scope.TaskDAO().Tasks(t.Context(), project.ID, TaskQuery{Page: Page{Limit: 10}, Worker: &WorkerQuery{UserID: owner, WorkerID: workerID}})
+		if err != nil {
+			return err
+		}
+		var owned []string
+		for _, item := range inventory.Items {
+			owned = append(owned, item.ID)
+		}
+		if want := []string{children[0].ID, children[1].ID}; !reflect.DeepEqual(owned, want) {
+			t.Fatalf("inventory=%v want=%v", owned, want)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

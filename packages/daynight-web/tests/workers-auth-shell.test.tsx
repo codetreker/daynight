@@ -178,6 +178,8 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/projects')); expect(screen.queryByRole('alertdialog')).toBeNull();
     act(() => navigate(`/workers/${firstWorker}`));
+    expect(screen.getByRole('tab', { name: 'Runtime monitoring' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
     expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
     expect(input).toHaveValue('2');
     fireEvent.change(input, { target: { value: '4' } });
@@ -214,6 +216,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     act(() => navigate('/projects')); expect(screen.queryByRole('alertdialog')).toBeNull();
     act(() => navigate(`/workers/${firstWorker}`));
+    expect(screen.getByRole('tab', { name: 'Runtime monitoring' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
     expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
     expect(input).toHaveValue('2');
     failReads = false;
@@ -248,6 +252,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/account'));
+    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);
@@ -278,6 +284,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate(`/workers/${firstWorker}`));
+    expect(screen.getByRole('tab', { name: 'Runtime monitoring' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'worker', scopeId: firstWorker, revision: '1', text: 'instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);

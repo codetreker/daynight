@@ -14,7 +14,7 @@ const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
-const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
+const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
@@ -114,6 +114,43 @@ describe("worker remote API", () => {
       expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);
       expect(requests[1]!.body).toMatchObject({ configuration, taskInventory: null });
       expect(requests[2]!.body).not.toHaveProperty("configuration");
+    } finally { operation.dispose(); }
+  });
+
+  it("enables tool bootstrap only after authenticated configuration rediscovery on a mode-capable server", async () => {
+    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
+    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, agentControlMode: "web" as const, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const tools = { codex: { kind: "path" as const, path: "/opt/codex" }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
+    const configuration = { bootstrap: null, observation: null, controlModeBootstrap: "web" as const, toolPathsBootstrap: tools };
+    let upgraded = false;
+    const serverUrl = await listen((request, response, body) => {
+      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
+      const selected = upgraded && request.headers["daynight-worker-tool-paths"] === "1";
+      response.setHeader("Daynight-Worker-Configuration", "1");
+      response.setHeader("Daynight-Worker-Control-Mode", "1");
+      if (selected) response.setHeader("Daynight-Worker-Tool-Paths", "1");
+      const desired = { revision: "1", updatedAt: time, value: { ...value, ...(selected ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
+      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
+        : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
+    });
+    const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", remote = createWorkerRemote({ serverUrl, serverToken: token });
+    await remote.currentUserId(signal());
+    const operation = operations.createOperation();
+    try {
+      await remote.configuration(workerId, signal());
+      upgraded = true;
+      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
+      await remote.configuration(workerId, operation.signal, operation);
+      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
+      expect(requests.map(({ method, mode, tools }) => ({ method, mode, tools }))).toEqual([
+        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: undefined },
+        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: "1" },
+      ]);
+      expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
+      expect(requests.map(({ url }) => url)).toEqual(["configuration", "report", "configuration", "report"].map(suffix => `/api/v1/me/workers/${workerId}/${suffix}`));
+      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, controlModeBootstrap: "web" } });
+      expect(requests[1]!.body).not.toHaveProperty("configuration.toolPathsBootstrap");
+      expect(requests[3]!.body).toMatchObject({ configuration });
     } finally { operation.dispose(); }
   });
 
@@ -446,8 +483,8 @@ describe("worker remote API", () => {
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
     expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);
     expect(urls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
+      { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
+      { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
     ]);
   });
 
@@ -460,6 +497,7 @@ describe("worker remote API", () => {
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "macos", signal(), platformSpecific));
     expect(result.map(({ id }) => id)).toEqual([uuid(9)]);
+    expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true"]);
     expect(queries.map(query => query.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
     expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
   });

@@ -76,11 +76,17 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
 不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
 
-MCP 认证客户端可以通过标准 Resources 目录发现七篇英文产品手册，并按固定
-`daynight://manuals/<主题>.md` URI 读取完整 Markdown。服务器 instructions 提供简短导航；
+MCP 认证客户端可以通过标准 `resources/list` 发现十二篇英文产品手册，并按目录返回的
+`daynight://manuals/<主题>.md` URI 读取完整 Markdown。主题按对象与 Project 上下文、Task、
+依赖、写入安全、正式材料、Steps、Thread、附件读取、附件写入、Session 读取、Session 消息和
+Worker assignment 操作划分，精确目录由服务源码拥有。服务器 instructions 按操作提供简短导航；
+每个主题说明必要的额外读取条件，写入需取得完整公共写入安全规则及操作自身的约束。
+
 无 Project 的有效账户也可读取。手册不修改业务数据，不建立 Worker assignment 或操作授权。
-文稿随服务版本发布，内部主题引用指向可读取的固定 URI；重新请求取得当前服务的内容。
-未知 URI 返回协议错误，不返回空正文或替代内容。公开 GET/HEAD 安装说明保持独立。
+文稿随服务版本发布，内部主题引用指向可读取的绝对 URI。更新服务后，客户端重新发现目录并请求
+当前正文；`queries-and-lifecycle`、`files-and-references` 和 `operation-boundaries` 的旧混合主题 URI
+由独立操作主题取代。未知或移除的 URI 返回协议错误，不返回空正文或替代内容。
+公开 GET/HEAD 安装说明保持独立。
 
 MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
 其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回
@@ -113,6 +119,8 @@ Task 包含以下持久化字段：
 |---|---|
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
+| `type` | 必填资源类型；当前公开创建只产生 `task` |
+| `parentId` | 必填、可空的父资源 UUID；当前公开创建为 null，公开写入不接受此字段 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -124,6 +132,8 @@ Task 包含以下持久化字段：
 | `createdAt`、`updatedAt` | UTC 创建和最后实际变更时间 |
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
+
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 
@@ -278,9 +288,9 @@ Step 删除不删除引用附件、PR 或 Session。所有 Steps 操作保留其
 证明某次未知删除造成了该状态，同 ID 当前存在也不能证明是原记录。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
-不能将空 task 列表作为不存在 project 的结果。授权成员访问已软删除任务的定点资源返回
+不能将空 task 列表作为不存在 project 的结果。授权成员访问自身或父 Goal 已删除的任务的定点资源返回
 `410 task_deleted`；非成员与不存在任务仍为 `404 not_found`。列表、ready、图、同步、统计与
-新依赖引用排除已删除任务。DELETE 正文 removeDepends 可省略或为严格布尔：省略/false 遇未删除引用者时拒绝且零变更；true 原子清除全部传入普通/外部及已删除源历史引用，并各自增加受影响源版本一次。目标自己的前置与附件保留，active 目标 worker 仍禁止删除。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
+新增依赖引用排除有效删除的普通任务；未改变的依赖保留物理状态用于满足性、重开保护和环检测。DELETE 正文 removeDepends 可省略或为严格布尔：省略/false 遇未删除引用者时拒绝且零变更；true 原子清除全部传入普通/外部及已删除源历史引用，并各自增加受影响源版本一次。目标自己的前置与附件保留，active 目标 worker 仍禁止删除。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
 
 设置 PATCH 必须同时提供 `version` 与 `executionWarningMinutes`，不接受 query 参数。
 缺失、重复、未知、只读、`null`、非整数、非正或超界字段按既有严格 JSON 规则拒绝；
@@ -310,7 +320,7 @@ Task 更新示例：
 Team、Project 和 Task 列表按请求条数读取一批候选，并以一项 lookahead 判断续页；cursor 指向最后返回项。普通资源直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域或共享 MCP 读取响应字节预算。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
-Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
 Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为

@@ -19,20 +19,69 @@ const fixture = () => {
 };
 
 test("runtime cleanup retries a failed bridge release after joining native without repeating the native stop request", async () => {
-  const f = fixture(), failure = new Error("Fixture bridge spool removal failed"); await f.runtime.ready;
+  const f = fixture(), failure = new Error("Fixture bridge spool removal failed"); await f.runtime.ready; vi.useFakeTimers();
   f.closeBridge.mockRejectedValueOnce(failure);
   const first = f.runtime.close(); expect(f.runtime.close()).toBe(first);
-  await expect(first).rejects.toBe(failure); expect(f.child.exitCode).toBe(0);
+  const rejected = expect(first).rejects.toBe(failure);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.shutdown).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.closeBridge).toHaveBeenCalledOnce();
+  expect(f.child.kill).not.toHaveBeenCalled(); f.exit();
+  await rejected; expect(f.child.exitCode).toBe(0);
   await expect(f.runtime.close()).resolves.toBeUndefined();
   expect(f.closeBridge).toHaveBeenCalledTimes(2); expect(f.shutdown).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce();
-  expect(f.child.kill).toHaveBeenCalledOnce(); expect(controlled.spawn).toHaveBeenCalledOnce();
+  expect(f.child.kill).not.toHaveBeenCalled(); expect(controlled.spawn).toHaveBeenCalledOnce();
+});
+
+test("runtime waits for the original native exit after the graceful acknowledgment and bridge cleanup", async () => {
+  const f = fixture(); await f.runtime.ready; vi.useFakeTimers();
+  let completed = false;
+  const closing = f.runtime.close(); expect(f.runtime.close()).toBe(closing);
+  void closing.then(() => { completed = true; });
+  await vi.advanceTimersByTimeAsync(1499);
+  expect(f.shutdown).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.closeBridge).toHaveBeenCalledOnce();
+  expect(completed).toBe(false); expect(f.child.kill).not.toHaveBeenCalled();
+  f.exit(); await closing;
+  await f.runtime.close();
+  expect(f.child.kill).not.toHaveBeenCalled(); expect(f.shutdown).toHaveBeenCalledOnce(); expect(controlled.spawn).toHaveBeenCalledOnce();
+});
+
+test("runtime escalates once when native does not exit before the graceful deadline", async () => {
+  const f = fixture(); await f.runtime.ready; vi.useFakeTimers();
+  f.child.kill.mockImplementation(signal => { if (signal === "SIGKILL") f.exit(); return true; });
+  const closing = f.runtime.close();
+  await vi.advanceTimersByTimeAsync(1499); expect(f.child.kill).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1); expect(f.child.kill.mock.calls.map(([signal]) => signal)).toEqual(["SIGTERM"]);
+  await vi.advanceTimersByTimeAsync(2000); await closing;
+  expect(f.child.kill.mock.calls.map(([signal]) => signal)).toEqual(["SIGTERM", "SIGKILL"]);
+  await f.runtime.close();
+  expect(f.child.kill).toHaveBeenCalledTimes(2); expect(f.shutdown).toHaveBeenCalledOnce(); expect(controlled.spawn).toHaveBeenCalledOnce();
+});
+
+test("a successful shutdown acknowledgment still waits for native exit when SDK transport cleanup fails", async () => {
+  const f = fixture(); await f.runtime.ready; vi.useFakeTimers();
+  f.stop.mockRejectedValueOnce(new Error("SDK transport cleanup failed"));
+  const closing = f.runtime.close();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.forceStop).toHaveBeenCalledOnce(); expect(f.closeBridge).toHaveBeenCalledOnce(); expect(f.child.kill).not.toHaveBeenCalled();
+  f.exit(); await closing;
+  expect(f.shutdown).toHaveBeenCalledOnce(); expect(f.child.kill).not.toHaveBeenCalled();
+});
+
+test.each(["shutdown failure", "forced cleanup"])("runtime starts forced native cleanup immediately after %s", async mode => {
+  const f = fixture(); await f.runtime.ready; vi.useFakeTimers();
+  if (mode === "shutdown failure") f.shutdown.mockRejectedValueOnce(new Error("Shutdown failed"));
+  const closing = f.runtime.close(mode === "forced cleanup");
+  await vi.advanceTimersByTimeAsync(0); await closing;
+  expect(f.child.kill.mock.calls.map(([signal]) => signal)).toEqual(["SIGTERM"]);
+  expect(f.shutdown).toHaveBeenCalledTimes(mode === "forced cleanup" ? 0 : 1);
+  expect(f.forceStop).toHaveBeenCalledOnce();
 });
 
 test("runtime retries an unconfirmed exit observation without sending either native termination signal again", async () => {
   const f = fixture(); await f.runtime.ready; vi.useFakeTimers(); f.child.kill.mockReturnValue(true);
   f.child.kill.mockImplementation(() => true);
   const first = f.runtime.close(), rejected = expect(first).rejects.toThrow();
-  await vi.advanceTimersByTimeAsync(4001); await rejected;
+  await vi.advanceTimersByTimeAsync(5501); await rejected;
   expect(f.child.kill.mock.calls.map(([signal]) => signal)).toEqual(["SIGTERM", "SIGKILL"]);
   const second = f.runtime.close(), retryRejected = expect(second).rejects.toThrow();
   await vi.advanceTimersByTimeAsync(2001); await retryRejected;
@@ -42,9 +91,10 @@ test("runtime retries an unconfirmed exit observation without sending either nat
 });
 
 test("runtime cleanup preserves both bridge removal and native termination errors", async () => {
-  const f = fixture(), bridgeError = new Error("Fixture bridge release failed"), nativeError = new Error("Fixture native termination failed"); await f.runtime.ready;
+  const f = fixture(), bridgeError = new Error("Fixture bridge release failed"), nativeError = new Error("Fixture native termination failed"); await f.runtime.ready; vi.useFakeTimers();
   f.closeBridge.mockRejectedValueOnce(bridgeError); f.child.kill.mockImplementation(() => { throw nativeError; });
-  const error = await f.runtime.close().catch(error => error);
+  const closing = f.runtime.close().catch(error => error);
+  await vi.advanceTimersByTimeAsync(1500); const error = await closing;
   expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual(expect.arrayContaining([bridgeError, nativeError]));
   expect(f.child.exitCode).toBeNull();
   f.exit(); await expect(f.runtime.close()).resolves.toBeUndefined();

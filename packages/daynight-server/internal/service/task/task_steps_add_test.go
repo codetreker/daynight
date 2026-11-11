@@ -469,6 +469,9 @@ func (f *strictStepWrite) TasksByID(context.Context, []string) ([]model.Task, er
 	f.unexpected("TasksByID")
 	return nil, nil
 }
+func (f *strictStepWrite) VisibleTaskIDs(context.Context, []string) ([]string, error) {
+	panic("unexpected VisibleTaskIDs")
+}
 func (f *strictStepWrite) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	f.unexpected("ActiveDependentIDs")
 	return nil, nil
@@ -585,4 +588,14 @@ func (d *strictWriteCaptureDAO) Policy(context.Context, int64) (webhook.Policy, 
 func (d *strictWriteCaptureDAO) SaveCapture(context.Context, store.WebhookCapturedEvent, []store.WebhookCapturedDelivery) error {
 	d.f.unexpected("SaveCapture")
 	return nil
+}
+
+func (f *strictStepWrite) GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error) {
+	f.t.Fatal("unexpected GoalProgresses")
+	return nil, nil
+}
+
+func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error) {
+	f.t.Fatal("unexpected ParentTask")
+	return model.Task{}, nil
 }

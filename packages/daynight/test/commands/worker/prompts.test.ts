@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { appendWorkerPrompts, buildWorkerPrompt, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
+import { appendWorkerPrompts, buildWorkerPrompt, workerCleanupPrompt, workerContinuationPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 
 const uuid = (number: number) => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
@@ -58,10 +58,10 @@ describe("worker managed prompts", () => {
     if (field === "worktree") task.worktree.worktreePath = path.resolve("elsewhere");
     expect(() => build(task, field === "platform" ? "invalid" as never : "linux")).toThrow();
   });
-  it.each(["startup", "resume", "periodic"])("keeps claim, pause, recovery and completion obligations in the %s prompt", (kind) => {
+  it.each(["startup", "resume", "continuation", "periodic"])("keeps claim, pause, recovery and completion obligations in the %s prompt", (kind) => {
     const { task, build } = fixture();
     if (kind === "resume") task.sessionId = uuid(6);
-    const prompt = kind === "periodic" ? workerPingPrompt(task) : build(task, "macos");
+    const prompt = kind === "periodic" ? workerPingPrompt(task) : kind === "continuation" ? workerContinuationPrompt(task) : build(task, "macos");
     expect(prompt).toContain("verify the original active claim, Worker and worktree");
     expect(prompt).toContain("--if-version <observed-version>");
     expect(prompt).toContain("paused false --project <project-id>");
@@ -71,12 +71,10 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("final task mutation");
     expect(prompt).toContain("properties.worker.state=completed");
     expect(prompt).toContain("do not automatically replay it, use ordinary completion to bypass the claim");
-    if (kind !== "periodic") {
-      expect(prompt).toContain("If allowAgents is false, stop immediately");
-      expect(prompt).toContain("stop task-related writes");
-      expect(prompt).toContain("The controller owns scheduling and its worktree, branch and workspace");
-      expect(prompt).not.toContain("development-workflow");
-    }
+    expect(prompt).toContain("If allowAgents is false, stop immediately");
+    expect(prompt).toContain("stop task-related writes");
+    expect(prompt).toContain("The controller owns scheduling and its worktree, branch and workspace");
+    expect(prompt).not.toContain("development-workflow");
   });
   it("uses the current cleanup attempt deadline", async () => {
     const { task } = fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);
@@ -99,14 +97,25 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("Honor independent user pauses, restrictions and revocations");
     expect(prompt).toContain("all required delivery, acceptance and evidence");
   });
-  it.each(["startup", "periodic"])("requires its own task to be paused before necessary human intervention in the %s prompt", async (kind) => {
+  it.each(["startup", "resume", "continuation", "periodic"])("handles unexpected conditions within the assignment and pauses only for an irreconcilable design conflict in the %s prompt", (kind) => {
     const { task, build } = fixture();
-    const prompt = kind === "startup" ? build(task, "linux") : workerPingPrompt(task);
-    expect(prompt).toContain("When completing this assignment requires specific information");
+    if (kind === "resume") task.sessionId = uuid(6);
+    const prompt = kind === "periodic" ? workerPingPrompt(task) : kind === "continuation" ? workerContinuationPrompt(task) : build(task, "macos");
+    expect(prompt).toContain("inspect the current task, repository rules and available evidence");
+    expect(prompt).toContain("adjust the implementation approach, steps and task-level decisions");
+    expect(prompt).toContain("investigate and choose a feasible alternative");
+    expect(prompt).toContain("confirmed business goal, task scope, acceptance criteria, external commitments and existing authorization");
+    expect(prompt).toContain("record significant deviations and their reasons");
+    expect(prompt).toContain("Ordinary information gaps, unavailable tools, failed approaches, recoverable errors and obsolete plan steps do not by themselves justify a pause");
+    expect(prompt).toContain("confirmed requirements or architecture constraints cannot all be met, no feasible alternative preserves the confirmed goal and constraints, and resolving it requires changing a confirmed constraint");
+    expect(prompt).toContain("record the conflict evidence, affected requirements, alternatives considered and the specific decision needed");
     expect(prompt).toContain("set properties.paused=true on your own assigned task using the exact version observed");
-    expect(prompt).toContain("a decision, authorization or an action that you cannot supply within its scope and existing authority");
     expect(prompt).toContain("Read the task back to confirm the pause and original assignment");
     expect(prompt).toContain("Clear your pause only when resuming is permitted");
+    expect(prompt).toContain("If allowAgents is false, stop immediately");
+    expect(prompt).toContain("If the original claim or assignment no longer matches, stop task-related writes");
+    expect(prompt).toContain("permission is withdrawn, or an independent pause applies");
+    expect(prompt).not.toContain("When completing this assignment requires specific information");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
   });
 });

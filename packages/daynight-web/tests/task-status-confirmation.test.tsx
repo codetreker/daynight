@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
@@ -17,7 +18,7 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'proposed' || status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
+const source = (status: TaskStatus = 'todo'): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'proposed' || status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
   status, version: 9007199254740993n, properties: { pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,
   startedAt: status === 'cancelled' ? detail.startedAt : status === 'in_progress' ? later : status === 'proposed' || status === 'todo' || detail.status === 'proposed' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'cancelled' ? detail.completedAt : status === 'done' ? later : null, cancelledAt: status === 'cancelled' ? later : null });
@@ -27,7 +28,7 @@ const snapshot = (detail: TaskDetail, revision = 1): GraphSnapshot => {
   const tasks = [detail, { ...source('done'), id: dependencyId, title: 'Prerequisite', dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false }];
   const graph: TaskGraph = { observedAt: time, project, tasks: tasks.map(({ version: _version, projectId: _project, title, description: _description, properties: _properties, ...task }) => ({ ...task, titlePreview: title, titleTruncated: false })),
     summary: { proposed: tasks.filter((task) => task.status === "proposed").length, total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: tasks.filter((task) => task.status === 'cancelled').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
-  const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, tasks);
   return result;
 };
@@ -78,7 +79,8 @@ describe('status menu and reviewed confirmation', () => {
       historyGeneration: 1, displayRequiresFreshRead: false, assignmentUncertain: false, sessionCurrent: false,
       canDisplayAssignee: true, canDisplayStatus: true, canDisplayDelete: true, canDisplayAgentPermission: true, canDisplayRequiredPlatform: true, canDisplayWithdrawClaim: false,
       canUnpause: false, canWithdrawClaim: false, canDelete: true, canSetAssignedTo: true, canSetRequiredPlatform: true, canSetAgentPermission: true, canSetStatus: true,
-      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, reconcile: noOp,
+      canSetParent: true, canEditGoal: false,
+      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, setParent: noOp, editGoal: noOp, reconcile: noOp,
     } as const;
     vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
     vi.spyOn(taskReading, 'TaskDetailReading').mockReturnValue(<></>);

@@ -19,6 +19,10 @@ type taskDAO struct {
 }
 
 func (d taskDAO) TasksByID(context.Context, []string) ([]model.Task, error) { return d.tasks, nil }
+func (d taskDAO) VisibleTaskIDs(_ context.Context, ids []string) ([]string, error) {
+	return ids, nil
+}
+
 func (d taskDAO) Reachable(_ context.Context, from, _ string, _ store.DependencyReplacement) (bool, error) {
 	return d.cycles[from], nil
 }

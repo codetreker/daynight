@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
@@ -50,8 +51,11 @@ runs ordinary tests and installed acceptance in independent jobs on Linux,
 Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
 and records its own outcome. The ordinary jobs also typecheck and test the local
 development installer. Both native matrices include `ubuntu-latest`,
-`windows-latest` and `macos-15`, with a 10-minute limit for every job. Ordinary
-suites exclude `.stress.ts` files; explicit local stress commands select those
+`windows-latest` and `macos-15`, with a 10-minute limit for every job. Windows
+ordinary tests use two independent runners with Vitest's built-in `--shard=1/2`
+and `--shard=2/2`; their execution sets together cover the complete ordinary
+collection. Each Windows runner retains the same preparation and source checks.
+Ordinary suites exclude `.stress.ts` files; explicit local stress commands select those
 workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
@@ -289,11 +293,16 @@ native platform, the runtime compatibility matrix and the dedicated Linux shell
 completion job. Both native matrices need only module detection, so ordinary
 validation does not gate installed validation. Each job owns its checkout,
 toolchain, dependencies, environment recorder, build, fixtures, cleanup and
-artifacts. The two macOS jobs use separate workspaces, so their fixed
+artifacts. The Windows ordinary phase has two independent matrix entries; the
+other native phases each have one. Final `checks` requires actual success from
+all selected ordinary, installed, runtime and completion jobs, including both
+Windows ordinary shards. The two macOS jobs use separate workspaces, so their fixed
 receipt paths need no phase handoff or clearing. A failure or cancellation in
 either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
 records the original parallel model; the [independent macOS validation decision](../.agents/notes/implemented/testing/2026-11-07-independent-macos-cli-validation.md)
-owns the current macOS topology and its allocation trade-off.
+owns the current macOS topology and its allocation trade-off. The
+[Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
+owns the Windows ordinary allocation and completeness checks.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -323,6 +332,94 @@ Unavailable probes are recorded as diagnostic errors; sampling cannot prove the
 absence of a short-lived process or identify a signal sender by itself. The
 [termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
 describes the evidence limits and collection cost.
+
+The macOS observer enables `--signal-intents` for its command subtree. This
+prepends `scripts/signal-intents.cjs` to `NODE_OPTIONS`, retaining the existing
+options and their preload order. Loading first captures native diagnostic I/O
+before test isolation or other preloads wrap it; test code continues to use the
+normal isolation guards. The observer and its native probes are not instrumented.
+Each Node process or worker thread that loads the preload writes a separate
+JSONL file under `signals/` in the same artifact. A bootstrap records PID, PPID,
+thread ID, a random startup token, executable basename, Node version and installed
+hooks. These records establish coverage; absence of a bootstrap does not prove
+that a process made no signal requests.
+
+Before `process.kill` or `ChildProcess.prototype.kill` executes, the preload
+synchronously records its API, sender identity, target, supplied signal and bounded
+call sites. The original receiver and arguments are forwarded exactly once, with
+the original return or exception. Numeric targets and signals and recognized
+signal names retain their values; other argument values retain only their type.
+Child targets are read only from a non-Proxy receiver's own data property.
+Call sites use Node's public `util.getCallSites` with source maps disabled,
+without invoking `Error.prepareStackTrace`. No signal handlers, process-group
+changes, retries or termination guards are installed. An intent records a request,
+not delivery or target termination; self-SIGKILL can prevent any later output.
+
+Each process/thread file admits at most 1,024 normal events and 256 KiB including
+one reserved truncation event. An event is at most 16 KiB; each encoded call-site
+file or function field is at most 512 bytes, with a visible truncation suffix.
+Up to ten call sites remain after removing two instrumentation frames; a full
+capture marks its frame limit. Budget exhaustion explicitly stops further
+diagnostic records while signal calls continue. A file-write failure emits one
+bounded stderr notice and disables that file; if stderr is also unavailable,
+no diagnostic sink remains. Total artifact size depends on the number of covered
+processes and threads, rather than a shared cross-process byte quota.
+
+Explicitly removed preload/environment, replaced hooks, non-Node programs,
+native signal calls, external processes and kernel termination remain outside
+this coverage. The absence of a matching intent cannot establish an external
+sender or OOM.
+Synchronous recording adds execution time and does not preserve exact scheduling.
+The [signal intent decision](../.agents/notes/implemented/testing/2026-11-11-node-signal-intents.md)
+owns these trade-offs. A later successful CI run does not explain an earlier
+unattributed SIGKILL.
+
+Ordinary CLI Vitest runs retain Vitest's default reporter selection, including
+GitHub Actions annotations, and add `scripts/vitest-failure-reporter.ts`.
+Failed tests, suite hooks and module
+initialization errors are written when Vitest supplies their public result;
+the public `onUnhandledError` callback records unhandled errors without
+suppressing Vitest's failure decision. Readable console diagnostics and
+incremental JSONL files in `.tmp/cli-test-failures/` preserve those observations
+before the final summary. The ordinary CI matrix always attempts to upload the
+available files as `daynight-cli-tests-failures-<os>`. Windows ordinary
+environment, probe and failure artifacts append `-shard-1` or `-shard-2` to the
+platform name. A runner stopped before
+delivering an event, or before artifact upload executes, may leave no such
+evidence; these diagnostics do not identify the cause of process termination.
+
+Windows ordinary execution uses `vitest.windows-shards.config.ts`, which inherits
+the ordinary configuration and adds Vitest's JSON reporter. Each Windows runner
+first executes `vitest list --config vitest.windows-shards.config.ts --filesOnly`
+with JSON output to save the complete unsharded discovery, then executes
+`vitest run --config vitest.windows-shards.config.ts --shard=1/2` or `2/2`.
+The discovery command does not establish a shard's execution. The actual run's
+JSON, full discovery and source metadata are uploaded as
+`daynight-cli-tests-results-windows-latest-shard-1` and `-shard-2` from
+`.tmp/windows-cli-shard/`.
+
+After all selected CLI jobs succeed, final `checks` downloads both artifacts and
+runs `.github/scripts/windows-cli-shards.mts verify`. It checks clean source SHA
+and tree against its own checkout, the pinned Vitest version, native Windows
+platform and the actual GitHub test-step outcome. File paths are normalized
+relative to each runner's package root; invalid or escaping paths are rejected.
+Both full discoveries must agree. Each actual execution set must be nonempty and
+free of duplicates, and the two sets must be disjoint with a union exactly equal
+to the full discovery. Missing evidence, failed or incomplete results, or a
+mismatch fails the gate. Existing intentional skips and todos remain represented;
+JSON success never replaces the native command and job results.
+
+The reporter records only the framework's file, full test or suite name, and
+error name, message and stack. Field limits include JSON escaping: file 2 KiB,
+test name 4 KiB, error name 256 bytes, message 8 KiB and stack 16 KiB. Each event
+contains at most two errors and is capped at 64 KiB in each output. A run allows
+1,024 normal events and 4 MiB across JSONL and console, including reserved
+truncation and writer-failure notices. Truncation is explicit. Diagnostic write
+failures are reported through the remaining output, without changing the test
+result. No environment values, command arguments or additional process contents
+are collected; assertion messages and stacks retain the content supplied by
+Vitest. Existing test selection, concurrency, deadlines and the macOS observer
+remain unchanged.
 
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
 case-insensitive APFS images to check path identity against both behaviors.
@@ -542,8 +639,9 @@ cp deployment/localhost/.env.example deployment/localhost/.env
 bash deployment/localhost/up.sh
 ```
 
-The command requires the five authentication settings in that private file,
-builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
+The command uses the public base YAML mounted read-only under the selected
+server root and requires the five authentication settings in that private file.
+Explicit server environment variables override YAML. It builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
 `/readyz`. Open the configured public origin and log in through UniAuth. APIs and
 trusted attachment previews share that origin. For CLI access to this local test
 deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,
@@ -596,12 +694,12 @@ owns focused commands and the separate domain and Store proof owners.
 The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
 tests mock the directly called service/use-case operations while exercising real
 routing, credential middleware, parsing, responses and request lifecycle. Core
-rules use domain facts and required DAO, scope and transaction mocks. Service
-tests execute their own assembly, orchestration, transaction coordination and
-shared-resource lifetime with mocks of directly invoked core and other lower
-operations, plus required scope and transaction results. DAO mocks beneath real lower
-business decisions do not isolate service or server units. These unit selections
-execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
+rules use domain facts and required controlled DAO, scope and transaction
+dependencies. Service tests execute their own assembly, orchestration, transaction
+coordination and shared-resource lifetime. Tests may retain inexpensive,
+deterministic real collaborators and control narrow capabilities when cost or
+precise outcomes require it. Selections designed without PostgreSQL execute
+without it. Store tests retain actual SQL, locking, transaction,
 persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns focused commands and failure expectations. The complete
@@ -715,13 +813,19 @@ outcome. The public `/` introduction and local example use that same language
 state. `/login` owns authentication and `/projects` is the workspace index; the
 [public entry design](design/daynight-landing.md) owns route composition,
 public navigation hints and metadata. The header's book icon and visible Setup guide link, immediately before
-the language selector, open public `/setup` in a new tab. Its expanded bilingual steps cover CLI
-installation, device login, repository project discovery or creation, Agent skill
-installation and registering a first task. Commands stay selectable and provide
-copy feedback; the current origin is informational. The guide mounts outside the
-authenticated shell and makes no API requests, including identity or provider
-discovery, on direct access, reload, language changes or foreground return.
-The [guide decision](../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md) records the rationale for its boundaries; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
+the language selector, open public `/setup` in a new tab. Its expanded bilingual
+sections cover MCP client configuration, authorization and read-only verification,
+and the independent CLI and Agent skill setup. The current origin determines the
+MCP endpoint but does not configure the CLI. Selectable commands share copy
+feedback. The guide mounts outside the authenticated shell and makes no API,
+fetch or XHR requests during reading and interactions. Validate the production
+entry in a real browser across both languages, all three MCP clients, desktop,
+390px and 320px widths and long endpoints; check exact displayed and copied
+commands and the POSIX shell guidance (including Git Bash on Windows), stale
+clipboard results, keyboard access and zero-request lifecycle.
+Static guide checks do not prove an actual OAuth authorization or MCP call.
+The [path decision](../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
+records the trade-offs; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
 own the complete outcomes. With the Go API running on loopback, use:
 
 ```text
@@ -751,6 +855,57 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Public Markdown image integration
+
+The separate `Markdown external-image integration` workflow owns the normal
+public-source persistence regression for the Controller Markdown source module.
+It runs when the regression or its direct capture owners change, and supports
+manual dispatch. It does not add public-network dependencies to ordinary unit
+tests or product E2E. The workflow builds current CLI, Go and related runtime
+artifacts, uses isolated PostgreSQL and test authentication, saves one HTTP and
+one HTTPS image through production source/capture/relay components, then reads
+the same service resource after origin access is denied and the Controller
+process has stopped. Controlled Markdown and identity inputs are identified in
+the result; this does not prove native-model vision or browser rendering.
+
+Run the workflow on a standard GitHub-hosted `ubuntu-24.04` VM. Its entry point
+is `node packages/daynight/scripts/external-image-acceptance.ts --run-directory
+<checkout>/.tmp/external-image-acceptance/<run-id>`. Network setup refuses local,
+self-hosted and non-Linux execution. It requires Node.js 24, pnpm 11.28.6,
+Go 1.27.2, Docker, Python 3, curl, iproute2, iptables, nftables and dnsutils.
+The workflow prepares these tools and independently invokes the same entry
+point with `--cleanup` after execution.
+
+The job-owned Controller namespace has IPv6 disabled and an installed egress
+policy. Its service/DNS exceptions compare both original and final addresses
+and ports; protected targets remain denied after DNAT in INPUT and FORWARD.
+Actual host addresses/routes and the two owned Docker containers/networks,
+including their labels, addresses and aliases, supply the deployment inventory.
+The trusted external-image profile binds its policy identity to the installed
+rule digest.
+Source shutdown adds a separate deny and verifies per-protocol counter increases
+for probes pinned to the captured peer, without modifying product guards or
+fabricating DNS, peer or TLS results. All namespace processes, network links,
+firewall entries and changes to host forwarding have an owned cleanup receipt.
+Cleanup confirms process exit with pidfds before deleting namespace names;
+unconfirmed exit keeps the names and guards and produces a failed receipt.
+
+The workflow uploads only the run directory's `results/`, including source
+revision, image identities and hashes, network observations and cleanup
+receipts. Private configuration, tokens, keys, database files and image storage
+are excluded. A failed public request, changed DNS address or incomplete cleanup
+remains a failure. The [integration decision](../.agents/notes/implemented/testing/2026-11-11-public-markdown-image-integration.md)
+records scope and alternatives; the [source design](design/session-image-sources.md#可信部署出口配置)
+owns the product deployment contract.
+
+The network orchestrator's offline safety checks can run locally without
+privileges or network changes:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 packages/daynight/scripts/external-image-network.test.py
+bash -n packages/daynight/scripts/external-image-network.sh
+```
 
 ## Product E2E
 

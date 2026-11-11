@@ -1,0 +1,10 @@
+.task-organization-actions { display: inline-flex; gap: .5rem; flex-wrap: wrap; }
+.task-organization-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; background: var(--surface, white); border-radius: .75rem; }
+.task-organization-fields { display: grid; gap: 1rem; }
+.task-organization-fields label, .task-parent-control label { display: grid; gap: .35rem; }
+.task-organization-fields input, .task-organization-fields textarea, .task-organization-fields select, .task-parent-control select { width: 100%; min-width: 0; }
+.task-organization-fields textarea { min-height: 7rem; }
+.task-parent-control { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin-top: .75rem; }
+.task-parent-control label { min-width: 0; flex: 1 1 12rem; }
+.task-parent-control [role="alert"] { flex-basis: 100%; }
+.task-organization-fields fieldset { display: grid; gap: 1rem; border: 0; padding: 0; margin: 0; min-width: 0; }

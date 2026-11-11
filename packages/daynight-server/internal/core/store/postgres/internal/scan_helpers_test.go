@@ -87,7 +87,7 @@ func taskProjection(at time.Time, status model.TaskStatus) projectionRow {
 		value := at.Add(time.Minute)
 		cancelled = &value
 	}
-	return projectionRow{values: []any{"task", "project", "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
+	return projectionRow{values: []any{"task", "project", model.TaskTypeTask, (*string)(nil), "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
 		[]string{"dependency"}, []string{"external"}, []string{"blocked"}, true}}
 }
 
@@ -99,7 +99,7 @@ func TestScanTaskPreservesProjectionAndScanFailures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := model.Task{ID: "task", ProjectID: "project", Title: "title", Description: "description", Status: status, Version: 9,
+		want := model.Task{ID: "task", ProjectID: "project", Type: model.TaskTypeTask, Title: "title", Description: "description", Status: status, Version: 9,
 			CreatedAt: utc, UpdatedAt: utc, StartedAt: &utc, CompletedAt: &utc, AllowAgents: true, RequiredPlatform: &platform,
 			AssignedTo: &assignee, DependsOn: []string{"dependency"}, ExternalDependsOn: []string{"external"}, BlockedBy: []string{"blocked"}, Ready: true,
 			Properties: model.TaskProperties{}}

@@ -1,30 +1,31 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
+import { randomBytes, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import type { CopilotClient } from "@github/copilot-sdk";
 import { startCopilotBridge, type CopilotBridgeMediaOptions } from "./copilot-bridge.js";
 import type { ProviderOptions } from "./types.js";
 import { NativeRpcTimeoutError } from "./native-rpc.js";
+import type { CopilotAuthorityArtifacts } from "./copilot-read-authority-artifacts.js";
+import { CopilotReadAuthority } from "./copilot-read-authority.js";
+import { copilotExecutable } from "../../../platform/tool-executables.js";
+export { copilotExecutable } from "../../../platform/tool-executables.js";
 
 export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new NativeRpcTimeoutError(label)), ms);
   promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
 
-// The npm loader uses spawnSync. Spawn its platform executable directly so the
-// child proof and shutdown signal identify the runtime, rather than a wrapper.
-export const copilotExecutable = (): string => {
-  const require = createRequire(createRequire(import.meta.url).resolve("@github/copilot/package.json"));
-  const platforms = process.platform === "linux" && (require("detect-libc") as { isNonGlibcLinuxSync(): boolean }).isNonGlibcLinuxSync() ? ["linuxmusl", "linux"] : [process.platform];
-  for (const platform of platforms) try { return require.resolve(`@github/copilot-${platform}-${process.arch}`); } catch { /* Try the CLI's supported platform fallback. */ }
-  throw new Error("The installed Copilot CLI has no native package for this platform.");
-};
-
-export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void, media?: CopilotBridgeMediaOptions) => {
+export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void, artifacts?: CopilotAuthorityArtifacts, media?: CopilotBridgeMediaOptions) => {
   const token = randomBytes(32).toString("hex"), executable = options.executable ?? copilotExecutable();
   const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), COPILOT_CONNECTION_TOKEN: token }; delete env.NODE_DEBUG;
+  const execution = randomUUID();
+  if (artifacts) {
+    env.DAYNIGHT_COPILOT_AUTHORITY = execution;
+    env.NODE_COMPILE_CACHE = join(dirname(artifacts.entry), ".node-compile-cache");
+  }
   const js = /\.[cm]?js$/i.test(executable);
-  const child = spawn(js ? process.execPath : executable, [...(js ? [executable] : []), "--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
+  const entry = artifacts ? ["--import", new URL("./copilot-read-authority-preload.js", import.meta.url).href, artifacts.entry] : js ? [executable] : [];
+  const child = spawn(artifacts || js ? process.execPath : executable, [...entry, "--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])], { cwd: options.cwd, env, stdio: artifacts ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
   let closing = false, client: CopilotClient | undefined, closePromise: Promise<void> | undefined;
   let bridge: ReturnType<typeof startCopilotBridge> | undefined;
   let stopped = false;
@@ -39,7 +40,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   }));
   const listening = new Promise<number>((resolve, reject) => {
     let buffer = "", found = false;
-    child.stdout.on("data", chunk => {
+    child.stdout!.on("data", chunk => {
       if (found) return;
       buffer += String(chunk);
       if (Buffer.byteLength(buffer) > 65_536) { found = true; reject(new Error("Native Copilot startup output exceeds its limit.")); return; }
@@ -48,7 +49,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
       if (port) { found = true; const value = Number(port); if (value >= 1 && value <= 65535) resolve(value); else reject(new Error("Invalid native Copilot listener port.")); }
     });
   });
-  child.stderr.on("data", chunk => options.onDiagnostic?.(String(chunk).slice(0, 65_536)));
+  child.stderr!.on("data", chunk => options.onDiagnostic?.(String(chunk).slice(0, 65_536)));
   const ready = copilotDeadline(Promise.race([Promise.all([spawned, listening]), failed]), "Copilot runtime startup", 15_000).then(async ([, port]) => {
     if (closing) throw new Error("Copilot runtime closed during startup.");
     const bridgeEnv = { ...(options.env ?? process.env) }; delete bridgeEnv.NODE_DEBUG; delete bridgeEnv.COPILOT_CONNECTION_TOKEN;
@@ -58,7 +59,8 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     if (closing) throw new Error("Copilot runtime closed during connection.");
     return client;
   });
-  let sdkCleanup: Promise<unknown[]> | undefined, sdkCleanupReported = false, termRequested = false, killRequested = false;
+  let sdkCleanup: Promise<unknown[]> | undefined, sdkCleanupReported = false, shutdownAcknowledged = false, termRequested = false, killRequested = false;
+  let gracefulExit: Promise<void> | undefined;
   const stopSdk = (force: boolean): Promise<unknown[]> => sdkCleanup ??= (async () => {
     const errors: unknown[] = [];
     if (!client) return errors;
@@ -68,14 +70,20 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     } else {
       // forUri treats the runtime as external. This owner requests native stop
       // once; cleanup retries cannot dispatch it again after an unknown result.
-      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); } catch (error) { errors.push(error); }
+      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); shutdownAcknowledged = true; } catch (error) { errors.push(error); }
       try { const result = await copilotDeadline(client.stop(), "Copilot SDK shutdown", 3000); if (result.length) errors.push(...result); }
       catch (error) { errors.push(error); }
       if (errors.length) try { await copilotDeadline(client.forceStop(), "Copilot SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
     }
     return errors;
   })();
-  const joinNative = async (): Promise<void> => {
+  const joinNative = async (force: boolean): Promise<void> => {
+    if (stopped) return;
+    if (shutdownAcknowledged && !force) {
+      // The RPC acknowledgement precedes, and does not prove, process exit.
+      gracefulExit ??= copilotDeadline(exited, "Copilot graceful process exit", 1500).catch(() => {});
+      await gracefulExit;
+    }
     if (stopped) return;
     if (!termRequested && child.pid) {
       termRequested = true;
@@ -89,12 +97,13 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   const close = (force = false): Promise<void> => {
     if (closePromise) return closePromise;
     const attempt = (async () => {
-      closing = true;
+      closing = true; authority?.invalidate();
       const sdkErrors = await stopSdk(force), errors: unknown[] = [];
       // A bridge media failure cannot prevent native process cleanup. Both
       // owners retain failed work, and neither owner spawns during a retry.
       try { await bridge?.close(); } catch (error) { errors.push(error); }
-      try { await joinNative(); } catch (error) { errors.push(error); }
+      try { await joinNative(force); } catch (error) { errors.push(error); }
+      if (stopped) try { await artifacts?.cleanup(); } catch (error) { errors.push(error); }
       if (sdkErrors.length && !sdkCleanupReported) {
         sdkCleanupReported = true;
         try { options.onDiagnostic?.(stopped ? "Copilot SDK cleanup failed; the owned runtime was terminated." : "Copilot SDK cleanup failed; owned process shutdown remains unconfirmed."); }
@@ -108,5 +117,6 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     void attempt.then(settled, settled);
     return attempt;
   };
-  return { child, ready, close, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
+  const authority = artifacts ? new CopilotReadAuthority({ child, execution, cwd: options.cwd, publish: policy => options.onNativeReadPolicy?.(policy) }) : undefined;
+  return { child, ready, close, authority, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
 };

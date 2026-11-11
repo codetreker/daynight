@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useRef, type RefObject, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { acquireInert } from '../../app/inert';
+import { isTopOverlay, registerOverlay } from '../../app/overlay';
 import { dialogFocusables } from './focus';
 import { suspendSessionImagePreviews } from '../task-agent-session/images/image-preview';
 import '../../styles/auth.css';
@@ -33,12 +34,12 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
     const parent = owner.current!;
     const opener = document.activeElement;
     const resumeImages = suspendSessionImagePreviews();
-    const wasInert = parent.hasAttribute('inert');
-    parent.setAttribute('inert', '');
+    const releaseOverlay = registerOverlay(dialog.current!, parent);
     const results = parent.closest('.standalone-task-route')?.querySelector<HTMLElement>('.standalone-deletion-slot');
     const releaseResults = results == null ? undefined : acquireInert(results);
     cancel.current!.focus();
     const keydown = (event: KeyboardEvent) => {
+      if (!isTopOverlay(dialog.current!)) return;
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation(); callbacks.current.onCancel();
       } else if (event.key === 'Tab') {
@@ -54,7 +55,7 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
     document.addEventListener('keydown', keydown, true);
     return () => {
       document.removeEventListener('keydown', keydown, true);
-      if (!wasInert) parent.removeAttribute('inert');
+      releaseOverlay();
       releaseResults?.();
       const restore = () => {
         if (callbacks.current.onRestoreFocus !== undefined) callbacks.current.onRestoreFocus();

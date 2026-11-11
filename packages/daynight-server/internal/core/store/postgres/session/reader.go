@@ -25,12 +25,12 @@ func (r *Reader) CurrentTaskSessionSources(ctx context.Context, projectID string
  'executionGeneration',s.snapshot->'executionGeneration','connectionEpoch',s.snapshot->'connectionEpoch',
  'identity',s.snapshot->'identity','lifecycle',s.snapshot->'lifecycle'),
  s.last_seen,s.draining_until
- FROM tasks t
+ FROM task_resource_rows t
  LEFT JOIN task_properties w ON w.task_id=t.id AND w.name='worker'
  LEFT JOIN task_sessions s ON s.project_id=t.project_id AND s.task_id=t.id
   AND s.claim_id=((w.value::jsonb)->>'claimId')::uuid
   AND s.scope='task' AND s.backend='web'
- WHERE t.project_id=$1 AND t.deleted_at IS NULL AND t.status='in_progress'
+ WHERE t.project_id=$1 AND t.effective_deleted_at IS NULL AND t.type='task' AND t.status='in_progress'
  ORDER BY t.id`, projectID)
 	if err != nil {
 		return nil, pg.QueryError("read task session sources", err)

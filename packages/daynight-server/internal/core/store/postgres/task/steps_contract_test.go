@@ -424,7 +424,7 @@ func TestTaskStepsStorageErrorsPropagate(t *testing.T) {
 	}); err == nil {
 		t.Fatal("query failure concealed")
 	}
-	testutil.MustExec(t, database.Pool, `ALTER TABLE tasks RENAME COLUMN version TO missing_version`)
+	testutil.MustExec(t, database.Pool, `DROP VIEW task_resource_rows`)
 	if err := writerRead(t, database, func(dao store.TaskReader) error {
 		_, err := dao.TaskHeader(ctx, project.ID, task.ID)
 		return err

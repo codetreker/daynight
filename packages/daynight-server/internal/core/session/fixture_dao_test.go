@@ -237,9 +237,12 @@ func (d *fixtureDAO) SaveSession(a0 context.Context, a1 store.SessionRecord) err
 	return d.SaveSessionFn(a0, a1)
 }
 
-func (d *fixtureDAO) LockTaskRegistration(a0 context.Context, a1 string, a2 string) error {
-	d.invoke(a0, "LockTaskRegistration", d.LockTaskRegistrationFn != nil)
-	return d.LockTaskRegistrationFn(a0, a1, a2)
+func (d *fixtureDAO) LockTaskRegistration(a0 context.Context, a1 string, a2 string) (store.SessionTask, error) {
+	d.invoke(a0, "LockTaskRegistration", d.LockTaskRegistrationFn != nil && d.LockTaskFn != nil)
+	if err := d.LockTaskRegistrationFn(a0, a1, a2); err != nil {
+		return store.SessionTask{}, err
+	}
+	return d.LockTaskFn(a0, a1, a2)
 }
 
 func (d *fixtureDAO) LockTestOwner(a0 context.Context, a1 string) error {

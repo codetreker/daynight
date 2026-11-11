@@ -38,10 +38,10 @@ export const codexMetadataPath = (configuration: CodexPersistenceConfiguration, 
 
 /** Each observation uses one committed row and releases its SQLite snapshot before returning. */
 export const observeCodexMetadata = (databasePath: string, owner: { threadId: string; path: string; cwd: string }, expected: { model?: string; effort?: string }): (() => Promise<boolean>) => {
-  let identity: { dev: number; ino: number; path: string } | undefined;
+  let identity: { dev: bigint; ino: bigint; path: string } | undefined;
   return async () => {
     let named;
-    try { named = await lstat(databasePath); }
+    try { named = await lstat(databasePath, { bigint: true }); }
     catch (error) { if (!identity && record(error).code === "ENOENT") return false; throw invalid(); }
     if (!named.isFile()) throw invalid();
     const canonical = await realpath(databasePath);
@@ -56,7 +56,7 @@ export const observeCodexMetadata = (databasePath: string, owner: { threadId: st
       if (typeof code === "string" && (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"))) busy = true;
       else throw invalid();
     } finally { db?.close(); }
-    const after = await lstat(databasePath);
+    const after = await lstat(databasePath, { bigint: true });
     if (!after.isFile() || after.dev !== identity.dev || after.ino !== identity.ino || await realpath(databasePath) !== identity.path) throw invalid();
     if (busy || row === undefined) return false;
     const metadata = record(row);

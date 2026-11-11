@@ -231,8 +231,22 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
 消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
 
+通过原始资料的字段与编码容量校验后，service 使用 identity 领域的 `CanonicalUniAuthID`
+统一外部身份键：`microsoft:<tid>:<oid>` 转换为 `msft:<oid>@<tid>`，标准格式保持原值，
+其他身份键继续作为不透明字符串保存。两种 Microsoft 格式中的 `oid`、`tid` 必须非空，
+且均不含 `:` 或 `@`，从而避免不同组件组合转换成同一身份键。格式错误映射为
+502 `identity_unavailable`，发生在创建本地用户、Personal Team 和 session 的事务之前。
+
+迁移 `064_microsoft_identity.sql` 先验证已有 Microsoft 身份键，再原子更新旧格式的
+`users.uniauth_id`；`users.id`、资料时间及业务关联保持原值。已有目标键冲突通过唯一约束
+使整个迁移失败，不合并或删除账号；格式错误使用 SQLSTATE `P1064` 明确拒绝迁移。
+升级时先停止旧 Daynight 实例，再迁移并启动支持双格式的新实例，随后切换 UniAuth 输出。
+新 Daynight 实例继续接收原 UniAuth 输出，避免要求两个服务同时升级。
+[Microsoft 身份键决策](../../.agents/notes/implemented/architecture/2026-11-11-canonical-microsoft-identity.md)
+记录规范化与持久迁移的取舍。
+
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
-领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
+领取响应丢失都重新登录，不能重试可能已消费的 code。用户以规范化后的完整外部身份键唯一
 upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规范用户 UPSERT 后，
 `initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin 成员行，
 随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
@@ -295,7 +309,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 
 | 表 | 关键字段与约束 |
 |---|---|
-| users | 本地 UUID；唯一 uniauth_id；可空 email/email_verified/name/avatar_url；时间。 |
+| users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
 | sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
 | personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
@@ -490,6 +504,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
 
+`app/account-signal.ts` 提供独立的同源账户变化提示能力，尚未接入上述认证生命周期。它在 `daynight.activeUser` 保存 JSON 编码的规范小写 UUID 或明确的 `null`；缺失是未知，非法记录和存储失败保留错误，不作为认证证据。成功写入后通过 `daynight-identity` 频道发送固定的 `identity-changed` 提示；接收事件、storage clear 和前台恢复只通知订阅者读取当前记录。相同值不重复写入或发送。写入成功但通知失败时，补发先检查记录仍为预期值，仅发送通知；其他已知值表示被取代。释放 owner 会移除监听并关闭频道。完成结果只证明本地步骤，不保证其他标签页已处理；模块不调用 `/me` 或授予业务权限。[账户信号决策](../../.agents/notes/implemented/architecture/2026-11-11-account-change-signal.md)记录格式、分阶段失败及其取舍。
+
 Team 设置由同一 Team 的稳定 owner 保留已访问的基本信息、成员与邀请分区，切换时保留草稿、确认、待定和未知结果及一次性回执；失活分区通过 hidden/inert 暂停，活动分区仍受身份准入控制。离开该 Team 设置后，受保护的操作所有者继续存在以接纳原回执；真实身份失效执行旧 scope 清理。设置各分区及邀请将首次读取、后台重读和显式核对区分，并将已加载展示与写入新鲜度分开：普通身份检查撤销当前写入新鲜度，同账号恢复后后台重读，保留已显示资源、邀请区域、打开的确认和草稿；请求与发布都等待 scope 准入。后台读取不插入加载行或禁止本地编辑。成员重读比对待确认对象的身份、角色与版本，变化使确认失效；邀请区域依据已确认角色展示，邀请写入还要求成员权限和邀请读取都已就绪。显式核对保留原操作的版本和结果归属，读取不能恢复丢失的回执或重放写入。真实读取失败沿用错误和失权处理，首次读取仍显示加载状态。
 Project 设置、成员和转移的在途读取与写入保留原 scope 和资源归属，处理正向结果或普通错误前
 等待 scope.ready 并核对失效状态；重新检查当前 ProjectAccess 后才发布受权限约束的结果。
@@ -613,8 +629,10 @@ serverUrl/repoIdentity/projectId，review/update/help/version 不加载登录依
 
 ## 配置、部署与正式组合
 
-五项必需配置为 DAYNIGHT_PUBLIC_ORIGIN、DAYNIGHT_UNIAUTH_URL、
-DAYNIGHT_UNIAUTH_APP_ID、DAYNIGHT_UNIAUTH_APP_SECRET、DAYNIGHT_UNIAUTH_CALLBACK_URL。
+五项必需配置为 `server.public_origin`、`uniauth.url`、`uniauth.app_id`、
+`uniauth.app_secret` 和 `uniauth.callback_url`。它们可由 YAML 提供，也可分别由
+`DAYNIGHT_PUBLIC_ORIGIN`、`DAYNIGHT_UNIAUTH_URL`、`DAYNIGHT_UNIAUTH_APP_ID`、
+`DAYNIGHT_UNIAUTH_APP_SECRET` 和 `DAYNIGHT_UNIAUTH_CALLBACK_URL` 显式覆盖。
 启动校验和 handler 工厂都拒绝无效配置。App Secret 只进入服务端 SDK，不下发前端。
 Public origin 是无路径/凭据/query/fragment 的 canonical origin，host 小写、默认端口
 省略，不从请求或 listener 推导。Go listener 仍要求数值 loopback。
@@ -628,7 +646,7 @@ UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口和实际
 callback 的 returnPath，防止回调循环。
 
-两个独立的 0/1 开关在未设置或为 0 时关闭，其他值拒绝：
+两个独立开关默认关闭；YAML 使用布尔值，环境变量使用 0/1，其他值拒绝：
 
 | 配置 | 控制对象 |
 |---|---|

@@ -19,7 +19,13 @@ if [[ ${1:-} != --inside ]]; then
         for (const [target, published] of [[80, "8787"], [81, "8788"]]) {
           if (!ports.some(p => Number(p.target) === target && String(p.published) === published && p.host_ip === "127.0.0.1" && p.protocol === "tcp")) process.exit(1);
         }
-        if (config.services.server.environment.DAYNIGHT_METRICS_LISTEN_ADDR !== "127.0.0.1:8788") process.exit(1);
+        const server = config.services.server;
+        if (server.environment.DAYNIGHT_METRICS_LISTEN_ADDR !== undefined) process.exit(1);
+        if (JSON.stringify(server.command) !== JSON.stringify(["--root", "/var/lib/daynight"])) process.exit(1);
+        const mount = server.volumes.find(v => v.target === "/var/lib/daynight/config");
+        if (!mount || mount.type !== "bind" || !mount.read_only || !mount.source.endsWith("/deployment/localhost/config")) process.exit(1);
+        const yaml = require("node:fs").readFileSync(`${mount.source}/config.yml`, "utf8");
+        if (!/^  metrics_listen_address: "127\.0\.0\.1:8788"$/m.test(yaml)) process.exit(1);
       });'
   exec bash "$repository_dir/deployment/dev-ci/run.sh" bash "$script_dir/metrics.sh" --inside
 fi
@@ -32,6 +38,30 @@ endpoint="$("${compose[@]}" port gateway 81)"
 [[ $endpoint =~ ^127\.0\.0\.1:[0-9]+$ ]]
 gateway_id="$("${compose[@]}" ps --quiet gateway)"
 [[ $gateway_id =~ ^[a-f0-9]{12,64}$ ]]
+server_id="$("${compose[@]}" ps --quiet server)"
+[[ $server_id =~ ^[a-f0-9]{12,64}$ ]]
+[[ $(docker exec "$server_id" id -u) == 10001 ]]
+[[ $(docker exec "$server_id" stat -c '%a' /var/lib/daynight/config) == 755 ]]
+[[ $(docker exec "$server_id" stat -c '%a' /var/lib/daynight/config/config.yml) == 644 ]]
+docker inspect "$server_id" | node -e '
+  let input = "";
+  process.stdin.on("data", chunk => input += chunk);
+  process.stdin.on("end", () => {
+    const container = JSON.parse(input)[0];
+    const mount = container.Mounts.find(m => m.Destination === "/var/lib/daynight/config");
+    if (!mount || mount.Type !== "bind" || mount.RW || !mount.Source.endsWith(`/.tmp/dev-ci-config/${process.env.DAYNIGHT_DEV_CI_RUN_ID}`)) process.exit(1);
+    if (container.Mounts.some(m => m.Source.includes("/.tmp/dev-ci-private/"))) process.exit(1);
+    if (JSON.stringify(container.Config.Cmd) !== JSON.stringify(["--root", "/var/lib/daynight"])) process.exit(1);
+    for (const name of ["DAYNIGHT_DATABASE_URL", "DAYNIGHT_LISTEN_ADDR", "DAYNIGHT_METRICS_LISTEN_ADDR", "DAYNIGHT_STORAGE_ROOT"]) {
+      if (container.Config.Env.some(e => e.startsWith(`${name}=`))) process.exit(1);
+    }
+  });'
+docker exec "$server_id" cat /var/lib/daynight/config/config.yml | cmp - "$repository_dir/deployment/dev-ci/config/config.yml"
+if docker exec "$server_id" touch /var/lib/daynight/config/.write-test 2>/dev/null; then
+  docker exec "$server_id" rm -f /var/lib/daynight/config/.write-test
+  printf '%s\n' 'Config mount unexpectedly writable' >&2
+  exit 1
+fi
 docker inspect --format '{{json .NetworkSettings.Ports}}' "$gateway_id" | node -e '
   let input = "";
   process.stdin.on("data", chunk => input += chunk);

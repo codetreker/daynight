@@ -5,8 +5,9 @@ import { serializeSqliteError, SqliteAccessError } from "../../platform/sqlite-e
 import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
+import type { CleanupTarget } from "./execution-stop.js";
 
-export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; error?: unknown; sqlite?: SqliteMigrationEvent };
+export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent };
 
 const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   migrationId: event.migrationId, database: event.database, file: event.file,
@@ -49,19 +50,24 @@ export const createWorkerDiagnostics = async (options: {
   let failed: unknown;
   const emit = (event: WorkerDiagnostic): void => {
     const task = event.task;
+    const identity = task ?? event.identity;
     const record = {
       timestamp: new Date().toISOString(), workerId: options.workerId, platform: options.platform,
       kind: event.kind, message: redact(event.message),
       ...(event.sqlite === undefined ? {} : { sqlite: sqliteMetadata(event.sqlite) }),
-      ...(task === undefined ? {} : {
-        projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
-        status: task.status, agent: task.agent, sessionId: task.sessionId,
-      }),
+      ...(identity === undefined ? {} : { projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }),
+      ...(identity === undefined && event.projectId !== undefined ? { projectId: event.projectId } : {}),
+      ...(event.identity?.worktreeId === undefined ? {} : { worktreeId: event.identity.worktreeId }),
+      ...(task === undefined ? {} : { status: task.status, agent: task.agent, sessionId: task.sessionId }),
+      ...(event.component === undefined ? {} : { component: event.component }),
+      ...(event.phase === undefined ? {} : { phase: event.phase }),
+      ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }),
+      ...(event.runKey === undefined ? {} : { runKey: event.runKey }),
       ...(event.error === undefined ? {} : { error: describeError(event.error) }),
     };
     const serialized = JSON.stringify(record, (_key, value: unknown) => typeof value === "string" ? redact(value) : value);
     if (failed === undefined) pending = pending.then(() => appendFile(filename, `${serialized}\n`, { mode: 0o600 })).catch((cause: unknown) => { failed = cause; });
-    try { options.log?.(abbreviateGuids(redact(`${record.timestamp} ${record.kind}${task === undefined ? "" : ` ${task.projectId}/${task.taskId}/${task.claimId} ${task.status}`} ${record.message}${record.error === undefined ? "" : ` ${JSON.stringify(record.error)}`}\n`))); }
+    try { options.log?.(abbreviateGuids(redact(`${record.timestamp} ${record.kind}${identity === undefined ? "" : ` ${identity.projectId}/${identity.taskId}/${identity.claimId}${task === undefined ? "" : ` ${task.status}`}`} ${record.message}${record.error === undefined ? "" : ` ${JSON.stringify(record.error)}`}\n`))); }
     catch (cause) { if (failed === undefined) failed = cause; }
   };
   return {

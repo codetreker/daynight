@@ -228,3 +228,102 @@ func TestDeletionReceiptDigestPreservesEncodedBytes(t *testing.T) {
 		t.Fatalf("receipt replay: %v", err)
 	}
 }
+
+type oauthDeletionDAO struct {
+	store.SessionDAO
+	store.BotWriteDAO
+	t           *testing.T
+	plan        *callPlan
+	principal   model.Principal
+	bot         model.Bot
+	input       store.DeleteBot
+	refuseFirst bool
+	credentials int
+}
+
+func (d *oauthDeletionDAO) LockCredential(_ context.Context, p model.Principal, now time.Time) error {
+	d.plan.call("credential")
+	same(d.t, p, d.principal)
+	if now.IsZero() {
+		d.t.Fatal("missing credential check time")
+	}
+	d.credentials++
+	if d.refuseFirst || d.credentials == 2 {
+		return model.ErrNotFound
+	}
+	return nil
+}
+func (d *oauthDeletionDAO) Bot(_ context.Context, id string) (model.Bot, error) {
+	d.plan.call("bot")
+	same(d.t, id, d.bot.ID)
+	return d.bot, nil
+}
+func (d *oauthDeletionDAO) LockBotSessions(_ context.Context, id string) ([]store.BotSession, error) {
+	d.plan.call("sessions")
+	same(d.t, id, d.bot.ID)
+	return []store.BotSession{}, nil
+}
+func (d *oauthDeletionDAO) RevokeBotSessions(_ context.Context, id string) error {
+	d.plan.call("revoke")
+	same(d.t, id, d.bot.ID)
+	return nil
+}
+func (d *oauthDeletionDAO) SaveBotDeletion(_ context.Context, id string, value *model.BotDeletion) (model.Bot, error) {
+	d.plan.call("save")
+	same(d.t, id, d.bot.ID)
+	if value == nil || value.DeletionID != d.input.DeletionID || value.RequestedVersion != d.input.Version {
+		d.t.Fatalf("unexpected deletion candidate: %+v", value)
+	}
+	out := d.bot
+	out.Deletion = value
+	out.Version++
+	return out, nil
+}
+
+type oauthDeletionScope struct {
+	store.SessionScope
+	dao *oauthDeletionDAO
+}
+
+func (s oauthDeletionScope) SessionDAO() store.SessionDAO { return s.dao }
+func (s oauthDeletionScope) BotDAO() store.BotWriteDAO    { return s.dao }
+
+type oauthDeletionWriter struct {
+	plan *callPlan
+	dao  *oauthDeletionDAO
+}
+
+func (w oauthDeletionWriter) WriteSession(_ context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	w.plan.call("transaction")
+	err := fn(oauthDeletionScope{dao: w.dao})
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+func TestOAuthDeletionRejectsCredentialAtBothAdmissionStages(t *testing.T) {
+	p := model.Principal{Kind: model.OAuthCredential, UserID: "c1111111-1111-4111-8111-111111111111", CredentialID: "f6666666-6666-4666-8666-666666666666"}
+	bot := model.Bot{ID: "a4444444-4444-4444-8444-444444444444", OwnerUserID: p.UserID, WorkerID: "b5555555-5555-4555-8555-555555555555", Version: 1}
+	input := store.DeleteBot{Version: bot.Version, DeletionID: "c6666666-6666-4666-8666-666666666666"}
+	for _, tc := range []struct {
+		name  string
+		first bool
+		calls []string
+	}{
+		{"initial", true, []string{"transaction", "credential"}},
+		{"after mutation", false, []string{"transaction", "credential", "bot", "sessions", "revoke", "save", "credential"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := newPlan(t, tc.calls...)
+			dao := &oauthDeletionDAO{t: t, plan: plan, principal: p, bot: bot, input: input, refuseFirst: tc.first}
+			live := &discardedSessions{}
+			got, err := NewDeletions(oauthDeletionWriter{plan: plan, dao: dao}, nil, live).DeleteBot(t.Context(), p, bot.ID, input)
+			requireFault(t, err, "unauthenticated")
+			same(t, got, model.Bot{})
+			if len(live.ids) != 0 {
+				t.Fatalf("uncommitted revocation published: %v", live.ids)
+			}
+		})
+	}
+}

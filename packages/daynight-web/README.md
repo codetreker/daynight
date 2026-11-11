@@ -214,35 +214,41 @@ records the original trade-offs.
 
 The header's book icon and visible Setup guide link appear before the language
 selector and open public `/setup` in a new tab with native link behavior and
-`noopener noreferrer`. The opener retains its current page. The expanded five steps explain CLI
-installation with Node.js 22 or newer, `daynight login` device authorization,
-discovering or creating a project from a Git repository's `origin`, `daynight skill install`
-and registering and viewing the first task. Each step gives its execution
-location, prerequisites, copyable text and success signal. Remote terminals can
-use `daynight login --no-browser`; Agent reload instructions come from the
-installer's actual output for the selected launcher and User/Project scope.
+`noopener noreferrer`. The opener retains its current page. Two always-expanded
+sections offer independent MCP and CLI with Agent skill paths. MCP covers
+configuration of Codex, Claude Code or Copilot CLI for the current user and browser
+account authorization, and provides a read-only `team_list` request to verify connection.
+MCP shell commands use POSIX quoting and instruct Windows users to use a POSIX
+shell such as Git Bash. The guide links to the public `/mcp` installation manual, the selected client's
+official documentation and `/account`, where Tokens manages tokens and authorized
+applications. The five CLI steps cover installation with Node.js 22 or newer,
+device login, repository project discovery or creation, Agent skill installation,
+and registering and viewing a first task. Each gives its execution location,
+prerequisites, copyable text and success signal. Remote terminals can use
+`daynight login --no-browser`; Agent reload instructions follow the installer's
+output for the selected launcher and User/Project scope.
 
-`SetupGuidePage` uses the typed `messages.setup` catalogs inside a public shell
-with a localized title, breadcrumb, skip link and language selector. It displays
-the current origin as information; the CLI's default login service remains
-`https://daynight.cc`. Direct access, reloads, copying, locale changes and
-focus/visibility restoration make zero API requests. No identity, provider, task
-cache or business-resource lifecycle mounts. Return-to-project links load a new
-document at `/projects`, where the normal authentication workflow starts.
+`SetupGuidePage` uses typed `messages.setup` catalogs inside a public shell with a
+localized title, breadcrumb, skip link and language selector. It derives the MCP
+endpoint from the current origin; the CLI's default login service remains
+`https://daynight.cc`. Direct access, reloads, in-page navigation, client and locale
+changes, copying and focus/visibility restoration make zero API, fetch or XHR
+requests. No identity, provider, task cache or business-resource lifecycle mounts.
+Project and account links navigate to a new document and normal authentication.
 
 Command blocks retain selectable source text, exact newlines and argument quotes.
 One current copy operation disables the copy buttons until it settles. A floating
-status message reports success or explicitly asks for manual selection when the
-clipboard is unavailable or denied, without shifting content. Unmount and locale
-changes invalidate old results; switching language does not repeat a copy.
-The public reading layout supports the header at desktop, 390px and 320px widths.
-Go serves direct GET/HEAD requests and reloads through the normal no-store HTML
+status message reports success or manual-copy recovery without shifting content.
+Unmount, locale and client changes invalidate old results, including completion
+handlers that might otherwise release a newer pending copy. Client choice survives
+a language change and resets to Codex on reopening. The public reading layout
+supports long addresses and controls at desktop, 390px and 320px widths. Go
+serves direct GET/HEAD requests and reloads through the normal no-store HTML
 handler; `/setup` and its descendants are reserved from authentication callbacks.
 The [requirements](../../docs/spec/daynight-web.md#日常使用引导) and
 [design](../../docs/design/daynight-web.md#日常使用引导页) own the behavior and
-mechanisms. The
-[decision](../../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md)
-records the original trade-offs.
+mechanisms. The [path decision](../../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
+records the trade-offs.
 
 ## Authenticated workspace
 
@@ -306,6 +312,9 @@ The topbar avatar opens an account menu whose Account settings item navigates to
 `/account`. The localized trigger exposes its expanded state; keyboard access,
 outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
+Account profile, credentials and user prompt tabs participate in browser Back and
+Forward. Their history state contains only an account-bound tab selection; the
+existing credential and prompt owners retain their drafts and operation results. Worker monitoring and configuration tabs also participate in Back and Forward, scoped to the current user and Worker; the configuration owner retains its draft and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -507,10 +516,12 @@ service’s creation-time and Worker ID order within each group. Heartbeats do n
 change that relative order.
 
 The list also reads current monitoring summaries in batches of at most 100 loaded
-Worker IDs and presents their permission-filtered admission reasons. Detail shows scheduling and admission, actual capacity, parallel
+Worker IDs. Cards show the scheduling phase and capacity, including the capacity
+stale indicator, without admission reasons or monitoring timestamps and age.
+Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines.
+retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and
@@ -519,7 +530,8 @@ distinct presentations; failed monitoring reads retain dated observations and
 leave host resources visible. Project withdrawal removes associated private
 details and invalidates list reason sets whose individual scopes are unavailable;
 late responses cannot restore them. Total Worker capacity remains visible, and
-reported identity-free reasons return on an admitted reread. Background checks retain page interaction and
+reported identity-free reasons return in the projection on an admitted reread.
+Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
@@ -717,8 +729,10 @@ Versions above 2^53 remain exact bigint values and mutation encoding sends JSON
 numbers. Missing contract fields do not acquire defaults.
 
 Project synchronization merges intrinsic summaries by ID and exact business
-version in the current durable collection, then derives task readiness,
-statistics and GraphIndex. Duplicate summaries retain task and index references;
+version in the current durable collection, then merges authoritative dependency
+states whose taskVersion matches the current Task. These states supply readiness
+and statistics to the ordinary-task GraphIndex. Unchanged summaries and states
+retain task and index references;
 settings and ownership merge independently by their exact versions within one
 epoch. Equal ownership versions must identify the same Team; contradictions fail
 synchronization. Metadata-only changes preserve task projection. A new epoch
@@ -745,20 +759,12 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 9 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 9 rebuilds incompatible project,
-summary and detail records and their watermarks for required nullable cancelledAt,
-while preserving unchanged profile and compatible Session-history formats. Missing
-fields are not filled with null. Upgrading schema 7 clears its Session
-records, which lack the complete-empty proof, and preserves compatible project,
-task, profile and lifecycle data. Upgrading schema 6 adds the Session records
-store while retaining compatible task and profile data and lifecycle.
-Upgrading the ownership-complete schema 5 adds profiles while
-preserving compatible task records, user fences and watermarks. Upgrades from
-schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
-user fences and clear old epochs/watermarks before a complete snapshot. Missing
-properties, assignedTo or Project ownership in old records cannot receive
-defaults.
+schema 10 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 10 rebuilds incompatible project, summary and detail records and their
+watermarks for required type, parentId and dependency states, preserving user
+fences, profiles and compatible Session-history formats. Upgrades from schema 1
+through 4 rotate user fences; schema 7 Session records lack the complete-empty
+proof and are cleared. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and actual counts for both active and invalidated manifests.
@@ -775,21 +781,27 @@ that immutable request baseline in memory; snapshot observations use only
 returned Tasks, while delta observations overlay returned Tasks on the baseline.
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
-required nullable assignedTo/cancelledAt and complete current properties from the task row's
-database snapshot. Higher task
+required type, nullable parentId/assignedTo/cancelledAt and complete current
+properties from the task row's database snapshot. Each ordinary Task has a
+separate same-version dependency state; Goal records have no dependency state. Higher task
 versions replace whole summaries and property maps; missing keys remove old
 values without property tombstones or ordinary epoch changes. Equal-version
 content must match all intrinsic fields, including assignedTo, and all own
 property keys and JSON values: object order is
 irrelevant, array order matters, and missing differs from null or an empty array.
-Older responses cannot revive removed properties. Graph projections explicitly
-drop properties while retaining assignedTo; the summary map keeps complete properties. Only project-sync summaries
+Older responses cannot revive removed properties. Snapshot states replace the
+collection; delta states patch only matching owner versions. A readiness-only
+change is persisted and published, including across tabs. A late state for the
+same owner version can temporarily replace a newer prerequisite observation.
+Graph projections omit properties and Goal resources; the typed summary map
+retains both complete properties and Goal existence. Only project-sync summaries
 advance the watermark.
 Details, mutations, request time, Project time and `observedAt` cannot establish
 project coverage. UTC seconds plus nine fractional digits preserve ordering;
 business versions remain bigint. The default ten-second server overlap can
-repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
-invalidate detail records, replace published indexes or broadcast. Network,
+repeat its final rows indefinitely. Old/equal intrinsic rows with unchanged
+dependency states do not rewrite storage, invalidate detail records, replace
+published indexes or broadcast. Network,
 HTTP, decoding, quota and IDB-completion errors preserve the prior valid cache
 and watermark without partial publication. Server reads trust canonical stored
 properties without repeated normalization, field or capacity checks; natural
@@ -913,8 +925,7 @@ Task, summary and graph consumers require an explicit assignedTo field containin
 null or a canonical local user UUID. Equality, freshness, review keys and material
 preservation include the field. Its native storage, atomic permission reset and
 in-progress write policy belong to the [assignment contract](../../docs/spec/daynight-task-assignment.md).
-Schema 6 preserves strict task parsing and stores versioned profile content in a
-separate store; profile data never enters task records or task versions.
+The cache stores versioned profile content in a separate store; profile data never enters task records or task versions.
 
 The detail places status and assignee in one 24px compact group, followed by
 platform and readiness, with automatic execution on the right. The assignee
@@ -994,9 +1005,12 @@ index. Overview positioning adjusts filters that hide its target. The
 mutation and presentation mechanisms.
 
 Project task search submits the original expression to the server, matching IDs,
-complete titles and Markdown descriptions, including completed Tasks and chain members. Its draft, filters and cursor pages are
-independent of the ordinary lists. Clearing the search restores the ordinary
-view and its scroll position. Search results open a live Task detail, including
+complete titles and Markdown descriptions, including completed Tasks and chain
+members. Nonempty draft edits do not change the applied query. Clicking × or
+deleting the input to empty clears the search without submitting an empty query,
+cancels in-flight reads and keeps focus in the input. Search filters and cursor
+pages reset; the ordinary view retains its filters, pages and scroll position.
+Search results open a live Task detail, including
 when project graph synchronization fails. Errors and empty results remain
 distinct; the server owns matching, ordering and context. The
 [requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
@@ -1329,8 +1343,10 @@ ordinary writable storage directory and does not require an APFS image. Names
 that alias another file or directory on that filesystem are refused; Linux CI
 owns case-coexistence coverage. Vite proxies `/api` to that address
 and listens on loopback. For real login through Vite, set the same
-`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite and Go environments, registered with
-UniAuth for the development browser origin. Vite proxies exactly that callback
+`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite environment to the same public callback
+URL configured for Go, registered with UniAuth for the development browser origin.
+Go can receive this value through YAML or its environment; Vite does not read the
+server configuration file. Vite proxies exactly that callback
 path through the same Go API target. When unset, no callback proxy is added. The five required
 backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
@@ -1718,8 +1734,9 @@ alter the complete project counters or prerequisites. The [preference decision](
 records the original persistence rules; the
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for the shared offset and category-switch behavior.
 
-The generic task and summary decoders require nullable assignedTo and a properties
-object, preserving all property keys. Graph decoders also require assignedTo.
+The generic task and summary decoders require type, nullable parentId and
+assignedTo, and a properties object, preserving all property keys. Graph decoders
+require type and parentId and accept ordinary Tasks only.
 The PR business reader accepts an absent pullRequests key; a present
 value must be an array of objects with string `url` and `title` fields. Missing
 pullRequests and an empty array share the existing empty presentation while
@@ -1734,7 +1751,7 @@ requires the external set to be a subset; missing or null fields are protocol
 errors. Graph equality and detail freshness include classification, so a
 marker-only change invalidates the corresponding content without inventing a
 new timestamp. Clock-only samples still retain graph/index identity. Chain
-membership uses ordinary-edge weak components. A Goal projection contains all
+membership uses ordinary-edge weak components. A chain projection contains all
 ordinary members plus their direct external prerequisites, deduplicated by task
 ID, and all real edges whose endpoints are in that projection. It does not follow
 ordinary or external ancestry from contextual tasks. Complete prerequisite
@@ -1754,9 +1771,10 @@ unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
 still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
 is zero for local-only summaries; positive values are the successful mount-local
 receipt and online-admission signal, not a task version or durable commit counter. Equivalent
-task data retains its index and layout; settings-only changes update Project
-metadata without rebuilding task projections, and changed intrinsic data replaces
-statistics and both task-category lists together. The
+task data and dependency states retain their index and layout; settings-only
+changes update Project metadata without rebuilding task projections. Changes
+to intrinsic data or dependency states replace the affected projection and
+statistics together. The
 [automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md)
 records the rationale for the scheduling and scope.
 
@@ -2020,8 +2038,11 @@ task details at that file, even while preview content is loading.
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, five-state setting,
 automatic-execution permission, execution platform, assignee and attachment management.
-`TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
-and focus restoration. `TaskDetailPage` provides an ordinary full-page container,
+`TaskDetailDialog` supplies the modal portal. `DetailFrame` and its overlay hook
+share the focus loop, counted scroll lock, fullscreen scroll restoration and
+kept-mounted slots. Explicit parent ownership follows React across portals;
+child layers hold inert leases on their parent and alone handle detail Escape/Tab.
+Focus restoration remains with the opening workspace. `TaskDetailPage` provides an ordinary full-page container,
 return-to-project link and language selector. Their outer workspaces own fullscreen
 mode and the shared Surface handles layered Escape. Standalone fullscreen hides
 the auxiliary top bar while keeping an explicit return-to-project link in the
@@ -2032,7 +2053,7 @@ platform use the same confirmation/review owner; assignment uses the same mutati
 gate and review freshness. File deletion keeps its own
 modal confirmation. These interactions remain available in either container.
 Ordinary standalone mode retains native page and frame keys. Fullscreen supplies
-an `AttachmentKeyboardOwner` with the active reading root and `onEscape`; the
+an `AttachmentKeyboardOwner` with the active reading root, layer eligibility and `onEscape`; the
 already-loaded same-origin frame updates its listeners without reloading. The
 bridge adds a final Window handler for each Escape/Tab event after the child
 application's current Window consumers, so consumed shortcuts retain precedence
@@ -2056,10 +2077,13 @@ preventing an old login failure from surviving a successful return.
 
 Standalone relationship navigation, tab changes, file selection and successful
 upload selection synchronize the address and add history only for a new state.
-Back/Forward apply the address state without adding an entry; copying or reloading
-restores the task, tab and file. Modal relationship/tab/file changes stay local
-and do not write the project URL or history. A same-task tab/file route change
-keeps the shared surface and attachment controller mounted, retaining directory
+Back/Forward apply the address state without adding an entry. Goal graphs, child
+Task dialogs and external Goal dialogs on a standalone resource page also restore
+their reading selections with Back/Forward without changing the root URL.
+Closing a layer replaces the current selection after draft admission. Project-page
+dialogs keep local navigation. Copying or reloading restores the root task, tab
+and file; nested selections do not carry resource data or drafts. A same-task
+tab/file route change keeps the shared surface and attachment controller mounted, retaining directory
 disclosure, sidebar scroll and upload drafts. Task and authenticated-identity
 changes preserve the existing cancellation and state-isolation rules.
 
@@ -2462,8 +2486,9 @@ undefined positions. Frozen installs and container builds must include the patch
 API errors expose fixed safe text and a validated request ID; raw response bodies
 and server diagnostics do not reach the page. Project names and addresses render
 as text. The API parser verifies DTO shape and resource identity. The implemented graph
-model separately verifies dependency closure, acyclicity, status/readiness and
-summary consistency. It derives ordinary-edge weak components and their current
+model separately verifies visible-edge acyclicity, status/readiness and summary
+consistency. References to unavailable prerequisites remain in the Task, but
+only visible endpoints form adjacency; the server supplies their satisfaction. It derives ordinary-edge weak components and their current
 representatives. `mainIds` contains the complete ordinary component;
 `externalIds` contains only its direct external prerequisites outside that
 component, deduplicated by task ID. Projection P is their union and retains every
@@ -2512,9 +2537,9 @@ unmount aborts owned work. Attachments have independent scoped list, write and
 preview state, while project statistics continue to use complete graph snapshots. The
 project hook owns its visible-page timer; navigation and unmount clear the timer
 and cancel owned reads. Automatic graph reads never overlap, and same-task detail
-refreshes coalesce an in-flight follow-up. There is no global task cache or
-task-field editor. Push subscriptions remain deferred; they can trigger the same
-complete-snapshot refresh without changing graph projection. Production
+refreshes coalesce an in-flight follow-up. The authenticated task cache owns shared project summaries. Push subscriptions
+remain deferred; they can trigger the same synchronization without changing graph
+projection. Production
 `AuthenticatedApp` owns identity loading, authentication and account/membership
 flows under the persistent locale Provider. New identities discard user-owned
 requests and content; project 404 and discovery failures retain their distinct

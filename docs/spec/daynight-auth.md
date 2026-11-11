@@ -42,7 +42,12 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 ## 身份与凭据
 
 配置一个 UniAuth 服务和已注册 App，使用该 App 允许的 Microsoft/Google/GitHub
-入口。完整 provider-qualified id 映射到本地 UUID，不同身份不按同邮箱自动合并。
+入口。外部身份键映射到本地 UUID，不同身份不按同邮箱自动合并。Microsoft 同时接受
+`microsoft:<tid>:<oid>` 与 `msft:<oid>@<tid>`，内部统一使用并保存 `msft:<oid>@<tid>`；
+`oid`、`tid` 均须非空且不含 `:` 或 `@`。两种写法表示同一身份，tenant 或 object ID
+不同仍表示不同身份。其他外部身份键保持原值。格式错误的 Microsoft 身份按上游资料错误拒绝。
+历史 Microsoft 身份键通过数据库迁移转换，保留原本本地 UUID、凭据、Personal Team、
+成员关系及项目归属；目标身份键冲突或已有 Microsoft 键格式错误时，迁移明确失败且不部分提交。
 资料更新不改变本地用户和成员关系。每个用户恰有一个 Personal Team，包含其真实 owner admin 行；
 规范用户建立、Personal 初始化与浏览器 session 原子提交。重复及并发登录复用相同归属，
 已有 Personal 关系损坏明确失败。身份领取的实际解压响应最多 2097152 bytes，期限为 15 秒。
@@ -459,16 +464,17 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 
 ## 配置与运行边界
 
-下列五项服务端鉴权配置均必填，缺少或无效时启动失败；App Secret 不下发到前端。
+下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
+对应环境变量显式设置时覆盖文件。App Secret 不下发到前端。
 数据库、存储根目录和既有生命周期配置继续遵守服务要求。
 
 | 配置 | 要求 |
 |---|---|
-| `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
-| `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
-| `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
-| `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
-| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | 与主站同源的完整精确 callback；无凭据、query、fragment，使用 canonical 非根路径。 |
+| `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
+| `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
+| `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
+| `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
+| `uniauth.callback_url` / `DAYNIGHT_UNIAUTH_CALLBACK_URL` | 与主站同源的完整精确 callback；无凭据、query、fragment，使用 canonical 非根路径。 |
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
@@ -479,7 +485,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 路径，避免认证循环。callback URL 与 UniAuth App 登记值精确匹配，主站 origin
 及 callback 不从 Host、转发 header 或随机 listener 推导。
 
-生产默认 HTTPS。两个开关分别接受未设置/`0` 或 `1`，其他值明确拒绝：
+生产默认 HTTPS。两个开关默认关闭；YAML 接受布尔值，环境变量接受 `0` 或 `1`，其他值明确拒绝：
 
 | 开关 | 唯一作用 |
 |---|---|

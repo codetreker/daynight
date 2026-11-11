@@ -96,3 +96,17 @@ it("retains queryable SQLite migration metadata while rejecting extra payload an
   expect(output.join("\n")).not.toContain("private-raw-value");
   expect(error.cause).toBe(cause);
 });
+
+it("retains a claim-scoped cause without inventing a missing local task", async () => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "d-")); directories.push(home);
+  const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "worker", platform: "linux" });
+  const identity = { projectId: "project", taskId: "task", claimId: "claim", worktreeId: "worktree" };
+  const metadata = { component: "cleanup", phase: "agent-stop", attemptId: "attempt", runKey: "run" };
+  logger.emit({ kind: "execution-stop-observation-error", message: "unknown", identity, ...metadata, error: new Error("observation", { cause: new Error("original") }) });
+  await logger.flush();
+  const record = JSON.parse(await readFile(logger.filename, "utf8"));
+  expect(record).toMatchObject({ ...identity, ...metadata, error: { message: "observation", cause: { message: "original" } } });
+  expect(record).not.toHaveProperty("agent");
+});

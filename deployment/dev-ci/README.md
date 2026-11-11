@@ -81,6 +81,7 @@ inherits:
 | `DAYNIGHT_BASE_URL` | Main-site HTTP origin, such as `http://127.0.0.1:32777` |
 | `DAYNIGHT_DEV_CI_RUN_ID` | Unique run identity used in receipts and cleanup |
 | `DAYNIGHT_DEV_CI_AUTH_ENV_FILE` | Absolute private environment-file path for this run's Compose commands |
+| `DAYNIGHT_DEV_CI_CONFIG_DIRECTORY` | Absolute run-specific public configuration directory for this run's Compose commands |
 | `DAYNIGHT_AUTH_FIXTURE_DESCRIPTOR` | Absolute private fixture descriptor path used by authentication clients |
 
 The runner does not evaluate the command as shell text. Explicit `bash -c` is
@@ -95,14 +96,25 @@ Each invocation uses `daynight-dev-ci-<run-id>` as the explicit Compose project
 and a unique `daynight-dev-ci:<run-id>` image tag. All Compose operations use the
 same absolute file and project directory with the run's private environment
 file, regardless of inherited `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME`. Services,
-networks and the `postgres-data` and `attachment-data` named volumes have
-project-scoped names. PostgreSQL has no host port, and no resource uses a fixed
+networks and the `postgres-data`, `attachment-data` and `server-logs` named
+volumes have project-scoped names. PostgreSQL has no host port, and no resource uses a fixed
 container name or an external volume/network. Multiple invocations can run
-concurrently. The server receives
-`DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`, mounted from this project's
-attachment volume. Fresh-volume initialization preserves the image directory's
-UID/GID `10001:10001`; the normal nonroot process writes the files. No test uses
-the localhost deployment's persistent volumes.
+concurrently. The runner copies only the public `config/config.yml` into a
+run-specific directory outside the private authentication state. Compose selects
+`/var/lib/daynight` as root and mounts that directory read-only at
+`/var/lib/daynight/config`. The file supplies the listener, metrics, fixture database URL and storage
+path. The image sets its three image tool paths and the root-relative staging
+path `storage/.image-validation` through environment variables. Explicit
+environment variables override YAML values. A new run copies the current base
+file; reconfiguration reuses that run's copy. The directory is mode `0755` and
+its public file is `0644`, readable by UID 10001. Cleanup removes the copy after
+its resources have been removed.
+Dynamic credentials remain
+in the private environment file and the fixture directory is never mounted into
+the server. The project's attachment volume mounts at `/var/lib/daynight/storage`.
+Fresh-volume initialization preserves the image directories'
+UID/GID `10001:10001`; the normal nonroot process writes the files and logs. No
+test uses the localhost deployment's persistent volumes.
 
 The runner explicitly enables `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` for the
 main-site HTTP origin and its Cookie policy, and
@@ -110,7 +122,7 @@ main-site HTTP origin and its Cookie policy, and
 These independent test settings keep login and project authorization active.
 UniAuth configuration and fixture state are private files under
 `.tmp/dev-ci-private/<run-id>/`, including the fixture SQLite database. They are
-separate from uploadable receipts and from the two application data volumes.
+separate from uploadable receipts, the application data volumes and the log volume.
 
 ## Recreate and restore a running test stack
 
@@ -145,8 +157,8 @@ UUIDs are part of the SQL backup, so restoring them does not identify the replac
 history. Normal writes, restarts and recreation preserve the project's epoch.
 Keep database time valid and check imported task timestamps separately; epoch
 rotation cannot repair future-dated task data. The private UniAuth fixture
-directory survives application volume recreation; there is no third backup
-volume. The
+directory survives application volume recreation; logs are not part of the backup
+pair. The
 [attachment persistence check](#attachment-persistence-check) exercises this
 ordering. Reconfiguration belongs to the active runner's lifecycle and leaves
 its resources for the original runner to clean up.
@@ -215,8 +227,8 @@ receipts as CI artifacts when reporting a failure.
 The Bash fixture tests exercise success, malformed cleanup identities, build and
 partial-startup failures, image mismatch, callback failure, cleanup failure,
 recovery, cancellation and callback descendants without starting Docker. The
-fixture records both data volumes and rejects cleanup that leaves only the
-attachment volume behind:
+fixture records both data volumes and the log volume, and rejects cleanup that
+leaves either an attachment or log volume behind:
 
 ```bash
 bash deployment/dev-ci/tests/run.sh
@@ -233,6 +245,11 @@ gateway to check both loopback mappings, independent routing and a scrape of the
 official Go and process collectors. It also checks the localhost Compose port
 configuration. The runner verifies the running image identity and removes its
 owned resources when the check exits.
+
+`bash deployment/dev-ci/tests/logging.sh` uses the production image to verify
+UID 10001 ownership, identical JSON output to stderr and the log file, restart
+append, exclusive locking, and configuration and logging diagnostics associated
+with their run IDs. It uses the same scoped cleanup as the runner.
 
 ## Attachment persistence check
 

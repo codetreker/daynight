@@ -48,7 +48,7 @@ func (s *Execution) current(ctx context.Context, p model.Principal, project, tas
 		_, tx := op.scoped(scope)
 		t := task.task
 		w := t.Worker
-		if w == nil {
+		if t.Type == model.TaskTypeGoal || w == nil {
 			out = map[string]any{"status": "not_applicable", "claimId": nil, "agentControlMode": nil}
 			return nil
 		}

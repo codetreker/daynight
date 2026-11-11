@@ -91,3 +91,30 @@ test.each(["unsealed", "sealed", "both"])("bridge close preserves failed %s spoo
     await bridge.close(); expect(methods.filter(method => method === "close")).toHaveLength(1); expect(childProcess.spawn).toHaveBeenCalledOnce(); expect(failures).toEqual([]);
   } finally { for (const spool of spools) spool.remove.mockImplementation(() => rmSync(spool.path, { force: true })); await bridge.close().catch(() => {}); peer.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test.each(["same", "changed", "foreign"])("bridge preserves only the exact %s permission callback object", async mode => {
+  const child = Object.assign(new EventEmitter(), { pid: 45678, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, stdout: new PassThrough(), stdin: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+  const exit = () => { child.exitCode = 0; child.emit("exit", 0, null); };
+  child.kill.mockImplementation(() => { exit(); return true; });
+  childProcess.spawn.mockReset().mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
+  const failures: Error[] = [], events: unknown[] = [];
+  let peer!: CopilotBridgeChannel, callbackRequest: unknown;
+  peer = new CopilotBridgeChannel(child.stdin, child.stdout, raw => {
+    const message = raw as any;
+    if (message.type !== "request") return;
+    const value = message.method === "open" ? { sessionId: message.args[1] } : {};
+    void peer.send({ type: "response", id: message.id, result: { value, images: [] } }).then(() => { if (message.method === "close") queueMicrotask(exit); }).catch(error => failures.push(error));
+  }, error => failures.push(error));
+  const bridge = startCopilotBridge({ cwd: process.cwd(), env: {}, port: 23456, token: "a".repeat(64), onSpawn() {}, onLost: error => failures.push(error) });
+  try {
+    const client = await bridge.ready;
+    await client.createSession({ sessionId: "fixture-session", onPermissionRequest: request => { callbackRequest = request; return { kind: "no-result" }; }, onEvent: event => events.push(event) });
+    const permissionIdentity = randomUUID(), request = { kind: "read", path: "/controlled/image.png", intention: "ordinary fixture" };
+    await peer.send({ type: "request", id: randomUUID(), method: "callback", sessionId: "fixture-session", callback: "onPermissionRequest", args: [request, { sessionId: "fixture-session" }], permissionIdentity });
+    await vi.waitFor(() => expect(callbackRequest).toBeDefined());
+    await peer.send({ type: "event", sessionId: mode === "foreign" ? "foreign-session" : "fixture-session", permissionIdentity, result: { value: { type: "permission.requested", data: { requestId: "request", permissionRequest: { ...request, ...(mode === "changed" ? { path: "/other/image.png" } : {}) } } }, images: [] } });
+    if (mode === "same") { await vi.waitFor(() => expect(events).toHaveLength(1)); expect((events[0] as any).data.permissionRequest).toBe(callbackRequest); expect(failures).toEqual([]); }
+    else { await vi.waitFor(() => expect(failures).toHaveLength(1)); expect(events).toEqual([]); expect(failures[0]?.message).toContain("does not match"); }
+  } finally { await bridge.close(); peer.close(); }
+});

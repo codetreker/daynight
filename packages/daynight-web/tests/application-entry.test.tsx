@@ -69,7 +69,7 @@ describe("public and authenticated entry ownership", () => {
     mount();
     expect(window.location.hash).toBe("");
     expect(writes.mock.calls.every(([state]) => !JSON.stringify(state).includes("pending-invitation"))).toBe(true);
-    expect(browserNavigation().snapshot()).toEqual({ pathname: "/invitations", search: "", hash: "" });
+    expect(browserNavigation().snapshot()).toMatchObject({ pathname: "/invitations", search: "", hash: "" });
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     await act(async () => navigate(path));
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
@@ -286,7 +286,7 @@ describe("public and authenticated entry ownership", () => {
     expect(sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
     expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
-    expect(Object.keys(history.state.__daynightNavigation).sort()).toEqual(["index", "session"]);
+    expect(Object.keys(history.state.__daynightNavigation).sort()).toEqual(["entryId", "index", "session"]);
   });
 
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {

@@ -25,13 +25,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
+	"github.com/google/uuid"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func testConfig(t *testing.T) configpkg.Config {
 	t.Helper()
 	config := configuredTestConfig()
-	config.StorageRoot = testStorageRoot(t)
+	config.Storage.Root = testStorageRoot(t)
 	return config
 }
 
@@ -184,7 +188,7 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 
 func TestForcedDrainCancelsAdmittedSnapshot(t *testing.T) {
 	config := testConfig(t)
-	config.ShutdownTimeout = 30 * time.Millisecond
+	config.Server.ShutdownTimeout = 30 * time.Millisecond
 	entered := make(chan struct{})
 	queryResult := make(chan error, 1)
 	runtime, _ := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
@@ -252,9 +256,9 @@ func TestRuntimeDrainCompletesOrCancelsAdmittedTaskWrite(t *testing.T) {
 	for _, forced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graceful", true: "deadline"}[forced], func(t *testing.T) {
 			config := testConfig(t)
-			config.ShutdownTimeout = 5 * time.Second
+			config.Server.ShutdownTimeout = 5 * time.Second
 			if forced {
-				config.ShutdownTimeout = 250 * time.Millisecond
+				config.Server.ShutdownTimeout = 250 * time.Millisecond
 			}
 			entered, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
@@ -482,14 +486,14 @@ type runtimeTestResources struct {
 
 func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runtimeTestResources) http.Handler) (*Runtime, *runtimeTestResources) {
 	t.Helper()
-	files, err := local.New(config.StorageRoot)
+	files, err := local.New(config.Storage.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := &runtimeTestStore{httpTestStore: newHTTPTestStore(t)}
 	resources := &runtimeTestResources{Store: database, Files: files}
 	closeApp := func(context.Context) error { database.Close(); return files.Close() }
-	runtime, err := Start(context.Background(), config.ListenAddress, config.StartupTimeout, config.ShutdownTimeout, testLogger(), handler(resources), nil, nil, nil, closeApp)
+	runtime, err := Start(context.Background(), config.Server.ListenAddress, config.Server.StartupTimeout, config.Server.ShutdownTimeout, testLogger(), handler(resources), nil, nil, nil, closeApp)
 	if err != nil {
 		_ = closeApp(context.Background())
 		t.Fatal(err)
@@ -502,29 +506,6 @@ func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runti
 		}
 	})
 	return runtime, resources
-}
-
-func TestTransportStartupFailures(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	_, err = Start(context.Background(), listener.Addr().String(), time.Second, time.Second, testLogger(), http.NotFoundHandler(), nil, nil, nil, nil)
-	var failure *httpx.RuntimeError
-	if !errors.As(err, &failure) || failure.Phase != "listen" || errors.Unwrap(err) == nil {
-		t.Fatalf("listener failure lost cause: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = Start(ctx, "127.0.0.1:0", time.Second, time.Second, testLogger(), http.NotFoundHandler(), nil, nil, nil, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("startup cancellation lost: %v", err)
-	}
-	_, err = Start(context.Background(), "127.0.0.1:0", time.Second, time.Second, testLogger(), nil, nil, nil, nil, nil)
-	if !errors.As(err, &failure) || failure.Phase != "composition" {
-		t.Fatalf("missing handler accepted: %v", err)
-	}
 }
 
 func TestCloseRetriesTimedOutHTTPDrainWithoutClosingApp(t *testing.T) {
@@ -566,11 +547,17 @@ func TestCloseRetriesTimedOutHTTPDrainWithoutClosingApp(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("application closed after the runtime budget: %d", calls.Load())
 	}
+	if runtime.TransportDrained() {
+		t.Fatal("timed-out transport reported as drained")
+	}
 	if err := runtime.Close(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("retry lost grace timeout: %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("application closed more than once: %d", calls.Load())
+	}
+	if !runtime.TransportDrained() {
+		t.Fatal("completed transport drain was not recorded")
 	}
 }
 
@@ -1048,5 +1035,250 @@ func TestConcurrentCloseWaiterDeadlineDoesNotChangeOwner(t *testing.T) {
 	}
 	if relayCalls.Load() != 1 || closeCalls.Load() != 1 {
 		t.Fatalf("unexpected calls: relay=%d close=%d", relayCalls.Load(), closeCalls.Load())
+	}
+}
+
+type shutdownTestAuthenticator struct{}
+
+func (shutdownTestAuthenticator) Authenticate(_ context.Context, kind model.CredentialKind, _ string) (model.Principal, error) {
+	return model.Principal{Kind: kind, UserID: "test-user", CredentialID: "test-credential"}, nil
+}
+
+func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T) {
+	config := testConfig(t)
+	config.Server.ShutdownTimeout = 80 * time.Millisecond
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWork)
+	fixture := sessionHTTPSetup(t)
+	controller, _ := fixture.controller(t, uuid.NewString())
+	routes := fixture.application.relay
+	engine := fixture.application.engine
+	endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := map[string]any{"type": "object"}
+	if err := endpoint.RegisterTool(&sdk.Tool{Name: "wait", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
+		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
+			close(entered)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return mcphttp.ToolResult{}, ctx.Err()
+		}); err != nil {
+		t.Fatal(err)
+	}
+	application := &sessionApplication{Handler: endpoint, relay: routes, engine: engine, mcp: endpoint}
+	runtime, deps := startRuntimeTest(t, config, func(*runtimeTestResources) http.Handler { return application })
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, engine.CancelWork, engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDone := make(chan error, 1)
+	go func() { runtimeDone <- runtime.Run(ctx) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		request, err := http.NewRequest(http.MethodPost, "http://"+runtime.Address(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait","arguments":{}}}`))
+		if err != nil {
+			return
+		}
+		request.Header.Set("Authorization", "Bearer test")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		releaseWork()
+		cancel()
+		select {
+		case <-clientDone:
+		case <-time.After(5 * time.Second):
+			t.Error("MCP client did not stop")
+		}
+	})
+	await(t, entered)
+	started := time.Now()
+	cancel()
+	await(t, canceled)
+	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected bounded shutdown deadline, got %v", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("runtime waited beyond the shared shutdown budget")
+	}
+	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
+	defer stopProbe()
+	if err := deps.Store.Ready(probe); err != nil {
+		t.Fatalf("application dependency closed while MCP work remained active: %v", err)
+	}
+	if _, err := deps.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
+		t.Fatalf("files closed while MCP work remained active: %v", err)
+	}
+	if routes.ActiveConnections() != 1 {
+		t.Fatal("relay stopped its controller before the active MCP handler exited")
+	}
+	operation, err := engine.BeginOperation()
+	if err != nil {
+		t.Fatalf("session engine stopped before the active MCP handler exited: %v", err)
+	}
+	operation.Close()
+
+	releaseWork()
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
+	}
+	await(t, clientDone)
+	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRead()
+	if _, _, err := controller.Read(read); err == nil {
+		t.Fatal("relay retained controller connection after shutdown")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		closing := routes.ActiveConnections() == 0
+		op, operationErr := engine.BeginOperation()
+		if operationErr == nil {
+			op.Close()
+		}
+		engineClosed := operationErr != nil
+		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		databaseClosed := errors.Is(deps.Store.Ready(probe), os.ErrClosed)
+		object, openErr := deps.Files.Open(probe, "runtime", "shutdown.txt")
+		if openErr == nil {
+			_ = object.Body.Close()
+		}
+		cancel()
+		filesClosed := errors.Is(openErr, os.ErrClosed)
+		if closing && engineClosed && databaseClosed && filesClosed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resources not released after MCP and relay stop: relay=%v engine=%v databaseClosed=%v filesClosed=%v", closing, engineClosed, databaseClosed, filesClosed)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestForcedShutdownJoinsSnapshotCancellationWithIdleMCP(t *testing.T) {
+	config := testConfig(t)
+	config.Server.ShutdownTimeout = 30 * time.Millisecond
+	entered := make(chan struct{})
+	queryDone := make(chan error, 1)
+	var application *sessionApplication
+	runtime, dependencies := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine := sessioncore.NewEngine(deps.Files)
+		sessions := sessionservice.New(deps.Store, engine)
+		relay := sessionhttp.NewRoutes(sessions, nil, testLogger())
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", endpoint)
+		mux.Handle("/wait", runtimeWaitOperation(t, deps.Store, entered, queryDone))
+		application = &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}
+		return application
+	})
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, application.engine.CancelWork, application.engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + runtime.Address() + "/wait")
+		if err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() { cancel(); await(t, clientDone) })
+	await(t, entered)
+	cancel()
+	if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected forced shutdown deadline, got %v", err)
+	}
+	if err := await(t, queryDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("snapshot operation did not observe cancellation: %v", err)
+	}
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
+	}
+	if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("cleanup retained the application dependency: %v", err)
+	}
+	await(t, clientDone)
+}
+
+func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
+	drain := &Runtime{drained: make(chan struct{})}
+	called := false
+	handler := drain.admit(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	drain.stopAdmission()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable || called {
+		t.Fatalf("shutdown admitted a new handler: status=%d called=%v", response.Code, called)
+	}
+	drain.stopAdmission()
+}
+
+func TestSessionRuntimeShutsRelayBeforeDependencies(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			called := false
+			sentinel := errors.New("relay drain failed")
+			runtime, dependencies := startRuntimeTest(t, testConfig(t), func(*runtimeTestResources) http.Handler { return http.NotFoundHandler() })
+			runtime.shutdownHandler = func(ctx context.Context) error {
+				called = true
+				if err := dependencies.Store.Ready(ctx); err != nil {
+					t.Errorf("database closed before relay: %v", err)
+				}
+				if _, err := dependencies.Files.Put(ctx, uuid.NewString(), "shutdown.txt", strings.NewReader("relay still owns resources")); err != nil {
+					t.Errorf("files closed before relay: %v", err)
+				}
+				if fail {
+					return sentinel
+				}
+				return nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			err := runtime.Run(ctx)
+			if !called {
+				t.Fatal("relay shutdown hook not called")
+			}
+			if fail {
+				if !errors.Is(err, sentinel) {
+					t.Fatalf("shutdown error lost: %v", err)
+				}
+				if err := dependencies.Store.Ready(context.Background()); err != nil {
+					t.Fatalf("failed relay released database: %v", err)
+				}
+				fail = false
+				if err := runtime.Close(context.Background()); !errors.Is(err, sentinel) {
+					t.Fatalf("retry lost prior relay failure: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+				t.Fatal("completed shutdown retained database")
+			}
+		})
 	}
 }

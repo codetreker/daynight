@@ -13,7 +13,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
 : "${DAYNIGHT_TEST_REDIS_URL:?Set DAYNIGHT_TEST_REDIS_URL to an isolated Redis test instance}"
 rm -f coverage.out
 
-node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts
+node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts scripts/go-cov-capture.test.mts
 GOFLAGS="$unit_go_flags" go vet ./...
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
@@ -28,5 +28,6 @@ command_package="$(GOFLAGS="$unit_go_flags" go list -f '{{.ImportPath}}' ./cmd/d
 packages="$(GOFLAGS="$unit_go_flags" go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' ./... | awk -v command_package="$command_package" '$0 != command_package && $0 != ""' | paste -sd, -)"
 [[ -n "$packages" ]] || { printf '%s\n' 'No production packages found.' >&2; exit 1; }
 GOFLAGS= go install github.com/codetreker/go-cov/cmd/go-cov@v0.1.4
-GOFLAGS="$unit_go_flags -coverpkg=$packages" "$GOBIN/go-cov" --race="$race" --exclude-packages="$command_package"
+node scripts/command-timeout.mts 1800000 5000 env GOFLAGS="$unit_go_flags -coverpkg=$packages" \
+  node scripts/go-cov-capture.mts module "$(command -v go)" "$GOBIN/go-cov" --race="$race" --exclude-packages="$command_package"
 node scripts/coverage.mts coverage.out

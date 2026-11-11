@@ -44,11 +44,11 @@ type configurationSyncReceipt struct {
 	} `json:"configuration"`
 }
 
-func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult, controlMode bool) configurationSyncReceipt {
+func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult, capabilities workerprotocol.Capabilities) configurationSyncReceipt {
 	var result configurationSyncReceipt
 	result.ObservedAt = native.ObservedAt.UTC()
 	result.LastReportedAt = native.LastReportedAt.UTC()
-	result.Configuration.WorkerConfigurationReceipt = projectConfigurationReceipt(native.Configuration, controlMode)
+	result.Configuration.WorkerConfigurationReceipt = projectConfigurationReceipt(native.Configuration, capabilities)
 	result.Configuration.Prompts = prompts
 	return result
 }
@@ -103,13 +103,16 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	configurationAware := protocol != ""
-	controlMode, err := controlModeProtocol(request.Header)
-	if err == nil && controlMode && !configurationAware {
-		err = httpx.InvalidInput("Worker control mode requires the configuration protocol.")
+	capabilities, err := workerCapabilities(request.Header)
+	if err == nil && (capabilities.ControlMode || capabilities.ToolPaths) && !configurationAware {
+		err = httpx.InvalidInput("Worker extensions require the configuration protocol.")
 	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "validate", err)
 		return
+	}
+	if capabilities.ToolPaths {
+		allowed = append(allowed, "toolPaths")
 	}
 	if configurationAware {
 		allowed = append(allowed, "configuration")
@@ -125,7 +128,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	if configurationAware {
-		input.Configuration, err = workercore.ParseWorkerConfigurationExchangeProtocol(fields["configuration"], controlMode)
+		input.Configuration, err = workercore.ParseWorkerConfigurationExchangeProtocol(fields["configuration"], capabilities)
 		if err != nil {
 			httpx.WriteError(w, request, logger, "worker_report", "validate", err)
 			return
@@ -149,12 +152,10 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	logger.InfoContext(request.Context(), "worker report saved", "type", "resource", "component", "worker_report", "phase", "persist", "request_id", httpx.RequestID(request.Context()))
-	if controlMode {
-		w.Header().Set(workerControlModeHeader, "1")
-	}
+	writeWorkerCapabilities(w.Header(), capabilities)
 	if protocol == "2" {
 		w.Header().Set(workerConfigurationHeader, "2")
-		httpx.WriteJSON(w, request, logger, http.StatusOK, syncReceipt(result, prompts, controlMode))
+		httpx.WriteJSON(w, request, logger, http.StatusOK, syncReceipt(result, prompts, capabilities))
 		return
 	}
 	if configurationAware {
@@ -163,7 +164,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 			ObservedAt     time.Time                   `json:"observedAt"`
 			LastReportedAt time.Time                   `json:"lastReportedAt"`
 			Configuration  *WorkerConfigurationReceipt `json:"configuration"`
-		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), projectConfigurationReceipt(result.Configuration, controlMode)})
+		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), projectConfigurationReceipt(result.Configuration, capabilities)})
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerReportResponse{ObservedAt: result.ObservedAt.UTC(), LastReportedAt: result.LastReportedAt.UTC()})
@@ -171,6 +172,12 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 
 func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
+	capabilities, err := workerCapabilities(request.Header)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_report", "read", err)
+		return
+	}
+	writeWorkerCapabilities(w.Header(), capabilities)
 	page, err := httpx.PageRequest(request)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
@@ -194,12 +201,18 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return
 	}
+	capabilities, err := workerCapabilities(request.Header)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_report", "read", err)
+		return
+	}
+	writeWorkerCapabilities(w.Header(), capabilities)
 	result, err := h.workers.Get(request.Context(), principal, id)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: workerDetailResponse(result.Worker)})
+	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: workerprotocol.DetailForCapabilities(result.Worker, capabilities)})
 }
 
 func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {

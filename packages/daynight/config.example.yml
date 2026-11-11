@@ -63,6 +63,17 @@ worker:
   # Root for new Worker repository paths; independent of review's root.
   # Changing it does not relocate an existing local binding.
   repositoryRoot: ~/daynights
+  # Optional tool selections are parsed locally but are not yet connected to
+  # Worker launches, probes or cloud configuration. Saving them does not apply them.
+  # Omit a tool or use null for auto; empty/blank strings are invalid. Explicit
+  # values are complete absolute file paths for this machine, at most 4096 UTF-8
+  # bytes, without control characters. No trimming, arguments or expansion of ~
+  # or environment variables. The shared resolver uses the Worker's Node for Node
+  # entries; selecting an nvm CLI path does not select that directory's Node.
+  # toolPaths:
+  #   codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
+  #   copilot: null
+  #   herdr: /opt/homebrew/bin/herdr
   # Initial cloud values. maxConcurrent and pollIntervalMs are positive integers;
   # pollIntervalMs uses milliseconds, and recoveryLimit is nonnegative.
   maxConcurrent: 1

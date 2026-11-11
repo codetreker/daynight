@@ -1,4 +1,4 @@
-import { isTerminalStatus, taskProgressStatus, type TaskProgressStatus } from "../../api/task-status";
+import { taskProgressStatus, type TaskProgressStatus } from "../../api/task-status";
 import type { GraphTask, TaskGraph, TaskGraphSummary, TaskStatus } from "../../api/types";
 
 export type ComponentProgress = {
@@ -70,7 +70,7 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
     order.set(task.id, nodes.size);
     nodes.set(task.id, task);
     ordinaryNeighbors.set(task.id, []);
-    ordinaryIndegrees.set(task.id, task.dependsOn.length - task.externalDependsOn.length);
+    ordinaryIndegrees.set(task.id, 0);
     successors.set(task.id, []);
   }
 
@@ -78,19 +78,21 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
     total: nodes.size, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0,
   };
   for (const task of nodes.values()) {
-    const blocked = new Set<string>();
+    const blocked = new Set(task.blockedBy);
+    const dependencies = new Set(task.dependsOn);
     const external = new Set(task.externalDependsOn);
     for (const predecessorId of task.dependsOn) {
       const predecessor = nodes.get(predecessorId);
-      if (predecessor === undefined || predecessorId === task.id) return rejectGraph();
+      if (predecessorId === task.id) return rejectGraph();
+      if (predecessor === undefined) continue;
       successors.get(predecessorId)!.push(task.id);
       if (!external.has(predecessorId)) {
         ordinaryNeighbors.get(task.id)!.push(predecessorId);
         ordinaryNeighbors.get(predecessorId)!.push(task.id);
+        ordinaryIndegrees.set(task.id, ordinaryIndegrees.get(task.id)! + 1);
       }
-      if (!isTerminalStatus(predecessor.status)) blocked.add(predecessorId);
     }
-    if (blocked.size !== task.blockedBy.length || task.blockedBy.some((id) => !blocked.has(id)) ||
+    if (task.blockedBy.some((id) => !dependencies.has(id)) ||
       task.ready !== (task.status === "todo" && blocked.size === 0) ||
       ((task.status === "in_progress" || task.status === "done") && blocked.size !== 0)) return rejectGraph();
     if (task.status === "todo") {
@@ -146,7 +148,7 @@ export const projectChain = (index: GraphIndex, rootId: string): ChainProjection
   if (component === undefined) return rejectGraph();
   const mainIds = new Set([...index.nodes.keys()].filter((id) => component.memberIds.has(id)));
   const visibleIds = new Set(mainIds);
-  for (const id of mainIds) for (const source of index.nodes.get(id)!.externalDependsOn) visibleIds.add(source);
+  for (const id of mainIds) for (const source of index.nodes.get(id)!.externalDependsOn) if (index.nodes.has(source)) visibleIds.add(source);
   const externalIds = new Set<string>();
   const edges: ProjectionEdge[] = [];
   for (const task of index.nodes.values()) {
@@ -169,7 +171,7 @@ export const tracePrerequisites = (index: GraphIndex, taskId: string): ReadonlyS
     const id = pending.pop()!;
     if (result.has(id)) continue;
     result.add(id);
-    for (const source of index.nodes.get(id)!.dependsOn) pending.push(source);
+    for (const source of index.nodes.get(id)!.dependsOn) if (index.nodes.has(source)) pending.push(source);
   }
   return result;
 };

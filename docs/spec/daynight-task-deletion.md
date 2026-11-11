@@ -4,6 +4,8 @@
 
 用户可通过 CLI 或 Web 删除 Task。删除使用独立于`todo`、`in_progress`、`done`、`cancelled`的持久化标记；保留任务数据库行、assignedTo、完整资料、状态、执行起止、附件元数据及文件字节。默认保留依赖记录；显式选择解除引用时，只删除其他任务指向目标任务的直接依赖，目标自己的前置依赖继续保留。公共 Task JSON 不增加删除时间字段。已删除任务退出正常业务视图，不提供恢复、回收站、批量删除任务、级联删除任务或传递重连入口。
 
+Goal 删除只标记 Goal 自身，保留其孩子的 Parent、状态、版本、依赖与执行归属；孩子在正常入口不可见，后续成功库存观察触发既有清理。详细合同见 [Goal 需求](daynight-goals.md)。以下删除规则适用于普通 Task。
+
 ## 删除规则
 
 普通项目成员和管理员均可删除。删除必须在同一项目写事务中重新核对成员权限、任务身份和精确版本，先判断版本，再判断业务限制。合法版本范围为正 int64，沿用既有严格 JSON 和 CLI 十进制规则。
@@ -28,7 +30,7 @@
 
 ## CLI
 
-`daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]` 与 `dn` 等价。`--remove-depends` 是可选开关；不传时严格删除，无未删除引用者即可成功，有引用者返回 409。传入时发送明确的 `removeDepends:true`，原子解除全部传入引用再软删除。省略版本时仅先 GET 一次任务并提交读取到的版本；显式版本直接提交，不能以新版本替换冲突版本。成功输出明确的软删除结果；失败保留服务错误和不确定写入诊断。CLI 不另加交互确认，不自动重试写入。
+`daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]` 与 `dn` 等价。`--remove-depends` 是可选开关；不传时严格删除，无未删除引用者即可成功，有引用者返回 409。传入时发送明确的 `removeDepends:true`，原子解除全部传入引用再软删除。提交前读取目标的真实类型和身份；省略版本时提交读取到的版本，显式版本保持原值，不能以预读版本替换。普通 Task 沿用原删除行为；Goal 删除前在 stderr 提示 Goal 和所有子 Task 将不可见、归属不解除，执行中的 Task 会在后续成功观察后进入既有停止流程。交互确认或 `--force` 才提交，非交互无 force 不提交；force 只跳过 Goal 提示，不绕过服务端业务或版本检查。成功仅报告删除提交；失败保留服务错误和不确定写入诊断，不自动重试写入。
 
 ```bash
 daynight task delete <task-id> --if-version 3

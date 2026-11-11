@@ -27,13 +27,36 @@ func (tx *Writer) Task(ctx context.Context, id string) (model.Task, error) {
 	return pg.ReadTaskWithLock(ctx, tx.tx, tx.projectID, id, " FOR UPDATE OF t")
 }
 
+func (tx *Writer) ParentTask(ctx context.Context, id string) (model.Task, error) {
+	return pg.ReadTaskWithLock(ctx, tx.tx, tx.projectID, id, "")
+}
+
+func (tx *Writer) GoalProgresses(ctx context.Context, projectID string, ids []string) (map[string]model.GoalProgress, error) {
+	return (&Reader{tx: tx.tx}).GoalProgresses(ctx, projectID, ids)
+}
+
 func (tx *Writer) TasksByID(ctx context.Context, ids []string) ([]model.Task, error) {
 	return tx.tasks(ctx, `t.id = ANY($2::uuid[])`, ids, "read prerequisites")
 }
 
+// VisibleTaskIDs admits only live ordinary resources as new dependency targets.
+func (tx *Writer) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, error) {
+	rows, err := tx.tx.Query(ctx, `SELECT id::text FROM task_resource_rows
+		WHERE project_id=$1 AND id=ANY($2::uuid[]) AND type='task' AND effective_deleted_at IS NULL ORDER BY id`, tx.projectID, ids)
+	if err != nil {
+		return nil, pg.QueryError("read visible dependency targets", err)
+	}
+	defer rows.Close()
+	visible, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, pg.QueryError("read visible dependency targets", err)
+	}
+	return visible, nil
+}
+
 func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT `+pg.TaskProjection+` FROM tasks t
-		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND `+condition+` ORDER BY t.id`, tx.projectID, value)
+		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, pg.QueryError(phase, err)
 	}
@@ -51,7 +74,7 @@ func (tx *Writer) ActiveDependentIDs(ctx context.Context, id string) ([]string, 
 	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
 		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
-		AND t.deleted_at IS NULL AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
+		AND t.deleted_at IS NULL AND t.type = 'task' AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
 	if err != nil {
 		return nil, pg.QueryError("read active dependents", err)
 	}
@@ -68,7 +91,7 @@ func (tx *Writer) Reachable(ctx context.Context, from, to string, replacement De
 	err := tx.tx.QueryRow(ctx, `WITH RECURSIVE edges(task_id, depends_on_task_id) AS (
 		SELECT d.task_id, d.depends_on_task_id FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
-		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND d.task_id <> $4::uuid
+		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND t.type = 'task' AND d.task_id <> $4::uuid
 		UNION SELECT $4::uuid, unnest($5::uuid[])
 	), visited(id) AS (
 		SELECT $2::uuid
@@ -87,8 +110,16 @@ func (tx *Writer) CreateTask(ctx context.Context, id string, values TaskWrite) (
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}
 	values.Properties = properties
-	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to, cancelled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $5 = 'cancelled' THEN statement_timestamp() ELSE NULL END)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
+	taskType := values.Type
+	if taskType == "" {
+		taskType = model.TaskTypeTask
+	}
+	var observedAt, startedAt, completedAt, cancelledAt any
+	if values.GoalTiming != nil {
+		observedAt, startedAt, completedAt, cancelledAt = values.GoalTiming.ObservedAt, values.GoalTiming.StartedAt, values.GoalTiming.CompletedAt, values.GoalTiming.CancelledAt
+	}
+	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to, type, parent_id, created_at, updated_at, started_at, completed_at, cancelled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, statement_timestamp()), COALESCE($11::timestamptz, statement_timestamp()), $12, $13, CASE WHEN $11::timestamptz IS NOT NULL THEN $14::timestamptz WHEN $5 = 'cancelled' THEN statement_timestamp() ELSE NULL END)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo, taskType, values.ParentID, observedAt, startedAt, completedAt, cancelledAt)
 	if err != nil {
 		return model.Task{}, pg.QueryError("create task", err)
 	}
@@ -107,21 +138,28 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}
 	values.Properties = properties
-	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8,
+	var observedAt, startedAt, completedAt, cancelledAt any
+	if values.GoalTiming != nil {
+		observedAt, startedAt, completedAt, cancelledAt = values.GoalTiming.ObservedAt, values.GoalTiming.StartedAt, values.GoalTiming.CompletedAt, values.GoalTiming.CancelledAt
+	}
+	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8, parent_id = $9,
 		started_at = CASE
+			WHEN $10::timestamptz IS NOT NULL THEN $11::timestamptz
 			WHEN status <> $5 AND $5 = 'in_progress' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 IN ('proposed', 'todo') THEN NULL
 			WHEN status IN ('proposed', 'todo') AND $5 = 'done' THEN NULL
 			ELSE started_at END,
 		completed_at = CASE
+			WHEN $10::timestamptz IS NOT NULL THEN $12::timestamptz
 			WHEN status <> $5 AND $5 = 'done' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 IN ('proposed', 'todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
 		cancelled_at = CASE
+			WHEN $10::timestamptz IS NOT NULL THEN $13::timestamptz
             WHEN status <> $5 AND $5 = 'cancelled' THEN statement_timestamp()
             ELSE cancelled_at END,
-        version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
-		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
+        version = version + 1, updated_at = COALESCE($10::timestamptz, statement_timestamp()) WHERE project_id = $1 AND id = $2`,
+		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo, values.ParentID, observedAt, startedAt, completedAt, cancelledAt)
 	if err != nil {
 		return model.Task{}, pg.QueryError("update task", err)
 	}
