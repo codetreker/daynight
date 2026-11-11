@@ -220,9 +220,10 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
 
   it("retains a nonempty checkout whose Git pointer is missing", async () => {
     const f = fixture(), value = owner(), original = f.add(value);
+    const tracked = readFileSync(path.join(original.cwd, "tracked.txt"));
     unlinkSync(path.join(original.cwd, ".git"));
     await expect(f.migrate()).rejects.toThrow("reverse Git pointer");
-    expect(readFileSync(path.join(original.cwd, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(readFileSync(path.join(original.cwd, "tracked.txt"))).toEqual(tracked);
     expect(existsSync(path.join(original.admin, "locked"))).toBe(true);
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
