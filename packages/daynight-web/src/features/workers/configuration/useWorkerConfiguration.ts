@@ -2,7 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
-import { TaskCacheLifecycleChanged } from '../../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
@@ -53,7 +53,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
           if (signal.aborted) abort();
         });
         try { await scope.ready(signal); } catch (error) {
-          if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && alive() && !signal.aborted) continue;
           throw error;
         }
         if (enabled && alive()) return;

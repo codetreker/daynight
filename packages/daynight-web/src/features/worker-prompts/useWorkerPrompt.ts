@@ -3,7 +3,7 @@ import { ApiError } from '../../api/client';
 import { getWorkerPrompt, isPromptText, PROMPT_REQUEST_BYTES, promptSubmissionBytes, saveWorkerPrompt, type PromptTarget } from '../../api/worker-prompts';
 import { useProjectAccessSession } from '../projects/ProjectAccess';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange } from '../task-cache/project-cache';
 import { freezeSubmission, initialPromptState, promptDirty, promptReducer, type PromptAction, type PromptState } from './state';
 
 type OwnedState = { readonly owner: object; readonly key: string; readonly state: PromptState; readonly unavailable: boolean };
@@ -45,7 +45,7 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
           waiters.add(resume); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
         });
         try { await scope.ready(signal); } catch (error) {
-          if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && alive() && !signal.aborted) continue;
           throw error;
         }
         if (access !== null) {

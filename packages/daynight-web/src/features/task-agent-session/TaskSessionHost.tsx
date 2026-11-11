@@ -132,6 +132,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
     let wake: (() => void) | null = null;
     let recovering = false;
     const valid = () => {
+      if (scope.hasIdentityMismatch) return false;
       if (authRequestsPaused()) {
         if (!recovering) { recovering = true; void scope.ready(signal).then(() => setLifecycle(value => value + 1)).catch(() => {}); }
         return false;
@@ -152,7 +153,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
         wake?.();
       }
       if (!valid()) {
-        if (!signal.aborted && !scope.isInvalidated && !scope.isProjectSuspended(projectId) && !authRequestsPaused()) {
+        if (!signal.aborted && !scope.isInvalidated && !scope.hasIdentityMismatch && !scope.isProjectSuspended(projectId) && !authRequestsPaused()) {
           const project = scope.getAuthorizedProject(projectId);
           if (project === null || project.summaries.has(taskId)) setState({ ...initial(), denied: true });
           else setState(old => old.owner === owner ? { ...old, page: null, first: null, error: new ApiError('server', 404), loading: false, checking: false, denied: true } : old);
@@ -237,6 +238,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
           }
         }
       } catch (error) {
+        if (scope.hasIdentityMismatch) return;
         if (isAbortError(error)) {
           if (authRequestsPaused()) { void scope.ready(signal).then(() => setLifecycle(value => value + 1)).catch(() => {}); return; }
           if (!signal.aborted && !scope.isInvalidated && !scope.isProjectSuspended(projectId) && scope.canPreviewProject(projectId)) {
@@ -553,7 +555,8 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
       setState(old => ({ owner, loaded: old.owner === owner && old.loaded?.status === 'ready' && loaded.status === 'ready' && old.referenceKey === referenceKey && old.loaded.nativeRevision === loaded.nativeRevision ? old.loaded : loaded, error: null, loading: false, referenceKey }));
       if (loaded.status === 'pending' || loaded.status === 'unavailable' && preparing) timer = setTimeout(() => refresh(value => value + 1), 3000);
     })().catch(error => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || scope.hasIdentityMismatch) return;
+      if (error instanceof ApiError && error.kind === 'protocol' && error.code === 'principal_mismatch') return;
       const denied = error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0);
       if (denied) { denyResources(error); return; }
       setState(old => ({ owner, loaded: !denied && old.owner === owner ? old.loaded : null, error, loading: false }));
@@ -592,7 +595,7 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
   const lifetime = useMemo(() => {
     let retired = false, draining: Promise<void> | null = null;
     let reader: ReturnType<TerminalSessionApi['resources']> | null = null;
-    const admitted = () => !retired && admission.current.active && admission.current.current && !authority.isInvalidated && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
+    const admitted = () => !retired && admission.current.active && admission.current.current && !authority.isInvalidated && !authority.hasIdentityMismatch && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
     const read = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
       signal.throwIfAborted();
       if (!admitted()) throw new ImageFailure('access_pending', 'Archived resource access is being checked.');
@@ -614,7 +617,7 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
         if (!admitted()) throw new ImageFailure('access_pending', 'Archived resource access is being checked.');
         return blob;
       } catch (error) {
-        if (!retired && error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
+        if (!retired && !authority.hasIdentityMismatch && error instanceof ApiError && !(error.kind === 'protocol' && error.code === 'principal_mismatch') && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
         throw error;
       }
     };

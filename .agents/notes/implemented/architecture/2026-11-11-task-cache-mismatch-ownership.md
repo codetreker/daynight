@@ -15,8 +15,12 @@ The cache synchronously notifies its account owner before rejecting a principal
 mismatch or a transaction observing a replacement user fence. It neither clears
 its projection nor adopts the replacement fence on those paths. The current root
 owner invalidates the scope and starts identity verification; an owner that
-retains content must synchronously pause admission. Transaction and publication
-fences continue to reject stale data. Scope cleanup checks the bound user fence
+retains content must synchronously pause admission. After notification, a permanent mismatch fence ends admission waiters, aborts
+uncommitted ordinary transactions, and prevents late success or denial from
+publishing against the retained scope. Confirmed writes remain recorded. A
+normal same-account pause does not set this fence, so trusted revocations still
+apply. A peer's confirmed project withdrawal still withdraws matching retained
+projections without reopening durable admission. Scope cleanup checks the bound user fence
 in the same transaction before clearing durable rows, so an old owner cannot
 erase a replacement lifecycle. The [task synchronization design](../../../../docs/design/daynight-task-sync.md)
 owns the current lifecycle contract.

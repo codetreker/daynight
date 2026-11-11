@@ -277,8 +277,8 @@ export class TaskDetailSessions {
     return this.summaryVersion(entry.steps.projectId, entry.steps.taskId);
   }
   private ticketCurrent(entry: Entry, ticket: ReadTicket, allowAuthPaused = false): boolean {
-    return "historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
-      : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration;
+    return !this.scope.hasIdentityMismatch && ("historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
+      : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration);
   }
   historyGeneration(projectId: string): number { return this.scope.getHistoryGeneration(projectId); }
   directRequiresFreshRead(projectId: string, taskId: string, allowAuthPaused = false): boolean {
@@ -573,7 +573,7 @@ export class TaskDetailSessions {
           const detail = await this.getParent(entry, ticket, signal);
           await this.accept(steps.projectId, steps.taskId, detail, ticket, entry.state.revision, false, signal);
         } catch (parentError) {
-          if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(parentError)) return;
+          if (signal.aborted || this.disposed || this.scope.isInvalidated || this.scope.hasIdentityMismatch || generation !== steps.generation || isAbortError(parentError)) return;
           if (parentError instanceof ApiError && parentError.kind === "server" && parentError.status === 410 && parentError.code === "task_deleted") {
             this.markDeleted(steps.projectId, steps.taskId, ticket.cacheGeneration, parentError);
             return;
@@ -793,7 +793,7 @@ export class TaskDetailSessions {
     this.loadSteps(entry.steps.projectId, entry.steps.taskId, true);
   }
   private markDeleted(projectId: string, taskId: string, cacheGeneration: string, error: ApiError | null, phase: "confirmed" | "reconciled" = "confirmed"): void {
-    if (this.scope.isInvalidated) return;
+    if (this.scope.isInvalidated || this.scope.hasIdentityMismatch) return;
     const entry = this.entry(projectId, taskId);
     if (this.entryGeneration(entry) !== cacheGeneration) { this.refreshProject(projectId); return; }
     this.cancelRead(projectId, taskId);
@@ -811,6 +811,7 @@ export class TaskDetailSessions {
     this.refreshProject(projectId);
   }
   private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
+    if (this.scope.hasIdentityMismatch) return;
     if (entry.steps.pending !== null) this.failSteps(entry.steps, error);
     const stepReconciliation = isStepOperation(entry.state.mutation.operation) && entry.state.mutation.reconciling;
     if (stepReconciliation) entry.queuedRead = null;
@@ -825,7 +826,7 @@ export class TaskDetailSessions {
   }
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
-    const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
+    const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && !this.scope.hasIdentityMismatch && entry.state.status !== "deleted" &&
       entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
@@ -939,7 +940,7 @@ export class TaskDetailSessions {
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
-      if (signal.aborted || generation !== entry.generation || this.disposed || !retain && !reconciliation && isAbortError(error)) return;
+      if (signal.aborted || generation !== entry.generation || this.disposed || this.scope.hasIdentityMismatch || !retain && !reconciliation && isAbortError(error)) return;
       if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
         this.markDeleted(projectId, taskId, ticket.cacheGeneration, error, reconciliation ? "reconciled" : "confirmed");
         if (knownGoal && ticket.epoch !== null) this.scope.fenceGoalHistory(projectId, ticket.epoch);
@@ -1164,6 +1165,7 @@ export class TaskDetailSessions {
       ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
     retired.error = error;
     if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
+    if (this.scope.hasIdentityMismatch) return;
     if (error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted" &&
       retired.goalEpoch !== null && retired.fence !== null && this.scope.isTaskReadCurrent(retired.fence, true)) {
       this.scope.fenceGoalHistory(retired.projectId, retired.goalEpoch);
@@ -1303,7 +1305,7 @@ export class TaskDetailSessions {
       try { await this.scope.ready(this.scope.signal); }
       catch (error) {
         if (this.scope.isInvalidated) return null;
-        if (authRequestsPaused()) continue;
+        if (authRequestsPaused() && !(error instanceof TaskCacheLifecycleChanged && !error.retryable)) continue;
         throw error;
       }
       if (authRequestsPaused()) continue;
@@ -1314,7 +1316,7 @@ export class TaskDetailSessions {
         // A pause during asynchronous admission is not a rejection of the review.
         // Once dispatch starts, however, an operation must never be replayed.
         if (retryPreparation?.() && authRequestsPaused() && !this.scope.isInvalidated &&
-          (isAbortError(error) || error instanceof TaskMutationReviewExpired)) continue;
+          (isAbortError(error) && (!(error instanceof TaskCacheLifecycleChanged) || error.retryable) || error instanceof TaskMutationReviewExpired)) continue;
         throw error;
       }
     }
@@ -1470,6 +1472,14 @@ export class TaskDetailSessions {
         else this.finishRetiredMutation(operation, confirmed, error, committedVersion);
         return true;
       };
+      const settleFenceMismatch = (failure: TaskCacheLifecycleChanged, observed: unknown = failure): void => {
+        if (entry.state.mutation.operation !== operation) return;
+        if (confirmed) entry.committedVersion = committedVersion;
+        const phase = confirmed ? "confirmed" : !submitted ? "refused" : observed instanceof ApiError && observed.kind === "server" && observed.status !== null && observed.status >= 400 && observed.status < 500
+          ? observed.code === "version_conflict" ? "conflict" : "refused" : "unknown";
+        this.publish(entry, { ...entry.state, requiresFreshRead: true,
+          mutation: { operation, phase, error: confirmed ? null : observed, reconciling: false, reconciliationError: confirmed || phase === "unknown" ? failure : null } });
+      };
       const runOutcome = async (outcomeTicket: ReadTicket | null, error: unknown, work: () => void | Promise<void>, before?: () => boolean, verify = true, onRetired?: () => Promise<void>): Promise<void> => {
         // Verify and admit in the same turn; retry only the read-only part.
         for (;;) {
@@ -1528,7 +1538,7 @@ export class TaskDetailSessions {
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
           onWriteConfirmed: () => {
             confirmed = true;
-            if (operation.action === "delete" && previous.type === "goal") {
+            if (!this.scope.hasIdentityMismatch && operation.action === "delete" && previous.type === "goal") {
               const generation = this.entryGeneration(entry);
               if (generation !== null) this.markDeleted(projectId, taskId, generation, null);
               const reviewedEpoch = "historyGeneration" in requestTicket ? review.receipt?.epoch : requestTicket.epoch;
@@ -1685,6 +1695,11 @@ export class TaskDetailSessions {
       } catch (error) {
         if (this.scope.isInvalidated) return;
         if (settleRetired(error)) return;
+        if (this.scope.hasIdentityMismatch) { settleFenceMismatch(new TaskCacheLifecycleChanged(false), error); return; }
+        if (error instanceof TaskCacheLifecycleChanged && !error.retryable) {
+          settleFenceMismatch(error);
+          return;
+        }
         if (!isStepOperation(operation) && ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
           this.scope.isTaskReadCurrent(ticket, true) && entry.openingGeneration === ticket.openingSequence) {
           entry.receipt = null; entry.liveVersion = null; entry.withdrawn = true;
@@ -1709,6 +1724,7 @@ export class TaskDetailSessions {
             }, !negative);
           } catch (failure) {
             if (settleRetired(error)) return;
+            if (failure instanceof TaskCacheLifecycleChanged && !failure.retryable) { settleFenceMismatch(failure, error); return; }
             if (ticket !== null && "historyGeneration" in ticket && (isRetryableTaskCacheLifecycleChange(failure) && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
               this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
           }

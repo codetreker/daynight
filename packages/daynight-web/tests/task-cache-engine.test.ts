@@ -467,16 +467,12 @@ it("notifies the owner before destroying a projection on a real principal mismat
     await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch })).rejects.toMatchObject({ kind: "protocol", code: "principal_mismatch" });
     expect(mismatch).toHaveBeenCalledOnce(); expect(body).not.toHaveBeenCalled();
     expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
-    const controller = new AbortController();
-    const late = cache.applySync(ticket, response([task(2)]), controller.signal);
-    let settled = false; void late.then(() => { settled = true; }, () => { settled = true; });
-    await Promise.resolve(); await Promise.resolve();
-    expect(settled).toBe(false);
+    await expect(cache.applySync(ticket, response([task(2)]), signal())).rejects.toMatchObject({ name: "AbortError", retryable: false });
     const database = await inspect();
     expect((await database.getAllFromIndex("summaries", "by-user", userId)).map(row => row.taskId)).toEqual([taskId(1)]);
-    controller.abort(); await expect(late).rejects.toMatchObject({ name: "AbortError" });
   } finally { resume(); }
   expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+  await expect(cache.readProject(projectId, signal())).rejects.toMatchObject({ retryable: false });
 });
 
 it("holds disk reads and publication behind the foreground identity gate", async () => {
@@ -861,4 +857,59 @@ it('publishes claim changes and removal only within the authorized user and proj
   expect(cache.getAuthorizedProject(projectId)).toBeNull();
   await expect(cache.applySync(ticket, response([task(1, { version: 4n, properties: { worker: worker('late', 'active') } })]), signal())).rejects.toMatchObject({ name: 'AbortError' });
   expect(cache.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it("releases existing admission waiters once after concurrent real principal mismatches", async () => {
+  let resume = () => {}; const mismatch = vi.fn(); const cache = scope(userId, mismatch); await seed(cache);
+  let release!: (response: Response) => void; const pendingResponse = new Promise<Response>(resolve => { release = resolve; });
+  vi.stubGlobal("fetch", vi.fn().mockReturnValue(pendingResponse));
+  const first = getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch });
+  const second = getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch });
+  resume = pauseAuthRequests(); const waiting = cache.ready(signal());
+  try {
+    release(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) }));
+    await expect(first).rejects.toMatchObject({ code: "principal_mismatch" });
+    await expect(second).rejects.toMatchObject({ code: "principal_mismatch" });
+    await expect(waiting).rejects.toMatchObject({ name: "AbortError", retryable: false });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(cache.signal.aborted).toBe(false);
+  } finally { resume(); }
+});
+
+it("aborts an in-flight durable write after a real principal mismatch", async () => {
+  const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  const detail: TaskIntrinsicDetail = detailFixture(projectId, taskId(1));
+  await expect(cache.detailTransaction(ticket, signal(), async (details, manifest) => {
+    const write = details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
+    void write.catch(() => {});
+    await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+    await write;
+  })).rejects.toMatchObject({ retryable: false });
+  const database = await inspect(); expect(await database.getAll("details")).toEqual([]);
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+});
+
+it("honors a peer's confirmed project withdrawal after retaining a mismatched scope", async () => {
+  const retained = scope(); await seed(retained); const peer = scope();
+  const ticket = await peer.beginSync(projectId, signal());
+  await peer.applySync(ticket, response([]), signal());
+  const denial = await peer.beginSync(projectId, signal());
+  const events: { accessRevoked?: true }[] = []; retained.subscribe(event => events.push(event));
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: retained.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+  expect(retained.getAuthorizedProject(projectId)).not.toBeNull();
+  expect(await peer.revokeProject(denial, signal())).toBe(true);
+  await vi.waitFor(() => expect(events.some(event => event.accessRevoked)).toBe(true));
+  expect(retained.getAuthorizedProject(projectId)).toBeNull(); expect(retained.signal.aborted).toBe(false);
+});
+
+it("withdraws matching peer directory generations after a retained mismatch", async () => {
+  const peer = scope(); await seed(peer); const denial = await peer.beginSync(projectId, signal());
+  const directory = scope(); const snapshot = await directory.prepareProjection(signal());
+  const events: import('../src/features/task-cache/project-cache').CacheEvent[] = [];
+  directory.subscribeProjection(event => events.push(event));
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: directory.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+  expect(await peer.revokeProject(denial, signal())).toBe(true);
+  await vi.waitFor(() => expect(events.some(event => event.accessRevoked && directory.projectionEventMatches(snapshot, event))).toBe(true));
 });

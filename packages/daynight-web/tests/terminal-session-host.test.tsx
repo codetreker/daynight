@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { Blob as NodeBlob } from 'node:buffer';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { FixedSessionRecording, ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
@@ -10,12 +11,12 @@ import type { LoadedSessionArchive } from '../src/api/sessions';
 import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { sessionImageBytes, sessionImageSamples } from './helpers/sessionImages';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
-import type { SessionHistoryItem } from '../src/api/terminal-sessions';
-import { ApiError } from '../src/api/client';
+import type { SessionHistoryItem, SessionRecordingReference } from '../src/api/terminal-sessions';
+import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, readCachedSessionHistory, readSessionHistoryPaginationState, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider, TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 vi.mock('../src/api/sessions', () => ({ createSessionApi: vi.fn() }));
-vi.mock('../src/api/terminal-sessions', () => ({ createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
+vi.mock('../src/api/terminal-sessions', async original => ({ ...(await original<typeof import('../src/api/terminal-sessions')>()), createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
 vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), completeSessionHistoryPagination: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
 beforeEach(() => {
@@ -375,6 +376,33 @@ describe('unified Session and managed records', () => {
     expect(await screen.findByText('Private saved result.')).toBeVisible();
     expect(nativeArchive).toHaveBeenLastCalledWith(item, expect.any(AbortSignal));
   });
+  it.each([['web', 403], ['web', 404], ['herdr', 403], ['herdr', 404]] as const)('retains the loaded %s archive on a different principal %i refresh', async (mode, status) => {
+    let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+    const authority = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+    const nativeModule = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
+    const terminalModule = await vi.importActual<typeof import('../src/api/terminal-sessions')>('../src/api/terminal-sessions');
+    vi.mocked(createSessionApi).mockReturnValue(nativeModule.createSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch));
+    const real = terminalModule.createTerminalSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch);
+    const image = mode === 'web' ? await imageRecording() : null;
+    const api = image?.api ?? fixture();
+    const item = image?.item ?? record;
+    if (image === null) {
+      const archive = JSON.parse(readFileSync('../daynight/test/session/fixtures/v2/valid-archive.json', 'utf8'));
+      api.archive.mockResolvedValueOnce({ status: { payload: { state: 'ready' } }, archive } as never);
+    }
+    const view = render(<FixedSessionRecording api={api as never} item={item} active projectId={projectId} />, { taskCache: { scope: authority } });
+    try {
+      const preserved = mode === 'web' ? await screen.findByText('Saved image record.') : await screen.findByRole('region', { name: 'Session recording' });
+      const savedImage = image === null ? null : await screen.findByRole('img', { name: image.resource.name });
+      if (image === null) api.archive.mockImplementationOnce(((value: typeof record, signal: AbortSignal) => real.archive(value, signal)) as never);
+      else image.api.nativeArchive.mockImplementationOnce(((value: SessionRecordingReference, signal: AbortSignal) => real.nativeArchive(value, signal)) as never);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } })));
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
+      expect(authority.signal.aborted).toBe(false); expect(preserved).toBeVisible(); expect(screen.queryByRole('alert')).toBeNull();
+      if (image !== null) { expect(image.reader.close).not.toHaveBeenCalled(); expect(screen.getByRole('img', { name: image.resource.name })).toBe(savedImage); }
+    } finally { view.unmount(); resume(); authority.dispose(); }
+  });
   it.each([1, 3] as const)('shows schema %s saved images inside the record and retains them during an admission check', async schemaVersion => {
     const f = await imageRecording(schemaVersion), scopes = vi.spyOn(pageImageStore, 'createScope');
     const content = (current: boolean) => <FixedSessionRecording api={f.api as never} item={f.item} active current={current} projectId={projectId} />;
@@ -436,6 +464,24 @@ describe('unified Session and managed records', () => {
     expect(scopes.mock.results[0]!.value.valid).toBe(false);
     expect(f.reader.close).toHaveBeenCalledOnce();
     expect(f.api.command).not.toHaveBeenCalled();
+  });
+  it('keeps the archive and resource reader when an image response proves another principal', async () => {
+    let resume = () => {}; const mismatch = vi.fn(() => { resume = pauseAuthRequests(); });
+    const authority = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: mismatch });
+    const actual = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
+    const native = actual.createSessionApi(projectId, taskId, TEST_VIEWER_ID, authority.principalMismatch);
+    const f = await imageRecording(), scopes = vi.spyOn(pageImageStore, 'createScope');
+    let close: ReturnType<typeof vi.spyOn> | null = null;
+    f.api.resources.mockImplementation(((fence: Parameters<typeof native.resources>[0], isCurrent: () => boolean) => {
+      const reader = native.resources(fence, isCurrent); close = vi.spyOn(reader, 'close'); return reader;
+    }) as never);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 403, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } })));
+    const view = render(<FixedSessionRecording api={f.api as never} item={f.item} active projectId={projectId} />, { taskCache: { scope: authority } });
+    try {
+      await screen.findByText('Saved image record.'); await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
+      expect(authority.signal.aborted).toBe(false); expect(screen.getByText('Saved image record.')).toBeVisible();
+      expect(scopes.mock.results[0]!.value.valid).toBe(true); expect(close).not.toHaveBeenCalled(); expect(screen.queryByRole('alert')).toBeNull();
+    } finally { view.unmount(); resume(); authority.dispose(); }
   });
   it.each(['not_registered', 'not_applicable'] as const)('keeps completed %s recoverable without consulting old history', async status => {
     const api = fixture();

@@ -45,7 +45,7 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
     if (!active || !documentVisible || document.visibilityState === 'hidden' || flight.current !== null || claimId === undefined || mode === undefined || scope.isInvalidated || scope.isProjectSuspended(projectId)) return;
     const controller = new AbortController();
     const reading = { owner, controller }; flight.current = reading;
-    const isCurrent = () => !controller.signal.aborted && contextRef.current.owner === owner && activeRef.current && document.visibilityState !== 'hidden' && !scope.isInvalidated && !scope.isProjectSuspended(projectId);
+    const isCurrent = () => !controller.signal.aborted && contextRef.current.owner === owner && activeRef.current && document.visibilityState !== 'hidden' && !scope.isInvalidated && !scope.hasIdentityMismatch && !scope.isProjectSuspended(projectId);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => controller.abort(); scope.signal.addEventListener('abort', abort);
     const unsubscribe = scope.subscribe(event => { if (event.projectId === projectId && (event.accessRevoked || event.scopeSuspended)) abort(); });
@@ -69,7 +69,7 @@ export function useCompletedTaskSession({ projectId, taskId, claimId, mode, api,
       if (preparing) timer = setTimeout(refresh, 3000);
     })().catch(error => {
       if (!isCurrent()) return;
-      if (error instanceof ApiError && error.code === 'principal_mismatch') return;
+      if (error instanceof ApiError && error.kind === 'protocol' && error.code === 'principal_mismatch') return;
       const denied = error instanceof ApiError && (error.kind === 'protocol' || [401, 403, 404, 410].includes(error.status ?? 0));
       setState(old => ({ owner, item: !denied && old.owner === owner ? old.item : null, loading: false, error, availability: null, preparing: false }));
     }).finally(() => {

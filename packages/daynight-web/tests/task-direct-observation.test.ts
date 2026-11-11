@@ -1117,8 +1117,9 @@ it("does not publish a direct write receipt after the persisted identity changes
 });
 
 it.each(["success", "error"] as const)("keeps direct content when a late %s write encounters a changed fence and the owner pauses", async (outcome) => {
-  const mismatch = deferred<void>(); let resume = () => {};
+  const mismatch = deferred<void>(); let resume = () => {}; let notifications = 0;
   const { sessions, scope } = world((current) => {
+    notifications++;
     expect(current.signal.aborted).toBe(false);
     expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
     resume = pauseAuthRequests(); mismatch.resolve();
@@ -1137,9 +1138,28 @@ it.each(["success", "error"] as const)("keeps direct content when a late %s writ
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(scope.isInvalidated).toBe(false);
     expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
-    expect(sessions.snapshot(project, task).mutation.phase).not.toBe("confirmed");
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe(outcome === "success" ? "confirmed" : "refused"));
     expect(writes).toBe(1);
   } finally { resume(); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(notifications).toBe(1); expect(writes).toBe(1);
+});
+
+it("does not retry a direct mutation preparation after a retaining owner resumes", async () => {
+  const mismatch = deferred<void>(); let resume = () => {}; let notifications = 0; let writes = 0;
+  const { sessions, scope } = world(() => { notifications++; resume = pauseAuthRequests(); mismatch.resolve(); });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => { if (init.method === "PUT") writes++; return Promise.resolve(response(body())); }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  await db.put("userScopes", { userId: TEST_VIEWER_ID, userFence: crypto.randomUUID() }); db.close();
+  sessions.setStatus(project, task, "in_progress", 1n);
+  try {
+    await mismatch.promise;
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe("refused"));
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(scope.signal.aborted).toBe(false);
+  } finally { resume(); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(notifications).toBe(1); expect(writes).toBe(0);
 });
 
 it("withdraws a reopened task and keeps it locked while a retired write's 404 is revalidated", async () => {
@@ -1470,4 +1490,23 @@ it.each([200, 404] as const)('revalidates a fresh parent 404 without an open vie
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
   await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
   reopen();
+});
+
+it.each([404, 410] as const)("keeps direct content when a pre-mismatch read returns a late %s", async (status) => {
+  let resume = () => {}; const { sessions, scope } = world(() => { resume = pauseAuthRequests(); });
+  const late = deferred<Response>(); let reads = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if ((init.method === undefined || init.method === "GET") && ++reads === 2) return late.promise;
+    if (reads > 2) return Promise.resolve(wireResponse(body(), { headers: viewerHeaders("99999999-9999-4999-8999-999999999999") }));
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.load(project, task, 2, "refresh"); await waitFor(() => expect(reads).toBe(2));
+  try {
+    await expect(getTaskObservation(project, task, signal(), { userId: TEST_VIEWER_ID, onPrincipalMismatch: scope.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+    late.resolve(response({ error: { code: status === 410 ? "task_deleted" : "not_found", message: "Gone", requestId: "late" } }, null, status));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+  } finally { resume(); }
 });
