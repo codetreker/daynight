@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, json, readAuthRequestGeneration, request, requestId as canonicalRequestId } from './client';
+import { ApiError, assertResponsePrincipal, json, readAuthRequestGeneration, request, responseSignal, requestId as canonicalRequestId } from './client';
 import type { WorkerReadAdmission } from './workers';
 import { parseWorkerModelInput, parseWorkerModelResult, type WorkerModelInput, type WorkerModelResult } from './worker-models';
 export type { WorkerModelInput, WorkerModelResult, WorkerModelOption, WorkerModelDefault, WorkerModelProvider } from './worker-models';
@@ -106,6 +106,8 @@ export const parseWorkerReadonlyResponse = <K extends WorkerReadonlyOperation>(v
 };
 
 const boundedJson = async (response: Response, signal: AbortSignal): Promise<unknown> => {
+  signal = responseSignal(response, signal);
+  signal.throwIfAborted();
   const reader = response.body?.getReader();
   if (reader === undefined) return malformed();
   const chunks: Uint8Array[] = [];
@@ -142,9 +144,9 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
   if (options.binding !== undefined) { uuid(options.binding.connectionId); uuid(options.binding.capabilityGeneration); }
   const deadline = new AbortController(), combined = AbortSignal.any([signal, deadline.signal]);
   let timer: ReturnType<typeof setTimeout> | undefined, authGeneration = readAuthRequestGeneration();
-  let response: Response | undefined;
+  let response: Response | undefined, lifetime = combined;
   const check = (): void => {
-    combined.throwIfAborted();
+    lifetime.throwIfAborted();
     if (readAuthRequestGeneration() !== authGeneration || admission.isCurrent?.() === false) throw new DOMException('The read-only request target changed.', 'AbortError');
   };
   try {
@@ -156,6 +158,7 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
       check();
       timer = setTimeout(() => deadline.abort(new WorkerReadonlyError('timeout', 'The Worker read-only request timed out.')), operation === 'model.list' ? 32_000 : 12_000);
     });
+    lifetime = responseSignal(response, combined);
     check();
     assertResponsePrincipal(response, ownerUserId, admission.onPrincipalMismatch);
     const data = await json(response, combined, value => {

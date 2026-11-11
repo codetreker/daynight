@@ -42,6 +42,7 @@ type Options = {
     init: RequestInit,
   ) => Promise<Response>;
   readonly onPrincipalMismatch?: () => void;
+  readonly responseSignal?: (response: Response, signal: AbortSignal) => AbortSignal;
 };
 /** One authorized Session transport; caching and draft ownership belong to its consumers. */
 export const createSessionResourceClient = (options: Options) => {
@@ -61,7 +62,8 @@ export const createSessionResourceClient = (options: Options) => {
   imageId(options.scope.fence.sessionId);
   imageDecimal(options.scope.authorizationGeneration, true);
   const lifetime = new AbortController(),
-    flights = new Set<Promise<unknown>>();
+    flights = new Set<Promise<unknown>>(),
+    flightSignals = new WeakMap<AbortSignal, { signal: AbortSignal }>();
   const live = (signal: AbortSignal) => {
     signal.throwIfAborted();
     lifetime.signal.throwIfAborted();
@@ -73,11 +75,15 @@ export const createSessionResourceClient = (options: Options) => {
     action: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
     const combined = AbortSignal.any([signal, lifetime.signal]);
+    const flight = { signal: combined };
+    flightSignals.set(combined, flight);
     const pending = (async () => {
-      live(combined);
-      const value = await action(combined);
-      live(combined);
-      return value;
+      try {
+        live(flight.signal);
+        const value = await action(combined);
+        live(flight.signal);
+        return value;
+      } catch (error) { flight.signal.throwIfAborted(); throw error; }
     })();
     flights.add(pending);
     void pending.finally(() => flights.delete(pending)).catch(() => {});
@@ -116,20 +122,30 @@ export const createSessionResourceClient = (options: Options) => {
     statuses: readonly number[] = [200],
     onProgress?: () => void,
   ): Promise<T> => {
-    const r = await response(path, signal, init);
+    const flight = flightSignals.get(signal);
+    const current = flight?.signal ?? signal;
+    const r = await response(path, current, init);
+    live(current);
+    const responseLifetime = options.responseSignal?.(r, current) ?? current;
+    if (flight) flight.signal = AbortSignal.any([current, responseLifetime]);
+    live(responseLifetime);
     const reader = r.body?.getReader();
     if (!reader) throw new Error("Session resource response is missing.");
     let length = 0;
     const chunks: Uint8Array<ArrayBuffer>[] = [];
+    const cancel = () => { void reader.cancel(responseLifetime.reason).catch(() => undefined); };
+    responseLifetime.addEventListener("abort", cancel, { once: true });
     try {
+      live(responseLifetime);
       for (;;) {
         const { done, value } = await reader.read();
-        live(signal);
+        live(responseLifetime);
         if (done) break;
         length += value.byteLength;
         if (length > 1_048_576)
           throw new Error("Session resource response exceeds its limit.");
         if (value.byteLength > 0) onProgress?.();
+        live(responseLifetime);
         chunks.push(new Uint8Array(value));
       }
       if (!statuses.includes(r.status))
@@ -143,9 +159,14 @@ export const createSessionResourceClient = (options: Options) => {
         at += c.length;
       }
       return parse(decodeStrictSessionJson(bytes, 1_048_576));
+    } catch (error) {
+      responseLifetime.throwIfAborted();
+      throw error;
     } finally {
-      await reader.cancel();
-      reader.releaseLock();
+      responseLifetime.removeEventListener("abort", cancel);
+      try { await reader.cancel(); } catch (error) { responseLifetime.throwIfAborted(); throw error; }
+      finally { reader.releaseLock(); }
+      responseLifetime.throwIfAborted();
     }
   };
   const receipt = (uploadId: string, v: unknown): ImageUploadReceipt => {
@@ -292,37 +313,40 @@ export const createSessionResourceClient = (options: Options) => {
           throw new Error("Session resource is unavailable.");
         const bytes = new Uint8Array(Number(resource.byteLength));
         let offset = 0;
-        // Empty legacy originals still require an authorized read of the saved file.
-        do {
-          const chunk = await json(
-            `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
-            s,
-            parseImageReadChunk,
-            {},
-            [200],
-            onProgress,
-          );
-          if (
-            chunk.resourceId !== resource.resourceId ||
-            chunk.sha256 !== resource.sha256 ||
-            chunk.byteLength !== resource.byteLength ||
-            chunk.offset !== String(offset)
-          )
-            throw new Error("Session resource chunk identity mismatch.");
-          const raw = atob(chunk.data);
-          bytes.set(
-            Uint8Array.from(raw, (c) => c.charCodeAt(0)),
-            offset,
-          );
-          offset += raw.length;
-        } while (offset < bytes.length);
-        live(s);
-        if (
-          hex(await crypto.subtle.digest("SHA-256", bytes)) !== resource.sha256
-        )
-          throw new Error("Saved Session resource is corrupt.");
-        live(s);
-        return bytes;
+        const readLifetime = () => flightSignals.get(s)?.signal ?? s;
+        try {
+          // Empty legacy originals still require an authorized read of the saved file.
+          do {
+            live(readLifetime());
+            const chunk = await json(
+              `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
+              s,
+              parseImageReadChunk,
+              {},
+              [200],
+              onProgress,
+            );
+            live(readLifetime());
+            if (
+              chunk.resourceId !== resource.resourceId ||
+              chunk.sha256 !== resource.sha256 ||
+              chunk.byteLength !== resource.byteLength ||
+              chunk.offset !== String(offset)
+            )
+              throw new Error("Session resource chunk identity mismatch.");
+            const raw = atob(chunk.data);
+            bytes.set(
+              Uint8Array.from(raw, (c) => c.charCodeAt(0)),
+              offset,
+            );
+            offset += raw.length;
+          } while (offset < bytes.length);
+          live(readLifetime());
+          const digest = hex(await crypto.subtle.digest("SHA-256", bytes));
+          live(readLifetime());
+          if (digest !== resource.sha256) throw new Error("Saved Session resource is corrupt.");
+          return bytes;
+        } catch (error) { readLifetime().throwIfAborted(); throw error; }
       }),
     async close(): Promise<void> {
       lifetime.abort();

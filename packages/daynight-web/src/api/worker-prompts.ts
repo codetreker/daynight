@@ -1,5 +1,5 @@
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
-import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { id, malformed, record, string, timestamp } from './parse';
 import { parseConfigurationRevision } from './worker-configuration';
 
@@ -46,6 +46,8 @@ export const parsePromptResource = (value: unknown, target: PromptTarget, userId
 // A server may escape each character as six ASCII bytes. Bound the raw stream,
 // including chunked responses, before decoding and parsing any resource.
 const decodePromptJson = async (response: Response, signal: AbortSignal): Promise<unknown> => {
+  signal = responseSignal(response, signal);
+  signal.throwIfAborted();
   if (response.body === null) throw new Error('Missing response body');
   const length = response.headers.get('Content-Length');
   if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(PROMPT_RESPONSE_BYTES))) {

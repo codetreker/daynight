@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
+import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, responseSignal, type TaskResponseAdmission } from "./client";
 import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedTeamInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitationAcceptance, decodeInvitationJson, parseTeamInvitationInspection, parseTeamInvitationAcceptance, decodeTeamInvitationJson, parseTeamInvitations, parseRevokeTeamInvitationResult, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, decodeGrantResultJson, parseGrantResult, parseRemoveGrantResult, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
 import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, CreatedTeamInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, RevokeTeamInvitationResult, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User, TeamInvitation, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
@@ -30,6 +30,7 @@ const send = <T>(url: string, method: "POST" | "PATCH", status: number, body: st
 
 const empty = (url: string, method: "POST" | "DELETE", signal: AbortSignal, body?: string): Promise<void> => authOperation(signal, async () => {
   const response = await request(url, signal, { method, ...(body === undefined ? {} : { body, headers: { "Content-Type": "application/json" } }) });
+  responseSignal(response, signal).throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 204) throw new ApiError("protocol", response.status);
 });
@@ -248,6 +249,7 @@ export const revokeInvitation = (projectId: string, invitationId: string, expect
   const project = requestId(projectId), invite = requestId(invitationId), expected = requestId(expectedUserId);
   return grantWrite(signal, onIdentityMismatch, async () => {
     const response = await invitationRequest(`${projectUrl(project)}/invitations/${invite}`, "DELETE", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch, onDispatch);
+    responseSignal(response, signal).throwIfAborted();
     if (response.status === 204) return;
     if (response.ok) throw new ApiError("protocol", response.status);
     await json(response, signal, () => { throw new ApiError("protocol", response.status); });
@@ -346,6 +348,7 @@ export const inspectDeviceAuthorization = (userCode: string, expectedUserId: str
 
 export const decideDeviceAuthorization = (userCode: string, decision: "approve" | "deny", expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<void> => authOperation(signal, async () => {
   const response = await deviceRequest("decision", userCode, expectedUserId, signal, onIdentityMismatch, decision);
+  responseSignal(response, signal).throwIfAborted();
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 204) throw new ApiError("protocol", response.status);
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { ApiError, cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { getThreadPage, isThreadScopeLoss, postThreadMessage, ThreadPostError, THREAD_REQUEST_TIMEOUT_MS, type ThreadAdmission } from '../src/features/task-thread/api';
 import { mergeThreadMessage, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, type ThreadMessage, type ThreadScope } from '../src/features/task-thread/contract';
 import { readThreadJsonSource } from '../src/features/task-thread/json';
@@ -100,6 +100,33 @@ describe('bounded Thread transport', () => {
     expect(url).toBe(`/api/v1/projects/${scope.projectId}/tasks/${scope.taskId}/thread/messages?count=1&details=true&beforeId=${id(2)}`);
     expect(init).toMatchObject({ cache: 'no-store', credentials: 'same-origin', redirect: 'error' });
     expect(init.headers).toMatchObject({ 'Daynight-Worker-Protocol': '2' });
+  });
+
+  it('cancels a Thread response being read with the original network reason', async () => {
+    let started!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    const cancelled = vi.fn();
+    let dispatched!: AbortSignal;
+    const stream = new ReadableStream<Uint8Array>({ pull() { started(); }, cancel: cancelled }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      dispatched = init.signal as AbortSignal;
+      return new Response(stream, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': scope.userId } });
+    }));
+    const pending = getThreadPage(scope, { count: 50 }, signal(), admission());
+    await reading;
+    cancelAuthNetworkRequests();
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(cancelled).toHaveBeenCalledWith(dispatched.reason);
+  });
+
+  it('keeps a confirmed Thread receipt when its callback cancels the network lifetime', async () => {
+    const posted = message();
+    const fetch = fetchResponse(response(posted, 201));
+    const onConfirmed = vi.fn(() => cancelAuthNetworkRequests());
+    const pending = postThreadMessage(scope, { body: posted.body }, signal(), admission({ onConfirmed }));
+    const error = await pending.catch((value: unknown) => value);
+    expect(error).toBe((fetch.mock.calls[0]![1].signal as AbortSignal).reason);
+    expect(onConfirmed).toHaveBeenCalledWith(posted);
   });
 
   it('rejects overlong or malformed UTF-8 streams and cancels retained responses', async () => {
