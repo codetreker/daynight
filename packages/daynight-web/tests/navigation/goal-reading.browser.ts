@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000100';
@@ -37,7 +37,8 @@ async function install(page: Page) {
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: () => ({ pullRequests: [] }) }));
+    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
     const detail = details.find(item => path === `/api/v1/projects/${projectId}/tasks/${item.id}`);
     if (detail !== undefined) {
       if (detail.id === goalId) {
@@ -53,7 +54,12 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
+  return { addActiveChain: () => {
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
+    const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
+    details = [root, child]; currentGraph = graphFixture(details);
+  }, forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
     currentGraph = graphFixture(details);
   }, addOutsideChain: () => {
@@ -73,6 +79,25 @@ async function install(page: Page) {
     currentGraph = graphFixture(details);
   } };
 }
+
+for (const width of [1366, 390, 320]) test(`active chain indicator remains usable at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page); fixture.addActiveChain();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  const header = page.locator(`#task-root-${outsideId}`);
+  await expect(header).toHaveAccessibleName(/Automatic execution active/);
+  await expect(header.locator('.chain-worker-active')).toBeVisible();
+  await expect(header.locator('.assignee-name')).toHaveText('Long owner name '.repeat(8).trim());
+  expect(await page.locator(`[data-chain-id="${outsideId}"]`).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await header.focus(); await page.keyboard.press('Enter');
+  await expect(header).toHaveAttribute('aria-expanded', 'true');
+  await expect(header.locator('.chain-worker-active')).toBeVisible();
+  await expect(page.locator(`#chain-task-${outsideId}-${firstId}`)).toBeVisible();
+  await expectHit(page.locator(`#task-chain-graph-${outsideId}`));
+  await expectHit(page.locator(`#chain-task-${outsideId}-${outsideId}`));
+  expect(await page.locator(`[data-chain-id="${outsideId}"]`).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+});
 
 test('a forbidden goal retires its attachment confirmation, while ordinary refresh preserves it', async ({ page }) => {
   const fixture = await install(page);

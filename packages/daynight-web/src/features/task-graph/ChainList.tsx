@@ -89,6 +89,12 @@ const compareMembers = (left: GraphTask, right: GraphTask) => {
   return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
 };
 
+const ActiveWorkerIndicator = ({ memberIds, workerMachines }: { readonly memberIds: ReadonlySet<string>; readonly workerMachines: ChainListProps['workerMachines'] }) => {
+  const { messages: { graph } } = useI18n();
+  if (![...memberIds].some((id) => workerMachines.get(id)?.state === 'active')) return null;
+  return <span className="chain-worker-active"><span className="chain-worker-active-dot" aria-hidden="true" />{graph.automaticExecutionActive}</span>;
+};
+
 const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
   const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
@@ -121,7 +127,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
         <span className="root-heading">
           <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span><TaskPauseCount count={pausedCount} />{pausedTaskIds.has(rootId) && <TaskPausedBadge />}</span>
-          <span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span>
+          <span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /><ActiveWorkerIndicator memberIds={component.memberIds} workerMachines={workerMachines} /></span>
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
       </button>
@@ -167,7 +173,7 @@ const ScopedChainRow = memo(({ projectId, index, workerMachines, rootId, members
     <div className="goal-header task-status-surface" data-task-status={status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded} aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-        <span className="root-heading"><span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgress })}</span></span><span className="root-meta">{m.childTasks({ count: members.length })}</span></span>
+        <span className="root-heading"><span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgress })}</span></span><span className="task-assignee-row-meta"><span className="root-meta">{m.childTasks({ count: members.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span></span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done, cancelled, total: members.length })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(done + cancelled) / members.length * 100}%` }} /></span></span>
       </button>
       <SessionStatus title={title} status={status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`} {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />

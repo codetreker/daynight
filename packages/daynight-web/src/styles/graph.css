@@ -46,3 +46,5 @@
 .session-status-annotation{position:absolute;top:-10px;right:-16px;height:12px;padding:0;border:0;border-radius:0;background:transparent;color:var(--session-annotation);font:italic 500 8.5px/12px Georgia,"Times New Roman",serif;letter-spacing:.03em;white-space:nowrap;pointer-events:none}
 [data-session-indicator="working"]{--session-annotation:#236544}[data-session-indicator="notice"]{--session-annotation:#8b6814}[data-session-indicator="warning"]{--session-annotation:#a33032}
 .session-status-tooltip{position:fixed;z-index:45;width:max-content;max-width:min(280px,calc(100vw - 16px));box-sizing:border-box;padding:7px 10px;border-radius:5px;background:#253148;color:white;font-size:12px;font-weight:400;line-height:1.6;white-space:normal;overflow-wrap:anywhere;pointer-events:none}
+
+.chain-worker-active{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-size:10px;line-height:16px;color:#287454}.chain-worker-active-dot{width:6px;height:6px;border-radius:50%;background:#287454;flex:none}.task-assignee-row-meta>.root-meta{margin-top:0}

@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, getTask, getTaskSync } from '../src/api/client';
-import type { GraphTask, TaskGraph } from '../src/api/types';
+import type { GraphTask, TaskGraph, WorkerClaim } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
@@ -87,11 +87,12 @@ let root: HTMLDivElement;
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
-const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
+const workerClaims = new Map<string, WorkerClaim>();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: (task) => ({ pullRequests: [], ...(workerClaims.has(task.id) ? { worker: workerClaims.get(task.id)! } : {}) }) });
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
-  syncFixture.reset();
+  syncFixture.reset(); workerClaims.clear();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
@@ -365,6 +366,29 @@ describe('project task views', () => {
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     expectUnfinishedCounts(0, 0);
+  });
+
+  it('updates the chain claim indicator through project sync without per-row reads', async () => {
+    const child = canonicalTask(2);
+    const claim: WorkerClaim = { claimId: canonicalTask(201), state: 'active', userId: canonicalTask(202), workerId: canonicalTask(203), machine: { id: canonicalTask(204), name: 'host' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: canonicalTask(205), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: timestamp };
+    workerClaims.set(child, claim);
+    graphRequest.mockResolvedValue(snapshot(seeds.map((task) => task.id === child ? { ...task, status: 'in_progress', startedAt: timestamp } : task)));
+    mount(); const header = await findChainRow();
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    expect(getTask).not.toHaveBeenCalled();
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(header).toHaveAccessibleName(/自动执行中/);
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+    expect(getTask).not.toHaveBeenCalled();
+    workerClaims.set(child, { ...claim, state: 'released' });
+    graphRequest.mockResolvedValue(snapshot());
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(header).not.toHaveAccessibleName(/自动执行中/));
+    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(getTask).not.toHaveBeenCalled();
+    expect(header).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('updates counts and categories from one successful snapshot and retains them while refreshing or after failure', async () => {

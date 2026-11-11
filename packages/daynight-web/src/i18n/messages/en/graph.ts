@@ -10,6 +10,7 @@ export const graph: GraphMessages = {
   chainList: 'Task chains',
   progress: ({ done, cancelled, total }) => cancelled === 0 ? `${number(done)}/${number(total)} completed` : `${number(done + cancelled)}/${number(total)} ended · ${number(done)} completed · ${number(cancelled)} cancelled`,
   chainTitle: 'Task chain',
+  automaticExecutionActive: 'Automatic execution active',
   noMachineRecord: 'No machine record',
   claimMachine: ({ name }) => `Claim machine: ${name}`,
   recordedMachine: ({ name }) => `Recorded machine: ${name}`,
