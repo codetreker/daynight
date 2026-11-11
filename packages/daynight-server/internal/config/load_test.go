@@ -226,3 +226,68 @@ image_decoder: {node_path: bin/node, helper_path: image/helper.js, manifest_path
 		t.Fatal("a YAML field was not applied")
 	}
 }
+
+func TestServerSemanticFailureOrigins(t *testing.T) {
+	for _, tc := range []struct{ name, layer, field, source, phase string }{
+		{"blank storage", "storage: {root: ' '}\n", "storage.root", "config.local.yml", "validate"},
+		{"public origin", "server: {public_origin: 'invalid'}\n", "server.public_origin", "config.local.yml", "validate"},
+		{"callback", "uniauth: {callback_url: 'https://daynight.example/mcp'}\n", "uniauth.callback_url", "config.local.yml", "validate"},
+		{"mcp origin", "mcp: {allowed_origins: ['https://client.example/path']}\n", "mcp.allowed_origins", "config.local.yml", "validate"},
+		{"credential", "uniauth: {app_id: 'private:bad'}\n", "uniauth.app_id", "config.local.yml", "validate"},
+		{"listener", "server: {listen_address: 'invalid'}\n", "server.listen_address", "config.local.yml", "validate"},
+		{"metrics", "monitoring: {metrics_listen_address: 'invalid'}\n", "monitoring.metrics_listen_address", "config.local.yml", "validate"},
+		{"timeout", "server: {shutdown_timeout: 11s}\n", "server.shutdown_timeout", "config.local.yml", "validate"},
+		{"decoder", "image_decoder: {node_path: bin/node}\n", "image_decoder.helper_path", "defaults", "validate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeLayer(t, root, "config.yml", validBase)
+			writeLayer(t, root, "config.local.yml", tc.layer)
+			_, err := LoadServer(root, lookupValues(nil))
+			var f *configvalue.ConfigurationError
+			if !errors.As(err, &f) || f.Field != tc.field || f.Origin.Source != tc.source || f.Phase != tc.phase {
+				t.Fatalf("unexpected failure: %#v", err)
+			}
+		})
+	}
+}
+
+func TestCompoundDuplicateKeysInIgnoredYAML(t *testing.T) {
+	for _, body := range []string{
+		"unknown:\n  ? [a, b]\n  : one\n  ? [a, b]\n  : two\n",
+		"unknown:\n  ? {a: 1, b: 2}\n  : one\n  ? {b: 2, a: 1}\n  : two\n",
+	} {
+		root := t.TempDir()
+		writeLayer(t, root, "config.yml", body)
+		_, err := LoadStorageVerification(root, lookupValues(nil))
+		var f *configvalue.ConfigurationError
+		if !errors.As(err, &f) || !strings.Contains(f.Rule, "duplicate") {
+			t.Fatalf("duplicate key accepted: %v", err)
+		}
+	}
+}
+
+func TestStorageVerificationChecksUnusedOAuthTypes(t *testing.T) {
+	for _, tc := range []struct{ name, yaml string }{
+		{"scalar", "oauth: {preregistered_clients: secret}\n"},
+		{"null", "oauth: {preregistered_clients: null}\n"},
+		{"alias scalar", "bad: &bad secret\noauth: {preregistered_clients: *bad}\n"},
+		{"metadata alias tag", "bad: &bad !private secret\noauth: {preregistered_clients: {client: {extension: *bad}}}\n"},
+		{"metadata non-json number", "oauth: {preregistered_clients: {client: {extension: .nan}}}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeLayer(t, root, "config.yml", "database: {url: postgres://db}\n"+tc.yaml)
+			_, err := LoadStorageVerification(root, lookupValues(nil))
+			var f *configvalue.ConfigurationError
+			if !errors.As(err, &f) || f.Phase != "decode" || f.Field != "oauth.preregistered_clients" || f.Origin.Source != "config.yml" || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("unexpected OAuth type failure: %#v", err)
+			}
+		})
+	}
+	root := t.TempDir()
+	writeLayer(t, root, "config.yml", "database: {url: postgres://db}\noauth: {preregistered_clients: {client: {extension: null}}}\n")
+	if _, err := LoadStorageVerification(root, lookupValues(nil)); err != nil {
+		t.Fatalf("JSON null extension rejected: %v", err)
+	}
+}

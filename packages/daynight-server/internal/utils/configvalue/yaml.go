@@ -15,8 +15,6 @@ import (
 
 type DurationString string
 
-type yamlMapping interface{ YAMLMapping() }
-
 // Origin identifies a configuration value without exposing its contents.
 type Origin struct {
 	Source  string
@@ -155,7 +153,7 @@ func mapping(node *yaml.Node, visiting map[*yaml.Node]bool) (map[string]*yaml.No
 }
 
 var nodeType = reflect.TypeOf(yaml.Node{})
-var mappingType = reflect.TypeOf((*yamlMapping)(nil)).Elem()
+var mappingType = reflect.TypeOf((*yaml.Unmarshaler)(nil)).Elem()
 var durationType = reflect.TypeOf(DurationString(""))
 
 // Validate checks known fields against the Patch types before YAML conversion.

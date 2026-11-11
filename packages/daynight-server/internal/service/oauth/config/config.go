@@ -23,8 +23,6 @@ func (p *ClientPatch) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-func (*ClientPatch) YAMLMapping() {}
-
 func (p Patch) ApplyTo(c *Config) error {
 	if p.PreregisteredClients == nil {
 		return nil
