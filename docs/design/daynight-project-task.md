@@ -235,6 +235,14 @@ URL，由 Git 处理 `insteadOf`；不读取 push URL、不自行实现 Git 配�
 1 秒预算；无法确认时保留原始错误并报告进程终止未确认，不能无限等待继承的输出句柄。
 取舍见[原生 Windows Git 回退决策](../../.agents/notes/implemented/simplification/2026-11-11-revert-native-windows-git.md)。
 
+独立的 owned Git 端口复用同一命令、环境、限额及脱敏策略，同时分别返回有界
+`outcome` 与 `joined`。`joined` 只在原 Git 子进程、已创建输出流及已启动的异步
+Windows taskkill 子进程和其输出流实际 close 后返回 `local-closed`；清理期限到期
+可先报告 `cleanup-pending`，但不会销毁流或放弃这些责任。超限后停止保存输出并继续
+排空，停止和流错误仍可观察。`local-closed` 不证明逃逸或脱离 stdio 的后代停止，
+这些后代仍可能在资源交接后写入。普通读取继续使用有界 API；端口本身不改变 Worker
+调用方。取舍见[本地收尾决策](../../.agents/notes/implemented/architecture/2026-11-11-owned-repository-git-local-closure.md)。
+
 repo 正规化对本地 origin、每个列表 repoUrl 和详情 repoUrl 使用同一函数。返回值
 是可持久化的 `repoIdentity` 字符串；它不是替换原始 repoUrl 的提交字段。
 

@@ -20,6 +20,8 @@ cause. No replacement process-ownership or recovery mechanism is introduced.
 
 The [native adoption record](../bug-fix/2026-11-10-repository-git-windows-job-ownership.md)
 retains the original rationale, alternatives and qualification limits as history.
+The [owned local-closure port](../architecture/2026-11-11-owned-repository-git-local-closure.md)
+retains this Node backend while separating bounded results from local closure.
 The [review Job decision](../bug-fix/2026-11-09-windows-review-job-ownership.md)
 continues to govern review's guardian, held Job and strict stop/retain policy.
 
