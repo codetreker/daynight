@@ -50,8 +50,11 @@ runs ordinary tests and installed acceptance in independent jobs on Linux,
 Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
 and records its own outcome. The ordinary jobs also typecheck and test the local
 development installer. Both native matrices include `ubuntu-latest`,
-`windows-latest` and `macos-15`, with a 10-minute limit for every job. Ordinary
-suites exclude `.stress.ts` files; explicit local stress commands select those
+`windows-latest` and `macos-15`, with a 10-minute limit for every job. Windows
+ordinary tests use two independent runners with Vitest's built-in `--shard=1/2`
+and `--shard=2/2`; their execution sets together cover the complete ordinary
+collection. Each Windows runner retains the same preparation and source checks.
+Ordinary suites exclude `.stress.ts` files; explicit local stress commands select those
 workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
@@ -289,11 +292,16 @@ native platform, the runtime compatibility matrix and the dedicated Linux shell
 completion job. Both native matrices need only module detection, so ordinary
 validation does not gate installed validation. Each job owns its checkout,
 toolchain, dependencies, environment recorder, build, fixtures, cleanup and
-artifacts. The two macOS jobs use separate workspaces, so their fixed
+artifacts. The Windows ordinary phase has two independent matrix entries; the
+other native phases each have one. Final `checks` requires actual success from
+all selected ordinary, installed, runtime and completion jobs, including both
+Windows ordinary shards. The two macOS jobs use separate workspaces, so their fixed
 receipt paths need no phase handoff or clearing. A failure or cancellation in
 either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
 records the original parallel model; the [independent macOS validation decision](../.agents/notes/implemented/testing/2026-11-07-independent-macos-cli-validation.md)
-owns the current macOS topology and its allocation trade-off.
+owns the current macOS topology and its allocation trade-off. The
+[Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
+owns the Windows ordinary allocation and completeness checks.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -332,9 +340,32 @@ the public `onUnhandledError` callback records unhandled errors without
 suppressing Vitest's failure decision. Readable console diagnostics and
 incremental JSONL files in `.tmp/cli-test-failures/` preserve those observations
 before the final summary. The ordinary CI matrix always attempts to upload the
-available files as `daynight-cli-tests-failures-<os>`. A runner stopped before
+available files as `daynight-cli-tests-failures-<os>`. Windows ordinary
+environment, probe and failure artifacts append `-shard-1` or `-shard-2` to the
+platform name. A runner stopped before
 delivering an event, or before artifact upload executes, may leave no such
 evidence; these diagnostics do not identify the cause of process termination.
+
+Windows ordinary execution uses `vitest.windows-shards.config.ts`, which inherits
+the ordinary configuration and adds Vitest's JSON reporter. Each Windows runner
+first executes `vitest list --config vitest.windows-shards.config.ts --filesOnly`
+with JSON output to save the complete unsharded discovery, then executes
+`vitest run --config vitest.windows-shards.config.ts --shard=1/2` or `2/2`.
+The discovery command does not establish a shard's execution. The actual run's
+JSON, full discovery and source metadata are uploaded as
+`daynight-cli-tests-results-windows-latest-shard-1` and `-shard-2` from
+`.tmp/windows-cli-shard/`.
+
+After all selected CLI jobs succeed, final `checks` downloads both artifacts and
+runs `.github/scripts/windows-cli-shards.mts verify`. It checks clean source SHA
+and tree against its own checkout, the pinned Vitest version, native Windows
+platform and the actual GitHub test-step outcome. File paths are normalized
+relative to each runner's package root; invalid or escaping paths are rejected.
+Both full discoveries must agree. Each actual execution set must be nonempty and
+free of duplicates, and the two sets must be disjoint with a union exactly equal
+to the full discovery. Missing evidence, failed or incomplete results, or a
+mismatch fails the gate. Existing intentional skips and todos remain represented;
+JSON success never replaces the native command and job results.
 
 The reporter records only the framework's file, full test or suite name, and
 error name, message and stack. Field limits include JSON escaping: file 2 KiB,
