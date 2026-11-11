@@ -25,8 +25,11 @@ capability and configuration protocols 1 and 2. Legacy readers receive their
 strict projection. Legacy PUT preserves current tool values after CAS inside the
 same lock, then validates and compares the complete candidate. The client learns
 support from authenticated configuration reads, including authenticated 404,
-and scopes that knowledge to origin and principal. A report without confirmation
-cannot grant capability or justify replaying a write with an unknown result.
+and scopes that knowledge to origin and principal. A receipt missing either
+negotiated projection schedules another configuration read before the next report.
+Confirmed mode support does not suppress tool discovery after a server upgrade.
+A report without confirmation cannot grant capability or justify replaying a
+write with an unknown result.
 
 Tool telemetry has one producer: the runtime selection manager. Public data
 separates the current admission selection, a verified pending candidate and
@@ -66,6 +69,10 @@ choices until their own import, while explicit auto prevents repeated imports.
 before PUT acquires its lock. Preservation must use the value observed after CAS
 under the same Worker transaction.
 
+**Rediscover extensions only while control mode is absent.** A server can support
+mode before tool paths. Its legacy tool projection then persists across a later
+upgrade, leaving a healthy running Worker unable to import local tool choices.
+
 **Use version probes as application evidence.** A bare probe can observe another
 installation or context, and one version cannot describe old and new running
 selections. Only the runtime owner can provide those facts; bounded reporting must
@@ -77,6 +84,8 @@ Configuration, telemetry and cache consumers can exchange tool targets without
 changing the existing storage layout or old strict envelopes. The adoption state,
 capability combinations, concurrency and output budgets require explicit tests.
 Server validation proves representation and ownership, not executable behavior.
+Until both extensions are present, configuration reports incur an additional
+authenticated read to detect upgrades without restarting the Worker.
 
 The API and cache seams do not implement Worker Task/Bot/Herdr launch integration.
 The default collector emits no tool-path facts without a runtime snapshot source.

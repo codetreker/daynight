@@ -66,7 +66,7 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 `Daynight-Worker-Tool-Paths: 1` 独立于托管模式头和配置协议 1/2，适用于配置 GET/HEAD/PUT、报告 POST 及 Worker 列表/详情读取。多个头值或非 1 在业务调用前拒绝。只有服务回显同名头才确认支持；未协商响应省略 desired.value.toolPaths 和 telemetry.toolPaths，未协商报告拒绝工具正文扩展。列表仍是原摘要，不增加 telemetry。
 
-旧 PUT 在 Worker 锁内通过目标 CAS 后保留当前 toolPaths，再执行完整规范化、预算与 no-op 比较；不能让旧客户端保存其它字段清除工具选择。客户端仅在当前 origin 和认证账号的配置 GET（包括已认证的 404）确认能力后上传工具扩展，不能跨账号复用或按版本号猜测。旧服务下继续本地选择和原配置合同，不发送工具字段；响应未确认能力不等同于新字段已生效，也不允许重放未知写。
+旧 PUT 在 Worker 锁内通过目标 CAS 后保留当前 toolPaths，再执行完整规范化、预算与 no-op 比较；不能让旧客户端保存其它字段清除工具选择。客户端仅在当前 origin 和认证账号的配置 GET（包括已认证的 404）确认能力后上传工具扩展，不能跨账号复用或按版本号猜测。运行中的 Worker 必须独立重新发现工具能力；已支持托管模式的服务升级后，无需重启 Worker 或等待其它故障即可开始同步工具选择。旧服务下继续本地选择和原配置合同，不发送工具字段；响应未确认能力不等同于新字段已生效，也不允许重放未知写。
 
 工具实际状态使用[工具路径观察](daynight-worker-snapshots.md#工具路径观察)，不增加 observation.items 的 appliedValue 分支。协议支持只证明可交换目标与事实，不能证明 Worker 已接入真实工具管理器。
 

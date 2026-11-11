@@ -857,8 +857,8 @@ export const runWorker = async (options: {
         accept: async (sent, receipt) => {
           await manager.acknowledge(sent, receipt);
           if (receipt.desired !== null) bootstrap = null;
-          // Legacy receipts cannot advertise a later upgrade; refresh capability before the next report.
-          if (receipt.desired?.value.agentControlMode === undefined) reconcileReport = true;
+          // Report projections cannot advertise later upgrades; rediscover each missing capability.
+          if (receipt.desired?.value.agentControlMode === undefined || receipt.desired?.value.toolPaths === undefined) reconcileReport = true;
         },
       },
     });
