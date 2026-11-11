@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureSkillBundle, validateSkillEntrypoint } from "../../platform/skill-bundle.js";
 import type { BundleEntry } from "../../platform/skill-bundle.js";
-import { validateManualContents } from "./manual.js";
+import { assembleManual } from "./manual-assembly.js";
 import type { SkillTarget } from "./targets.js";
 
 export type SkillBundle = readonly BundleEntry[];
@@ -15,9 +15,7 @@ export const captureInstalledSkill = async (packageDirectory: string): Promise<S
   try {
     const bundle = await captureSkillBundle(source, "using-daynight skill");
     validateSkillEntrypoint(bundle, "using-daynight", "using-daynight skill");
-    const manual = bundle.find((entry) => entry.relativePath === "references/manual.md");
-    if (manual?.type !== "file") throw new Error("using-daynight skill bundle must contain a regular references/manual.md file.");
-    validateManualContents(manual.contents);
+    assembleManual(new Map(bundle.flatMap((entry) => entry.type === "file" ? [[entry.relativePath, entry.contents] as const] : [])));
     return bundle;
   } catch (cause) { throw new Error(`Cannot capture installed using-daynight skill bundle ${source}. Reinstall the npm package and try again.`, { cause }); }
 };

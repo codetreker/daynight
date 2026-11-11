@@ -9,7 +9,7 @@ Follow the target repository's documentation and language rules.
 Task descriptions and attachments store effective requirements, solutions and formal results.
 Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
 Apply these responsibilities to descriptions, attachments and referenced material.
-Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#threads) to read, post and reply without changing task metadata or triggering execution.
+Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#threads) to read, post and reply without changing task metadata or triggering execution.
 An accepted conclusion in discussion must be incorporated into its effective content owner; a message alone does not replace the required task material or grant operational permission.
 
 | Store in the task | Store in the session or relevant platform |
@@ -71,7 +71,7 @@ Do not present future prerequisite outputs as existing inputs. See the [Goal pro
 
 Task details contain neither an attachment listing nor attachment bytes; use `task attachment list/read` separately.
 Uploading to the same path replaces the file.
-See [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#materials-and-files) for content concurrency limits.
+See [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md#independent-resources-and-operations) for content concurrency limits.
 
 Relative links and images in a description resolve from this task's attachment root; references inside a Markdown attachment resolve from the file's directory.
 Preserve case and actual resource paths, and do not escape the task root.

@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { skillAgents } from "../../../src/commands/skill/agents.js";
 import { captureInstalledSkill, installSkillTargets, SkillInstallationError } from "../../../src/commands/skill/install.js";
 import { planSkillTargets } from "../../../src/commands/skill/targets.js";
+import { manualTopicFiles } from "../../../src/commands/skill/manual.js";
+import { writeManualTopics } from "../../fixtures/manual-topics.js";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true }))); });
@@ -20,7 +22,7 @@ const fixture = async () => {
   await fs.mkdir(path.join(source, "references"), { recursive: true });
   await fs.writeFile(path.join(source, "SKILL.md"), "---\nname: using-daynight\ndescription: Track project work\n---\nRead references/commands.md\n");
   await fs.writeFile(path.join(source, "references/commands.md"), "Current commands\n");
-  await fs.writeFile(path.join(source, "references/manual.md"), "Manual\n");
+  await writeManualTopics(source);
   await fs.writeFile(path.join(source, "resource.bin"), Buffer.from([0, 255, 128]));
   const base = path.join(directory, "home");
   await fs.mkdir(base);
@@ -240,7 +242,7 @@ describe("installed bundle validation", () => {
     expect(await fs.readdir(base)).toEqual([]);
   });
 
-  it.each(["missing", "directory", "whitespace", "invalid UTF-8"])("rejects %s manual before replacing any target", async (damage) => {
+  it.each(["missing", "directory", "whitespace", "invalid UTF-8"])("rejects %s topic before replacing any target", async (damage) => {
     const { packageDirectory, source, base } = await fixture();
     const targets = await planSkillTargets(base, [codex, claude]);
     for (const target of targets) {
@@ -249,7 +251,7 @@ describe("installed bundle validation", () => {
       await fs.mkdir(target.legacyPath, { recursive: true });
       await fs.writeFile(path.join(target.legacyPath, "old"), "legacy");
     }
-    const manual = path.join(source, "references/manual.md");
+    const manual = path.join(source, manualTopicFiles[3]);
     if (damage === "missing" || damage === "directory") {
       await fs.rm(manual);
       if (damage === "directory") await fs.mkdir(manual);
