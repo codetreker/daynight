@@ -13,6 +13,9 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 		return model.Task{}, err
 	}
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+		if err := taskcore.CheckPropertyForType(current.Type, name); err != nil {
+			return taskcore.Mutation{}, err
+		}
 		value, err := taskcore.PropertyInput(name, valueText)
 		if err != nil {
 			return taskcore.Mutation{}, err
@@ -30,6 +33,9 @@ func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, p
 		return model.Task{}, err
 	}
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+		if err := taskcore.CheckPropertyForType(current.Type, name); err != nil {
+			return taskcore.Mutation{}, err
+		}
 		values, changed := taskcore.RemovePropertyCandidate(current, name)
 		return taskcore.Mutation{ID: current.ID, Current: current, Values: values, Changed: changed}, nil
 	})

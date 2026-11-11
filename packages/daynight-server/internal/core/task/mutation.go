@@ -24,6 +24,13 @@ func PrepareCreate(ctx context.Context, dao store.TaskWriteDAO, id string, value
 	if err := ValidateCandidate(ctx, dao, id, values); err != nil {
 		return Mutation{}, err
 	}
+	if values.Type == model.TaskTypeGoal {
+		now, err := dao.ObservedAt(ctx)
+		if err != nil {
+			return Mutation{}, err
+		}
+		values.GoalTiming = goalTiming(values.Status, nil, now)
+	}
 	return Mutation{ID: id, Values: values, Create: true, Changed: true}, nil
 }
 
@@ -51,6 +58,11 @@ func PrepareUpdate(ctx context.Context, dao store.TaskWriteDAO, id string, input
 	}
 	if err := ValidateUpdate(current, values); err != nil {
 		return Mutation{}, err
+	}
+	if !model.EqualOptional(current.ParentID, values.ParentID) {
+		if err := ValidateParent(ctx, dao, values.ParentID); err != nil {
+			return Mutation{}, err
+		}
 	}
 	if err := validateCandidate(ctx, dao, id, values, current.DependsOn); err != nil {
 		return Mutation{}, err

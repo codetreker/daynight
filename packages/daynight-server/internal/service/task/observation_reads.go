@@ -64,7 +64,7 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
-	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID})
+	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID})
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}

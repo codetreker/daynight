@@ -377,6 +377,8 @@ func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, pr
 }
 
 type taskHTTPWriterMock struct {
+	ParentTaskFn     func(context.Context, string) (model.Task, error)
+	GoalProgressesFn func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TaskHeaderFn     func(context.Context, string) (model.TaskHeader, error)
 	TaskStepsFn      func(context.Context, string) ([]model.TaskStep, error)
 	InsertTaskStepFn func(context.Context, string, model.TaskStep) error
@@ -395,6 +397,16 @@ type taskHTTPWriterMock struct {
 	ObservedAtFn         func(context.Context) (time.Time, error)
 	DependentIDsFn       func(context.Context, string) ([]string, error)
 	DeleteTaskFn         func(context.Context, string, bool) (model.TaskTombstone, error)
+}
+
+func (mock *taskHTTPWriterMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
+	mock.need("GoalProgresses", mock.GoalProgressesFn != nil)
+	return mock.GoalProgressesFn(ctx, project, ids)
+}
+
+func (mock *taskHTTPWriterMock) ParentTask(ctx context.Context, id string) (model.Task, error) {
+	mock.need("ParentTask", mock.ParentTaskFn != nil)
+	return mock.ParentTaskFn(ctx, id)
 }
 
 func (mock *taskHTTPWriterMock) Task(p0 context.Context, p1 string) (model.Task, error) {

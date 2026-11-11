@@ -16,17 +16,22 @@ import (
 )
 
 type CreateTask struct {
-	Status            *model.TaskStatus
-	AssignedTo        *string
-	RequiredPlatform  *model.TaskPlatform
-	ExternalDependsOn []string
-	Title             string
-	Description       string
-	Properties        model.TaskProperties
-	DependsOn         []string
+	Type                    model.TaskType
+	ParentID                *string
+	AssignedToPresent       bool
+	RequiredPlatformPresent bool
+	Status                  *model.TaskStatus
+	AssignedTo              *string
+	RequiredPlatform        *model.TaskPlatform
+	ExternalDependsOn       []string
+	Title                   string
+	Description             string
+	Properties              model.TaskProperties
+	DependsOn               []string
 }
 
 type UpdateTask struct {
+	ParentID          **string
 	AssignedTo        **string
 	RequiredPlatform  **model.TaskPlatform
 	ExternalDependsOn *[]string
@@ -93,12 +98,35 @@ func canonicalAssignedTo(value *string) (*string, error) {
 }
 
 func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
+	typ := input.Type
+	if typ == "" {
+		typ = model.TaskTypeTask
+	}
+	if typ != model.TaskTypeTask && typ != model.TaskTypeGoal {
+		return store.TaskWrite{}, invalidInput("Task type must be task or goal.")
+	}
 	status := model.TaskProposed
+	if typ == model.TaskTypeGoal {
+		status = model.TaskTodo
+	}
 	if input.Status != nil {
 		status = *input.Status
-		if status != model.TaskProposed && status != model.TaskTodo {
-			return store.TaskWrite{}, invalidInput("New task status must be proposed or todo.")
-		}
+	}
+	if typ == model.TaskTypeTask && status != model.TaskProposed && status != model.TaskTodo {
+		return store.TaskWrite{}, invalidInput("New task status must be proposed or todo.")
+	}
+	if typ == model.TaskTypeGoal && (!status.Valid() || status == model.TaskProposed) {
+		return store.TaskWrite{}, invalidInput("Goal status must be todo, in_progress, done or cancelled.")
+	}
+	if typ == model.TaskTypeGoal && (input.ParentID != nil || len(input.DependsOn) != 0 || len(input.ExternalDependsOn) != 0 || (input.RequiredPlatform != nil || input.RequiredPlatformPresent)) {
+		return store.TaskWrite{}, invalidInput("Goal does not support a parent, dependencies or execution platform.")
+	}
+	if err := CheckPropertiesForType(typ, input.Properties); err != nil {
+		return store.TaskWrite{}, err
+	}
+	parentID, err := canonicalAssignedTo(input.ParentID)
+	if err != nil {
+		return store.TaskWrite{}, err
 	}
 	if err := AdmitDependencies(input.DependsOn); err != nil {
 		return store.TaskWrite{}, PropertyInputError(err)
@@ -111,7 +139,7 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 	if err != nil {
 		return store.TaskWrite{}, err
 	}
-	values := store.TaskWrite{Type: model.TaskTypeTask, AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
+	values := store.TaskWrite{Type: typ, ParentID: parentID, AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id)
 	if err != nil {
 		return store.TaskWrite{}, err
@@ -124,7 +152,7 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 }
 
 func ValidateUpdateFields(input UpdateTask) error {
-	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
+	if input.ParentID == nil && input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
 		return invalidInput("At least one task field must be provided.")
 	}
 	return nil
@@ -132,6 +160,19 @@ func ValidateUpdateFields(input UpdateTask) error {
 
 func UpdateCandidate(current model.Task, input UpdateTask) (store.TaskWrite, error) {
 	values := CurrentWrite(current)
+	if current.Type == model.TaskTypeGoal && ((input.ParentID != nil && *input.ParentID != nil) || input.DependsOn != nil || input.ExternalDependsOn != nil || input.AllowAgents != nil || input.RequiredPlatform != nil) {
+		return store.TaskWrite{}, invalidInput("Goal does not support parent, dependencies or execution fields.")
+	}
+	if err := CheckPropertiesForType(current.Type, input.Properties); err != nil {
+		return store.TaskWrite{}, err
+	}
+	if input.ParentID != nil {
+		var err error
+		values.ParentID, err = canonicalAssignedTo(*input.ParentID)
+		if err != nil {
+			return store.TaskWrite{}, err
+		}
+	}
 	if input.AssignedTo != nil {
 		var err error
 		values.AssignedTo, err = canonicalAssignedTo(*input.AssignedTo)
@@ -193,7 +234,7 @@ func ValidateUpdate(current model.Task, values store.TaskWrite) error {
 }
 
 func Changed(current model.Task, values store.TaskWrite) bool {
-	return !model.EqualOptional(current.AssignedTo, values.AssignedTo) || !model.EqualOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
+	return !model.EqualOptional(current.ParentID, values.ParentID) || !model.EqualOptional(current.AssignedTo, values.AssignedTo) || !model.EqualOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
 		!slices.Equal(current.DependsOn, values.DependsOn) || !slices.Equal(current.ExternalDependsOn, values.ExternalDependsOn) || !taskproperty.Equal(current.Properties, values.Properties)
 }
 
@@ -260,10 +301,35 @@ func canonicalExternalDependencies(ids []string, self string, dependencies []str
 }
 
 func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) error {
+	if err := ValidateParent(ctx, dao, values.ParentID); err != nil {
+		return err
+	}
 	return validateCandidate(ctx, dao, id, values, nil)
 }
 
+// ValidateParent is called under the Project write lock, so it observes the
+// same serialization order as Goal deletion, status changes, and claims.
+func ValidateParent(ctx context.Context, dao store.TaskWriteDAO, parentID *string) error {
+	if parentID == nil {
+		return nil
+	}
+	parent, err := dao.ParentTask(ctx, *parentID)
+	if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrTaskDeleted) {
+		return invalidInput("Parent must identify a visible Goal in this project.")
+	}
+	if err != nil {
+		return err
+	}
+	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
+		return invalidInput("Parent must identify a visible Goal in this project.")
+	}
+	return nil
+}
+
 func validateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite, retained []string) error {
+	if values.Type == model.TaskTypeGoal {
+		return nil
+	}
 	if err := AdmitDependencies(values.DependsOn); err != nil {
 		return PropertyInputError(err)
 	}

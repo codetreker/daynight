@@ -100,7 +100,7 @@ it("retains identity and request order through two-project inventory, claim and 
       ["GET", `/api/v1/projects/${projectId}`], ["GET", `/api/v1/projects/${second}`],
       ["GET", `/api/v1/projects/${projectId}/tasks?workerId=${workerId}&limit=100`],
       ["GET", `/api/v1/projects/${second}/tasks?workerId=${workerId}&limit=100`],
-      ["GET", `/api/v1/projects/${projectId}/tasks?assignedTo=me&ready=true&allowAgents=true&compatiblePlatform=linux&limit=100`],
+      ["GET", `/api/v1/projects/${projectId}/tasks?assignedTo=me&ready=true&allowAgents=true&compatiblePlatform=linux&automaticCandidate=true&limit=100`],
       ["POST", `/api/v1/projects/${projectId}/tasks/${taskId}/worker-claim`], ["POST", `/api/v1/me/workers/${workerId}/report`],
     ]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);

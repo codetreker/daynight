@@ -181,7 +181,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
 
-`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。公开创建使用 `type` 和可空 `parentId`；省略类型为普通 Task，类型创建后不可修改。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
 
 `062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。资料和 Session 的带锁入口先预读 Parent，按 UUID 顺序锁目标与 Parent 的物理行，再以新语句复核 Parent 和有效删除。Session 注册对目标直接取得 UPDATE，其他资源锁使用 SHARE；Parent 变化返回 `resource_conflict`，不补锁或重放。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
@@ -237,7 +237,7 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 
 ## 状态与依赖不变量
 
-Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。
+普通 Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。Goal 使用四态及独立的状态时间和负责人策略，详见 [Goal 需求](../spec/daynight-goals.md)。
 `014_task_status_assignment.sql` 将旧 proposed 行归类为 todo，对转换行 version+1、更新 updatedAt，
 保留执行时间及所有其他事实；默认、数据、CHECK 与 ledger 同一事务。已应用历史迁移保持不变。
 [状态架构](daynight-task-status.md)拥有五态转换、迁移和计时的完整机制与理由。
@@ -247,18 +247,18 @@ Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建�
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
 同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
-普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人和属性。完整候选校验保证
+普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人、Parent 和属性。完整候选校验保证
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
-blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
+Goal 不进入依赖图，其 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
 external=true 的排序子集；数组明确为空。ready 当且仅当 todo 且 blockedBy 为空。
 派生值不持久化，前置变化不修改本任务版本或更新时间；因此同版本读取可有新 ready/blockedBy。
 POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[外部依赖架构](daynight-external-dependencies.md)。
 
 ## 写事务与并发
 
-所有 task 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
+所有 Task 与 Goal 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
 
 1. 以 `READ COMMITTED` 开启事务，用 `SELECT ... FOR UPDATE` 查找并锁定 project
    行；不存在时返回 `not_found`。获得锁后检查当前成员关系，非成员同样返回
@@ -287,6 +287,8 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 遍历，候选图必须先移除该任务旧的出边，再加入完整候选出边。对每条候选边
 `task → predecessor`，若 predecessor 能在候选图中到达 task，则拒绝。校验基于本次
 锁内读取的数据，不依赖请求前查询或进程缓存。
+
+Goal 的父资源校验和新 Worker claim 准入在同一项目锁内读取当前事实。普通 Task 的 Parent 可指向同项目未删除 Goal，结束状态不限制归属。自动候选和锁内新 claim 排除父 Goal 已结束的孩子；自有库存不使用该筛选，显式 resume 保持自身规则。Goal 删除只标记 Goal 并同事务轮换 epoch，不修改子项；其有效删除使库存缺失进入既有 cleanup。Goal 状态时间由 core 候选以锁后权威时间生成，DAO 保存明确值。写后 Goal progress 在同一事务内聚合并参与精确响应准入。Goal 不发布现有可执行 Task Webhook。
 
 中性 `currentTaskWrite` 统一复制普通编辑、状态、属性与 worker 写入的全部字段。AssignedTo 先规范化再参与 changed 值比较；明确 no-op 和删除分支先于负责人策略，不能把空候选当作清空。实际变化时检查执行状态和新目标访问，强制候选 allowAgents=false；共享领域错误分类保持暂存拒绝与事务失败优先级。
 
@@ -346,7 +348,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/deletion-preview` | 当前 owner Team admin 的有界影响及阻塞观察 |
 | `DELETE /api/v1/projects/{projectId}` | 锁内复核权限和全部 claim，提交删除屏障并返回回执 |
 | `PATCH /api/v1/projects/{projectId}/settings` | 管理员按观察设置版本保存分钟阈值，返回完整 Project |
-| `POST /api/v1/projects/{projectId}/tasks` | 创建默认 `proposed` task，可显式指定 `todo` |
+| `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
@@ -364,7 +366,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
 创建 task 的输入为 `title`、可省略的
-`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
+`type`、`parentId`、`status`、`description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
 属性表示没有对应行，完整属性对象为空时返回 {}。创建成功
 返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
 
@@ -375,7 +377,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 并用锁后的 statement 时间更新 project.updatedAt。响应在该事务内构造完整 Project，沿用已有提交/清理错误优先规则。
 
 Task PATCH 必须提交期望的 `version`，并至少提供 `title`、`description`、
-`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform`、`assignedTo` 或一个已定义属性。只有 `version` 或空 `properties` 的请求返回
+`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform`、`assignedTo`、`parentId` 或一个已定义属性。只有 `version` 或空 `properties` 的请求返回
 `invalid_input`；
 提供字段但值未变的请求采用前述语义空操作规则。例如：
 
@@ -394,7 +396,7 @@ status 是输入错误，含其他合法字段也不写入。HTTP 与日志保�
 
 省略可更新字段表示保持原值；`description: ""` 清空描述，`dependsOn: []` 清空
 依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`model.TaskPlatform.Valid()` 验证枚举，`model.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
-具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
+具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台、负责人和 Parent 字段允许清除外，显式 `null`、嵌套未知或
 重复字段、不合理的类型及非法枚举均为输入错误。`id`、
 `projectId`、创建时间及更新时间不可由调用者写入。任务返回结构包含模型字段及
 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`；外部子集是必填读取字段，也是创建/PATCH 的可选分类输入。

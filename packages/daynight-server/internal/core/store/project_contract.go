@@ -64,6 +64,9 @@ type ProjectWriteDAO interface {
 
 type TaskWriteDAO interface {
 	Task(context.Context, string) (model.Task, error)
+	// ParentTask reads under the Project write lock without acquiring a parent row lock.
+	ParentTask(context.Context, string) (model.Task, error)
+	GoalProgresses(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TasksByID(context.Context, []string) ([]model.Task, error)
 	VisibleTaskIDs(context.Context, []string) ([]string, error)
 	ActiveDependentIDs(context.Context, string) ([]string, error)

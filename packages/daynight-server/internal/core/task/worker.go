@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strconv"
@@ -66,6 +67,9 @@ func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 }
 
 func WorkerReady(current model.Task) error {
+	if current.Type == model.TaskTypeGoal {
+		return invalidInput("Goal does not support worker execution.")
+	}
 	if !current.Status.IsExecutable() {
 		return &model.Fault{Code: "invalid_transition", Message: "Only a ready todo task may be claimed."}
 	}
@@ -233,6 +237,9 @@ func WorkerUpdateCandidate(current model.Task, worker *model.WorkerClaim, claimI
 }
 
 func WithdrawableWorker(current model.Task, claimID string) (*model.WorkerClaim, error) {
+	if current.Type == model.TaskTypeGoal {
+		return nil, invalidInput("Goal does not support worker execution.")
+	}
 	if current.Status == model.TaskCancelled {
 		return nil, cancelledTransition()
 	}
@@ -265,4 +272,23 @@ func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {
 	var err error
 	values.Properties, err = properties.WithWorker(values.Properties, nil)
 	return values, err
+}
+
+// ClaimParentAdmission rechecks the parent inside the Project write scope.
+// A released execution resumes through its separate continuation path.
+func ClaimParentAdmission(ctx context.Context, dao store.TaskWriteDAO, current model.Task) error {
+	if current.ParentID == nil {
+		return nil
+	}
+	parent, err := dao.ParentTask(ctx, *current.ParentID)
+	if err != nil {
+		return err
+	}
+	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
+		return invalidInput("Parent must identify a visible Goal in this project.")
+	}
+	if parent.Status.IsTerminal() {
+		return &model.Fault{Code: "invalid_transition", Message: "A task in a completed or cancelled Goal cannot be claimed automatically."}
+	}
+	return nil
 }

@@ -32,3 +32,27 @@ func RemovePropertyCandidate(current model.Task, name string) (store.TaskWrite, 
 	delete(values.Properties, name)
 	return values, !taskproperty.Equal(current.Properties, values.Properties)
 }
+
+// CheckPropertyForType centralizes the Goal property capability policy.
+func CheckPropertyForType(typ model.TaskType, name string) error {
+	if typ == model.TaskTypeGoal && name != "pullRequests" {
+		return invalidInput("Goal does not support execution properties.")
+	}
+	return nil
+}
+
+func CheckPropertiesForType(typ model.TaskType, values model.TaskProperties) error {
+	for name := range values {
+		if err := CheckPropertyForType(typ, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func CheckStepsForType(typ model.TaskType) error {
+	if typ == model.TaskTypeGoal {
+		return invalidInput("Goal does not support steps.")
+	}
+	return nil
+}

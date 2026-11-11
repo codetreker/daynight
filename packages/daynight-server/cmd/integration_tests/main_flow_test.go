@@ -40,6 +40,32 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("Goal and child", func(t *testing.T) {
+		project := createProject(t, f, "API Goal")
+		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})
+		if goal.Type != "goal" || goal.Status != "todo" || goal.Ready || goal.AssignedTo == nil || *goal.AssignedTo != f.userID || goal.Progress == nil || goal.Progress.Total != 0 {
+			t.Fatalf("initial Goal differs: %+v", goal)
+		}
+		child := createTask(t, f, project, "Child", map[string]any{"parentId": goal.ID, "status": "todo"})
+		if child.ParentID == nil || *child.ParentID != goal.ID {
+			t.Fatalf("child parent differs: %+v", child)
+		}
+		read := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
+		if read.Progress == nil || read.Progress.Total != 1 || read.Progress.Unfinished != 1 {
+			t.Fatalf("Goal progress differs: %+v", read)
+		}
+		messagePath := taskPath(goal) + "/thread/messages"
+		message := requestJSON[api.ThreadMessage](t, f, http.MethodPost, messagePath, map[string]any{"body": "Goal material"}, http.StatusCreated)
+		messages := requestJSON[api.ThreadPage](t, f, http.MethodGet, messagePath+"?fromBeginning=true", nil, http.StatusOK)
+		if expectID(t, messages.Items, message.ID, func(item api.ThreadMessage) string { return item.ID }).Body != "Goal material" {
+			t.Fatal("Goal Thread content differs")
+		}
+		goal = setStatus(t, f, read, "done", nil)
+		childRead := requestJSON[api.Task](t, f, http.MethodGet, taskPath(child), nil, http.StatusOK)
+		if childRead.Version != child.Version || childRead.Status != child.Status || childRead.ParentID == nil || *childRead.ParentID != goal.ID {
+			t.Fatalf("Goal completion changed child: %+v", childRead)
+		}
+	})
 	t.Run("personal worker prompts", func(t *testing.T) { serverAPIPromptNormalFlow(t, f) })
 	t.Run("MCP manual and repository project context", func(t *testing.T) {
 		const repository = "https://github.com/example/manual-integration"

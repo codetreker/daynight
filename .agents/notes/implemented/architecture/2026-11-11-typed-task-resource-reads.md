@@ -41,4 +41,4 @@ progress is derived from the same snapshot as its Goal. The view adds a parent
 join to resource reads; dependency decisions deliberately retain a separate
 physical path. Independent material and Session operations use the
 [resource lifecycle lock plan](2026-11-11-parent-resource-lifecycle.md) for
-their physical rows. Parent mutation remains a separate capability.
+their physical rows. Parent mutation uses the Project write scope and validates the target Goal.
