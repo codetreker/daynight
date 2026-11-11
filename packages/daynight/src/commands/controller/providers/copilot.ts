@@ -322,7 +322,30 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   return {
     nativeSessionId: nativeId, send,
     async refreshControls() { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); } },
-    async setSetting(id, value, operationId, revision) { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; controls!.invalidateImages(); state(); try { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; } finally { controlsBusy = false; state(); } },
+    async setSetting(id, value, operationId, revision) {
+      if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable.");
+      controlsBusy = true; controls!.invalidateImages(); state();
+      const modelSetting = id === "model" || id === "effort";
+      try {
+        if (!modelSetting) { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); }
+        try { await controls!.set(id, value, operationId, revision); }
+        catch (error) {
+          if (modelSetting) {
+            runtime.authority?.invalidate();
+            try { await options.drainNativeReadPolicy?.(); }
+            catch (cleanupError) { throw new AggregateError([error, cleanupError], "Copilot setting failed and image cleanup did not complete."); }
+          }
+          throw error;
+        }
+        // Settings-only readback preserves the checker; native permission events
+        // can still revoke it while a model change awaits confirmation.
+        if (modelSetting && runtime.authority) {
+          let valid = true; try { runtime.authority.verify(); } catch { valid = false; }
+          if (!valid) await options.drainNativeReadPolicy?.();
+        }
+        return { disposition: "handled" };
+      } finally { controlsBusy = false; state(); }
+    },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       controlsBusy = true; controls!.invalidateImages(); state();

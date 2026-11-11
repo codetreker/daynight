@@ -52,6 +52,8 @@ Provider 发布的 `NativeReadPolicy` 绑定真实 native Session、可信 cwd �
 
 支持的当前模式为 `manual` 或 `allow-all`。固定原生版本的 managed `defaultMode` 只影响新 Session，恢复保留原模式，动态 `permissions.disableAssistedPermissionsMode`/`permissions.disableBypassPermissionsMode` 只能收紧。独占 headless root Session 的 Host 模式变更先失效并 drain，权限变化事件也关闭 gate；每次原生 route 前再次读取实际模式，避免图片请求触发 assisted judge。模式值仅决定该无模型调用路径是否适用，不能代替完整 Read 判定。
 
+Copilot 的 `model` 与 `effort` 设置经过 controls 的 revision、可用选项及当前状态验证，只调用对应原生 model RPC 和设置读回，不再次加载 skills。成功时保留同一个 Read authority；模型切换为 deferred 时沿原 controls 确认流程等待，不视为权限变更，也不提前报告模型生效。保留实例不复活已失效的 authority，后续每个 checkpoint 仍重新检查原生模式、hooks、content exclusion 和 Read。设置拒绝、超时或读回不符等失败关闭 authority 并 drain；权限设置及未分类操作在发出原生变更前先关闭并 drain，原生权限事件仍可独立关闭读取。
+
 需要询问的图片请求由既有 SDK callback 精确拒绝，图片功能从不批准请求。每个请求预登记并签名绑定 native Session、execution、sequence、来源证明摘要及路径；live callback 还必须匹配 SDK context，且 request 与 `event.data.permissionRequest` 必须是同一个对象。拒绝 receipt 另签实际 native requestId。固定自有 ClientMetadata namespace 保存关联密钥，缺失时才初始化并读回，恢复保留原值，畸形或不确定状态不能覆盖、轮换或继续采集。密钥不进入 intention、事件、诊断或模型输入。历史只隐藏经两份签名验证的完整请求/拒绝对；未完成记录保留既有 expired/unknown 语义，不伪造完成，也不恢复为可批准的新请求。普通工具审批保持原流程，历史关联与当前图片模式资格分开。
 
 Copilot IPC 每次只允许一个在途判定。15 秒 deadline 或未知 IPC 状态关闭图片 authority、拒绝队列并丢弃迟到允许结果；仍可能到达的本图片权限 callback 继续拒绝。原生 N-API 无法取消时最多保留一条在途调用，不能为了普通图片超时终止整个文字 Session。真正的 Provider close 才负责关闭其拥有的 runtime 并回收正常解包资源；强制终止进程不能保证执行用户态临时目录清理。

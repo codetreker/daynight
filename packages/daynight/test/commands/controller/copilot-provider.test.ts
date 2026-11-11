@@ -1,14 +1,17 @@
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import type { ChildProcess } from "node:child_process";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
 import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
-import type { ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
+import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
+import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
+import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
 const sdk = vi.hoisted(() => ({ provenGeometry: false, authority: null as any, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 vi.mock("../../../src/commands/controller/providers/copilot-image-profile.js", async original => {
   const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-image-profile.js")>();
@@ -54,6 +57,202 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.authority = null; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+
+async function sourceAuthorityFixture() {
+  const { CopilotReadAuthority, copilotAuthorityProtocol } = await vi.importActual<typeof import("../../../src/commands/controller/providers/copilot-read-authority.js")>("../../../src/commands/controller/providers/copilot-read-authority.js");
+  const policies: (NativeReadPolicy | null)[] = [], readPaths: string[] = [], cwd = process.cwd(), child = fixture.child;
+  let readBarrier: { entered(): void; waiting: Promise<void> } | undefined;
+  const state = { modelId: "first", reasoningEffort: "low", readAllowed: true };
+  const model = {
+    getCurrent: vi.fn(async () => ({ modelId: state.modelId, reasoningEffort: state.reasoningEffort })),
+    list: vi.fn(async () => ({ list: ["first", "second"].map(id => ({ id, supportedReasoningEfforts: ["low", "high"] })) })),
+    switchTo: vi.fn(async ({ modelId }: { modelId: string }) => { state.modelId = modelId; return { deferred: false }; }),
+    setReasoningEffort: vi.fn(async ({ reasoningEffort }: { reasoningEffort: string }) => { state.reasoningEffort = reasoningEffort; return {}; }),
+  };
+  const skills = { ensureLoaded: vi.fn(async () => {}), list: vi.fn(async () => ({ skills: [] })) };
+  Object.assign(fixture.native.rpc, { model, skills });
+  const setApproveAll = vi.fn(async () => ({ success: true })); Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const nativeRead: CopilotAuthorityNative = {
+    sessionAuthMetadataJson: () => JSON.stringify({ type: "user", host: "https://github.com", login: "fixture" }),
+    hookSessionSnapshot: async sessionId => JSON.stringify({ sessionId, cwd, hooks: [], hookCount: 0, warnings: [], repositoryLoaded: true, repositoryDiagnostics: [] }),
+    hookProcessorCallbackRegistrations: () => [],
+    sessionInvokeJson: async (sessionId, method, params) => {
+      if (method === "session.metadata.snapshot") return JSON.stringify({ ok: true, result: { sessionId, workingDirectory: cwd, isRemote: false } });
+      if (method === "session.permissions.getMode") return JSON.stringify({ ok: true, result: { mode: "manual" } });
+      if (method !== "session.contentExclusion.checkPaths") throw new Error(`Unexpected Read method: ${method}`);
+      if (readBarrier) { readBarrier.entered(); await readBarrier.waiting; }
+      const { paths } = JSON.parse(params!); return JSON.stringify({ ok: true, result: { available: true, checks: paths.map((path: string) => ({ path, excluded: false })) } });
+    },
+    sessionRoutePermissionJson: async (_sessionId, params) => {
+      const request = JSON.parse(params).permissionRequest;
+      if (request.kind !== "read") throw new Error("Unexpected permission kind");
+      readPaths.push(request.path); return JSON.stringify({ route: "result", result: { kind: state.readAllowed ? "approved" : "denied-by-rules" } });
+    },
+  };
+  Object.assign(child, { connected: true, send(request: import("../../../src/commands/controller/providers/copilot-read-authority.js").CopilotReadRequest, callback: (error: Error | null) => void) {
+    callback(null);
+    void (async () => {
+      let allowed = false;
+      try {
+        if (request.checkpoint) await checkCopilotRead(nativeRead, request.sessionId, request.cwd, request.checkpoint);
+        else await bindCopilotRead(nativeRead, request.sessionId, request.cwd);
+        allowed = true;
+      } catch { /* The controlled transport returns the native checkpoint decision. */ }
+      child.emit("message", { protocol: copilotAuthorityProtocol, execution: request.execution, sequence: request.sequence, digest: request.digest, allowed, key: request.sequence === 0 && allowed ? "1".repeat(64) : null });
+    })();
+    return true;
+  } });
+  const publish = (policy: NativeReadPolicy | null) => policies.push(policy);
+  sdk.authority = new CopilotReadAuthority({ child: child as unknown as ChildProcess, cwd, publish });
+  const checkpoint: LocalImageCheckpoint = { stage: "initial", proof: { requested: { locator: "image.png", path: "image.png" }, root: { cwd, identity: { kind: "posix", dev: "1", ino: "1" }, traversal: [] }, traversal: [], opened: null } };
+  const drain = vi.fn(async () => {}), { executable: _executable, ...options } = fixture.options;
+  const provider = await openCopilotProvider({ ...options, onNativeReadPolicy: publish, drainNativeReadPolicy: drain });
+  const policy = policies.at(-1)!;
+  if (!policy) { await provider.close(); throw new Error("The provider did not publish its Read policy."); }
+  const blockCheckpoint = () => {
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }), waiting = new Promise<void>(resolve => { release = resolve; });
+    readBarrier = { entered, waiting }; return { started, release };
+  };
+  skills.ensureLoaded.mockClear(); skills.list.mockClear(); setApproveAll.mockClear();
+  return { provider, policy, checkpoint, policies, readPaths, state, model, skills, setApproveAll, drain, blockCheckpoint, revision: () => fixture.states.at(-1)!.controls!.revision };
+}
+
+// The qualified Copilot Read ABI consumes POSIX checkpoints.
+const sourceAuthorityTest = test.skipIf(process.platform === "win32");
+sourceAuthorityTest.each([["model", "second"], ["effort", "high"]])("Copilot %s settings preserve fresh local-source checkpoint decisions", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    await expect(f.provider.setSetting!(id, value, randomUUID(), f.revision())).resolves.toEqual({ disposition: "handled" });
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === id)?.value).toBe(value);
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    expect(f.policies.at(-1)).toBe(f.policy);
+    f.state.readAllowed = false;
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(f.readPaths).toEqual(Array(3).fill(path.join(process.cwd(), "image.png")));
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([["model", "second"], ["effort", "high"]])("Copilot %s setting readback never reloads native skills", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.provider.setSetting!(id, value, randomUUID(), f.revision());
+    expect(f.skills.ensureLoaded).not.toHaveBeenCalled(); expect(f.skills.list).not.toHaveBeenCalled();
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot deferred model switches require readback before setting confirmation", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    f.model.switchTo.mockResolvedValue({ deferred: true }); vi.useFakeTimers();
+    let confirmed = false;
+    const setting = f.provider.setSetting!("model", "second", randomUUID(), f.revision()).then(result => { confirmed = true; return result; });
+    await vi.advanceTimersByTimeAsync(0); expect(confirmed).toBe(false);
+    f.state.modelId = "second"; await vi.advanceTimersByTimeAsync(1001);
+    expect(await setting).toEqual({ disposition: "handled" });
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    expect(f.policies.at(-1)).toBe(f.policy); expect(f.drain).not.toHaveBeenCalled();
+    expect(f.skills.ensureLoaded).not.toHaveBeenCalled(); expect(f.skills.list).not.toHaveBeenCalled();
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each(["revision", "value"])("Copilot invalid setting %s revokes source authority before returning", async failure => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    await expect(f.provider.setSetting!("model", failure === "value" ? "unlisted" : "second", randomUUID(), failure === "revision" ? "0" : f.revision())).rejects.toThrow();
+    expect(f.model.switchTo).not.toHaveBeenCalled(); expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([["tool_approval", "allow"], ["unknown", "value"]])("Copilot %s updates revoke pending checkpoints and drain before dispatch", async (id, value) => {
+  const f = await sourceAuthorityFixture();
+  let releaseDrain!: () => void;
+  const drained = new Promise<void>(resolve => { releaseDrain = resolve; }), blocked = f.blockCheckpoint();
+  try {
+    const checking = f.policy.authorizeCheckpoint(f.checkpoint).catch(error => error);
+    await blocked.started;
+    f.drain.mockImplementation(() => drained);
+    const setting = f.provider.setSetting!(id, value, randomUUID(), f.revision()).catch(error => error);
+    expect(await checking).toMatchObject({ code: "source_forbidden" });
+    expect(f.policies.at(-1)).toBeNull();
+    expect(f.drain).toHaveBeenCalledOnce(); expect(f.setApproveAll).not.toHaveBeenCalled();
+    const reply = once(fixture.child, "message"); blocked.release(); await reply;
+    releaseDrain();
+    if (id === "tool_approval") expect(await setting).toEqual({ disposition: "handled" });
+    else expect(await setting).toBeInstanceOf(Error);
+    expect(f.model.switchTo).not.toHaveBeenCalled();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { blocked.release(); releaseDrain(); await f.provider.close(); }
+});
+
+sourceAuthorityTest.each([
+  ["model", "second", "reject"], ["effort", "high", "reject"],
+  ["model", "second", "readback"], ["effort", "high", "readback"],
+])("Copilot %s update %s (%s) keeps source capture fail-closed", async (id, value, failure) => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).resolves.toBeUndefined();
+    if (id === "model") f.model.switchTo.mockImplementation(async () => { if (failure === "reject") throw new Error("Native update rejected"); return { deferred: false }; });
+    else f.model.setReasoningEffort.mockImplementation(async () => { if (failure === "reject") throw new Error("Native update rejected"); return {}; });
+    await expect(f.provider.setSetting!(id, value, randomUUID(), f.revision())).rejects.toThrow();
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+    expect(f.readPaths).toHaveLength(1);
+    await expect(f.provider.send(textNativeInput("Text remains available"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot delayed effort completion cannot revive authority after the update deadline", async () => {
+  const f = await sourceAuthorityFixture(); let complete!: () => void;
+  try {
+    f.model.setReasoningEffort.mockImplementation(({ reasoningEffort }) => new Promise(resolve => { complete = () => { f.state.reasoningEffort = reasoningEffort; resolve({}); }; }));
+    vi.useFakeTimers();
+    const setting = f.provider.setSetting!("effort", "high", randomUUID(), f.revision()), failed = expect(setting).rejects.toThrow("not confirmed");
+    await vi.advanceTimersByTimeAsync(30_001); await failed;
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    complete(); await f.provider.refreshControls!();
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === "effort")?.value).toBe("high");
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { complete?.(); await f.provider.close(); }
+});
+
+sourceAuthorityTest("Copilot deferred model timeout cannot revive authority on a later readback", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    f.model.switchTo.mockResolvedValue({ deferred: true }); vi.useFakeTimers();
+    const setting = f.provider.setSetting!("model", "second", randomUUID(), f.revision()), failed = expect(setting).rejects.toThrow("not confirmed");
+    await vi.advanceTimersByTimeAsync(30_001); await failed;
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    f.state.modelId = "second"; await f.provider.refreshControls!();
+    expect(fixture.states.at(-1)!.controls!.settings.find(setting => setting.id === "model")?.value).toBe("second");
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("a native permission change during an effort update still revokes source authority", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    f.model.setReasoningEffort.mockImplementation(async ({ reasoningEffort }) => { f.state.reasoningEffort = reasoningEffort; fixture.emit(event("session.permissions_changed", { mode: "assisted" })); return {}; });
+    await f.provider.setSetting!("effort", "high", randomUUID(), f.revision());
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
+sourceAuthorityTest("an unknown Copilot command still revokes source authority and drains", async () => {
+  const f = await sourceAuthorityFixture();
+  try {
+    await f.policy.authorizeCheckpoint(f.checkpoint);
+    await expect(f.provider.executeCommand!("unknown", "", randomUUID(), f.revision(), null)).rejects.toThrow();
+    expect(f.policies.at(-1)).toBeNull(); expect(f.drain).toHaveBeenCalledOnce();
+    await expect(f.policy.authorizeCheckpoint(f.checkpoint)).rejects.toMatchObject({ code: "source_forbidden" });
+  } finally { await f.provider.close(); }
+});
+
 test("Copilot still stops its owned runtime when image draining fails", async () => {
   const error = new Error("Image cleanup failed"), policies: unknown[] = [];
   const provider = await openCopilotProvider({ ...fixture.options, onNativeReadPolicy: policy => policies.push(policy), drainNativeReadPolicy: async () => { throw error; } });

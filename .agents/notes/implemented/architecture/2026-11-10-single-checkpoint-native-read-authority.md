@@ -96,6 +96,15 @@ allow-all modes, the pinned managed-mode lifecycle and the exclusive mutation
 boundary prevent the request from invoking an assisted model judge. Current
 mode is still queried for every checkpoint; a startup flag is insufficient.
 
+Model and reasoning-effort settings use only their validated native model RPCs
+and settings readback, without loading skills again. A successful operation
+preserves the existing Read authority; it does not recreate an invalidated one
+or reuse an earlier checkpoint decision. A deferred model switch retains the
+same permission-independent behavior while the controls layer awaits its normal
+confirmation. Failed or uncertain setting operations close authority and drain
+writers. Permission settings and unclassified operations close and drain before
+the native mutation; native permission events independently invalidate authority.
+
 A fixed private ClientMetadata key authenticates request markers and refusal
 receipts across resume. Live matching also requires issuance, Session context
 and the same request object as `event.data.permissionRequest`. Historical
@@ -168,6 +177,13 @@ tool requests can copy text. Authenticated issuance handles live events; a
 second signature binds a completed historical refusal to its native request ID.
 An incomplete crash record remains visible as expired/unknown when that proof
 is absent.
+
+**Invalidate Read authority for every setting.** The conservative policy covers
+unknown permission effects, but permanently disables local capture after an
+ordinary model or reasoning-effort change. Those two validated operations have
+known model-only mutations and need no skills reload. Their success preserves
+the existing gate while every source checkpoint still queries native policy;
+unknown operations and failed settings retain the closed-gate behavior.
 
 ## Consequences
 
