@@ -1,6 +1,7 @@
 import type { AuthMessages } from "../auth";
 
 export const auth: AuthMessages = {
+  accountChange: { message: "Account changed", reload: "Refresh page" },
   roles: { admin: "Administrator", member: "Member" },
   shell: {
     sidebar: {

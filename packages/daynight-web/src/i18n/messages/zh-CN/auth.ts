@@ -1,6 +1,7 @@
 import type { AuthMessages } from "../auth";
 
 export const auth: AuthMessages = {
+  accountChange: { message: "账户已变化", reload: "刷新页面" },
   roles: { admin: "管理员", member: "成员" },
   shell: {
     sidebar: {

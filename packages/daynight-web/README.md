@@ -2336,6 +2336,14 @@ the assistant suite below without depending on the quality job or its artifacts.
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
 
+The controlled `AccountChangeBanner` presents a localized polite status and a
+caller-supplied refresh action in the active header. Inactive instances keep an empty live region without presenting or announcing a notice.
+The region exists before its message is populated. The caller chooses the active header and supplies the real reload action;
+the component does not discover identity or connect existing business headers.
+The session-header browser configuration also builds a controlled production
+component fixture for normal, native modal and fullscreen headers. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/session-header-playwright.config.ts`.
+
 ## Independent browser checks
 
 Run all module browser configurations after installing Chromium with
