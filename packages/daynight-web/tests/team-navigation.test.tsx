@@ -77,10 +77,12 @@ describe("Team workspace navigation", () => {
     act(() => navigate(route));
     if (route === "/shared-projects") await screen.findByRole("heading", { name: "Projects shared with me" });
     else await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
-    expect(screen.getByRole("dialog", { hidden: true })).toBeInTheDocument();
+    const confirmation = screen.getByRole("dialog", { hidden: true });
     localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
     await act(async () => receipt.resolve(json({ teamId: a, userId, removed: true, actorRole: null })));
-    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+    await waitFor(() => expect(confirmation).toHaveAttribute("aria-busy", "false"));
+    expect(screen.getByRole("dialog", { hidden: true })).toBe(confirmation);
+    expect(confirmation).not.toBeVisible();
     expect(window.location.pathname).toBe(route);
     if (route === "/shared-projects") {
       expect(screen.getByRole("heading", { name: "Projects shared with me" })).toBeInTheDocument();
