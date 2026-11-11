@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { removeProjectGrant, setProjectGrant } from "../src/api/auth";
-import { invalidateAuthRequests } from "../src/api/client";
+import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { directAccessFixture } from "./helpers/taskSync";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
@@ -17,6 +17,44 @@ const mock = (value: Response) => { const fetcher = vi.fn().mockResolvedValue(va
 afterEach(() => { vi.unstubAllGlobals(); invalidateAuthRequests(); });
 
 describe("project grant receipts", () => {
+  it.each(["set", "remove"] as const)("reports %s dispatch only when fetch starts, not when admission is cancelled", async (action) => {
+    const fetcher = mock(action === "set" ? response({ grant, actorAccess }) : response({ projectId, userId: targetId, deleted: true, actorAccess }));
+    const dispatch = vi.fn();
+    const controller = new AbortController();
+    const resume = pauseAuthRequests();
+    const invoke = (requestSignal: AbortSignal) => action === "set"
+      ? setProjectGrant(projectId, targetId, { version, role: "member", expectedUserId: actorId }, requestSignal, vi.fn(), dispatch)
+      : removeProjectGrant(projectId, targetId, { version, expectedUserId: actorId }, requestSignal, vi.fn(), dispatch);
+    const pending = invoke(controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    resume();
+    fetcher.mockImplementationOnce(async () => {
+      expect(dispatch).toHaveBeenCalledOnce();
+      return action === "set" ? response({ grant, actorAccess }) : response({ projectId, userId: targetId, deleted: true, actorAccess });
+    });
+    await invoke(signal());
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("reports a dispatched request before propagating network cancellation", async () => {
+    const dispatched = vi.fn();
+    const controller = new AbortController();
+    const fetcher = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      expect(dispatched).toHaveBeenCalledOnce();
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const pending = setProjectGrant(projectId, targetId, { version, role: "member", expectedUserId: actorId }, controller.signal, vi.fn(), dispatched);
+    expect(fetcher).toHaveBeenCalledOnce();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("creates with null, replaces with an exact numeric version and preserves nested int64 values", async () => {
     const fetcher = mock(response({ grant, actorAccess }));
     expect(await setProjectGrant(projectId, targetId, { version: null, role: "member", expectedUserId: actorId }, signal(), vi.fn())).toEqual({ grant, actorAccess });

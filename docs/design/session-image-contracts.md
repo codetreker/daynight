@@ -360,6 +360,8 @@ type ImageReadChunk = {
 
 archive reader 以 recordId 所属授权解析 resourceId；在线 Session 的新 generation 不修改旧记录的图片归属。服务可直接从已保存 blob 读取，不依赖 Controller；仅尚在采集的资源由 Controller 通道读取。跨连接 chunk 要验证同一不可变身份，旧请求响应不得混入新请求。浏览器按 origin/account/owner/resourceId/hash 缓存，先验证当前授权再用缓存；图片 URL 不是 bearer 公开地址，响应 `Cache-Control: private, no-store`。访问撤销/账户切换/记录删除后立即撤销当前 Blob URL、敏感预览和下载资格，保留阅读位置的普通权限复核不能重挂图片。
 
+Session 账户刷新停止能力可独立关闭 live 或固定记录的远端媒体 reader，拒绝新读取和下载，同时保留原图片 scope 与已解码 lease。它不改变认证 generation，也不代替根 owner 对真实账户切换、撤权和记录删除的清理策略；现有根清理仍可销毁 scope。浏览器生命周期与展示边界见[图片浏览器设计](session-image-browser.md)。
+
 ### 来源资格与唯一重试
 
 唯一来源重试端点为 `POST {base}/image-occurrences/{imageId}/retry`，严格body `{}`，返回 `{capture:ImageCaptureReceipt}`；服务向Controller发送 `retry_capture {captureId,attemptId}`，成功结果为该attempt的ValidatedImage。POST只接受已登记原出现、可信local/external来源及当前操作权限，不接受新locator、headers或actor。

@@ -1428,21 +1428,21 @@ retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
-preferences, so the first render after reload or return already shows the saved
-Overview or Task list selection. It does not change the URL or history. Empty
+preferences, so the first render after reload or a new visit already shows the saved
+Overview or Task list selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
 projects retain both section destinations.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
 inert on Overview. Leaving Task list or its Task chains category closes the
-current graph dialog and clears its temporary opening state; returning shows
-the list without reopening it. The retained task subtree does not start another
+current graph dialog and clears its temporary opening state; an ordinary return shows
+the list without reopening it. Browser history traversal can restore an earlier graph selection. The retained task subtree does not start another
 cache, index or refresh loop. Task details remain outside either section panel.
 Inactive inner-category contents unmount while their associated tabpanel IDs
 remain stable.
 
 Within Task list, an absent category preference selects Task chains; later
-visits restore the project's last inner category. Both badges count unfinished
+new visits restore the project's last saved inner category. Both badges count unfinished
 tasks (pending and in progress) from the complete snapshot, independently of
 completed-item visibility, outer/inner selection and the open graph dialog. Their sum
 equals the project's unfinished total; toolbars report all entries matching the
@@ -2088,7 +2088,10 @@ Back/Forward apply the address state without adding an entry. Goal graphs, child
 Task dialogs and external Goal dialogs on a standalone resource page also restore
 their reading selections with Back/Forward without changing the root URL.
 Closing a layer replaces the current selection after draft admission. Project-page
-dialogs keep local navigation. Copying or reloading restores the root task, tab
+sections, graph, details and their nested reading selections also participate in
+Back/Forward without changing the project URL. Traversal does not replay operations
+or save preferences; closing replaces the current selection with its parent.
+For standalone URLs, copying or reloading restores the root task, tab
 and file; nested selections do not carry resource data or drafts. A same-task
 tab/file route change keeps the shared surface and attachment controller mounted, retaining directory
 disclosure, sidebar scroll and upload drafts. Task and authenticated-identity
@@ -2342,6 +2345,14 @@ serially with bounded stages and uploads coverage evidence. The browser job runs
 the assistant suite below without depending on the quality job or its artifacts. The module browser
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
+
+The controlled `AccountChangeBanner` presents a localized polite status and a
+caller-supplied refresh action in the active header. Inactive instances keep an empty live region without presenting or announcing a notice.
+The region exists before its message is populated. The caller chooses the active header and supplies the real reload action;
+the component does not discover identity or connect existing business headers.
+The session-header browser configuration also builds a controlled production
+component fixture for normal, native modal and fullscreen headers. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/session-header-playwright.config.ts`.
 
 ## Independent browser checks
 

@@ -18,8 +18,14 @@ Worker-specific responses. The server owns resolution and successful preferences
 
 A creation ID is retained before dispatch. Unknown outcomes expose only a GET
 of that ID. A scope-owned memory record survives page unmounts; sessionStorage
-holds only the ID for reload recovery. Confirmed outcomes and scope invalidation
-clear the record. Storage failures retain the identity within the same document.
+holds only the ID for reload recovery. Confirmed outcomes clear the unresolved
+record after admission; scope invalidation clears both records. Storage failures
+retain the identity within the same document. Trusted receipts remain in scope
+memory independently of presentation, so cancellation cannot turn confirmation
+into an unknown result. The form owns cancellable publication and fences closing
+or navigation by its draft revision and submission location. A result delayed
+by identity pause remains available for an explicit open without an automatic
+read or replay.
 
 Visible pages poll independent list, defaults and detail resources every five
 seconds. Complete pagination is published atomically so search covers the whole
@@ -43,6 +49,11 @@ only the name. The form instead tracks user changes separately.
 **Keep unknown creation only in dialog or page state.** Both lose the ID on
 navigation and permit a new creation after a committed but lost response. The
 retained identity supports observation across remounts without replaying payloads.
+
+**Hold the creation operation open until presentation is admitted.** A persistent
+identity pause would retain its busy lock indefinitely and prevent local editing.
+Settling locally preserves the actual receipt while admission still protects
+presentation and follow-up reads.
 
 **Search only the first page.** This silently hides matches in later pages. Full
 pagination has a higher read cost but preserves a simple, complete search until

@@ -1,7 +1,11 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { pauseAuthRequests } from '../src/api/client';
+import { browserNavigation } from '../src/app/navigation';
+import { navigate } from '../src/app/router';
 import type { WorkerConfigurationOutcome } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
@@ -14,6 +18,116 @@ const install = (response: () => Response) => {
 };
 
 describe('configuration presentation', () => {
+  it('holds a new save until the confirmed result is published and keeps the new edit', async () => {
+    const put = Promise.withResolvers<Response>(), dispatched = Promise.withResolvers<void>();
+    const enteringPublication = Promise.withResolvers<void>(), releasePublication = Promise.withResolvers<void>();
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() });
+    const ready = scope.ready.bind(scope), writes: Array<{ revision: string; value: { maxConcurrent: number } }> = [];
+    const fetch = vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${workerId(1)}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }));
+      if (init.method === 'PUT') {
+        writes.push(JSON.parse(String(init.body)) as { revision: string; value: { maxConcurrent: number } });
+        if (writes.length === 1) { dispatched.resolve(); return put.promise; }
+        return Promise.resolve(configurationResponse(configurationResource('3', { ...configurationValue(), maxConcurrent: 4 })));
+      }
+      return Promise.resolve(configurationResponse(configurationResource()));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { scope } });
+    try {
+      const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+      fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+      await act(async () => dispatched.promise);
+      vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => {
+        enteringPublication.resolve();
+        await Promise.race([releasePublication.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+      }).mockImplementation(ready);
+      put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+      await act(async () => enteringPublication.promise);
+      fireEvent.change(input, { target: { value: '4' } });
+      const save = screen.getByRole('button', { name: 'Save configuration' });
+      const discard = within(screen.getByRole('form', { name: 'Configuration' })).getByRole('button', { name: 'Discard changes' });
+      expect(save).toBeDisabled(); expect(discard).toBeDisabled(); fireEvent.click(save); fireEvent.click(discard);
+      expect(input).toHaveValue('4'); expect(writes).toHaveLength(1);
+      await act(async () => { releasePublication.resolve(); for (let n = 0; n < 40; n++) await Promise.resolve(); });
+      expect(input).toHaveValue('4'); expect(save).toBeEnabled();
+      fireEvent.click(save);
+      await act(async () => { for (let n = 0; n < 40; n++) await Promise.resolve(); });
+      expect(writes).toHaveLength(2); expect(writes[1]).toMatchObject({ revision: '2', value: { maxConcurrent: 4 } });
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('keeps an edit made after leaving while a confirmed save awaits publication', async () => {
+    const put = Promise.withResolvers<Response>(), dispatched = Promise.withResolvers<void>();
+    const enteringPublication = Promise.withResolvers<void>(), releasePublication = Promise.withResolvers<void>();
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() });
+    const ready = scope.ready.bind(scope), writes: Array<{ revision: string; value: { maxConcurrent: number } }> = [];
+    const fetch = vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${workerId(1)}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }));
+      if (init.method === 'PUT') {
+        writes.push(JSON.parse(String(init.body)) as { revision: string; value: { maxConcurrent: number } });
+        if (writes.length === 1) { dispatched.resolve(); return put.promise; }
+        return Promise.resolve(configurationResponse(configurationResource('3', { ...configurationValue(), maxConcurrent: 5 })));
+      }
+      return Promise.resolve(configurationResponse(configurationResource()));
+    });
+    vi.stubGlobal('fetch', fetch);
+    act(() => browserNavigation().navigate(`/workers/${workerId(1)}`));
+    const view = renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { scope } });
+    try {
+      const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+      fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+      await act(async () => dispatched.promise);
+      vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => {
+        enteringPublication.resolve();
+        await Promise.race([releasePublication.promise, new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+      }).mockImplementation(ready);
+      put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+      await act(async () => enteringPublication.promise);
+      fireEvent.change(input, { target: { value: '4' } });
+      act(() => navigate('/projects')); expect(screen.getByRole('alertdialog')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+      expect(input).toHaveValue('4');
+      fireEvent.change(input, { target: { value: '5' } });
+      await act(async () => { releasePublication.resolve(); for (let n = 0; n < 40; n++) await Promise.resolve(); });
+      expect(input).toHaveValue('5');
+      const save = screen.getByRole('button', { name: 'Save configuration' }); expect(save).toBeEnabled(); fireEvent.click(save);
+      await act(async () => { for (let n = 0; n < 40; n++) await Promise.resolve(); });
+      expect(writes).toHaveLength(2); expect(writes[1]).toMatchObject({ revision: '2', value: { maxConcurrent: 5 } });
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('ends saving during a pause while retaining the editor and an unconfirmed result', async () => {
+    const dispatched = Promise.withResolvers<void>();
+    const fetch = vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${workerId(1)}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }));
+      if (init.method === 'PUT') {
+        dispatched.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init.signal!;
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return Promise.resolve(configurationResponse(configurationResource()));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const panel = (enabled: boolean) => <WorkerConfigurationPanel workerId={workerId(1)} readEnabled={enabled} online={null} tasks={[]} />;
+    const view = renderWithLocale(panel(true), { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await act(async () => dispatched.promise); expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    const count = fetch.mock.calls.length; const resume = pauseAuthRequests(); view.rerender(panel(false));
+    expect(await screen.findByText('The save result is not yet confirmed. Your draft has been kept.')).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBe(input); expect(input).toHaveValue('3');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled(); expect(fetch).toHaveBeenCalledTimes(count);
+    fireEvent.change(input, { target: { value: '4' } }); expect(input).toHaveValue('4');
+    resume(); view.rerender(panel(true));
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+
   it('keeps uninitialized configuration read-only without inventing target settings', async () => {
     const fetch = install(() => configurationResponse({ desired: null, observationRevision: '0', observation: null }));
     mount();

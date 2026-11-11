@@ -9,8 +9,10 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
   const revision = observation.kind === "project-summary" ? observation.revision : 1;
   const observedTask = observation.kind === "project-summary" ? observation.task : undefined;
   const sessions = useTaskDetailSessions();
-  const opened = useRef<{ readonly sessions: TaskDetailSessions; readonly projectId: string; readonly taskId: string; readonly revision: number; readonly version: bigint | null; readonly generation: string | null; readonly blockedRead: boolean } | null>(null);
-  const sameIdentity = opened.current?.sessions === sessions && opened.current.projectId === projectId && opened.current.taskId === taskId;
+  const opened = useRef<{ readonly sessions: TaskDetailSessions; readonly projectId: string; readonly taskId: string; readonly source: TaskObservationInput["kind"]; readonly revision: number; readonly version: bigint | null; readonly generation: string | null; readonly blockedRead: boolean } | null>(null);
+  const sameTask = opened.current?.sessions === sessions && opened.current.projectId === projectId && opened.current.taskId === taskId;
+  const sameIdentity = sameTask && opened.current?.source === observation.kind;
+  const changingSource = sameTask && !sameIdentity;
   const subscribe = useCallback((listener: () => void) => sessions.subscribe(projectId, taskId, listener), [sessions, projectId, taskId]);
   const snapshot = useCallback(() => sessions.snapshot(projectId, taskId), [sessions, projectId, taskId]);
   const state = useSyncExternalStore(subscribe, snapshot);
@@ -21,10 +23,10 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
   useEffect(() => {
     if (direct || revision <= 0) return;
     const previous = opened.current;
-    const opening = previous === null || previous.sessions !== sessions || previous.projectId !== projectId || previous.taskId !== taskId;
+    const opening = previous === null || previous.sessions !== sessions || previous.projectId !== projectId || previous.taskId !== taskId || previous.source !== observation.kind;
     if (opening) sessions.requireOpeningRead(projectId, taskId);
     const needsRead = sessions.observe(projectId, taskId, observedTask, generation !== null);
-    opened.current = { sessions, projectId, taskId, revision, version, generation, blockedRead };
+    opened.current = { sessions, projectId, taskId, source: observation.kind, revision, version, generation, blockedRead };
     const newReceipt = previous?.revision !== revision;
     if (!blockedRead && (opening || previous?.generation !== generation || needsRead && (previous?.version !== version || newReceipt || previous?.blockedRead === true))) {
       sessions.load(projectId, taskId, revision, opening ? "open" : "automatic");
@@ -32,7 +34,7 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
   }, [sessions, projectId, taskId, revision, observedTask, blockedRead, version, generation, direct]);
   useEffect(() => {
     if (!direct) return;
-    opened.current = { sessions, projectId, taskId, revision, version: null, generation: null, blockedRead: false };
+    opened.current = { sessions, projectId, taskId, source: 'direct', revision, version: null, generation: null, blockedRead: false };
     sessions.openDirect(projectId, taskId);
     let timer: ReturnType<typeof setInterval> | null = null;
     const schedule = () => {
@@ -63,7 +65,7 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
   const withdrawClaim = useCallback((claimId: string, version: bigint) => { sessions.withdrawClaim(projectId, taskId, claimId, version); }, [sessions, projectId, taskId]);
   const deleteTask = useCallback((version: bigint, removeDepends: boolean) => { sessions.deleteTask(projectId, taskId, version, removeDepends); }, [sessions, projectId, taskId]);
   const reconcile = useCallback(() => { sessions.reconcile(projectId, taskId); }, [sessions, projectId, taskId]);
-  const visible = (direct ? sameIdentity : revision > 0 && (sessions.hasCurrentGeneration(projectId, taskId) && (sameIdentity || state.mutation.phase !== "idle") || sameIdentity && state.detail === null && state.status === "error")) ? state
+  const visible = !changingSource && (direct ? sameIdentity : revision > 0 && (sessions.hasCurrentGeneration(projectId, taskId) && (sameIdentity || state.mutation.phase !== "idle") || sameIdentity && state.detail === null && state.status === "error")) ? state
     : { ...state, detail: null, loadedRevision: null, status: "loading" as const, refreshing: false, error: null };
   const requiresFreshRead = !sameIdentity || (direct ? sessions.directRequiresFreshRead(projectId, taskId) : revision <= 0 || sessions.requiresFreshRead(projectId, taskId, observedTask));
   const displayRequiresFreshRead = !sameIdentity || (direct ? sessions.directRequiresFreshRead(projectId, taskId, true) : requiresFreshRead);

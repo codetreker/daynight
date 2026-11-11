@@ -217,6 +217,8 @@ type ImageAssetAdapter = {
 
 `ImageReadPriority` 区分 `background`、`preview` 与 `download`。live scope 从真实 Session fence/native 身份与账户构建；record scope 使用实际记录命名空间、记录 ID 与所选归档摘要。固定记录的状态与内容使用同一份已核对的状态验证，不能以第二次状态读取替换所选表示。认证复核期间 `readAdmitted=false` 阻止新读和下载，已经显示的同身份内容保持；权威撤权通过 scope 失效同步撤下表示并等待读取、解码实际结束。
 
+账户刷新停止入口同步撤销 live 和固定记录的远端读取准入并关闭 reader，保留同一个 scope 和已解码 lease；迟到的读取不能发布。该入口不可恢复，不借用临时认证复核的 60 秒连接宽限。真正撤权或记录离开仍调用破坏性的 scope 失效，根 owner 负责选择策略。
+
 格式验证先核对完整长度、摘要与 PNG/JPEG/GIF/WebP/AVIF 容器，再发布原件 lease。解码单独报告本地失败并保留仍获授权的原件下载。支持 `ImageDecoder` 的浏览器遍历所有帧；仅在容器已证明静态单帧时才使用 `createImageBitmap` 后备路径。多帧或帧数未知且缺少完整解码能力时明确显示本地解码失败，不把第一帧成功当成完整验证。
 
 `open` 同步建立模态并立即显示图片框/加载状态；读取可异步完成。相同 scope+asset 的重复 open 只聚焦现有预览，不重置缩放、读取或创建第二个模态。不同图片替换当前内容，释放旧预览 lease，初始回到 fit；旧读取即使晚到也不能替换新图。每个 host 同时只有一张图；跨图片轮播不是本期要求，调用方保留原有多图顺序。

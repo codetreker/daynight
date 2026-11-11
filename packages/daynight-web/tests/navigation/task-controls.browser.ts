@@ -130,6 +130,115 @@ test('ID search keeps long results readable and opens the correct task on narrow
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
+test('history protects a summary task draft before restoring its earlier direct search detail', async ({ page }) => {
+  const writes = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  await page.getByRole('button', { name: 'Open task: Target task' }).click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog).toHaveAccessibleName('Target task');
+  const directEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(dialog).toHaveCount(0);
+  await input.fill('');
+  await page.locator(`#standalone-task-${taskId}`).click();
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Keep this summary draft');
+  await page.evaluate(() => history.go(-3));
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Keep this summary draft');
+  await page.evaluate(() => history.go(-3));
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(directEntry);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
+
+test('returning from direct search detail to the earlier summary loads Steps', async ({ page }) => {
+  const writes = await install(page);
+  const dialog = await openDialog(page);
+  const summaryEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('summary');
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(dialog).toHaveCount(0);
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  await page.getByRole('button', { name: 'Open task: Target task' }).click();
+  await expect(dialog).toHaveAccessibleName('Target task');
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('direct');
+  await page.evaluate(() => history.go(-2));
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(summaryEntry);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
+
+test('summary detail waits for a snapshot and retains its real editor through snapshot loss', async ({ page }) => {
+  const writes = await install(page);
+  await page.goto('/summary-detail-fixture');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const directReads = () => page.evaluate(() => (window as unknown as { summaryDetailFixture: { directReads(): number } }).summaryDetailFixture.directReads());
+  const setRevision = (value: number | null) => page.evaluate(revision => (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void } }).summaryDetailFixture.setRevision(revision), value);
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(0);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(1);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Retained after snapshot loss');
+  const original = await draft.elementHandle();
+  await setRevision(null);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
+  await expect(draft).toHaveValue('Retained after snapshot loss');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  expect(await directReads()).toBe(0);
+  expect(writes).toEqual([]);
+});
+
+test('a direct Goal retains its editor when the summary snapshot is not yet available', async ({ page }) => {
+  await install(page);
+  const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Target goal', version: 5n, ready: false });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, route => route.fulfill({ status: 200, body: stringifyWireJson(goal), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) } }));
+  await page.goto('/summary-detail-fixture?resource=goal');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const goalDialog = page.getByRole('dialog', { name: 'Target goal' });
+  await goalDialog.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  const draft = editor.getByRole('textbox', { name: 'Description', exact: true });
+  await draft.fill('Goal draft across observation changes');
+  const original = await draft.elementHandle();
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setSource(value: 'summary'): void } }).summaryDetailFixture.setSource('summary'));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(0));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(1));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:1');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+});
+
 test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
   const writes = await install(page);
   const dialog = await openDialog(page);
