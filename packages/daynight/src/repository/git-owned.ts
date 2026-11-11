@@ -62,9 +62,8 @@ export const startOwnedRepositoryGit = (
     complete = true;
     clearTimeout(commandTimer); clearTimeout(grace);
     operation.signal.removeEventListener("abort", abort);
-    if (!stopRequested) {
-      try { operation.check(); } catch (error) { recordFailure(error); }
-    }
+    try { operation.check(); }
+    catch (error) { if (!failures.includes(error) && !cleanupErrors.includes(error)) recordFailure(error); }
     if (outcomeSent && failedExit) cleanupErrors.push(exitFailure());
     const settlement: GitSettlement = { kind: "local-closed", cleanupErrors: cleanupErrors.slice() };
     resolveJoined(settlement);
