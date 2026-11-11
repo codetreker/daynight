@@ -1042,11 +1042,23 @@ and persisted readback. Other Worker suites use the fixtures required by their
 own proof. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
 records these proof owners.
 
+### Worker HTTP tests
+
+`internal/server/worker` owns the Worker route input, telemetry, privacy and
+configuration protocol matrices. The ordinary report and configuration cases
+assemble the real Worker registrar, request authentication, Service and Core
+with controlled storage capabilities; exact refusal and capacity cases use
+strict operation callbacks. Controlled results do not prove physical commits.
+`internal/server/httpx` owns the error classification and response mapping for
+Worker transaction failures and Session content faults. Root retains its shared
+fixtures for other consumers. Existing integration tests retain their real
+infrastructure requirements.
+
 ### Worker capacity tests
 
-The root Report and Configuration capacity matrices register real Worker HTTP
-routes and credential middleware with direct Worker operation mocks. They check
-full arguments, exact calls, response content and private headers. Report
+The `internal/server/worker` Report and Configuration capacity matrices register
+real Worker HTTP routes and credential middleware with direct Worker operation
+mocks. They check full arguments, exact calls, response content and private headers. Report
 byte-field overflows arrive at the operation and receive a supplied service
 refusal; Report collection overflow is rejected by the actual wire parser.
 Configuration PUT and observation overflow inputs are parsed before any business
@@ -1067,7 +1079,7 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
   -run '^(TestWorker(Report|Configuration)Capacity|TestPutConfigurationCapacity|TestExchangeConfigurationCapacity)' \
-  ./internal/server ./internal/core/worker
+  ./internal/server/worker ./internal/core/worker
 ```
 
 The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
@@ -1102,7 +1114,7 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
   -run '^(TestWorkerAssistantHostHTTP|TestWorkerAssistantHostReportValidationAndSnapshot|TestExchangeConfigurationAssistantHostCompatibility|TestWorkerAdmission)' \
-  ./internal/server ./internal/core/worker ./internal/service/worker
+  ./internal/server/worker ./internal/core/worker ./internal/service/worker
 ```
 
 The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)

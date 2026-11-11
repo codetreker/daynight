@@ -19,7 +19,7 @@ describe("intrinsic Project ownership", () => {
     expect(parsePage(page, parseProject, ({ id }) => id).items).toEqual([project]);
     const graph = parseApiJson(stringifyApiJson({
       observedAt: time, project, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
-      tasks: [{ id: teamId, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, allowAgents: false, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }],
+      tasks: [{ id: teamId, type: "task", parentId: null, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, allowAgents: false, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }],
     }));
     expect(parseTaskGraph(graph, projectId, teamId).project).toEqual(project);
   });

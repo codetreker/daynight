@@ -14,7 +14,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const userId = "cccccccc-3333-4333-8333-333333333333";
 const time = "2026-10-20T00:00:00.123456Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: userId, version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: userId, requiredPlatform: null, version: 1n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: userId, requiredPlatform: null, version: 1n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const operations: ReturnType<typeof createOperation>[] = [];
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); });
 const fixture = () => {
@@ -103,7 +103,7 @@ it("keeps empty properties and the exact version in task show JSON", async () =>
 it("renders only returned graph nodes and their summary", async () => {
   const f = fixture();
   const otherId = "dddddddd-4444-4444-8444-444444444444";
-  const node = { id: taskId, titlePreview: "First", titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
+  const node = { type: "task", parentId: null, id: taskId, titlePreview: "First", titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
   const graph: TaskGraph = { observedAt: time, project: { ...project, settings: { ...project.settings, version: 9_007_199_254_740_993n } }, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [node, { ...node, id: otherId, titlePreview: "Second", ready: true, dependsOn: [], blockedBy: [] }] };
   f.api.getTaskGraph.mockResolvedValue(graph);
   await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
@@ -160,7 +160,7 @@ it("keeps external dependency classification across show, list and graph text", 
   const f = fixture();
   const prerequisite = "dddddddd-4444-4444-8444-444444444444";
   const classified: Task = { ...task, dependsOn: [prerequisite], externalDependsOn: [prerequisite], blockedBy: [prerequisite], ready: false };
-  const node = { id: taskId, titlePreview: task.title, titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [prerequisite], blockedBy: [prerequisite], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
+  const node = { type: "task", parentId: null, id: taskId, titlePreview: task.title, titleTruncated: false, status: "todo", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [prerequisite], blockedBy: [prerequisite], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time } as const;
   const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 }, tasks: [{ ...node, id: prerequisite, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }, node] };
   f.api.getTask.mockResolvedValue(classified); f.api.listTasks.mockResolvedValue([classified]); f.api.getTaskGraph.mockResolvedValue(graph);
   for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
@@ -172,7 +172,7 @@ it("keeps external dependency classification across show, list and graph text", 
 it("keeps completed graph members and summary in JSON", async () => {
   const f = fixture();
   const prerequisite = "dddddddd-4444-4444-8444-444444444444";
-  const node = { id: taskId, titlePreview: task.title, titleTruncated: false, status: "done", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time } as const;
+  const node = { type: "task", parentId: null, id: taskId, titlePreview: task.title, titleTruncated: false, status: "done", ready: false, allowAgents: false, assignedTo: userId, requiredPlatform: null, dependsOn: [prerequisite], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time } as const;
   const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, proposed: 0, todo: 0, inProgress: 0, done: 2, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, id: prerequisite, dependsOn: [] }, node] };
   f.api.getTaskGraph.mockResolvedValue(graph);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
@@ -211,7 +211,7 @@ it("keeps compact list order, status, dependencies and escaped PR values", async
   await runTaskCommand(["list", "--all", "--project", projectId], f.context, f.dependencies);
   const output = f.context.stdout.mock.calls[0]![0];
   expect(output.indexOf(`ID: ${taskId}\n`)).toBeLessThan(output.indexOf(`ID: ${doneId}\n`));
-  expect(output).toContain(`ID: ${doneId}\nProject: ${projectId}\nTitle: Done\n`);
+  expect(output).toContain(`ID: ${doneId}\nProject: ${projectId}\nType: task\nParent: none\nTitle: Done\n`);
   expect(output).toContain("Status: todo\n"); expect(output).toContain("Status: done\n");
   expect(output).toContain("Properties: 0\n");
   expect(output).toContain("Ready: true\nDepends on: none\nExternal dependencies (0): none\nBlocked by: none\n");
@@ -226,6 +226,7 @@ it("reports a version conflict with the task and server request identity without
   const operation = createOperation(); operations.push(operation);
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
     if (String(url).endsWith(`/api/v1/projects/${projectId}`)) return new Response(stringifyApiJson(project), { headers: { "Content-Type": "application/json" } });
+    if (init?.method === "GET" && String(url).endsWith(`/api/v1/projects/${projectId}/tasks/${taskId}`)) return new Response(stringifyApiJson({ ...task, version: 2n }), { headers: { "Content-Type": "application/json" } });
     expect(init?.method).toBe("PUT");
     return new Response(stringifyApiJson({ error: { code: "version_conflict", message: "Task changed.", requestId: "fixture-version-conflict" } }), { status: 409, headers: { "Content-Type": "application/json" } });
   });
@@ -239,7 +240,7 @@ it("reports a version conflict with the task and server request identity without
   expect(f.context.stdout).not.toHaveBeenCalled();
   const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
   expect(diagnostic).toContain("version_conflict"); expect(diagnostic).toContain(taskId); expect(diagnostic).toContain("fixture-version-conflict");
-  expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "PUT"]);
+  expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "GET", "PUT"]);
 });
 
 it("keeps concurrent same-version updates independent and does not retry the refused write", async () => {
@@ -280,6 +281,7 @@ it("keeps concurrent same-version status outcomes separate without retrying eith
   const writes: { status: string; version: bigint }[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
     if (String(url).endsWith(`/api/v1/projects/${projectId}`)) return new Response(stringifyApiJson(project), { headers: { "Content-Type": "application/json" } });
+    if (init?.method === "GET" && String(url).endsWith(`/api/v1/projects/${projectId}/tasks/${taskId}`)) return new Response(stringifyApiJson({ ...task, version: 2n }), { headers: { "Content-Type": "application/json" } });
     expect(init?.method).toBe("PUT");
     expect(String(url)).toContain(`/api/v1/projects/${projectId}/tasks/${taskId}/status`);
     const body = parseApiJson(String(init!.body)) as { status: string; version: bigint };

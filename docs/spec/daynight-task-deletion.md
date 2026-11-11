@@ -28,7 +28,7 @@
 
 ## CLI
 
-`daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]` 与 `dn` 等价。`--remove-depends` 是可选开关；不传时严格删除，无未删除引用者即可成功，有引用者返回 409。传入时发送明确的 `removeDepends:true`，原子解除全部传入引用再软删除。省略版本时仅先 GET 一次任务并提交读取到的版本；显式版本直接提交，不能以新版本替换冲突版本。成功输出明确的软删除结果；失败保留服务错误和不确定写入诊断。CLI 不另加交互确认，不自动重试写入。
+`daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]` 与 `dn` 等价。`--remove-depends` 是可选开关；不传时严格删除，无未删除引用者即可成功，有引用者返回 409。传入时发送明确的 `removeDepends:true`，原子解除全部传入引用再软删除。提交前读取目标的真实类型和身份；省略版本时提交读取到的版本，显式版本保持原值，不能以预读版本替换。普通 Task 沿用原删除行为；Goal 删除前在 stderr 提示 Goal 和所有子 Task 将不可见、归属不解除，执行中的 Task 会在后续成功观察后进入既有停止流程。交互确认或 `--force` 才提交，非交互无 force 不提交；force 只跳过 Goal 提示，不绕过服务端业务或版本检查。成功仅报告删除提交；失败保留服务错误和不确定写入诊断，不自动重试写入。
 
 ```bash
 daynight task delete <task-id> --if-version 3

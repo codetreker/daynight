@@ -18,8 +18,8 @@ const accountId = "abcdefab-6666-4222-8333-123456789abc";
 const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ type: "task", parentId: null, id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const observe = (task: Task) => ({ ...task, session });
 const observeGraph = (value: TaskGraph): ObservedTaskGraph => ({ ...value, tasks: value.tasks.map(task => ({ ...task, session, relation: "member" })), sessionSummary: { indicator: null, workingCount: 0, noticeCount: 0, warningCount: 0, unknownCount: 0, complete: true, observedAt: time }, partial: false });
@@ -216,10 +216,10 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
   });
 
-  it("submits dependency-removal consent with the supplied exact version without a task or graph read", async () => {
+  it("submits dependency-removal consent with the supplied exact version after a task read", async () => {
     const f = fixture();
     await runTaskCommand(["delete", taskId, "--remove-depends", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
     expect(f.api.getTaskGraph).not.toHaveBeenCalled();
     expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, removeDepends: true });
   });
@@ -229,7 +229,7 @@ describe("task parameter boundaries", () => {
     const failure = new Error("Dependent tasks prevent deletion");
     f.api.deleteTask.mockRejectedValue(failure);
     await expect(runTaskCommand(["delete", taskId, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
-    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
     expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n });
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
@@ -247,12 +247,12 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task status set.\n${renderTask(result)}`);
   });
 
-  it.each(["proposed", "todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s without reading or retrying conflicts", async (status) => {
+  it.each(["proposed", "todo", "in_progress", "done", "cancelled"] as const)("submits the explicit full-int64 version for %s after reading the target without retrying conflicts", async (status) => {
     const f = fixture();
     const failure = new Error("Version conflict");
     f.api.setTaskStatus.mockRejectedValue(failure);
     await expect(runTaskCommand(["set-status", taskId, status, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
-    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
     expect(f.api.setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, status });
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.workingDirectory).not.toHaveBeenCalled();
@@ -274,14 +274,14 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task status set.\n${renderTask(result)}`);
   });
 
-  it("submits the exact explicit worker completion version without reading or replaying a refusal", async () => {
+  it("submits the exact explicit worker completion version after reading the target without replaying a refusal", async () => {
     const f = fixture();
     const failure = new Error("Claim is no longer current");
     f.api.completeWorkerTask.mockRejectedValue(failure);
 
     await expect(runTaskCommand(["set-status", taskId, "done", `--claim-id=${claimId}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
 
-    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
     expect(f.api.completeWorkerTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, claimId });
     expect(f.api.setTaskStatus).not.toHaveBeenCalled();
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
@@ -611,7 +611,7 @@ describe("task output contracts", () => {
   it("preserves full titles and descriptions beside a longer task value", () => {
     const tasks = [task, { ...task, id: "22222222-2222-4222-8333-123456789abc", title: "Long task title ".repeat(4), description: "Long description ".repeat(4) }];
     const output = renderTaskList(tasks);
-    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\nDescription: ${current.description}\n`);
+    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nType: task\nParent: none\nTitle: ${current.title}\nDescription: ${current.description}\n`);
   });
 });
 

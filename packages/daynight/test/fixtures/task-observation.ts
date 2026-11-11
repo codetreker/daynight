@@ -8,7 +8,7 @@ export const claimId = "44444444-4444-4444-8444-444444444444";
 export const actorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const time = "2026-11-10T01:02:03.123456789Z";
 export const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-export const task: Task = {
+export const task: Task = { type: "task", parentId: null,
   id: taskId, projectId, assignedTo: actorId, title: "Task", description: "Body", properties: {}, status: "in_progress", allowAgents: true, requiredPlatform: null,
   version: 9_007_199_254_740_993n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };

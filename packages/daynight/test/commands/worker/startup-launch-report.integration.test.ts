@@ -89,7 +89,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
   const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), verifyWorktree: vi.fn(async () => {}) } as unknown as WorkerGitManager;
   const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
-  let remoteTask: Task = { id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", status: "in_progress", allowAgents: true,
+  let remoteTask: Task = { type: "task", parentId: null, id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", status: "in_progress", allowAgents: true,
     assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, properties: { pullRequests: [], worker: { claimId: identity.claimId, workerId: identity.workerId, worktreeId: identity.worktreeId,
       userId: identity.userId, agent: "codex", agentControlMode: "web", platform: "linux",

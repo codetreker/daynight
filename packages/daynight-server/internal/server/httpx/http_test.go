@@ -340,3 +340,55 @@ func TestBodyFailureDoesNotHideTransactionOutcome(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerConfigurationFaultClassificationPreservesTransactionFailures(t *testing.T) {
+	logger := quietLogger()
+	for _, code := range []string{"version_conflict", "configuration_not_initialized", "invalid_input"} {
+		refusal := &model.Fault{Code: code, Message: "Configuration refusal."}
+		for _, failure := range []*store.TransactionError{
+			{Phase: "cleanup", Cause: errors.Join(refusal, errors.New("rollback failure")), Outcome: store.TransactionUnknown, CleanupFailed: true},
+			{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
+			{Phase: "operation", Cause: refusal, Outcome: store.TransactionUnknown},
+		} {
+			if _, ok := KnownFault(failure); ok {
+				t.Fatalf("operational failure classified as business refusal: %+v", failure)
+			}
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/me/workers/11111111-1111-4111-8111-111111111111/configuration", nil)
+			WriteError(response, request, logger, "worker_configuration", "exchange", failure)
+			var responseBody api.ErrorResponse
+			if response.Code != http.StatusInternalServerError || response.Header().Get("Content-Type") != "application/json" || json.Unmarshal(response.Body.Bytes(), &responseBody) != nil {
+				t.Fatalf("operational failure response: %d %s", response.Code, response.Body)
+			}
+			if responseBody.Error.Code != "internal_error" {
+				t.Fatalf("operational failure exposed business code: %+v", responseBody)
+			}
+		}
+		failure := &store.TransactionError{Phase: "operation", Cause: refusal, Outcome: store.TransactionNotCommitted}
+		if fault, ok := KnownFault(failure); !ok || fault != refusal {
+			t.Fatalf("rolled back refusal hidden: %+v %v", fault, ok)
+		}
+	}
+}
+
+func TestSessionContentFaultsRemainExplicitAndRecoverable(t *testing.T) {
+	for code, status := range map[string]int{"controller_offline": http.StatusServiceUnavailable, "relay_instance_unavailable": http.StatusServiceUnavailable, "content_unavailable": http.StatusBadGateway} {
+		t.Run(code, func(t *testing.T) {
+			err := &model.Fault{Code: code, Message: "Connect the original controller to read local content."}
+			if ErrorKind(err) != code {
+				t.Fatal("content failure lost diagnostic category")
+			}
+			response := httptest.NewRecorder()
+			WriteError(response, httptest.NewRequest(http.MethodGet, "/session/timeline", nil), quietLogger(), "session", "read", err)
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(response.Body.Bytes(), &body) != nil || response.Code != status || body.Error.Code != code || body.Error.Message != err.Message {
+				t.Fatalf("fault response %d %s", response.Code, response.Body)
+			}
+		})
+	}
+}
