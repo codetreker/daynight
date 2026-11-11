@@ -62,7 +62,12 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 	if os.Getenv("DAYNIGHT_CONTROLLED_WEBHOOK_HELPER") != "1" {
 		return
 	}
-	cfg, err := config.LoadConfig(os.Getenv)
+	_, daynightRoot, err := parseCommand([]string{"--root", os.Getenv("DAYNIGHT_TEST_ROOT")}, os.LookupEnv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cfg, err := config.LoadServer(daynightRoot, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -89,7 +94,7 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 		os.Exit(1)
 	}
 	wrapped := controlledHandler{handler}
-	runtime, err := server.Start(context.Background(), cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, wrapped, wrapped.Shutdown, app.CancelWork, func(ctx context.Context) error {
+	runtime, err := server.Start(context.Background(), cfg.Server.ListenAddress, cfg.Server.StartupTimeout, cfg.Server.ShutdownTimeout, logger, wrapped, wrapped.Shutdown, app.CancelWork, func(ctx context.Context) error {
 		fmt.Fprintln(os.Stderr, "TRACE engine_drain_begin")
 		e := app.Drain(ctx)
 		fmt.Fprintln(os.Stderr, "TRACE engine_drain_end")
@@ -118,7 +123,7 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "TRACE runner_not_started")
 			os.Exit(1)
 		}
-		cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		cleanup, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 		defer cancel()
 		if err = runtime.Close(cleanup); err != nil {
 			fmt.Fprintln(os.Stderr, "TRACE partial_start_cleanup_error", err)
@@ -149,6 +154,22 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestWebhookControlledProcessRejectsInvalidRoot(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWebhookControlledProcessHelper$")
+	cmd.Env = grantEnvironment(map[string]string{"DAYNIGHT_CONTROLLED_WEBHOOK_HELPER": "1", "DAYNIGHT_TEST_ROOT": "relative-root-secret"})
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !bytes.Contains(output, []byte("root must be a nonempty absolute path")) || bytes.Contains(output, []byte("relative-root-secret")) {
+		t.Fatalf("invalid root: error=%v output=%s", err, output)
+	}
+}
+
 func startControlledWebhookProcess(t *testing.T, values map[string]string, ca []byte) *persistenceProcess {
 	t.Helper()
 	executable, err := os.Executable()
@@ -158,14 +179,14 @@ func startControlledWebhookProcess(t *testing.T, values map[string]string, ca []
 	cmd := exec.Command(executable, "-test.run=^TestWebhookControlledProcessHelper$")
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if _, found := values[key]; !found && key != "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER" && key != "DAYNIGHT_CONTROLLED_CA" {
+		if !strings.HasPrefix(key, "DAYNIGHT_") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
 	for k, v := range values {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	cmd.Env = append(cmd.Env, "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER=1", "DAYNIGHT_CONTROLLED_CA="+base64.StdEncoding.EncodeToString(ca))
+	cmd.Env = append(cmd.Env, "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER=1", "DAYNIGHT_CONTROLLED_CA="+base64.StdEncoding.EncodeToString(ca), "DAYNIGHT_TEST_ROOT="+testStorageRoot(t))
 	logs := &persistenceProcessLog{}
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err = cmd.Start(); err != nil {
@@ -509,14 +530,14 @@ func TestWebhookControlledPartialStartProcessCleanup(t *testing.T) {
 	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWebhookControlledProcessHelper$")
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if _, found := values[key]; !found && key != "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER" && key != "DAYNIGHT_CONTROLLED_CA" && key != "DAYNIGHT_CONTROLLED_START_FAILURE" {
+		if !strings.HasPrefix(key, "DAYNIGHT_") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
 	for k, v := range values {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	cmd.Env = append(cmd.Env, "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER=1", "DAYNIGHT_CONTROLLED_START_FAILURE=1", "DAYNIGHT_CONTROLLED_CA="+base64.StdEncoding.EncodeToString(ca))
+	cmd.Env = append(cmd.Env, "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER=1", "DAYNIGHT_CONTROLLED_START_FAILURE=1", "DAYNIGHT_CONTROLLED_CA="+base64.StdEncoding.EncodeToString(ca), "DAYNIGHT_TEST_ROOT="+testStorageRoot(t))
 	output, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 {

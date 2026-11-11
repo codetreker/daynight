@@ -65,7 +65,7 @@ func terminalOwner(p model.Principal, r *terminalRecord) error {
 }
 func terminalActive(t task, r *terminalRecord) bool {
 	w := t.Worker
-	return r.FinalizationID == nil && t.Status == "in_progress" && w != nil && w.State == model.WorkerActive && w.ClaimID == r.Envelope.ClaimID && w.UserID == r.Owner.OwnerUserID && w.WorkerID == r.Owner.WorkerID && w.WorktreeID == r.Owner.WorktreeID && w.AgentControlMode == model.AgentControlModeHerdr && string(w.Agent) == r.Owner.Provider
+	return !t.Deleted && t.Type != model.TaskTypeGoal && r.FinalizationID == nil && t.Status == "in_progress" && w != nil && w.State == model.WorkerActive && w.ClaimID == r.Envelope.ClaimID && w.UserID == r.Owner.OwnerUserID && w.WorkerID == r.Owner.WorkerID && w.WorktreeID == r.Owner.WorktreeID && w.AgentControlMode == model.AgentControlModeHerdr && string(w.Agent) == r.Owner.Provider
 }
 func terminalRecordingReady(r *terminalRecord) bool {
 	rec := r.Recording[r.Envelope.ExecutionGeneration]
@@ -291,7 +291,10 @@ func (s *Execution) UpdateTerminalLedger(ctx context.Context, p model.Principal,
 		}
 		generationChanged := m.ExecutionGeneration != r.Envelope.ExecutionGeneration
 		if len(r.Runs) == 0 {
-			if m.ExecutionGeneration != "1" || !terminalActive(t, r) {
+			// An owner may record the already stopped original generation after
+			// deletion even when its first ledger write had not yet committed.
+			stoppedOriginal := t.Deleted && m.ExecutionGeneration == r.Envelope.ExecutionGeneration && in.Runs[0].StoppedAt != nil && in.Runs[0].StopProof != nil
+			if m.ExecutionGeneration != "1" || (!terminalActive(t, r) && !stoppedOriginal) {
 				return conflict()
 			}
 			if err := terminalBinding(r.Binding, in.Runs[0].Binding); err != nil {
@@ -302,7 +305,10 @@ func (s *Execution) UpdateTerminalLedger(ctx context.Context, p model.Principal,
 			// bindings and stop proofs. A proof may first learn it at shutdown;
 			// recovering from that identity must not rewrite the frozen run.
 			previousProof := in.Runs[len(r.Runs)-1].StopProof
-			if !terminalActive(t, r) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || previousProof == nil || previousProof.NativeLaunch != "" || previousProof.Binding.NativeSessionID == nil {
+			// Recovery may have launched the next generation before deletion but
+			// lost its ledger commit. Admit only its complete stopped evidence.
+			stoppedRecovery := t.Deleted && len(in.Runs) == len(r.Runs)+1 && in.Runs[len(in.Runs)-1].StoppedAt != nil && in.Runs[len(in.Runs)-1].StopProof != nil
+			if (!terminalActive(t, r) && !stoppedRecovery) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || previousProof == nil || previousProof.NativeLaunch != "" || previousProof.Binding.NativeSessionID == nil {
 				return conflict()
 			}
 			if err := invalidateTerminalOperations(ctx, tx, id); err != nil {
@@ -422,7 +428,8 @@ func (s *Execution) UpdateTerminalRecording(ctx context.Context, p model.Princip
 				out = m
 				return nil
 			}
-			if !terminalActive(t, r) || m.ExecutionGeneration != r.Envelope.ExecutionGeneration || r.Runs[n-1].StopProof != nil {
+			stoppedOriginal := t.Deleted && r.Runs[n-1].StopProof != nil
+			if m.ExecutionGeneration != r.Envelope.ExecutionGeneration || (!terminalActive(t, r) && !stoppedOriginal) || (r.Runs[n-1].StopProof != nil && !stoppedOriginal) {
 				return conflict()
 			}
 			rec.Responsibility = &in

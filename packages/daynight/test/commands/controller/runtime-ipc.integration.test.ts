@@ -6,6 +6,20 @@ import { createConnection, Socket } from "node:net";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn(), waitForTurn: vi.fn() }));
+vi.mock("node:net", async importOriginal => {
+  const net = await importOriginal<typeof import("node:net")>();
+  const { relative } = await import("node:path");
+  // Keep the real socket in this worktree while fitting Unix's sockaddr limit.
+  const endpoint = (value: string) => process.platform === "win32" ? value : relative(process.cwd(), value);
+  return { ...net,
+    createServer: (...args: Parameters<typeof net.createServer>) => {
+      const server = net.createServer(...args), listen = server.listen;
+      server.listen = ((value: string, callback: () => void) => listen.call(server, endpoint(value), callback)) as typeof server.listen;
+      return server;
+    },
+    createConnection: (value: string) => net.createConnection(endpoint(value)),
+  };
+});
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: async () => ({ pid: 1, parentPid: 0, processGroupId: 1, startedAt: "test", commandHash: "test" }) }));
 vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void }) => {
   queueMicrotask(() => callbacks.onConnection(true));

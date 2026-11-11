@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 
 	httpx "github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
@@ -44,7 +44,7 @@ func providerTestHandler(t *testing.T, transport providerTestTransport, output i
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	auth, err := NewAuthentication(identityservice.New(nil, client, "https://daynight.example/auth/callback"), configpkg.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	auth, err := NewAuthentication(identityservice.New(nil, client, "https://daynight.example/auth/callback"), authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

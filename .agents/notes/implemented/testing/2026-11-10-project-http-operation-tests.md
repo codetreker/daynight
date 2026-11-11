@@ -19,6 +19,11 @@ context, IDs, inputs and call counts. Malformed protocol input is rejected befor
 business work. Ordinary Project HTTP tests clear database and UniAuth fixture
 configuration before discovery and execute without those services.
 
+Organization scenarios also use the real Project registrar, Service and Core
+over narrowly controlled DAO facts, following the later
+[component ownership decision](2026-11-11-go-component-test-ownership.md).
+Direct-operation tests retain precise boundary observations.
+
 HTTP tests retain real routing, request parsing, authentication headers and
 cookies, response encoding, error mapping, log redaction, cancellation and failing
 ResponseWriter mechanisms. Supplied transaction outcomes only prove their HTTP

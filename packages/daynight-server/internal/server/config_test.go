@@ -6,17 +6,26 @@ import (
 	"testing"
 	"time"
 
+	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
+	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 )
 
 func configuredTestConfig() configpkg.Config {
-	return configpkg.Config{
-		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",
-		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
-		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
-		UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test",
-		UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback",
+	c := configpkg.Config{
+		Database: databaseconfig.Config{URL: "postgres://database"},
+		Storage:  storageconfig.Config{Root: "storage"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
+		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
+		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "configuration-test", AppSecret: "configuration-test", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
+	c.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
+	return c
 }
 
 func configEnvironment(values map[string]string) func(string) string {
@@ -36,9 +45,9 @@ func TestPublicPageCallbackConflictsPreventRouteComposition(t *testing.T) {
 	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests", "/api/v1/webhook-event-types", "/api/v1/webhook-event-types/callback", "/api/v1/me/webhooks", "/api/v1/teams/x/webhooks", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
-			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
+			config.UniAuth.CallbackURL = config.Server.PublicOrigin + callbackPath
 			handler, err := newTestHandler(Dependencies{}, config, testLogger())
-			var failure *configpkg.ConfigurationError
+			var failure *configvalue.ConfigurationError
 			if handler != nil || !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" || failure.Rule != "must not overlap an application API, page, asset, or health route" {
 				t.Fatalf("conflicting callback reached route composition or lost diagnosis: %v", err)
 			}

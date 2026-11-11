@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"log/slog"
 
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
@@ -21,7 +25,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
-	"github.com/codetreker/uniauth/sdk/go"
+	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -60,10 +64,10 @@ type OAuthProfile struct {
 }
 
 // NewIdentityClient constructs the one application client before opening resources.
-func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
-	client, err := uniauth.New(uniauth.Config{BaseURL: c.UniAuthURL, AppID: c.UniAuthAppID, AppSecret: c.UniAuthAppSecret, AllowLoopbackHTTP: c.AllowLoopbackHTTP, HTTPClient: identityHTTPClient()})
+func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
+	client, err := uniauth.New(uniauth.Config{BaseURL: c.URL, AppID: c.AppID, AppSecret: c.AppSecret, AllowLoopbackHTTP: c.AllowLoopbackHTTP, HTTPClient: identityHTTPClient()})
 	if err != nil {
-		return nil, &config.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_URL / DAYNIGHT_UNIAUTH_APP_ID / DAYNIGHT_UNIAUTH_APP_SECRET", Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: err}
+		return nil, &configvalue.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_URL / DAYNIGHT_UNIAUTH_APP_ID / DAYNIGHT_UNIAUTH_APP_SECRET", Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: err}
 	}
 	return client, nil
 }
@@ -72,22 +76,22 @@ func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
-		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap, capture...),
+		Application: application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
-	decoder, err := configuredImageDecoder(c, coresession.NewImageDecoder)
+	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
 	app.ImageValidationError = err
 	if decoder != nil {
 		app.Engine.SetImageDecoder(decoder)
 	}
-	if database != nil && c.PublicOrigin != "" {
+	if database != nil && c.Server.PublicOrigin != "" {
 		admission := coreoauth.PublicAdmission{Writer: database}
-		clients, err := oauthservice.NewClients(database, admission, c.OAuthClients)
+		clients, err := oauthservice.NewClients(database, admission, c.OAuth.PreregisteredClients)
 		if err != nil {
 			app.OAuthError = err
 		} else {
-			authorizations, authErr := oauthservice.NewAuthorizations(database, clients, admission, c.PublicOrigin)
+			authorizations, authErr := oauthservice.NewAuthorizations(database, clients, admission, c.Server.PublicOrigin)
 			if authErr != nil {
 				app.OAuthError = authErr
 			} else {
@@ -99,10 +103,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	}
 	private, ok := files.(filestorage.TransferStorage)
 	if ok {
-		budget, reserve := c.MCPTempBudgetBytes, c.MCPReservedFreeBytes
-		if budget == 0 {
-			budget, reserve = 8<<30, 1<<30
-		}
+		budget, reserve := c.MCP.Transfer.TempBudgetBytes, c.MCP.Transfer.ReservedFreeBytes
 		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
 		if app.PrivateContent != nil {
 			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
@@ -114,13 +115,13 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	return app
 }
 
-func configuredImageDecoder(c config.Config, factory func(coresession.ImageDecoderConfig) (coresession.ImageDecoder, error)) (coresession.ImageDecoder, error) {
-	if c.ImageNodePath == "" && c.ImageHelperPath == "" && c.ImageManifestPath == "" && c.ImageTemporaryDirectory == "" {
+func configuredImageDecoder(c imageconfig.Config, factory func(coresession.ImageDecoderConfig) (coresession.ImageDecoder, error)) (coresession.ImageDecoder, error) {
+	if c.NodePath == "" && c.HelperPath == "" && c.ManifestPath == "" && c.TemporaryDirectory == "" {
 		return nil, nil
 	}
-	decoder, err := factory(coresession.ImageDecoderConfig{NodePath: c.ImageNodePath, HelperPath: c.ImageHelperPath, ManifestPath: c.ImageManifestPath, TemporaryDirectory: c.ImageTemporaryDirectory})
+	decoder, err := factory(coresession.ImageDecoderConfig{NodePath: c.NodePath, HelperPath: c.HelperPath, ManifestPath: c.ManifestPath, TemporaryDirectory: c.TemporaryDirectory})
 	if err != nil {
-		return nil, &config.ConfigurationError{Field: "image decoder", Rule: "must identify the complete pinned Node 24 validation build", Cause: err}
+		return nil, &configvalue.ConfigurationError{Field: "image decoder", Rule: "must identify the complete pinned Node 24 validation build", Cause: err}
 	}
 	return decoder, nil
 }
@@ -169,17 +170,17 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	client, err := NewIdentityClient(c)
+	client, err := NewIdentityClient(c.UniAuth)
 	if err != nil {
 		return nil, err
 	}
-	startup, cancel := context.WithTimeout(ctx, c.StartupTimeout)
+	startup, cancel := context.WithTimeout(ctx, c.Server.StartupTimeout)
 	defer cancel()
-	files, err := open.files(c.StorageRoot)
+	files, err := open.files(c.Storage.Root)
 	if err != nil {
-		return nil, &config.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
+		return nil, &configvalue.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
 	}
-	database, err := openPersistence(startup, c.DatabaseURL, open.database)
+	database, err := openPersistence(startup, c.Database.URL, open.database)
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
@@ -194,22 +195,22 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
-		cleanup, done := context.WithTimeout(context.Background(), c.ShutdownTimeout)
+		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
 		defer done()
 		return nil, errors.Join(cause, app.Close(cleanup))
 	}
-	if c.RedisURL != "" {
+	if c.Monitoring.Redis.RedisURL != "" {
 		if open.monitoring == nil {
 			return failOpen(errors.New("monitoring store opener is unavailable"))
 		}
-		monitoring, err := open.monitoring(c.RedisURL)
+		monitoring, err := open.monitoring(c.Monitoring.Redis.RedisURL)
 		if err != nil {
-			return failOpen(&config.ConfigurationError{Field: "DAYNIGHT_REDIS_URL", Rule: "must identify a valid monitoring store", Cause: err})
+			return failOpen(&configvalue.ConfigurationError{Field: "DAYNIGHT_REDIS_URL", Rule: "must identify a valid monitoring store", Cause: err})
 		}
 		app.monitoring = monitoring
 		app.Workers.SetMonitoringStore(monitoring)
 	}
-	if c.MetricsListenAddress != "" {
+	if c.Monitoring.Metrics.MetricsListenAddress != "" {
 		makeMetrics := open.metrics
 		if makeMetrics == nil {
 			makeMetrics = newMetricsRegistry
@@ -225,7 +226,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 			return failOpen(fmt.Errorf("register persistence metrics collector: %w", err))
 		}
 	}
-	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
+	if err := app.assembleWebhooks(database.Transactions, c.Webhook.Enabled, logger); err != nil {
 		return failOpen(err)
 	}
 	if app.ImageValidationError != nil {

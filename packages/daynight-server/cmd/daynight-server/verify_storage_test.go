@@ -29,13 +29,13 @@ func TestVerifyStorageProcessHelper(t *testing.T) {
 	if os.Getenv("DAYNIGHT_VERIFY_STORAGE_HELPER") != "1" {
 		return
 	}
-	os.Exit(run(context.Background(), []string{"verify-storage"}, os.Getenv, os.Stderr))
+	os.Exit(run(context.Background(), []string{"verify-storage", "--root", os.Getenv("DAYNIGHT_TEST_ROOT")}, os.LookupEnv, os.Stderr))
 }
 
 func TestVerifyStorageCommandRejectsMissingConfigurationAndRedactsFailures(t *testing.T) {
 	for _, values := range []map[string]string{{}, {"DAYNIGHT_DATABASE_URL": "postgres://secret-user:secret-password@bad%host/db", "DAYNIGHT_STORAGE_ROOT": "/secret/root"}} {
 		var output bytes.Buffer
-		if code := run(t.Context(), []string{"verify-storage"}, func(key string) string { return values[key] }, &output); code != 1 {
+		if code := run(t.Context(), []string{"verify-storage", "--root", testStorageRoot(t)}, lookupTestEnvironment(values), &output); code != 1 {
 			t.Fatal(code)
 		}
 		if strings.Contains(output.String(), "secret-") || strings.Contains(output.String(), "/secret/root") {
@@ -52,14 +52,16 @@ func runBackupVerifierProcess(t *testing.T, database, root string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	configRoot := testStorageRoot(t)
+	writeTestConfig(t, configRoot, map[string]any{"database": map[string]any{"url": database}, "storage": map[string]any{"root": root}})
 	command := exec.CommandContext(ctx, executable, "-test.run=^TestVerifyStorageProcessHelper$")
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if key != "DAYNIGHT_DATABASE_URL" && key != "DAYNIGHT_STORAGE_ROOT" && key != "DAYNIGHT_VERIFY_STORAGE_HELPER" {
+		if !strings.HasPrefix(key, "DAYNIGHT_") {
 			command.Env = append(command.Env, entry)
 		}
 	}
-	command.Env = append(command.Env, "DAYNIGHT_DATABASE_URL="+database, "DAYNIGHT_STORAGE_ROOT="+root, "DAYNIGHT_VERIFY_STORAGE_HELPER=1")
+	command.Env = append(command.Env, "DAYNIGHT_TEST_ROOT="+configRoot, "DAYNIGHT_VERIFY_STORAGE_HELPER=1")
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatal("backup verifier did not exit", string(output))

@@ -70,7 +70,7 @@ func (f fixture) GrantPhase(ctx context.Context, work map[string]int) context.Co
 }
 
 func (f fixture) RegistrationPhase(ctx context.Context, work map[string]int) context.Context {
-	return f.dao.ContextPhase(ctx, mergeFixtureCounts(map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1}, work))
+	return f.dao.ContextPhase(ctx, mergeFixtureCounts(map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTaskRegistration": 1}, work))
 }
 
 func fixtureHandle(f fixture, ctx context.Context, message sp.ControllerMessage, work map[string]int) (map[string]any, error) {

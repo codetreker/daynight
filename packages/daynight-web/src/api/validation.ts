@@ -1,4 +1,4 @@
-import type { ExecutionPlatform, TaskStatus } from "./types";
+import type { ExecutionPlatform, TaskStatus, TaskType } from "./types";
 
 export const malformed = (): never => {
   throw new Error("The server returned an invalid response.");
@@ -42,6 +42,13 @@ export const id = (value: unknown): string => {
 };
 
 export const nullableId = (value: unknown): string | null => value === null ? null : id(value);
+
+export const taskTypeFields = (data: Record<string, unknown>): { readonly type: TaskType; readonly parentId: string | null } => {
+  if (data.type !== "task" && data.type !== "goal") return malformed();
+  const parentId = nullableId(data.parentId);
+  if (data.type === "goal" && parentId !== null) return malformed();
+  return { type: data.type, parentId };
+};
 
 export const timestamp = (value: unknown): string => {
   const parsed = string(value);

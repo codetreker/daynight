@@ -279,7 +279,7 @@ func TestTaskSyncCompletionDiscardsConstructedResult(t *testing.T) {
 	if err != nil || len(baseline.Tasks) != 1 || baseline.Tasks[0].ID != row.ID || baseline.Sessions == nil || f.reads != 1 {
 		t.Fatalf("baseline Task sync: %#v %v", baseline, err)
 	}
-	want := []string{"read store.ReadSnapshot", "snapshot.ProjectDAO", "project reader.ProjectAccess", "snapshot.ProjectDAO", "project reader.Project", "snapshot.TaskDAO", "task reader.TaskCacheEpoch", "task reader.TaskSyncTasks", "task reader.TaskAssignees", "snapshot.ObservedAt", "snapshot.SessionDAO", "Session reader.CurrentTaskSessionSources"}
+	want := []string{"read store.ReadSnapshot", "snapshot.ProjectDAO", "project reader.ProjectAccess", "snapshot.ProjectDAO", "project reader.Project", "snapshot.TaskDAO", "task reader.TaskCacheEpoch", "task reader.TaskSyncTasks", "task reader.TaskSyncDependencyStates", "task reader.TaskAssignees", "snapshot.ObservedAt", "snapshot.SessionDAO", "Session reader.CurrentTaskSessionSources"}
 	if !slices.Equal(f.base.trace.snapshot(), want) {
 		t.Fatalf("baseline Task sync calls: %v", f.base.trace.snapshot())
 	}

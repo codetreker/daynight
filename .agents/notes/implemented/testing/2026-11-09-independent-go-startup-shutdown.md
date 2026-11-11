@@ -23,7 +23,7 @@ All command tests remain in `cmd/daynight-server` behind the explicit
 `startupshutdown` tag. This preserves access to the private `main` and `run`
 entries while keeping command tests outside ordinary module discovery. Existing
 `race`, `webhooktest` and `stress` conditions remain additional requirements.
-The lifecycle runner also owns the focused `internal/server`
+The lifecycle runner also owns the focused `internal/service/webhook`
 `TestWebhookRunnerAbruptProcessRecovery` witness, retaining its dedicated
 transport build, bounded execution and abnormal-process observations. Ordinary
 CI does not enable stress workloads.

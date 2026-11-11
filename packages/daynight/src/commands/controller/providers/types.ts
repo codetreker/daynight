@@ -1,5 +1,6 @@
 import type { NativeInputPublicationIdentity, NativeInputPublicationRequest, NativeInputPublicationResult, NativeInputPublicationQuery } from "../media/native-publication-types.js";
 import type { CaptureStageInput } from "../media/preparations.js";
+import type { LocalImageCheckpoint } from "../markdown/local-source-proof.js";
 import type { ImagePart, ImageUnavailablePart, ImageCaptureRequest, ImageCaptureReceipt, ImageError, ImageOccurrence, NativeImageSource, InputObservation, ValidatedImage, ProviderImageCapabilities } from "../../../session/image-values.js";
 import type { NativeMediaSpool } from "../media/native-spool.js";
 import type { SessionCommand, OperationState } from "../../../session/protocol.js";
@@ -12,6 +13,21 @@ export type NativeImagePart = { readonly type: "image"; readonly imageId: string
 export type NativeInput = { readonly content: readonly (TextPart | NativeImagePart)[] };
 export type NativeImageFile = { kind: "file"; path: string; byteLength: string; sha256: string; release(): void };
 export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEntry ? Omit<T, "entrySeq"> : never : never;
+/** Native body lifecycle, supplied by the adapter rather than source text. */
+export type MarkdownTimelineMetadata = {
+  complete: boolean;
+  format: "markdown" | "plain";
+  truncated: boolean;
+};
+/** A native decision admits only the supplied checkpoint, never a later read. */
+export type NativeReadPolicy = {
+  readonly nativeSessionId: string;
+  readonly cwd: string;
+  readonly revision: string;
+  /** Synchronous connection and authority-generation check; grants no source IO. */
+  verify(): void;
+  authorizeCheckpoint(checkpoint: LocalImageCheckpoint): Promise<void>;
+};
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null; images?: Omit<ProviderImageCapabilities, "revision"> };
 export type NativeImageRuntime = {
   /** Patch one original image on the current committed entry, preserving late associations. */
@@ -36,7 +52,7 @@ export type ProviderOptions = {
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   imageRuntime?: NativeImageRuntime;
-  onTimeline(entry: ProviderEntry): void;
+  onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;
   onState(state: ProviderState): void;
@@ -45,6 +61,10 @@ export type ProviderOptions = {
   onNativeProcessProof?(proof: ProcessProof): void;
   onDiagnostic?(line: string): void;
   onFatalError?(error: Error): void;
+  /** Publish or synchronously invalidate this native instance's source authority. */
+  onNativeReadPolicy?(policy: NativeReadPolicy | null): void;
+  /** Join source writers after invalidation, before changing native permissions. */
+  drainNativeReadPolicy?(): Promise<void>;
   onControlConfirmed?(operationId: string): void;
   /** Only true confirms durable image evidence; legacy text callbacks ignore the result. */
   onInputObserved?(observation: string | InputObservation): unknown;

@@ -13,11 +13,97 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Catalog predicates can be evaluated before schema filters. Resolve the
 // fixture-owned OID first so concurrent schema cleanup stays outside this check.
 const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
+
+func TestTaskSyncDependencyStatesCancellationReleasesBlockedQuery(t *testing.T) {
+	database, _, _, project := membershipFixture(t)
+	root := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	owner := queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
+	bounded, stop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stop()
+	config := database.Pool.Config().Copy()
+	config.MaxConns = 1
+	config.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(bounded, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	reader := &Store{Pool: pool}
+	var readerPID uint32
+	if err := pool.QueryRow(bounded, "SELECT pg_backend_pid()").Scan(&readerPID); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := database.Pool.Begin(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := holder.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("dependency state lock cleanup: %v", err)
+		}
+	}()
+	if _, err := holder.Exec(bounded, "LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(bounded)
+	finished := make(chan error, 1)
+	go func() {
+		finished <- reader.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.TaskDAO().TaskSyncDependencyStates(ctx, project.ID, nil)
+			return err
+		})
+	}()
+	drained := false
+	t.Cleanup(func() {
+		cancel()
+		if !drained {
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Error("dependency state query did not stop during cleanup")
+			}
+		}
+	})
+	graphCancellationWaiter(t, bounded, database, readerPID, holder.Conn().PgConn().PID())
+	cancel()
+	select {
+	case err := <-finished:
+		drained = true
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("dependency state cancellation lost cause: %v", err)
+		}
+	case <-bounded.Done():
+		t.Fatal("canceled dependency state query did not return")
+	}
+	graphCancellationReleased(t, bounded, database, readerPID)
+	graphCancellationPoolDrained(t, bounded, pool)
+	if err := pool.Ping(bounded); err != nil {
+		t.Fatalf("pool could not be reused: %v", err)
+	}
+	if err := holder.Rollback(bounded); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.ReadSnapshot(bounded, func(snapshot SnapshotScope) error {
+		states, err := snapshot.TaskDAO().TaskSyncDependencyStates(bounded, project.ID, nil)
+		if err != nil {
+			return err
+		}
+		if state := states[owner.ID]; state.Ready || !slices.Equal(state.BlockedBy, []string{root.ID}) {
+			t.Fatalf("read after cancellation: %#v", states)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	parallelRootDatabaseTest(t)
@@ -62,6 +148,10 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		if err != nil || epoch != oldEpoch || storedProject != project || !reflect.DeepEqual(access, beforeAccess) || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Version != 1 || !slices.Equal(tasks[1].DependsOn, []string{a.ID}) {
 			t.Fatalf("mixed project/access/epoch/task snapshot: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
 		}
+		states, err := snapshot.TaskDAO().TaskSyncDependencyStates(ctx, project.ID, nil)
+		if err != nil || states[a.ID].TaskVersion != tasks[0].Version || states[b.ID].TaskVersion != tasks[1].Version || states[b.ID].Ready || !slices.Equal(states[b.ID].BlockedBy, []string{a.ID}) {
+			t.Fatalf("mixed task/dependency snapshot: %#v %#v, %v", tasks, states, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -82,6 +172,10 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || epoch == oldEpoch || storedProject.Settings.ExecutionWarningMinutes != 31 || access.Role != model.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.Version != 9007199254740993 || len(tasks) != 2 || tasks[0].TitlePreview != "After" || tasks[0].Version != 2 || tasks[1].ID != b.ID {
 			t.Fatalf("fresh snapshot missed committed history: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
+		}
+		states, err := snapshot.TaskDAO().TaskSyncDependencyStates(ctx, project.ID, nil)
+		if err != nil || states[a.ID].TaskVersion != tasks[0].Version || states[b.ID].TaskVersion != tasks[1].Version || !states[b.ID].Ready || len(states[b.ID].BlockedBy) != 0 {
+			t.Fatalf("fresh task/dependency snapshot: %#v %#v, %v", tasks, states, err)
 		}
 		return nil
 	}); err != nil {

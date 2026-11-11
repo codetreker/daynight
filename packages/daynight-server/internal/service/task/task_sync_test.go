@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -28,15 +29,25 @@ func (r taskReadSessionStates) TaskListSessionStates(ctx context.Context, source
 func (f *taskReadFixture) sync(epoch string, rows func(*time.Time) ([]model.TaskViewRecord, error), people []model.TaskAssigneeFact, overlap time.Duration) *taskservice.TaskSync {
 	f.reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) { f.requireProject(ctx, id); return epoch, nil }
 	f.reader.TaskSyncTasksFn = nil
+	f.reader.TaskSyncDependencyStatesFn = nil
 	f.reader.TaskAssigneesFn = nil
 	f.snapshot.SessionDAOFn = nil
 	if rows != nil {
+		var gotLower *time.Time
 		f.reader.TaskSyncTasksFn = func(ctx context.Context, id string, lower *time.Time, characters int) ([]model.TaskViewRecord, error) {
 			f.requireProject(ctx, id)
 			if characters != projection.TitlePreviewCharacters {
 				f.t.Fatalf("title preview limit changed: %d", characters)
 			}
+			gotLower = lower
 			return rows(lower)
+		}
+		f.reader.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+			f.requireProject(ctx, id)
+			if !model.EqualOptional(lower, gotLower) {
+				f.t.Fatal("dependency window differs from task window")
+			}
+			return map[string]model.TaskDependencyState{}, nil
 		}
 		f.reader.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 			f.requireProject(ctx, id)
@@ -215,5 +226,67 @@ func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 	fresh, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
 	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 || old.Project != oldProject || old.Tasks[0].TitlePreview != "Before" || f.reads != 2 {
 		t.Fatalf("independent fresh scope: %#v %v", fresh, err)
+	}
+}
+
+func TestTaskSyncDependencyPatchSharesWindowAndSnapshot(t *testing.T) {
+	f := newTaskReadFixture(t)
+	epoch := taskReadID(90)
+	owner := taskReadID(2)
+	prerequisite := taskReadID(1)
+	since := f.observed.Add(time.Minute)
+	wantLower := since.Add(-10 * time.Second)
+	sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		if lower == nil || !lower.Equal(wantLower) {
+			t.Fatalf("task lower = %v", lower)
+		}
+		return []model.TaskViewRecord{}, nil
+	}, []model.TaskAssigneeFact{}, 10*time.Second)
+	want := map[string]model.TaskDependencyState{owner: {TaskVersion: 9007199254740993, BlockedBy: []string{prerequisite}, Ready: false}}
+	calls := 0
+	f.reader.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+		f.requireProject(ctx, id)
+		calls++
+		if lower == nil || !lower.Equal(wantLower) {
+			t.Fatalf("dependency lower = %v", lower)
+		}
+		return want, nil
+	}
+	result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch, Since: &since})
+	if err != nil || result.Mode != "delta" || len(result.Tasks) != 0 || !reflect.DeepEqual(result.DependencyStates, want) || result.ObservedAt != f.observed || result.Epoch != epoch || result.Sessions == nil || f.reads != 1 || calls != 1 {
+		t.Fatalf("same snapshot dependency patch: %#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestTaskSyncDependencyFailureAndCancellationDiscardResult(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "read failure", true: "cancellation"}[cancelled], func(t *testing.T) {
+			f := newTaskReadFixture(t)
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			f.ctx = ctx
+			sync := f.sync(taskReadID(90), func(*time.Time) ([]model.TaskViewRecord, error) {
+				return []model.TaskViewRecord{taskReadView(taskReadID(1), "partial", 1, f.observed)}, nil
+			}, []model.TaskAssigneeFact{}, time.Second)
+			cause := errors.New("dependency read failed")
+			f.reader.TaskSyncDependencyStatesFn = func(got context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+				f.requireProject(got, id)
+				if lower != nil {
+					t.Fatal("snapshot has lower bound")
+				}
+				if cancelled {
+					cancel()
+					return nil, got.Err()
+				}
+				return nil, cause
+			}
+			result, err := sync.Get(ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
+			if cancelled {
+				cause = context.Canceled
+			}
+			if !errors.Is(err, cause) || !reflect.DeepEqual(result, model.TaskSync{}) {
+				t.Fatalf("partial state escaped on failure: %#v, %v", result, err)
+			}
+		})
 	}
 }

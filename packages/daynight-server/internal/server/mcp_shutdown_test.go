@@ -30,7 +30,7 @@ func (shutdownTestAuthenticator) Authenticate(_ context.Context, kind model.Cred
 
 func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T) {
 	config := testConfig(t)
-	config.ShutdownTimeout = 80 * time.Millisecond
+	config.Server.ShutdownTimeout = 80 * time.Millisecond
 	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
@@ -156,7 +156,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 
 func TestForcedShutdownJoinsSnapshotCancellationWithIdleMCP(t *testing.T) {
 	config := testConfig(t)
-	config.ShutdownTimeout = 30 * time.Millisecond
+	config.Server.ShutdownTimeout = 30 * time.Millisecond
 	entered := make(chan struct{})
 	queryDone := make(chan error, 1)
 	var application *sessionApplication

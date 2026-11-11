@@ -4,6 +4,7 @@ import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js"
 import { codexNativeHome } from "./codex-settings-metadata.js";
 import { CodexInterruptions } from "./codex-interruptions.js";
 import { CodexControls } from "./controls-codex.js";
+import { CodexReadAuthority } from "./codex-read-authority.js";
 import { persistCodexInitialSettings } from "./codex-initial-settings.js";
 import { CodexErrors } from "./codex-errors.js";
 import { codexApprovalDetail } from "./codex-approval-detail.js";
@@ -27,11 +28,13 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   const executable = options.executable ?? "codex";
   const childEnvironment = { ...(options.env ?? process.env) };
+  if (options.onNativeReadPolicy) childEnvironment.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const nativeHome = codexNativeHome(childEnvironment, options.cwd);
   const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
+  let authority: CodexReadAuthority | undefined;
   let imageInputs: CodexImageInputs, imageProjection: CodexImageProjection;
   const imageProjector = new ProviderImageProjector(options);
   let imageProfile: CodexImageProfile | null = null;
@@ -79,7 +82,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (!imageUser && item.type === "userMessage" && typeof item.clientId === "string") options.onInputObserved?.(item.clientId);
     projection?.item(item, completed, turnId);
   };
-  const readItems = async (turnId?: string, usersOnly = false): Promise<boolean> => {
+  const readItems = async (turnId?: string, usersOnly = false, turnComplete = false): Promise<boolean> => {
     let cursor: string | null = null;
     const cursors = new Set<string>();
     do {
@@ -88,7 +91,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       for (const raw of Array.isArray(page.data) ? page.data : []) {
         const entry = record(raw), item = record(entry.item ?? raw);
         if (turnId && entry.turnId && entry.turnId !== turnId) continue;
-        if (!usersOnly || item.type === "userMessage") projectItem(item, true, string(entry.turnId) || turnId || "");
+        if (!usersOnly || item.type === "userMessage") projectItem(item, item.type === "userMessage" || turnComplete || typeof entry.completedAtMs === "number", string(entry.turnId) || turnId || "");
       }
       cursor = string(page.nextCursor) || null;
       if (cursor && cursors.has(cursor)) throw new Error("Native item history cursor repeated.");
@@ -120,7 +123,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`));
     if (!currentTurnId || turn.id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); }
   };
-  const rpc = new CodexRpc(child, message => {
+  const transport = new CodexRpc(child, message => {
+    authority?.observe(string(message.method), message.params);
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
@@ -156,9 +160,17 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "serverRequest/resolved") for (const [id, value] of pending) if (value.nativeId === p.requestId) { value.interaction = { ...value.interaction, state: "resolved", revision: "2" }; showInteraction(value); pending.delete(id); value.settled?.(); state(); }
     if (method === "error") { errors.notification(p, nativeId, currentTurnId); if (awaitingInitialSettings) initialSettingsAbort.abort(new Error("Native Codex rejected initial settings asynchronously.")); }
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
-  }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
+  }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { authority?.invalidate(); if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
+  const rpc = {
+    request: (method: string, params: unknown, onLateResponse?: Parameters<CodexRpc["request"]>[2]) => authority ? authority.request(method, params, onLateResponse) : transport.request(method, params, onLateResponse),
+    notify: transport.notify.bind(transport), respond: transport.respond.bind(transport), reject: transport.reject.bind(transport), dispose: transport.dispose.bind(transport),
+    stopped: transport.stopped,
+  };
+  if (options.onNativeReadPolicy) authority = new CodexReadAuthority({ cwd: options.cwd, request: transport.request.bind(transport), publish: options.onNativeReadPolicy,
+    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}) });
   controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor);
   child.once("close", () => {
+    authority?.invalidate();
     initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
     closed = true;
     const error = new Error("Native Codex connection ended; pending operation results are unknown.");
@@ -166,7 +178,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     currentTurnId = null; activity = closing ? "stopped" : "unknown"; expire(); state();
     reportFatal(error);
   });
-  const close = async () => {
+  const stop = async () => {
     initialSettingsAbort.abort(new Error("Native Codex stopped before initial settings persistence was confirmed."));
     closing = true; controls.close();
     if (closed) { rpc.dispose(); await rpc.stopped; await Promise.all(terminalProjections); await imageProjector.close(); return; }
@@ -180,21 +192,32 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       await imageProjector.close();
     }
   };
+  const close = async () => {
+    closing = true; authority?.invalidate();
+    try { await options.drainNativeReadPolicy?.(); }
+    finally { await stop(); }
+  };
   try {
     const initialized = record(await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } })); rpc.notify("initialized");
+    let remoteControl: unknown = null;
+    if (authority && CodexReadAuthority.supports(initialized)) {
+      try { remoteControl = await rpc.request("remoteControl/status/read", {}); }
+      catch { authority.invalidate(); }
+    }
     const aliasOverrides = options.agentCliEnvironment
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } }));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
+    authority?.install({ initialized, remoteControl, response, nativeSessionId: nativeId, nativeCwd: string(thread.cwd) });
     imageProfile = codexImageProfile(initialized, response);
     controls.seed({ ...response, ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}) });
     await controls.refresh();
     if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) });
     imageInputs = new CodexImageInputs(options, nativeId);
     imageProjection = new CodexImageProjection(nativeId, options, imageInputs, imageProjector);
-    projection = new CodexProjection(nativeId, entry => imageProjector.publish(entry), imageProjection);
+    projection = new CodexProjection(nativeId, (entry, metadata) => imageProjector.publish(entry, [], metadata), imageProjection);
     if (options.resumeNativeSessionId) {
       let cursor: string | null = null, readTurns = false;
       const cursors = new Set<string>();
@@ -205,7 +228,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
           for (const raw of Array.isArray(page.data) ? page.data : []) {
             const turn = record(raw), id = string(turn.id);
             if (!id) throw new Error("Native history turn identity is unavailable.");
-            const completeHistory = await readItems(id);
+            const completeHistory = await readItems(id, false, ["completed", "interrupted", "failed"].includes(string(turn.status)));
             interruptions.completed(turn, completeHistory);
           }
           cursor = string(page.nextCursor) || null;

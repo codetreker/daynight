@@ -29,9 +29,10 @@ func (r syncProjectReader) Project(ctx context.Context, id string) (model.Projec
 
 type syncTaskReader struct {
 	store.TaskReader
-	epoch  func(context.Context, string) (string, error)
-	tasks  func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	people func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	epoch        func(context.Context, string) (string, error)
+	tasks        func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	dependencies func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
+	people       func(context.Context, string) ([]model.TaskAssigneeFact, error)
 }
 
 func (r syncTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
@@ -39,6 +40,9 @@ func (r syncTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, 
 }
 func (r syncTaskReader) TaskSyncTasks(ctx context.Context, id string, since *time.Time, limit int) ([]model.TaskViewRecord, error) {
 	return r.tasks(ctx, id, since, limit)
+}
+func (r syncTaskReader) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+	return r.dependencies(ctx, id, lower)
 }
 func (r syncTaskReader) TaskAssignees(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 	return r.people(ctx, id)
@@ -87,7 +91,7 @@ func TestTaskSyncSessionReadFollowsTaskReadAndSnapshotCompletion(t *testing.T) {
 	principal := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
 	cause := errors.New("read failed")
 	completion := errors.New("snapshot commit failed")
-	full := []string{"access", "project", "epoch", "tasks", "people", "clock", "sessions", "completion"}
+	full := []string{"access", "project", "epoch", "tasks", "dependencies", "people", "clock", "sessions", "completion"}
 	for _, test := range []struct {
 		name, stage, code string
 		wantErr           error
@@ -103,11 +107,12 @@ func TestTaskSyncSessionReadFollowsTaskReadAndSnapshotCompletion(t *testing.T) {
 		{name: "project error", stage: "project", wantErr: cause, want: []string{"access", "project"}},
 		{name: "epoch error", stage: "epoch", wantErr: cause, want: full[:3]},
 		{name: "task read error", stage: "tasks", wantErr: cause, want: full[:4]},
-		{name: "people read error", stage: "people", wantErr: cause, want: full[:5]},
-		{name: "clock read error", stage: "clock", wantErr: cause, want: full[:6]},
-		{name: "session read error", stage: "sessions", wantErr: cause, want: full[:7]},
-		{name: "engine read cause", engineFailure: true, wantErr: cause, want: full[:7]},
-		{name: "shared engine stopped", stopEngine: true, code: "service_unavailable", want: full[:7]},
+		{name: "dependency read error", stage: "dependencies", wantErr: cause, want: full[:5]},
+		{name: "people read error", stage: "people", wantErr: cause, want: full[:6]},
+		{name: "clock read error", stage: "clock", wantErr: cause, want: full[:7]},
+		{name: "session read error", stage: "sessions", wantErr: cause, want: full[:8]},
+		{name: "engine read cause", engineFailure: true, wantErr: cause, want: full[:8]},
+		{name: "shared engine stopped", stopEngine: true, code: "service_unavailable", want: full[:8]},
 		{name: "success commit error", completionErr: completion, wantErr: completion, want: full},
 		{name: "refusal commit error", stage: "access", code: "not_found", completionErr: completion, wantErr: completion, want: []string{"access", "completion"}},
 	} {
@@ -145,6 +150,12 @@ func TestTaskSyncSessionReadFollowsTaskReadAndSnapshotCompletion(t *testing.T) {
 					epoch: func(context.Context, string) (string, error) { return epoch, phase("epoch") },
 					tasks: func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 						return []model.TaskViewRecord{}, phase("tasks")
+					},
+					dependencies: func(_ context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+						if id != projectID || lower != nil {
+							t.Fatal("dependency arguments changed")
+						}
+						return map[string]model.TaskDependencyState{}, phase("dependencies")
 					},
 					people: func(context.Context, string) ([]model.TaskAssigneeFact, error) {
 						return []model.TaskAssigneeFact{}, phase("people")
@@ -223,6 +234,11 @@ func TestTaskSyncReplacesWholeSessionCollectionWhenTaskDeltaIsEmpty(t *testing.T
 				t.Fatal("delta lost lower boundary")
 			}
 			return []model.TaskViewRecord{}, nil
+		}, dependencies: func(_ context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+			if id != projectID || lower == nil {
+				t.Fatal("dependency delta arguments changed")
+			}
+			return map[string]model.TaskDependencyState{}, nil
 		}, people: func(context.Context, string) ([]model.TaskAssigneeFact, error) {
 			return []model.TaskAssigneeFact{}, nil
 		}},

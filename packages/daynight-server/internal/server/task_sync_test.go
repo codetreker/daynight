@@ -48,7 +48,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	assertProjectError(t, projectRequest(outsideHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "assignees": 1, "observed": 1, "sessions": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "sessions": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -83,6 +83,14 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 			t.Fatalf("snapshot query = %#v/%d", lower, preview)
 		}
 		return []model.TaskViewRecord{}, nil
+	}
+	tasks.TaskSyncDependencyStatesFn = func(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+		plan.Called("dependencies")
+		requireProject(id)
+		if lower != nil {
+			t.Fatalf("snapshot dependency lower = %#v", lower)
+		}
+		return map[string]model.TaskDependencyState{}, nil
 	}
 	tasks.TaskAssigneesFn = func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 		plan.Called("assignees")

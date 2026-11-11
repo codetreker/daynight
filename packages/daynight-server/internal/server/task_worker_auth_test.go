@@ -25,7 +25,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := resourceTestServer(t, database, attachmentTestFiles(t), &logs)
-	origin := configuredTestConfig().PublicOrigin
+	origin := configuredTestConfig().Server.PublicOrigin
 	admin := workerHTTPCredential{principal: model.Principal{UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
 	member := workerHTTPCredential{principal: model.Principal{UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", CredentialID: "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb", Kind: model.SessionCredential}, value: secret.Random("dnst_")}
 	outsider := workerHTTPCredential{principal: model.Principal{UserID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", CredentialID: "cccccccc-1111-4111-8111-cccccccccccc", Kind: model.SessionCredential}, value: secret.Random("dnst_")}

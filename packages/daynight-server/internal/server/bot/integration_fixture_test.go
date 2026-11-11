@@ -11,6 +11,13 @@ import (
 	"testing"
 	"time"
 
+	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -40,7 +47,14 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	origin := "http://" + instance.Listener.Addr().String()
 	callback := origin + "/api/v1/auth/callback"
 	gateway := testauth.StartGateway(t, callback)
-	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
+	config := configpkg.Config{
+		Database: databaseconfig.Config{URL: "postgres://database"},
+		Storage:  storageconfig.Config{Root: "storage"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
+		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
+	}
+	config.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {
@@ -111,7 +125,7 @@ type authHarness = testsupport.AuthHarness[*authhttp.Authentication]
 
 func authTestHarness(t *testing.T) *authHarness {
 	return testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+		return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 	})
 }
 

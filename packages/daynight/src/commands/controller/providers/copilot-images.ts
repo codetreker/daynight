@@ -4,13 +4,13 @@ import { CopilotImageInputs, type CopilotInputMatch, type CopilotPublicationProp
 import { ProviderImageProjector, type NativeImagePayload, type NativeImageSlot } from "./image-projector.js";
 import { record, string } from "./native-rpc.js";
 import { limited, nativeEntryId, readable } from "./projection.js";
-import type { ProviderEntry, ProviderOptions } from "./types.js";
+import type { MarkdownTimelineMetadata, ProviderEntry, ProviderOptions } from "./types.js";
 
 type Message = Extract<ProviderEntry, { kind: "user_message" | "assistant_message" }> & { kind: "user_message" };
 type Tool = Extract<ProviderEntry, { kind: "tool_call" }>;
 type Parts = Array<Message["content"][number]>;
 type SlotIdentity = Omit<NativeImageSlot, "payload">;
-type Published = { raw: unknown; entry: Message; slots: SlotIdentity[] };
+type Published = { raw: unknown; entry: Message; slots: SlotIdentity[]; metadata?: MarkdownTimelineMetadata };
 type Asset = { marker: CopilotBridgeImage; release(): void } | { error: string };
 const unavailable = (code = "source_unavailable"): NativeImagePayload => ({ kind: "unavailable", error: { code, message: "The original native image is unavailable." } });
 const imageMime = (value: unknown) => typeof value === "string" && ["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"].includes(value);
@@ -33,10 +33,10 @@ export class CopilotImages {
     const saved = this.options.imageRuntime?.readState(this.pendingKey);
     return Array.isArray(saved) && saved.some(key => typeof key === "string" && record(this.options.imageRuntime?.readState(key)).phase !== "settled");
   }
-  private withSlots(entry: ProviderEntry, slots: readonly NativeImageSlot[]): void {
+  private withSlots(entry: ProviderEntry, slots: readonly NativeImageSlot[], metadata?: MarkdownTimelineMetadata): void {
     try { this.prepareSlots(entry, slots); }
     catch (error) { this.discardUnsubmitted(slots, error); }
-    this.projector.publish(entry, slots);
+    this.projector.publish(entry, slots, metadata);
   }
   private prepareSlots(entry: ProviderEntry, slots: readonly NativeImageSlot[]): void {
     if (slots.length && this.options.imageRuntime) {
@@ -101,7 +101,7 @@ export class CopilotImages {
     };
     walk(raw);
   }
-  publish(entry: ProviderEntry): void { this.projector.publish(entry); }
+  publish(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void { this.projector.publish(entry, [], metadata); }
   asset(raw: unknown): void {
     const data = record(record(raw).data), id = string(data.assetId), marker = data.data;
     if (!id) { if (isCopilotBridgeImage(marker)) releaseCopilotBridgeImage(marker); return; }
@@ -162,10 +162,10 @@ export class CopilotImages {
     }
     if (this.associations.size) this.schedulePublication();
   }
-  user(raw: unknown, entry: Message): void {
+  user(raw: unknown, entry: Message, metadata?: MarkdownTimelineMetadata): void {
     const event = record(raw), data = record(event.data), attachments = Array.isArray(data.attachments) ? data.attachments : [];
     const match = this.inputs.match(raw), accepted = this.inputs.acceptedMatch(string(event.id)), parts = [...entry.content], slots: NativeImageSlot[] = [];
-    const replay = () => this.user(raw, entry);
+    const replay = () => this.user(raw, entry, metadata);
     let transferred = false;
     try {
       for (const [index, rawAttachment] of attachments.entries()) {
@@ -176,7 +176,7 @@ export class CopilotImages {
       }
       const next = { ...entry, content: parts };
       const safeRaw = { id: event.id, type: event.type, ...(event.agentId ? { agentId: event.agentId } : {}), data: { content: data.content, parentToolCallId: data.parentToolCallId, attachments: attachments.map(item => ({ type: record(item).type, mimeType: record(item).mimeType })) } };
-      const published = { raw: safeRaw, entry: next, slots: slots.map(({ payload: _payload, ...slot }) => slot) } satisfies Published;
+      const published = { raw: safeRaw, entry: next, slots: slots.map(({ payload: _payload, ...slot }) => slot), ...(metadata ? { metadata } : {}) } satisfies Published;
       const proposal = match ? this.proposal(match, safeRaw, next, slots) : undefined;
       transferred = true;
       if (accepted) this.accepted(accepted, slots, proposal, published);
@@ -193,16 +193,16 @@ export class CopilotImages {
     const selected = new Set(prepared.slots.map(slot => slot.payload));
     try { this.projector.discard(slots.filter(slot => !selected.has(slot.payload))); }
     catch (error) { this.discardUnsubmitted(prepared.slots, error); }
-    this.withSlots(prepared.entry, prepared.slots);
+    this.withSlots(prepared.entry, prepared.slots, prepared.metadata);
   }
-  private prepareNative(messageId: string, published: Published, slots: readonly NativeImageSlot[]): { entry: Message; slots: readonly NativeImageSlot[] } {
+  private prepareNative(messageId: string, published: Published, slots: readonly NativeImageSlot[]): { entry: Message; slots: readonly NativeImageSlot[]; metadata?: MarkdownTimelineMetadata } {
     const existing = this.options.imageRuntime?.readState(this.key(messageId)) as Published | null;
     if (existing) {
       const current = new Map(slots.map(slot => [slot.native.nativePartId, slot.payload]));
-      return { entry: existing.entry, slots: existing.slots.map(slot => ({ ...slot, payload: current.get(slot.native.nativePartId) ?? { kind: "pending" as const } })) };
+      return { entry: existing.entry, slots: existing.slots.map(slot => ({ ...slot, payload: current.get(slot.native.nativePartId) ?? { kind: "pending" as const } })), ...(existing.metadata ? { metadata: existing.metadata } : {}) };
     }
     this.options.imageRuntime?.writeState(this.key(messageId), published);
-    return { entry: published.entry, slots };
+    return { entry: published.entry, slots, ...(published.metadata ? { metadata: published.metadata } : {}) };
   }
   accepted(match: CopilotInputMatch, current: readonly NativeImageSlot[] = [], proposed?: CopilotPublicationProposal, fallback?: Published): void {
     const held = this.hold(match, current), association = this.associations.get(match.messageId)!;
@@ -235,7 +235,7 @@ export class CopilotImages {
         // A shape mismatch prevents original association, not native display.
         // Preparation retains ownership through every fallible read and write;
         // publish consumes all selected leases, including on projection failure.
-        this.associations.delete(match.messageId); this.projector.publish(prepared.entry, prepared.slots);
+        this.associations.delete(match.messageId); this.projector.publish(prepared.entry, prepared.slots, prepared.metadata);
       } else if (!held.length) this.associations.delete(match.messageId);
       return;
     }
@@ -253,13 +253,13 @@ export class CopilotImages {
     if (proposal || result?.state === "unknown" || fallback) this.schedulePublication();
     else if (!held.length) this.associations.delete(match.messageId);
   }
-  tool(raw: unknown, entry: Tool): void {
+  tool(raw: unknown, entry: Tool, metadata?: MarkdownTimelineMetadata): void {
     const event = record(raw), data = record(event.data), result = record(data.result), parts: Parts = [], slots: NativeImageSlot[] = [];
     const texts = new Set<string>();
     const text = (value: unknown, unique = true) => { if (typeof value !== "string" || !value || unique && texts.has(value)) return; texts.add(value); parts.push({ type: "text", text: limited(value) }); };
     if (data.success === false) text(string(record(data.error).message) || "Native tool failed.");
     const mirrored = new Set<string>();
-    const replay = () => this.tool(raw, entry);
+    const replay = () => this.tool(raw, entry, metadata);
     for (const field of ["contents", "binaryResultsForLlm"] as const) for (const [index, rawItem] of (Array.isArray(result[field]) ? result[field] : []).entries()) {
       const item = record(rawItem), resource = record(item.resource), embedded = item.type === "resource" ? resource : item;
       if (item.type === "text") { text(item.text, false); continue; }
@@ -286,7 +286,8 @@ export class CopilotImages {
     texts.add(parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"));
     for (const value of typeof data.result === "string" ? [data.result] : [result.content, result.detailedContent]) text(typeof value === "string" ? value : value === undefined ? undefined : readable(value));
     if (result.structuredContent !== undefined) text(readable(result.structuredContent));
-    this.withSlots({ ...entry, output: parts, truncated: entry.truncated || [...texts].some(value => value.length > 200_000) }, slots);
+    const truncated = entry.truncated || [...texts].some(value => value.length > 200_000);
+    this.withSlots({ ...entry, output: parts, truncated }, slots, metadata ? { ...metadata, truncated: metadata.truncated || truncated } : undefined);
   }
   finishHistory(): void {
     const owners = [...this.waiting.entries()]; this.waiting.clear();

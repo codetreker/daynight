@@ -51,7 +51,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	cfg := configuredTestConfig()
 	projectID := task.ProjectID
 	pane := "pane_1"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: projectID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
+	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: projectID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.Server.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
 	f := terminalHTTPFixture{h: h, app: app, backend: backend, server: server, base: taskPath(task) + "/sessions", message: m}
 	return f
 }
@@ -89,7 +89,7 @@ func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testi
 	reg.Binding.NativeSessionID = &native
 	reg.Capabilities = v2.Capabilities{}
 	f.message.Payload = reg
-	f.expect(t, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1})
+	f.expect(t, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1})
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
 	if f.inserted == nil || f.inserted.OwnerID != f.h.principal.UserID || f.inserted.SessionID != f.message.SessionID || !bytes.Equal(f.inserted.Registration, []byte(jsonBody(t, reg))) || f.inserted.ServerInstance == "" || f.inserted.LastSeen.IsZero() {
 		t.Fatal("terminal registration changed declared identity")
@@ -224,10 +224,9 @@ func (d *terminalRecoveryDAO) ProjectAccess(ctx context.Context, user, project s
 	}
 	return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectAdmin}, ctx.Err()
 }
-func (d *terminalRecoveryDAO) LockTaskRegistration(ctx context.Context, project, id string) error {
+func (d *terminalRecoveryDAO) LockTaskRegistration(ctx context.Context, project, id string) (store.SessionTask, error) {
 	d.f.plan.Called("LockTaskRegistration")
-	_, err := d.task(ctx, project, id)
-	return err
+	return d.task(ctx, project, id)
 }
 func (d *terminalRecoveryDAO) FindTerminalRegistration(ctx context.Context, id, project, registration, task, claim string) (string, error) {
 	d.f.plan.Called("FindTerminalRegistration")

@@ -87,13 +87,13 @@ export class CopilotControls {
       await this.refresh(false); return;
     }
     if (id === "effort") {
-      await controlDeadline(this.native.rpc.model.setReasoningEffort({ reasoningEffort: value }), "Copilot effort update"); await this.refresh();
+      await controlDeadline(this.native.rpc.model.setReasoningEffort({ reasoningEffort: value }), "Copilot effort update"); await this.refresh(false);
       if (this.store.value.settings.find(item => item.id === id)?.value !== value) throw new Error("Copilot did not confirm applied effort."); this.confirmed?.(operationId); return;
     }
     const response = await controlDeadline(this.native.rpc.model.switchTo({ modelId: value, deferIfModelChangeQueued: true }), "Copilot model update");
     let resolve!: () => void, reject!: (error: Error) => void;
     const confirmation = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; }); void confirmation.catch(() => {}); this.pending.set(operationId, { model: value, resolve, reject });
-    await this.refresh();
+    await this.refresh(false);
     if (this.pending.has(operationId)) {
       if (!response.deferred) { this.pending.delete(operationId); throw new Error("Copilot model readback did not match the requested model."); }
       this.pollTimer ??= setInterval(() => { if (this.polling || this.closed) return; this.polling = true; void this.refresh(false).finally(() => { this.polling = false; }); }, 1000); this.pollTimer.unref();

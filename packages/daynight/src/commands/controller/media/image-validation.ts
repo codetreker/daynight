@@ -8,8 +8,9 @@ export type { ValidatedImage } from "../../../session/image-values.js";
 
 export const IMAGE_VALIDATION_BUILD_ID = "daynight-image-validation-v1-sharp-0.35.5";
 export type ImageValidationRequest = { version: 1; policy: "image-validation-v1"; inputPath: string; expectedByteLength: string; expectedSha256: string };
+export const IMAGE_VALIDATION_ERROR_CODES = ["image_format_unsupported", "image_integrity_failed", "image_geometry_exceeded", "image_decode_failed", "image_too_large"] as const;
 export class ImageValidationError extends Error {
-  constructor(readonly code: "image_format_unsupported" | "image_integrity_failed" | "image_geometry_exceeded" | "image_decode_failed" | "image_too_large", message: string) { super(message); }
+  constructor(readonly code: typeof IMAGE_VALIDATION_ERROR_CODES[number], message: string) { super(message); }
 }
 const fail = (code: ImageValidationError["code"], message: string): never => { throw new ImageValidationError(code, message); };
 export const parseImageValidationRequest = (input: unknown): ImageValidationRequest => {
@@ -126,30 +127,27 @@ export const validateImageFile = async (input: ImageValidationRequest): Promise<
     const mediaType = sniff(header);
     const containerFrames = await validateContainer(file, mediaType, offset);
     sharp.cache(false); sharp.concurrency(1);
-    try {
-      const metadata = await sharp(request.inputPath, { failOn: "warning", limitInputPixels: 33_554_432 }).metadata();
-      const formats: Readonly<Record<string, ValidatedImage["mediaType"] | undefined>> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", heif: "image/avif" };
-      const format = formats[metadata.format ?? ""];
-      if (format !== mediaType) return fail("image_format_unsupported", "Image format differs from its decoded container.");
-      const width = metadata.width ?? 0, height = metadata.pageHeight ?? metadata.height ?? 0, frameCount = metadata.pages ?? 1;
-      if (containerFrames !== null && containerFrames !== frameCount) return fail("image_format_unsupported", "This image animation cannot be completely decoded by the pinned component.");
-      if (![width, height, frameCount].every(value => Number.isSafeInteger(value) && value > 0) || width > 16_384 || height > 16_384 || width * height > 33_554_432 || frameCount > 256 || width * height * frameCount > 67_108_864) return fail("image_geometry_exceeded", "Image geometry exceeds the complete decoding policy.");
-      let total = 0;
-      for (let page = 0; page < frameCount; page++) {
-        const decoder = sharp(request.inputPath, { failOn: "warning", limitInputPixels: 33_554_432, page, pages: 1 }).toColourspace("srgb").ensureAlpha().raw();
-        let frameBytes = 0;
-        for await (const pixels of decoder) {
-          frameBytes += (pixels as Buffer).length; total += (pixels as Buffer).length;
-          if (total > 268_435_456 || frameBytes > width * height * 4) { decoder.destroy(); return fail("image_geometry_exceeded", "Image decoded pixels exceed the output budget."); }
-        }
-        if (frameBytes !== width * height * 4) return fail("image_decode_failed", "Image decode did not consume a complete canvas.");
+    // Sharp also reports IO and internal failures without structured codes.
+    // Only explicit validation checks establish a confirmed content rejection.
+    const metadata = await sharp(request.inputPath, { failOn: "warning", limitInputPixels: 33_554_432 }).metadata();
+    const formats: Readonly<Record<string, ValidatedImage["mediaType"] | undefined>> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", heif: "image/avif" };
+    const format = formats[metadata.format ?? ""];
+    if (format !== mediaType) return fail("image_format_unsupported", "Image format differs from its decoded container.");
+    const width = metadata.width ?? 0, height = metadata.pageHeight ?? metadata.height ?? 0, frameCount = metadata.pages ?? 1;
+    if (containerFrames !== null && containerFrames !== frameCount) return fail("image_format_unsupported", "This image animation cannot be completely decoded by the pinned component.");
+    if (![width, height, frameCount].every(value => Number.isSafeInteger(value) && value > 0) || width > 16_384 || height > 16_384 || width * height > 33_554_432 || frameCount > 256 || width * height * frameCount > 67_108_864) return fail("image_geometry_exceeded", "Image geometry exceeds the complete decoding policy.");
+    let total = 0;
+    for (let page = 0; page < frameCount; page++) {
+      const decoder = sharp(request.inputPath, { failOn: "warning", limitInputPixels: 33_554_432, page, pages: 1 }).toColourspace("srgb").ensureAlpha().raw();
+      let frameBytes = 0;
+      for await (const pixels of decoder) {
+        frameBytes += (pixels as Buffer).length; total += (pixels as Buffer).length;
+        if (total > 268_435_456 || frameBytes > width * height * 4) { decoder.destroy(); return fail("image_geometry_exceeded", "Image decoded pixels exceed the output budget."); }
       }
-      const after = await file.stat(), named = await lstat(request.inputPath);
-      if (named.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || after.ino !== named.ino || after.dev !== named.dev) return fail("image_integrity_failed", "Image integrity changed during complete decoding.");
-      return { mediaType, byteLength: request.expectedByteLength, sha256: request.expectedSha256, width, height, frameCount };
-    } catch (error) {
-      if (error instanceof ImageValidationError) throw error;
-      return fail("image_decode_failed", "Image decode failed to consume every frame.");
+      if (frameBytes !== width * height * 4) return fail("image_decode_failed", "Image decode did not consume a complete canvas.");
     }
+    const after = await file.stat(), named = await lstat(request.inputPath);
+    if (named.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || after.ino !== named.ino || after.dev !== named.dev) return fail("image_integrity_failed", "Image integrity changed during complete decoding.");
+    return { mediaType, byteLength: request.expectedByteLength, sha256: request.expectedSha256, width, height, frameCount };
   } finally { await file.close(); }
 };

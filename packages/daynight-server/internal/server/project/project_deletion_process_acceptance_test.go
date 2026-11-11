@@ -18,8 +18,9 @@ import (
 	"testing"
 	"time"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	coreattachment "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -35,7 +36,7 @@ func TestProjectDeletionBuiltProcessRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
+		return authhttp.NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
 	})
 	cookie := h.Login(t, "deletion-process-acceptance")
 	principal, err := h.Identity.Authenticate(ctx, model.SessionCredential, cookie.Value)

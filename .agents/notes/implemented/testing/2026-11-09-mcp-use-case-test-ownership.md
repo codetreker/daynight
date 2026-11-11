@@ -73,6 +73,18 @@ keeps its real lifecycle, permits and chunk stream while controlling DAO,
 transaction and directly invoked attachment-operation results; Store and process
 witnesses retain receipt persistence and crash recovery.
 
+Project, Team and Invitation organization scenarios additionally execute the
+real Service and Core with controlled DAO facts through an Entry host that
+registers only those adapters. Root retains its full production catalog and
+default authentication proofs. The later
+[component ownership decision](2026-11-11-go-component-test-ownership.md)
+explains the behavior and cost basis for that boundary. Bot's completed-response
+loss scenario also uses real Service and Core with controlled DAO facts and an
+Entry host registering only Bot tools. Its SDK transport consumes each completed
+response before discarding it; a separate reader observes explicitly supplied
+Bot facts. Root retains the shared MCP and REST application lifecycle. These
+controlled facts do not establish persistence.
+
 The MCP test binary clears database and UniAuth fixture variables before test
 execution. Full module validation can provide infrastructure to its physical
 owners without lending it to these protocol units. Native body-timeout tests

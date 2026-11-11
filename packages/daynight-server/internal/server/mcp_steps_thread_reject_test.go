@@ -197,3 +197,8 @@ func (d mcpStepsRejectedTaskReader) TaskWorkTargets(context.Context, string, []s
 	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkTargets")
 	panic("unreachable")
 }
+
+func (d mcpStepsRejectedTaskReader) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncDependencyStates")
+	panic("unreachable")
+}

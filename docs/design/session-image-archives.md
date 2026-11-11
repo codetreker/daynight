@@ -2,7 +2,7 @@
 
 本文定义统一 manifest/timeline/blob 归档、旧记录迁移、历史恢复和删除边界。基础层实现不表示原生图片来源、浏览器预览或整体验收已完成。[图片显示与归档规格](../spec/session-image-history.md)拥有所需行为，[图片验收与容量规格](../spec/session-image-acceptance.md)拥有验收要求。
 
-[公共协议与存储设计](session-image-contracts.md)拥有基础图片 DTO、身份、错误和共享预算；本文唯一拥有 schema3、归档状态、完整历史同步、文件传输及导入 DTO，并描述持久化顺序、恢复和失败处理。公共 codec 按本文定义实现一次，负责闭包遍历、编码和旧数据边界归一。[来源采集设计](session-image-sources.md)拥有采集，[三 Provider 设计](session-image-providers.md)拥有可信原生关联，[浏览器设计](session-image-browser.md)拥有预览与下载。这里不扩展 Herdr、任意文件、跨账户共享或任意跨 Session 复制。
+[公共协议与存储设计](session-image-contracts.md)拥有基础图片 DTO、身份、错误和共享预算；本文唯一拥有 schema3、归档状态、完整历史同步、文件传输及导入 DTO，并描述持久化顺序、恢复和失败处理。公共 codec 按本文定义实现一次，负责闭包遍历、编码和旧数据边界归一。[来源采集设计](session-image-sources.md)拥有采集，[Provider 设计](session-image-providers.md)拥有可信原生关联，[浏览器设计](session-image-browser.md)拥有预览与下载。这里不扩展 Herdr、任意文件、跨账户共享或任意跨 Session 复制。
 
 服务业务接线遵循[服务器组织规则](../daynight-server.md)，分别使用 `internal/core/session/` 执行、`internal/service/session/` 授权事务、`internal/core/store/` DAO、`internal/server/session/` HTTP 和 `internal/core/filestorage/` 文件抽象；不重建旧 `internal/sessionrelay/`。
 
@@ -45,7 +45,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 导入只发生于已经验证原记录与准确native身份的显式resume链，不开放任意跨Session复制。服务在当前认证下同时检查源记录读取权、目标Session操作权、同owner、同provider/准确nativeSessionId、真实resume来源关系、双方删除屏障及图片协议。新Session尚未建立native ID时，关系只作为待验证准备，必须由该次resume结果确认精确ID才发布导入；任意其他初始化不得接管。源Task记录不因相同native ID成为Test导入来源；首版仅沿既有Test resume可证明的同账户来源。
 
-持久来源映射由Controller 媒体存储和各Provider投影提供：原生message/item/block键、entryId/imageId及原resourceId/hash，保留在服务的record occurrence索引，归档提交时将其与manifest/timeline身份一起冻结。该索引不存会话正文/路径或图片Base64；必须从可信投影证明映射，不能由浏览器声明，也不能根据相同文字、摘要或数组位置猜配。在线已成功采集的图片没有可靠原生键时，原记录保持可读；新恢复明确context_unavailable且不能宣称图片恢复完整。公共协议统一投影来源键的登记及归档关联，三种 Provider 适配器产出准确原生键；仅Controller私有映射不足以保证原Controller离线后恢复。
+持久来源映射由Controller 媒体存储和各Provider投影提供：原生message/item/block键、entryId/imageId及原resourceId/hash，保留在服务的record occurrence索引，归档提交时将其与manifest/timeline身份一起冻结。该索引不存会话正文/路径或图片Base64；必须从可信投影证明映射，不能由浏览器声明，也不能根据相同文字、摘要或数组位置猜配。在线已成功采集的图片没有可靠原生键时，原记录保持可读；新恢复明确context_unavailable且不能宣称图片恢复完整。公共协议统一投影来源键的登记及归档关联，各既有 Provider 适配器产出准确原生键；仅Controller私有映射不足以保证原Controller离线后恢复。
 
 服务将一次恢复绑定为`(sourceRecordId,sourceManifestSha256,targetSessionId,expectedNativeSessionId)`不可变导入身份。开始前枚举完整可信来源集合，原子预留目标所需所有资源槽、完整字节和统一元数据容量；同源resource多次出现只导入一个目标resource，每个出现各有稳定目标imageId。预留与新输出/草稿走同一guard，新内容不能挤掉待恢复历史。达到1GiB/1000或物理水位时，明确拒绝/等待整个历史导入，原记录入口保持可读，不偷偷导入前几张后称恢复完成。
 
@@ -385,4 +385,4 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 
 删除测试设置真实 writer/reader 屏障，覆盖初始权限通过后暂停、实例失联、迟到 rename、cleanup 失败重启和 GC；只有 cancel+join、最终清扫/fsync 及同 delete epoch 回执全齐才是 completed。验证其他记录、unknown、native/resume 引用不被误删，物理删除失败仍计费。
 
-兼容验证分别读取 schema1 真实字节与缺失资源、schema2 Herdr、schema3、旧数据边界归一和原始摘要；回滚保留新读者和查询。备份恢复同时校验 DB、manifest/timeline及统一资源原件闭包，不能用重新取源补造旧图。检查执行范围及证据等级遵循[图片验收规格](../spec/session-image-acceptance.md)和仓库现行检查规则，受控测试不能替代三个真实 Provider 与实际平台证据。
+兼容验证分别读取 schema1 真实字节与缺失资源、schema2 Herdr、schema3、旧数据边界归一和原始摘要；回滚保留新读者和查询。备份恢复同时校验 DB、manifest/timeline及统一资源原件闭包，不能用重新取源补造旧图。检查执行范围及证据等级遵循[图片验收规格](../spec/session-image-acceptance.md)和仓库现行检查规则，受控测试不能替代当前支持范围内 Codex、Copilot 的真实 Provider 与实际平台证据；Claude 历史记录仍须保留原始身份和读取权限。

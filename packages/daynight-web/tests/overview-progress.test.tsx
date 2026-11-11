@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, renderHook, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskGraph, TaskStatus } from "../src/api/types";
@@ -19,7 +20,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
   const tasks: GraphTask[] = seeds.map((seed) => {
     const dependsOn = seed.dependsOn === undefined ? [] : seed.dependsOn;
     const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done" && seeds.find((task) => task.id === id)!.status !== "cancelled");
-    return { assignedTo: null, id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
+    return { type: 'task', parentId: null, assignedTo: null, id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
       dependsOn, externalDependsOn: seed.externalDependsOn === undefined ? [] : seed.externalDependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, allowAgents: false, requiredPlatform: null,
       startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, cancelledAt: seed.cancelledAt === undefined ? null : seed.cancelledAt, createdAt: beforeCutoff, updatedAt: observed };
@@ -29,7 +30,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
     tasks, summary: { proposed: tasks.filter((task) => task.status === "proposed").length, total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length, cancelled: tasks.filter((task) => task.status === "cancelled").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };
-  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
 };
 const categories = ({ index }: GraphSnapshot) => ({
   chainIds: index.representativeIds.toReversed().filter((id) => index.components.get(id)!.memberIds.size > 1),

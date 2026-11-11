@@ -1943,7 +1943,7 @@ service uses its last valid report time for the 120-second offline threshold and
 task status.
 
 Current execution monitoring is reported separately every 30 seconds. It shows
-observed scheduling, activities, capacity and bounded failure summaries; unknown
+observed scheduling, activities, capacity and bounded failure summaries. Claim failures with trusted bindings may include a project-relative worktree location or a fixed unavailable reason; unknown
 or stale data does not mean the Worker is idle. Monitoring failures do not stop
 heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 defines its freshness, permissions and retention.

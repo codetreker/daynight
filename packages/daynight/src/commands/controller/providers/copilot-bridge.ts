@@ -43,6 +43,7 @@ export const startCopilotBridge = (options: {
   let closing = false, failed = false, closed = false, peakRss = 0, peakHeap = 0, peakExternal = 0, peakArrayBuffers = 0, samples = 0;
   const waiters = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   const callbacks = new Map<string, Callbacks>(), transfers = new Map<string, Transfer>();
+  const permissions = new Map<string, { sessionId: string; request: object; serialized: string }>();
   const owned = new Set<CopilotBridgeImage>();
   const subscriptions = new Map<string, Set<(event: unknown) => void>>();
   let totalTransfers = 0;
@@ -139,6 +140,12 @@ export const startCopilotBridge = (options: {
     if (message.type === "event") {
       if (typeof message.sessionId !== "string") throw new Error("Copilot bridge event identity is unavailable.");
       const event = materialize(message.result as CopilotBridgeExport);
+      if (message.permissionIdentity !== undefined) {
+        if (typeof message.permissionIdentity !== "string") throw new Error("Copilot permission event identity is invalid.");
+        const pending = permissions.get(message.permissionIdentity), data = object(object(event).data);
+        if (!pending || pending.sessionId !== message.sessionId || object(event).type !== "permission.requested" || JSON.stringify(data.permissionRequest) !== pending.serialized) throw new Error("Copilot permission event does not match its callback object.");
+        permissions.delete(message.permissionIdentity); data.permissionRequest = pending.request;
+      }
       callbacks.get(message.sessionId)?.onEvent?.(event);
       for (const callback of subscriptions.get(message.sessionId) ?? []) callback(event);
       return;
@@ -149,6 +156,12 @@ export const startCopilotBridge = (options: {
       if (message.method !== "callback" || typeof message.sessionId !== "string" || typeof message.callback !== "string" || !Array.isArray(message.args)) throw new Error("Invalid Copilot bridge callback.");
       const callback = callbacks.get(message.sessionId)?.[message.callback];
       if (!callback) throw new Error("Copilot callback is unavailable.");
+      const identity = message.permissionIdentity;
+      if (identity !== undefined) {
+        const value = message.args[0];
+        if (message.callback !== "onPermissionRequest" || typeof identity !== "string" || !/^[a-f0-9-]{36}$/.test(identity) || permissions.has(identity) || permissions.size >= 128 || value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Copilot permission callback identity is invalid.");
+        permissions.set(identity, { sessionId: message.sessionId, request: value, serialized: JSON.stringify(value) });
+      }
       await respond(message.id, await callback(...message.args));
     } catch (error) { await respond(message.id, undefined, error instanceof Error ? error : new Error(String(error))); }
   }
@@ -232,7 +245,7 @@ export const startCopilotBridge = (options: {
         catch (error) { errors.push(error); }
       }
       for (const image of owned) try { releaseCopilotBridgeImage(image); } catch (error) { errors.push(error); }
-      callbacks.clear(); subscriptions.clear();
+      callbacks.clear(); subscriptions.clear(); permissions.clear();
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "Copilot bridge cleanup did not release every retained transfer.");
     })();

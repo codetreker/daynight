@@ -37,7 +37,7 @@ func TestTerminalRegistrationPreservesSharedRegistryAndRejectsForeignOwner(t *te
 	f.dao.Expect("InsertTerminal", 1)
 	f.dao.Expect("FindTerminalRegistration", 2)
 	a, e := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	})
@@ -49,7 +49,7 @@ func TestTerminalRegistrationPreservesSharedRegistryAndRejectsForeignOwner(t *te
 		t.Fatal(ack)
 	}
 	b, e := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	})
@@ -64,7 +64,7 @@ func TestTerminalRegistrationPreservesSharedRegistryAndRejectsForeignOwner(t *te
 	p.Owner.WorkerID = uuid.NewString()
 	bad.Payload = p
 	if _, e = terminalRegistrationStep(t, f, bad.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, bad)
 		})
 	}); e == nil {
@@ -84,7 +84,7 @@ func TestTerminalWorkerChannelEpochIsConsumedOnce(t *testing.T) {
 	f, m := terminalFixture(t)
 	ctx := context.Background()
 	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "InsertTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	}); err != nil {
@@ -110,7 +110,7 @@ func TestTerminalWorkerChannelEpochIsConsumedOnce(t *testing.T) {
 	reg.ConnectionEpoch = &epoch
 	m.Payload = reg
 	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
+		return withinRecordingPhase(f, ctx, map[string]int{"LockTaskRegistration": 1, "LockCredential": 1, "ProjectAccess": 1, "FindTerminalRegistration": 1, "LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}, func(phase context.Context) (v2.Message, error) {
 			return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
 		})
 	}); err != nil {

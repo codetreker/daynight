@@ -29,14 +29,14 @@ func startMetricsProcess(t *testing.T, values map[string]string) *persistencePro
 	cmd := exec.Command(executable, "-test.run=^TestPersistenceProcessHelper$")
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if _, overridden := values[key]; !overridden && key != "DAYNIGHT_PERSISTENCE_PROCESS_HELPER" {
+		if !strings.HasPrefix(key, "DAYNIGHT_") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
 	for key, value := range values {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	cmd.Env = append(cmd.Env, "DAYNIGHT_PERSISTENCE_PROCESS_HELPER=1")
+	cmd.Env = append(cmd.Env, "DAYNIGHT_PERSISTENCE_PROCESS_HELPER=1", "DAYNIGHT_TEST_ROOT="+testStorageRoot(t))
 	logs := &persistenceProcessLog{}
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {

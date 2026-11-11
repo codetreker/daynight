@@ -5,10 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,15 +13,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
 func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	h := newOAuthHTTPFixture(t)
 	session := h.Session
 	config := configuredTestConfig()
-	config.PublicOrigin, config.AllowHTTPTestOrigin = h.Origin, true
-	config.UniAuthCallbackURL = h.Origin + "/api/v1/auth/callback"
-	config.OAuthClients = map[string][]byte{"known": []byte(`{"client_id":"known","client_name":"Known","redirect_uris":["https://client.example/callback"]}`)}
+	config.Server.PublicOrigin, config.Server.AllowHTTPTestOrigin = h.Origin, true
+	config.UniAuth.CallbackURL = h.Origin + "/api/v1/auth/callback"
+	config.OAuth.PreregisteredClients = map[string][]byte{"known": []byte(`{"client_id":"known","client_name":"Known","redirect_uris":["https://client.example/callback"]}`)}
 	handler, err := newTestHandler(Dependencies{Store: h.Store, Files: attachmentTestFiles(t)}, config, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

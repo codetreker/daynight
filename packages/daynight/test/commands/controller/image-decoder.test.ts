@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { createImageDecoder, type ImageDecoderConfiguration } from "../../../src/commands/controller/media/image-decoder.js";
-import { IMAGE_VALIDATION_BUILD_ID } from "../../../src/commands/controller/media/image-validation.js";
+import { IMAGE_VALIDATION_BUILD_ID, ImageValidationError } from "../../../src/commands/controller/media/image-validation.js";
+import { sourceImageDecoder } from "../../fixtures/image-decoder.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (body: string) => {
@@ -38,4 +39,40 @@ test("a helper deadline and output overflow terminate and join the process", asy
   await expect(createImageDecoder({ ...idle.configuration, timeoutMilliseconds: 30 })(idle.request)).rejects.toThrow("deadline");
   const loud = await fixture("process.stdout.write('x'.repeat(16385));setInterval(()=>{},1000);");
   await expect(createImageDecoder(loud.configuration)(loud.request)).rejects.toThrow("bound");
+});
+
+test.each([
+  { name: "corrupt PNG", bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), code: "image_decode_failed" },
+  { name: "unsupported format", bytes: Buffer.from("<svg/>"), code: "image_format_unsupported" },
+])("the real helper preserves the confirmed $name failure across process exit", async ({ bytes, code }) => {
+  const f = await fixture("");
+  const decoder = await sourceImageDecoder(path.join(f.root, "decoder"));
+  await writeFile(f.request.inputPath, bytes);
+  await expect(decoder({ ...f.request, expectedByteLength: String(bytes.length), expectedSha256: createHash("sha256").update(bytes).digest("hex") })).rejects.toMatchObject({ code });
+});
+
+test("the real helper does not classify an unavailable input file as invalid image bytes", async () => {
+  const f = await fixture("");
+  const decoder = await sourceImageDecoder(path.join(f.root, "decoder"));
+  await expect(decoder(f.request)).rejects.toMatchObject({ code: "image_validation_unavailable" });
+});
+
+test.each([
+  { code: "image_decode_failed", message: "Invalid pixels.", retry: "always" },
+  { code: "unknown_failure", message: "Invalid pixels.", retry: "never" },
+  { code: "image_decode_failed", message: "Invalid pixels.", retry: "never", extra: true },
+  { code: "image_decode_failed", message: null, retry: "never" },
+])("malformed helper failures never establish a confirmed image rejection: %j", async error => {
+  const body = `process.stdin.resume();process.stdin.on('end',()=>{process.stdout.write(JSON.stringify(${JSON.stringify({ version: 1, buildId: IMAGE_VALIDATION_BUILD_ID, result: null, error })}));process.stderr.write(JSON.stringify({peakRssBytes:'123456'}));});`;
+  const f = await fixture(body);
+  const failure = await createImageDecoder(f.configuration)(f.request).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(ImageValidationError);
+});
+
+test("an abnormal helper exit does not establish a confirmed image rejection", async () => {
+  const f = await fixture("process.stdin.resume();process.stdin.on('end',()=>process.exit(19));");
+  const failure = await createImageDecoder(f.configuration)(f.request).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(ImageValidationError);
 });

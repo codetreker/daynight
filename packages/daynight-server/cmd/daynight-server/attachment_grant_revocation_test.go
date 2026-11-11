@@ -424,7 +424,7 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	gateway = testauth.StartGatewayGuarded(t, values["DAYNIGHT_UNIAUTH_CALLBACK_URL"], cleanupAllowed)
 	values["DAYNIGHT_UNIAUTH_URL"], values["DAYNIGHT_UNIAUTH_APP_ID"], values["DAYNIGHT_UNIAUTH_APP_SECRET"] = gateway.Origin, gateway.AppID, gateway.AppSecret
 	process = &grantProcess{done: make(chan struct{})}
-	process.command = exec.Command(binary)
+	process.command = exec.Command(binary, "--root", values["DAYNIGHT_STORAGE_ROOT"])
 	process.command.WaitDelay = 2 * time.Second
 	process.command.Env = grantEnvironment(values)
 	process.command.Stdout = &process.logs

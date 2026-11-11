@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskGraph as TaskGraphData } from "../src/api/types";
@@ -13,7 +14,7 @@ import { installGraphMeasurements } from "./graph-measurements";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
 const start = "2026-10-20T00:00:00.123456789Z";
-const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [],
+const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [],
   id, titlePreview: id, titleTruncated: false, status: "done", dependsOn: [], blockedBy: [], ready: false,
   startedAt: null, completedAt: null, cancelledAt: null, createdAt: start, updatedAt: start, ...changes,
 });
@@ -28,7 +29,7 @@ const graph: TaskGraphData = {
 const index = buildGraphIndex(graph);
 const snapshot = (elapsedMilliseconds: number, warningMinutes = 60): GraphSnapshot => ({
   graph: { ...graph, project: { ...graph.project, settings: { version: 1n, executionWarningMinutes: warningMinutes } } },
-  index, workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
+  index, summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
 });
 const noop = () => {};
 const canvas = (value: GraphSnapshot) => <TaskExecutionClockProvider projectId="project" snapshot={value}>

@@ -4,12 +4,12 @@ import { CodexImageInputs } from "../../../src/commands/controller/providers/cod
 import { CodexMediaReference } from "../../../src/commands/controller/providers/codex-rpc-json.js";
 import { CodexProjection } from "../../../src/commands/controller/providers/projection.js";
 import type { NativeImageSlot } from "../../../src/commands/controller/providers/image-projector.js";
-import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { MarkdownTimelineMetadata, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 
 const fixture = () => {
-  const states = new Map(), publications: { entry: ProviderEntry; slots: readonly NativeImageSlot[] }[] = [];
+  const states = new Map(), publications: { entry: ProviderEntry; slots: readonly NativeImageSlot[]; metadata: MarkdownTimelineMetadata | undefined }[] = [];
   const options = { cwd: "/authorized/worktree", imageRuntime: { readState: (key: string) => states.get(key), writeState: (key: string, value: unknown) => states.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
-  const projection = new CodexImageProjection("thread", options, new CodexImageInputs(options, "thread"), { publish(entry, slots = []) { publications.push({ entry, slots }); } });
+  const projection = new CodexImageProjection("thread", options, new CodexImageInputs(options, "thread"), { publish(entry, slots = [], metadata) { publications.push({ entry, slots, metadata }); } });
   return { projection, publications, options };
 };
 const missing = () => new CodexMediaReference("unavailable", "image/png", null, null, "image_too_large");
@@ -65,8 +65,21 @@ test("tool deltas and late starts retain image slots and cannot revive a termina
   expect(f.projection.toolDelta("m", " delta")).toBe(true);
   expect(f.publications.at(-1)!.entry).toMatchObject({ status: "completed", output: [{ text: "before delta" }, { text: "" }] });
   expect(f.publications.at(-1)!.slots).toHaveLength(1);
+  expect(f.publications.at(-1)!.metadata).toEqual({ complete: true, format: "plain", truncated: false });
   f.projection.item({ ...item, result: null }, false, "turn");
   expect(f.publications.at(-1)!.entry).toMatchObject({ status: "completed" });
+  expect(f.publications.at(-1)!.slots).toHaveLength(1);
+  expect(f.publications.at(-1)!.metadata).toEqual({ complete: true, format: "plain", truncated: false });
+});
+
+test("mixed image tool deltas retain truncation when their terminal item omits output", () => {
+  const f = fixture();
+  f.projection.item({ id: "m", type: "mcpToolCall", tool: "draw", result: { content: [{ type: "image", data: missing() }] } }, false, "turn");
+  f.projection.toolDelta("m", "a".repeat(200_001));
+  expect(f.publications.at(-1)!.metadata).toEqual({ complete: false, format: "plain", truncated: true });
+  f.projection.item({ id: "m", type: "mcpToolCall", status: "completed", result: null }, true, "turn");
+  expect(f.publications.at(-1)!.entry).toMatchObject({ status: "completed", truncated: true });
+  expect(f.publications.at(-1)!.metadata).toEqual({ complete: true, format: "plain", truncated: true });
   expect(f.publications.at(-1)!.slots).toHaveLength(1);
 });
 

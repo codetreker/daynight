@@ -35,6 +35,9 @@ import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
+import { encodeWorktree } from "./monitoring/worktree.js";
+import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
+import type { FailureWorktree } from "./monitoring/types.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" };
@@ -133,6 +136,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
     },
   };
+  // Only an operation-selected target or a durable original binding can identify a path.
+  const selectedWorktrees = createSelectedWorktrees();
+  const selectWorktree = selectedWorktrees.select;
+  const worktreeContext = (identity: ClaimIdentity, originalPath?: string): { worktree?: FailureWorktree } => {
+    try {
+      const web = options.webStore?.getTask(identity);
+      if (web?.resources.worktree && (!("worktreeId" in identity) || identity.worktreeId === web.worktreeId)) return { worktree: encodeWorktree(web.repositoryPath, web.resources.worktree.worktreePath) };
+      if (originalPath !== undefined || "worktreeId" in identity && typeof identity.worktreeId === "string") {
+        const project = options.store.getProject(identity);
+        if (project !== null) {
+          const target = originalPath ?? options.herdr.lifecycle?.worktreePath?.(identity as ResourceOwner);
+          if (target != null) return { worktree: encodeWorktree(project.localPath, target) };
+        }
+      }
+      const selected = selectedWorktrees.get(identity);
+      if (selected !== undefined) return { worktree: selected };
+    } catch { /* Optional context must not suppress the failure. */ }
+    return {};
+  };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
@@ -197,7 +219,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     observe(m => m.setUnattributed(partialKey(identityKey, operationKey), false));
     const failureKey = `false/${identityKey}/${operationKey}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
     monitoringFailures.set(failureKey, failureId);
-    observe(m => m.fail({ operationId: failureId, component: "execution", phase: phase.phase, scope: { kind: "claim", projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }, error, ...(observedFailure === undefined ? {} : { observedFailure }), ...(observedFailure?.running ? { retryState: "running" as const } : {}) }));
+    observe(m => m.fail({ operationId: failureId, component: "execution", phase: phase.phase, scope: { kind: "claim", projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }, ...worktreeContext(identity), error, ...(observedFailure === undefined ? {} : { observedFailure }), ...(observedFailure?.running ? { retryState: "running" as const } : {}) }));
   };
   const confirmWebClaim = (identity: ClaimIdentity): void => {
     const identityKey = key(identity); confirmedClaims.add(identityKey);
@@ -208,7 +230,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [pendingKey, pending] of unattributedWebIdentities) if (key(pending.identity) === identityKey) { unattributedWebIdentities.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
     for (const [pendingKey, pending] of pendingWebFailures) if (key(pending.identity) === identityKey) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
   };
-  try { options.webBackend?.setMonitoringObserver?.({ ...(deps.observePhase === undefined ? {} : { observePhase: deps.observePhase }), observeSelect: (identity, phase, operationKey) => { monitoringPhases.set(key(identity), phase.phase); monitoringOperations.set(key(identity), operationKey); }, observeSuccess: (identity, phase, operationKey) => {
+  try { options.webBackend?.setMonitoringObserver?.({ observeWorktree: selectWorktree, ...(deps.observePhase === undefined ? {} : { observePhase: deps.observePhase }), observeSelect: (identity, phase, operationKey) => { monitoringPhases.set(key(identity), phase.phase); monitoringOperations.set(key(identity), operationKey); }, observeSuccess: (identity, phase, operationKey) => {
     const identityKey = key(identity), pendingKey = `${identityKey}/${operationKey}`, pending = pendingWebFailures.get(pendingKey);
     if (pending !== undefined) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); return; }
     if (phase.kind === "execution") deps.observeSuccess?.(identity, phase, operationKey); else if (controllers.get(identityKey)?.terminal === true) recoverCleanupPhase(identity, phase.phase);
@@ -404,7 +426,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const failure = quarantinedMonitoringFailures.get(identity) ?? { owner: item.owner, operationId: randomUUID() };
           quarantinedMonitoringFailures.set(identity, failure);
           const error = item.error instanceof WorktreePreconditionError ? item.error : new WorktreePreconditionError("validation_failed", "The original worktree failed validation and remains reserved.", { cause: item.error });
-          observe(m => m.fail({ operationId: failure.operationId, component: "resources", phase: "resource-observation", scope: { kind: "claim", projectId: item.owner.projectId, taskId: item.owner.taskId, claimId: item.owner.claimId }, error }));
+          observe(m => m.fail({ operationId: failure.operationId, component: "resources", phase: "resource-observation", scope: { kind: "claim", projectId: item.owner.projectId, taskId: item.owner.taskId, claimId: item.owner.claimId }, ...worktreeContext(item.owner), error }));
           warn("quarantined", item.owner, `Quarantined worktree ${identity} retains capacity and blocks its task; unrelated tasks may use remaining capacity.`);
           if (!snapshotWarnings.get(project.projectId)?.has(JSON.stringify(["quarantined", item.owner.projectId, item.owner.taskId, item.owner.claimId, item.owner.worktreeId]))) options.emit({ kind: "resource-quarantined", message: `Worktree ${identity} failed validation; its original resources are retained.`, error: item.error });
         }
@@ -560,7 +582,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (operationId !== undefined) {
           const failureKey = `true/${identityKey}/${repairCode !== null && !(cause instanceof ArchiveRepairRequiredError) ? "archive-observation" : stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
-          observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, ...worktreeContext(owner), error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
           for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
           observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: repairCode === null ? "retry-backoff" : "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
         }
@@ -581,7 +603,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const phase = monitoringPhases.get(identityKey) ?? "observation";
           const failureKey = `false/${identityKey}/${monitoringOperations.get(identityKey) ?? phase}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
-          observe(m => m.fail({ operationId: failureId, component: "execution", phase, scope, error }));
+          observe(m => m.fail({ operationId: failureId, component: "execution", phase, scope, ...worktreeContext(identity), error }));
         }
       }
       options.emit({ kind: terminal ? "cleanup-error" : "execution-error", ...(task === null ? {} : { task }), message: terminal ? cleanupMessage! : task?.agentControlMode === "web" ? "The task operation failed; native recovery accounting remains independent of orchestration retries." : "The task operation failed; this process retains its recovery count.", error: reportedError });
@@ -678,7 +700,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     observe(m => {
       if (!monitoringFailures.has(failureKey)) {
         const id = randomUUID(); monitoringFailures.set(failureKey, id);
-        m.fail({ operationId: id, component: "cleanup", phase: "archive", scope, error: new ArchiveRepairRequiredError(code), retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
+        m.fail({ operationId: id, component: "cleanup", phase: "archive", scope, ...worktreeContext(owner), error: new ArchiveRepairRequiredError(code), retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
       }
       if (!monitoringActivities.has(activityKey)) {
         const id = m.startActivity({ kind: "cleanup", phase: "archive", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
@@ -723,6 +745,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
         await runCleanup(owner, true, signal);
         options.store.deleteCleanupSchedule(owner);
+        selectedWorktrees.release(ending.get(identityKey) ?? owner);
         ending.delete(identityKey);
         cleanupRetries.delete(identityKey);
         const activity = monitoringActivities.get(`true/${identityKey}`);
@@ -736,7 +759,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (isWorkerCancellation(error, signal)) return;
       const failureKey = `${identity}/${boundary}`, operationId = nameMonitoringFailures.get(failureKey) ?? randomUUID();
       nameMonitoringFailures.set(failureKey, operationId); nameFailureThisJob.add(identity);
-      observe(m => m.fail({ operationId, component: "execution", phase: "observation", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error }));
+      observe(m => m.fail({ operationId, component: "execution", phase: "observation", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, ...worktreeContext(owner), error }));
     };
     const recoverName = (boundary: "admission" | "discovery" | "rename"): void => {
       const failureKey = `${identity}/${boundary}`, previous = nameMonitoringFailures.get(failureKey);
@@ -849,7 +872,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
               if (recovery !== undefined) observe(m => m.discardFailure(recovery.id));
               const id = randomUUID();
               webRecoveryFailures.set(recoveryKey, { id, reason: recoveryReason });
-              observe(m => m.fail({ operationId: id, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error: new MonitoringRecoveryEvidence(recoveryReason), retryState: "manual" }));
+              observe(m => m.fail({ operationId: id, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, ...worktreeContext(task), error: new MonitoringRecoveryEvidence(recoveryReason), retryState: "manual" }));
             } else if (recovery !== undefined && recoveryReason === null && observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing") {
               observe(m => m.recover(recovery.id)); webRecoveryFailures.delete(recoveryKey);
             }
@@ -882,6 +905,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (currentConfiguration === null) return;
     if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
     const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
+    observe(() => selectWorktree(owner, input.project.localPath, executionContext(input).cwd));
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
@@ -925,7 +949,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!canAdvance(task) || jobs.has(key(task)) || ending.has(key(task))) return;
     updatePromptDemand();
     const count = failures.get(key(task)) ?? 0;
-    startJob(task, signal => {
+    const owner = remoteOwner(remoteTask);
+    startJob(owner, signal => {
       if (!canAdvance(task)) return Promise.resolve();
       const current = configurationFor(task);
       if (current === null) return Promise.resolve();
@@ -936,7 +961,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           monitoringLimitRetries.delete(identity);
           if (!monitoringFailures.has(limitKey)) {
             const operationId = randomUUID(); monitoringFailures.set(limitKey, operationId);
-            m.fail({ operationId, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error: new MonitoringRecoveryEvidence("recovery_limit"), retryState: "manual" });
+            m.fail({ operationId, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, ...worktreeContext(owner), error: new MonitoringRecoveryEvidence("recovery_limit"), retryState: "manual" });
           }
           if (activity !== undefined) m.updateActivity(activity, pausedClaims.has(identity) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "paused", status: "paused", waitReason: "recovery-blocked" });
         } else {
@@ -1048,6 +1073,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const pending = ending.get(identity);
         if (pending && hasWorktreeIdentity(pending) && pending.worktreeId !== resource.owner.worktreeId) throw new Error("The pending cleanup belongs to another original worktree.");
         reconcileDeletedHerdrResource(options.store, resource);
+        selectedWorktrees.release(resource.owner);
         ending.delete(identity); cleanupRetries.delete(identity);
         const task = options.store.getTask(resource.owner); if (task !== null) execution.forget(task);
         observe(m => {
@@ -1064,7 +1090,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             monitoringActivities.set(monitoringKey, operationId);
           }
           monitoringFailures.set(monitoringKey, operationId); monitoringFailurePhases.set(monitoringKey, "worktree-removal");
-          m.fail({ operationId, component: "cleanup", phase: "worktree-removal", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, error });
+          m.fail({ operationId, component: "cleanup", phase: "worktree-removal", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, ...worktreeContext(resource.owner, resource.worktreePath), error });
           m.updateActivity(operationId, { phase: "worktree-removal", status: "waiting", waitReason: "unknown", nextAttemptAt: null });
         });
         options.emit({ kind: "cleanup-error", message: `Herdr deleted-resource reconciliation for ${identity} remains incomplete; the original deletion evidence is retained for retry.`, error });
@@ -1091,7 +1117,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (monitoringFailurePhases.get(signatureKey) !== signature) {
             monitoringFailurePhases.set(signatureKey, signature);
             monitoringFailures.set(monitoringKey, operationId); monitoringFailurePhases.set(monitoringKey, "archive");
-            m.fail({ operationId, component: "cleanup", phase: "archive", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, error: undefined, retryState: resource.nextAttemptAt === null ? "manual" : "scheduled", nextAttemptAt: resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString() });
+            m.fail({ operationId, component: "cleanup", phase: "archive", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, ...worktreeContext(resource.owner, resource.worktreePath), error: undefined, retryState: resource.nextAttemptAt === null ? "manual" : "scheduled", nextAttemptAt: resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString() });
           } else m.updateFailureRetry(operationId, resource.nextAttemptAt === null ? "manual" : "scheduled", resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString());
         }
       });
@@ -1134,6 +1160,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         archive.cleaned(owner);
         const deleted = archive.resources().find(resource => resource.sessionId === selected.sessionId && sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId);
         if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");
+        selectedWorktrees.release(owner);
         ending.delete(key(owner));
         cleanupRetries.delete(key(owner));
         observe(m => {
@@ -1156,7 +1183,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (activity === undefined) return;
           const nextAttemptAt = monitoringRetryAt === null ? null : new Date(monitoringRetryAt).toISOString();
           monitoringFailures.set(monitoringKey, activity); monitoringFailurePhases.set(monitoringKey, monitoringPhase);
-          m.fail({ operationId: activity, component: "cleanup", phase: monitoringPhase, scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId }, error, retryState: nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt });
+          m.fail({ operationId: activity, component: "cleanup", phase: monitoringPhase, scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId }, ...worktreeContext(owner, selected.worktreePath), error, retryState: nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt });
           m.updateActivity(activity, { phase: monitoringPhase, status: "waiting", waitReason: nextAttemptAt === null ? "unknown" : "retry-backoff", nextAttemptAt });
         });
         options.emit({ kind: "cleanup-error", message: `Herdr archive finalization for ${key(owner)} remains incomplete; the original source and resource responsibility are retained.`, error });
@@ -1179,6 +1206,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       // never filesystem paths that a successor may now own.
       if (task !== null && task.status !== "done") options.store.completeTask(owner);
       if (schedule !== null) options.store.deleteCleanupSchedule(owner);
+      selectedWorktrees.release(owner);
       ending.delete(identity); cleanupRetries.delete(identity);
       if (task !== null) execution.forget(task);
     }

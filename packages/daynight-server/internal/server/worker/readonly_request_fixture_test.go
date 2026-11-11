@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -106,7 +107,7 @@ func newRequestFixture(t *testing.T) *requestFixture {
 			return model.Principal{}, errors.New("unexpected authentication arguments")
 		}
 		return p.principal, nil
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -122,13 +122,18 @@ func credential(ctx context.Context, tx *operationTx, p model.Principal, now tim
 
 type task struct {
 	Worker        *model.WorkerClaim
+	Type          model.TaskType
+	Deleted       bool
 	Status        string
 	StartupReport *sp.StartupReport
 }
 
 func lockTask(ctx context.Context, tx *operationTx, project, id string) (task, error) {
 	persisted, err := tx.dao.LockTask(ctx, project, id)
-	return task{Worker: persisted.Worker, Status: persisted.Status, StartupReport: persisted.StartupReport}, err
+	return taskFromStore(persisted), err
+}
+func taskFromStore(persisted store.SessionTask) task {
+	return task{Worker: persisted.Worker, Type: persisted.Type, Deleted: persisted.Deleted, Status: persisted.Status, StartupReport: persisted.StartupReport}
 }
 func current(t task, r *record) bool {
 	if r.Snapshot.TestExecutionID != "" {
@@ -138,7 +143,7 @@ func current(t task, r *record) bool {
 	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == model.AgentControlModeWeb
 }
 func active(t task, r *record) bool {
-	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
+	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || !t.Deleted && t.Type != model.TaskTypeGoal && current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
 }
 func (s *Execution) browser(ctx context.Context, p model.Principal, project, taskID, id string, fn func(*operationTx, *record, task, bool) error) error {
 	return s.browserRun(ctx, p, project, taskID, id, BrowserAccess, func(a *Access) error {

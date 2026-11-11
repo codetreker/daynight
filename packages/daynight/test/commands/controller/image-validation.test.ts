@@ -1,12 +1,19 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import * as fileSystem from "node:fs/promises";
+import { unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
+import { ImageValidationError, validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
+
+vi.mock("node:fs/promises", async original => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const sample = async (bytes: Buffer) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-validation-tests");
   await mkdir(base, { recursive: true });
@@ -20,6 +27,24 @@ test("complete decoding verifies original bytes and geometry without transcoding
   const request = await sample(bytes);
   await expect(validateImageFile(request)).resolves.toEqual({ mediaType: "image/png", byteLength: request.expectedByteLength, sha256: request.expectedSha256, width: 17, height: 13, frameCount: 1 });
   await expect(validateImageFile({ ...request, expectedSha256: "f".repeat(64) })).rejects.toThrow("integrity");
+});
+
+test("an IO failure during final source verification does not become a decode failure", async () => {
+  const bytes = await sharp({ create: { width: 7, height: 5, channels: 4, background: "red" } }).png().toBuffer();
+  const request = await sample(bytes);
+  vi.mocked(fileSystem.lstat).mockRejectedValueOnce(Object.assign(new Error("Input/output error"), { code: "EIO" }));
+  await expect(validateImageFile(request)).rejects.toMatchObject({ code: "EIO" });
+});
+
+test("a source removed before Sharp reopens it is not classified as confirmed invalid bytes", async () => {
+  const bytes = await sharp({ create: { width: 7, height: 5, channels: 4, background: "red" } }).png().toBuffer();
+  const request = await sample(bytes), cache = sharp.cache;
+  // Hash and container validation use the open handle; Sharp subsequently
+  // reopens the pathname and reports this real IO failure without an error code.
+  vi.spyOn(sharp, "cache").mockImplementationOnce(options => { unlinkSync(request.inputPath); return cache(options); });
+  const failure = await validateImageFile(request).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(ImageValidationError);
 });
 
 test("executable formats and truncated pixels are rejected even when declared hash and length match", async () => {

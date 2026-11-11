@@ -41,7 +41,8 @@ export type MonitoringReason = Scoped & { code: MonitoringReasonCode; observedAt
 export type MonitoringReservation = Scoped & { reservationId: string; roles: readonly Choice<typeof roles>[]; occupied: boolean; observedAt: string };
 export type MonitoringActivity = Scoped & { kind: 'execution' | 'cleanup' | 'maintenance'; phase: Choice<typeof executionPhases> | Choice<typeof cleanupPhases> | SchedulerPhase; operationId: string; status: 'queued' | 'running' | 'waiting' | 'paused'; startedAt: string; lastProgressAt: string | null; elapsedMs: number; deadlineAt: string | null; waitReason: MonitoringWaitReason | null; nextAttemptAt: string | null };
 export type MonitoringCause = { type: 'operation'; code: MonitoringDiagnosticCode; cause: string; causeTruncated: false };
-export type MonitoringFailure = Scoped & { operationId: string; component: MonitoringComponent; phase: string; error: MonitoringCause; firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; retryState: 'none' | 'scheduled' | 'running' | 'manual'; nextAttemptAt: string | null };
+export type FailureWorktree = { kind: 'project-relative'; path: string } | { kind: 'unavailable'; reason: 'different-volume' | 'invalid-path' | 'limit-exceeded' };
+export type MonitoringFailure = Scoped & { operationId: string; component: MonitoringComponent; phase: string; error: MonitoringCause; firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; retryState: 'none' | 'scheduled' | 'running' | 'manual'; nextAttemptAt: string | null; worktree?: FailureWorktree };
 export type MonitoringRecovery = Scoped & { operationId: string; component: MonitoringComponent; observedAt: string; explanation: string; explanationTruncated: false };
 export type MonitoringObservation = { runId: string; sequence: string; capturedAt: string; lifecycle: MonitoringSummary['lifecycle']; scheduler: MonitoringSummary['scheduler'] & { cycleId: string | null; lastCompletedAt: string | null; lastOutcome: 'completed' | 'failed' | 'cancelled' | null }; capacity: (MonitoringCapacity & { detailCoverage: DetailCoverage }) | null; admission: { observedAt: string; coverage: Coverage; reasons: readonly MonitoringReason[] }; reservations: readonly MonitoringReservation[]; activities: readonly MonitoringActivity[]; currentFailures: readonly MonitoringFailure[]; lastRecovery: MonitoringRecovery | null; detailCoverage: DetailCoverage; delivery: { lastSucceededAt: string | null; lastFailure: { observedAt: string; phase: Choice<typeof deliveryPhases>; error: MonitoringCause; requestId: string | null } | null } };
 export type WorkerMonitoringDetail = { observedAt: string; detailCoverage: DetailCoverage; permissionProjection: 'current' | 'restricted' } & ({ state: 'absent'; revision: null; runId: null; sequence: null; receivedAt: null; expiresAt: null; data: null } | { state: 'available'; revision: string; runId: string; sequence: string; receivedAt: string; expiresAt: string; data: MonitoringObservation });
@@ -109,12 +110,32 @@ const activity = (value: unknown): MonitoringActivity => {
   const kind = choice(d.kind, ['execution', 'cleanup', 'maintenance'] as const);
   return { ...scoped(d), kind, phase: kind === 'execution' ? choice(d.phase, executionPhases) : kind === 'cleanup' ? choice(d.phase, cleanupPhases) : phase(d.phase), operationId: uuid(d.operationId), status: choice(d.status, ['queued', 'running', 'waiting', 'paused'] as const), startedAt: timestamp(d.startedAt), lastProgressAt: nullable(d.lastProgressAt, timestamp), elapsedMs: monitoringCount(d.elapsedMs), deadlineAt: nullable(d.deadlineAt, timestamp), waitReason: nullable(d.waitReason, v => choice(v, waits)), nextAttemptAt: nullable(d.nextAttemptAt, timestamp) };
 };
+const worktree = (value: unknown): FailureWorktree => {
+  const d = record(value);
+  if (d.kind === 'unavailable') {
+    fields(d, ['kind', 'reason']);
+    return { kind: 'unavailable', reason: choice(d.reason, ['different-volume', 'invalid-path', 'limit-exceeded'] as const) };
+  }
+  if (d.kind !== 'project-relative') return malformed();
+  fields(d, ['kind', 'path']);
+  const path = string(d.path);
+  if (!path.isWellFormed() || new TextEncoder().encode(path).length > 4096 || /[\u0000-\u001f\u007f-\u009f\\]/.test(path) || /^[a-zA-Z]:/.test(path)) return malformed();
+  if (path !== '.') {
+    let ordinarySegmentSeen = false;
+    for (const segment of path.split('/')) {
+      if (segment === '' || segment === '.' || (segment === '..' && ordinarySegmentSeen)) return malformed();
+      if (segment !== '..') ordinarySegmentSeen = true;
+    }
+  }
+  return { kind: 'project-relative', path };
+};
 const failure = (value: unknown): MonitoringFailure => {
-  const d = fields(value, ['operationId', 'component', 'phase', 'scope', 'error', 'firstObservedAt', 'lastObservedAt', 'occurrencesInRun', 'retryState', 'nextAttemptAt', 'association']);
+  const raw = record(value), hasWorktree = Object.hasOwn(raw, 'worktree');
+  const d = fields(raw, ['operationId', 'component', 'phase', 'scope', 'error', 'firstObservedAt', 'lastObservedAt', 'occurrencesInRun', 'retryState', 'nextAttemptAt', 'association', ...(hasWorktree ? ['worktree'] : [])]);
   const component = choice(d.component, components), parsedScope = scoped(d), retryState = choice(d.retryState, ['none', 'scheduled', 'running', 'manual'] as const), nextAttemptAt = nullable(d.nextAttemptAt, timestamp);
-  if ((retryState === 'scheduled') !== (nextAttemptAt !== null) || (component === 'project' && parsedScope.scope.kind === 'worker')) return malformed();
+  if ((retryState === 'scheduled') !== (nextAttemptAt !== null) || (component === 'project' && parsedScope.scope.kind === 'worker') || (hasWorktree && parsedScope.scope.kind !== 'claim')) return malformed();
   const parsedPhase = component === 'execution' ? choice(d.phase, executionPhases) : component === 'cleanup' ? choice(d.phase, cleanupPhases) : component === 'monitoring' ? choice(d.phase, deliveryPhases) : phase(d.phase);
-  return { ...parsedScope, component, phase: parsedPhase, operationId: uuid(d.operationId), error: cause(d.error), firstObservedAt: timestamp(d.firstObservedAt), lastObservedAt: timestamp(d.lastObservedAt), occurrencesInRun: monitoringCount(d.occurrencesInRun), retryState, nextAttemptAt };
+  return { ...parsedScope, component, phase: parsedPhase, operationId: uuid(d.operationId), error: cause(d.error), firstObservedAt: timestamp(d.firstObservedAt), lastObservedAt: timestamp(d.lastObservedAt), occurrencesInRun: monitoringCount(d.occurrencesInRun), retryState, nextAttemptAt, ...(hasWorktree ? { worktree: worktree(d.worktree) } : {}) };
 };
 const recovery = (value: unknown): MonitoringRecovery => {
   const d = fields(value, ['operationId', 'component', 'scope', 'observedAt', 'explanation', 'explanationTruncated', 'association']);

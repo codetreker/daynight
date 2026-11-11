@@ -37,9 +37,9 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	production, _ := newMCPHTTPServer(t, database, files)
 	origin := production.URL
 	config := configuredTestConfig()
-	config.PublicOrigin = origin
-	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin = origin
+	config.UniAuth.CallbackURL = origin + "/api/v1/auth/callback"
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newApp := func() *sessionApplication {
 		handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
@@ -201,8 +201,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	if closed["state"] != "cleanup_pending" || closed["cleanupState"] != "pending" {
 		t.Fatalf("attachment close: %#v", closed)
 	}
-
-	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.

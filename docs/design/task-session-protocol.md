@@ -144,7 +144,11 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 原生先追加 JSONL，再更新 SQLite metadata；另一个原生客户端正常读取空线程即可提前建立缺少 model/effort 的旧行。若只观察 JSONL 就就绪，在 SQLite 提交前进程退出，冷恢复仍可能用旧 metadata 覆盖历史设置。因此 `codex-settings-metadata.ts` 还须确认 SQLite 的已提交行。派发更新前读取 `config/read` 和 `configRequirements/read`，按 managed `requirements.sqliteHome` 的本地文件 URI、有效 `config.sqlite_home` 的绝对路径、实际子进程环境 `CODEX_SQLITE_HOME`、native home 的顺序确定 SQLite 目录；环境相对路径按本次 cwd 解析。只支持已核实的 `state_5.sqlite` 布局，不扫描目录选择数据库，不把父进程未传入的环境值补给子进程。
 
-历史记录满足条件后，每次用现有 `better-sqlite3` 打开只读、必须存在、busy timeout 为 0 的连接，以一次 SELECT 读取原 ID 的 `rollout_path`、`cwd`、model 和 reasoning_effort，随后立即关闭连接。必须核对同一原生路径和真实 cwd，且同一已提交行中的明确字段匹配。查询前后校验普通文件、真实路径与文件身份；替换或归属不符立即失败。读锁冲突、缺文件、缺行或字段尚未匹配在总期限内重查；未知 schema、损坏或未知路径配置失败，不允许仅凭 JSONL 成功。不保持跨轮询事务，不使用 `immutable` 跳过 WAL，不迁移、checkpoint 或直接修改原生数据库。metadata 确认后再次核对历史文件没有新增未处理内容，再允许就绪。
+历史记录满足条件后，每次用现有 `better-sqlite3` 打开只读、必须存在、busy timeout 为 0 的连接，以一次 SELECT 读取原 ID 的 `rollout_path`、`cwd`、model 和 reasoning_effort，随后立即关闭连接。必须核对同一原生路径和真实 cwd，且同一已提交行中的明确字段匹配。
+
+首次观察到普通文件时绑定真实路径和精确的 `bigint` dev/ino；每次查询前后均以 `lstat(..., { bigint: true })` 校验普通文件、同一真实路径与原文件身份，拒绝轮询之间及单次读取期间的替换。64 位文件 ID 超出 JavaScript 安全整数范围时，默认 number stat 可能将不同 ID 舍入为同值，因此不能先读取 number 再转换为 bigint。归属不符立即失败。
+
+读锁冲突、尚未绑定身份时缺文件、缺行或字段尚未匹配在总期限内重查；已绑定路径消失、未知 schema、损坏或未知路径配置失败，不允许仅凭 JSONL 成功。不保持跨轮询事务，不使用 `immutable` 跳过 WAL，不迁移、checkpoint 或直接修改原生数据库。metadata 确认后再次核对历史文件没有新增未处理内容，再允许就绪。
 
 屏障先以 `lstat` 拒绝非普通文件，打开后以 `fstat` 再核对同一文件身份；可用的 `O_NOFOLLOW` / `O_NONBLOCK` 进一步防止检查后被替换为链接或 FIFO，但不替代前后身份校验。屏障持有同一只读文件句柄，以 64 KiB 块读取并保留未完成尾行，每 20 ms 至多读取一次新增内容。总文件预算为 16 MiB，配置读取、唯一设置更新与双层观察共享 30 秒总期限；不支持的持久化格式、损坏完整记录、文件身份替换、截断、路径消失或预算超限均失败。错误 owner 或值不能满足屏障，后续完整正确事件仍可确认；超时保留持久化结果未知。原生异步 error、退出及关闭会取消观察，所有出口释放文件和计时器。拒绝、畸形回执及断流同样沿初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。此屏障证明原生冷恢复所用历史与 metadata 已可读，不承诺断电耐久性或排除其他客户端后续修改。
 
