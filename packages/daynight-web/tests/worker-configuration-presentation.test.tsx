@@ -5,13 +5,20 @@ import { browserNavigation } from '../src/app/navigation';
 import { navigate } from '../src/app/router';
 import type { WorkerConfigurationOutcome } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
+import { useWorkerConfiguration } from '../src/features/workers/configuration/useWorkerConfiguration';
+import { WorkerEditingPanels } from '../src/features/workers/configuration/WorkerEditingPanels';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
-const mount = () => renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
+const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
+  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled });
+  return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
+};
+const mount = () => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const install = (response: () => Response) => {
   const fetch = vi.fn((url: string, _init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : response());
   vi.stubGlobal('fetch', fetch); return fetch;
@@ -34,7 +41,7 @@ describe('configuration presentation', () => {
       return Promise.resolve(configurationResponse(configurationResource()));
     });
     vi.stubGlobal('fetch', fetch);
-    const view = renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { scope } });
+    const view = renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { scope } });
     try {
       const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
       fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
@@ -75,7 +82,7 @@ describe('configuration presentation', () => {
     });
     vi.stubGlobal('fetch', fetch);
     act(() => browserNavigation().navigate(`/workers/${workerId(1)}`));
-    const view = renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { scope } });
+    const view = renderWithLocale(<WorkerEditingPanels id="worker-test" workerId={workerId(1)} section="configuration" readEnabled online={null} tasks={[]} onContinueEditing={() => {}} />, { locale: 'en', taskCache: { scope } });
     try {
       const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
       fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
@@ -114,7 +121,7 @@ describe('configuration presentation', () => {
       return Promise.resolve(configurationResponse(configurationResource()));
     });
     vi.stubGlobal('fetch', fetch);
-    const panel = (enabled: boolean) => <WorkerConfigurationPanel workerId={workerId(1)} readEnabled={enabled} online={null} tasks={[]} />;
+    const panel = (enabled: boolean) => <ConfigurationFixture workerId={workerId(1)} readEnabled={enabled} online={null} tasks={[]} />;
     const view = renderWithLocale(panel(true), { locale: 'en', taskCache: { viewerId: WORKER_USER } });
     const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
     fireEvent.change(input, { target: { value: '3' } }); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
