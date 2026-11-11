@@ -229,6 +229,12 @@ exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
 one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+The required `dependencyStates` map supplies each visible ordinary Task's exact
+version, retained unsatisfied prerequisites and ready state in snapshots; deltas
+patch owners whose own or direct prerequisite's update falls in the window.
+Its bulk query shares the snapshot and does not load Task bodies. Hidden retained
+prerequisites keep their actual satisfaction state; a Goal's status does not alter
+Task readiness. The current Web continues to derive readiness from its local graph.
 Selected canonical property text is loaded directly into RawMessage maps; reads
 do not repeat normalization, field validation or capacity admission.
 Every snapshot and delta, including an empty delta,

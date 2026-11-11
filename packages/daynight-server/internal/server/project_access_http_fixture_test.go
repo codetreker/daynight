@@ -36,11 +36,12 @@ func (s accessHTTPSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 
 type accessHTTPTaskReader struct {
 	store.TaskReader
-	epoch    func(context.Context, string) (string, error)
-	sync     func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	people   func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	presence func(context.Context, string, string) (store.TaskPresence, error)
-	graph    func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	epoch        func(context.Context, string) (string, error)
+	sync         func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	dependencies func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
+	people       func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	presence     func(context.Context, string, string) (store.TaskPresence, error)
+	graph        func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 }
 
 func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
@@ -48,6 +49,9 @@ func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (st
 }
 func (d accessHTTPTaskReader) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 	return d.sync(ctx, id, lower, preview)
+}
+func (d accessHTTPTaskReader) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+	return d.dependencies(ctx, id, lower)
 }
 func (d accessHTTPTaskReader) TaskAssignees(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 	return d.people(ctx, id)
@@ -130,7 +134,7 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		snapshot.observed = func(context.Context) (time.Time, error) { observed(); return v.UpdatedAt, nil }
 	}
 	if kind == "sync" {
-		epoch, sync, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+		epoch, sync, dependencies, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 		snapshot.task = accessHTTPTaskReader{
 			epoch: func(ctx context.Context, id string) (string, error) {
 				epoch()
@@ -143,6 +147,12 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 				projectHTTPCheck(t, gotLower, lower)
 				projectHTTPCheck(t, preview, projection.TitlePreviewCharacters)
 				return []model.TaskViewRecord{}, nil
+			},
+			dependencies: func(ctx context.Context, id string, gotLower *time.Time) (map[string]model.TaskDependencyState, error) {
+				dependencies()
+				projectHTTPCheck(t, id, v.ID)
+				projectHTTPCheck(t, gotLower, lower)
+				return map[string]model.TaskDependencyState{}, nil
 			},
 			people: func(ctx context.Context, id string) ([]model.TaskAssigneeFact, error) {
 				people()

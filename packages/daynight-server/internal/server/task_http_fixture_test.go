@@ -218,26 +218,27 @@ var _ store.ThreadScope = (*taskHTTPThreadScopeMock)(nil)
 
 type taskHTTPReaderMock struct {
 	taskHTTPMockBase
-	TaskFn                 func(context.Context, string, string) (model.Task, error)
-	TaskBodiesFn           func(context.Context, string, []string) ([]model.Task, error)
-	GoalProgressesFn       func(context.Context, string, []string) (map[string]model.GoalProgress, error)
-	TasksFn                func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
-	TaskListFenceFn        func(context.Context, string) (store.TaskListFence, error)
-	TaskPriorityListFn     func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
-	TaskPresenceFn         func(context.Context, string, string) (store.TaskPresence, error)
-	TaskHeaderFn           func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn             func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn            func(context.Context, string) ([]model.TaskStep, error)
-	TaskStepPageFn         func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
-	TaskStepSummaryFn      func(context.Context, string, string) (store.TaskStepProjection, error)
-	ThreadMessageFn        func(context.Context, string, string) (model.ThreadMessage, error)
-	ThreadCandidatesFn     func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
-	ThreadSidesFn          func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
-	TaskAssigneesFn        func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	ResolveTaskAssigneesFn func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphTasksFn       func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-	TaskCacheEpochFn       func(context.Context, string) (string, error)
-	TaskSyncTasksFn        func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskFn                     func(context.Context, string, string) (model.Task, error)
+	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
+	GoalProgressesFn           func(context.Context, string, []string) (map[string]model.GoalProgress, error)
+	TasksFn                    func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
+	TaskListFenceFn            func(context.Context, string) (store.TaskListFence, error)
+	TaskPriorityListFn         func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
+	TaskPresenceFn             func(context.Context, string, string) (store.TaskPresence, error)
+	TaskHeaderFn               func(context.Context, string, string) (model.TaskHeader, error)
+	TaskStepFn                 func(context.Context, string, string) (model.TaskStep, error)
+	TaskStepsFn                func(context.Context, string) ([]model.TaskStep, error)
+	TaskStepPageFn             func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
+	TaskStepSummaryFn          func(context.Context, string, string) (store.TaskStepProjection, error)
+	ThreadMessageFn            func(context.Context, string, string) (model.ThreadMessage, error)
+	ThreadCandidatesFn         func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
+	ThreadSidesFn              func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
+	TaskAssigneesFn            func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	ResolveTaskAssigneesFn     func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
+	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	TaskCacheEpochFn           func(context.Context, string) (string, error)
+	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
 func (mock *taskHTTPReaderMock) TaskBodies(ctx context.Context, project string, ids []string) ([]model.Task, error) {
@@ -336,6 +337,11 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
+	mock.need("TaskSyncDependencyStates", mock.TaskSyncDependencyStatesFn != nil)
+	return mock.TaskSyncDependencyStatesFn(ctx, id, lower)
 }
 
 var _ store.TaskReader = (*taskHTTPReaderMock)(nil)

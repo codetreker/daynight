@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
@@ -53,7 +54,11 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 }
 
 func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
-	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), DependencyStates: make(map[string]api.TaskDependencyState, len(sync.DependencyStates)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	for id, state := range sync.DependencyStates {
+		blocked := append([]string{}, state.BlockedBy...)
+		result.DependencyStates[id] = api.TaskDependencyState{TaskVersion: strconv.FormatInt(state.TaskVersion, 10), BlockedBy: blocked, Ready: state.Ready}
+	}
 	if sync.Sessions != nil {
 		result.Sessions = make(map[string]string, len(sync.Sessions))
 		for taskID, state := range sync.Sessions {
