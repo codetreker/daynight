@@ -98,7 +98,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       }
       const observedNewer = incoming.desired !== null && old.baselineRevision !== null && BigInt(incoming.desired.revision) > BigInt(old.baselineRevision);
       if (old.protectedDraft && observedNewer && old.draft !== null && resource.desired !== null && configurationDraftsEqual(old.draft, draftFromValue(resource.desired.value))) {
-        return { ...old, resource, baselineDraft: old.draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false, protectedDraft: false };
+        return { ...old, resource, baselineDraft: old.draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, notice: old.notice === 'conflict' ? null : old.notice, unavailable: false, protectedDraft: false };
       }
       const protectedDraft = old.protectedDraft;
       return { ...old, resource, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false, protectedDraft };

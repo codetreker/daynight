@@ -361,6 +361,27 @@ describe('Worker configuration editing lifetime', () => {
       expect(result.current.draft?.maxConcurrent).toBe('3'); expect(fetch).toHaveBeenCalledTimes(2);
     } finally { resume(); spy.mockRestore(); }
   });
+  it('clears a conflict when the latest target matches a later edit and saves further edits against that revision', async () => {
+    const put = deferred<Response>(), latest = deferred<Response>(), readDispatched = deferred<void>();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockImplementationOnce(() => put.promise)
+      .mockImplementationOnce(() => { readDispatched.resolve(); return latest.promise; })
+      .mockResolvedValueOnce(configurationResponse(configurationResource('3', { ...configurationValue(), maxConcurrent: 5 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let first!: Promise<void>; act(() => { first = result.current.save(); }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '4' })));
+    put.resolve(configurationError(409, 'version_conflict')); await act(async () => first); await act(async () => readDispatched.promise);
+    latest.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 4 }))); await flush();
+    expect(result.current.draft?.maxConcurrent).toBe('4'); expect(result.current.baselineRevision).toBe('2');
+    expect(result.current.conflict).toBe(false); expect(result.current.notice).not.toBe('conflict'); expect(result.current.dirty).toBe(false);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '5' })));
+    await act(async () => result.current.save()); await flush();
+    const writes = fetch.mock.calls.filter(([, options]) => options?.method === 'PUT');
+    expect(writes).toHaveLength(2); expect(JSON.parse(String(writes[1]![1].body))).toMatchObject({ revision: '2', value: { maxConcurrent: 5 } });
+    expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('3'); expect(result.current.dirty).toBe(false);
+  });
   it('settles a conflict save without waiting for the follow-up read', async () => {
     const verify = deferred<Response>(), readDispatched = deferred<void>();
     const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
