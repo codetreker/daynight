@@ -1810,9 +1810,13 @@ auth fixture as described in [validation](#validate).
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
-WebSocket traffic share one actual application and Engine. Startup, channel,
-serialization and shutdown cases retain their private composition observations
-and capacity boundaries. Store tests own actual SQL, database-clock expiry after
+WebSocket traffic share one actual application and Engine. Runtime tests group
+lifecycle, metrics listeners and transport boundaries by responsibility; server
+tests own application shutdown ordering. The metrics handler retains its direct
+write failure test. These cases use controlled DAO facts and do not require a
+database; listener, deadline, relay, file and retry observations remain real.
+Startup, channel, serialization and shutdown cases retain their private composition
+observations and capacity boundaries. Store tests own actual SQL, database-clock expiry after
 locks, transaction outcomes and committed readback; process tests own complete
 entry-point drain and restart persistence. The
 [root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
