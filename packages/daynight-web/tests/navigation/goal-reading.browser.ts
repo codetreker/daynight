@@ -11,6 +11,7 @@ const singleId = '00000000-0000-4000-8000-000000000203';
 const otherGoalId = '00000000-0000-4000-8000-000000000204';
 const otherTaskId = '00000000-0000-4000-8000-000000000205';
 const outsideId = '00000000-0000-4000-8000-000000000206';
+const otherTask2Id = '00000000-0000-4000-8000-000000000207';
 const personalId = '00000000-0000-4000-8000-000000000701';
 const time = '2026-10-22T10:00:00Z';
 const goal = detailFixture(projectId, goalId, { type: 'goal', title: 'Goal reading', ready: false, description: Array.from({ length: 60 }, (_, i) => `Paragraph ${i} of the goal description.`).join('\n\n') });
@@ -97,6 +98,14 @@ async function install(page: Page) {
     details = [root, child]; currentGraph = graphFixture(details);
   }, forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
+    currentGraph = graphFixture(details);
+  }, addTwoExternalTasks: () => {
+    details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
+      detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false }),
+      detailFixture(projectId, otherTask2Id, { parentId: otherGoalId, title: 'Other second task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
+    currentGraph = graphFixture(details);
+  }, moveOtherTask: () => {
+    details = details.map(item => item.id === otherTaskId ? { ...item, parentId: null, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
     currentGraph = graphFixture(details);
   }, addOutsideChain: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain' });
@@ -595,4 +604,32 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await page.goForward(); await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+test('history retains an external Goal draft when its old witness moves', async ({ page }) => {
+  const fixture = await install(page); fixture.addTwoExternalTasks();
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  await page.locator('.task-chain-dialog').getByRole('button', { name: 'Other task, Details' }).click();
+  const external = page.getByRole('dialog', { name: 'Other goal' });
+  await external.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await external.getByRole('button', { name: 'Close task details' }).click();
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  await page.locator('.task-chain-dialog').getByRole('button', { name: 'Other second task, Details' }).click();
+  await expect(external.locator(`[data-goal-task-id="${otherTaskId}"]`)).toHaveCount(1);
+  await external.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await external.getByRole('button', { name: 'Edit', exact: true }).click();
+  const edit = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  const draft = edit.getByRole('textbox', { name: 'Description', exact: true });
+  await draft.fill('Keep this Goal draft');
+  const original = await external.elementHandle();
+  fixture.moveOtherTask();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(external.locator(`[data-goal-task-id="${otherTaskId}"]`)).toHaveCount(0);
+  await page.evaluate(() => history.go(-4));
+  await expect(external.locator('[role="tab"][aria-selected="true"]')).toHaveText('Tasks');
+  await expect(edit).toBeVisible();
+  await expect(draft).toHaveValue('Keep this Goal draft');
+  expect(await external.evaluate((element, previous) => element === previous, original)).toBe(true);
 });

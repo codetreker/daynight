@@ -30,10 +30,9 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
   const targetTrigger = useRef<HTMLElement | null>(null);
   const requestedTarget = history.selection.externalGoal;
   const admittedTarget = useRef<string | null>(null);
-  const targetKey = requestedTarget === null ? null : `${requestedTarget.id}/${requestedTarget.witness}`;
-  if (targetKey === null) admittedTarget.current = null;
-  else if (admittedTarget.current !== targetKey) admittedTarget.current = graph.snapshot?.index.nodes.get(requestedTarget!.witness)?.parentId === requestedTarget!.id ? targetKey : null;
-  const target = targetKey !== null && admittedTarget.current === targetKey ? requestedTarget : null;
+  if (requestedTarget === null) admittedTarget.current = null;
+  else if (admittedTarget.current !== requestedTarget.id) admittedTarget.current = graph.snapshot?.index.nodes.get(requestedTarget.witness)?.parentId === requestedTarget.id ? requestedTarget.id : null;
+  const target = requestedTarget !== null && admittedTarget.current === requestedTarget.id ? requestedTarget : null;
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
   const select = (nextTask: string, selection: TaskDetailNavigation) => {
