@@ -69,8 +69,10 @@ clear refusal and retains existing stop confirmation.
 
 Dependency satisfaction and ended progress include done and cancelled; successful
 delivery counts only done. Cancellation can release successors without changing
-their versions or states, so all projections derive readiness from the current
-full graph.
+their versions or states. Web consumes the server's retained dependency facts
+rather than inferring readiness from visible nodes; the [dependency-state
+decision](../architecture/2026-11-11-task-sync-dependency-states.md) records
+that projection and its ordering limit.
 
 The additional required nullable time field needs coordinated protocol readers
 and explicit persistent-cache migration. Distinct predicates prevent a broad

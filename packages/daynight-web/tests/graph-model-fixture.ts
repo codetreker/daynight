@@ -9,7 +9,7 @@ export const graph = (seeds: readonly Seed[]): TaskGraph => {
     const status = seed.status ?? "todo";
     const blockedBy = dependsOn.filter((predecessor) => seeds.find((item) => item.id === predecessor)?.status !== "done" && seeds.find((item) => item.id === predecessor)?.status !== "cancelled");
     return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: status === "cancelled" ? time : null,
-      id: seed.id, status, dependsOn, blockedBy, ready: status === "todo" && blockedBy.length === 0,
+      id: seed.id, type: "task", parentId: null, status, dependsOn, blockedBy, ready: status === "todo" && blockedBy.length === 0,
       titlePreview: "Private task text", titleTruncated: false, createdAt: time, updatedAt: time,
     };
   });

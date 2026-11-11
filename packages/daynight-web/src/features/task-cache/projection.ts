@@ -1,7 +1,6 @@
-import type { Project, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
+import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
 import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
-import { isTerminalStatus } from "../../api/task-status";
-import { buildGraphIndex, type GraphIndex } from "../task-graph/model";
+import { buildGraphIndex, GraphDataError, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
   const seconds = left.slice(0, 19).localeCompare(right.slice(0, 19));
@@ -22,7 +21,7 @@ const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
 export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
-  left.id === right.id && left.version === right.version && left.titlePreview === right.titlePreview &&
+  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
@@ -38,13 +37,14 @@ export const sameProject = (left: Project, right: Project): boolean =>
 
 export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">> };
 
-export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], observedAt: string): TaskProjection => {
+export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], dependencyStates: ReadonlyMap<string, TaskDependencyState>, observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
-  const nodes = new Map(ordered.map((task) => [task.id, task]));
-  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
-  const tasks = ordered.map(({ version: _version, properties: _properties, ...task }) => {
-    const blockedBy = task.dependsOn.filter((dependency) => !nodes.has(dependency) || !isTerminalStatus(nodes.get(dependency)!.status));
-    const ready = task.status === "todo" && blockedBy.length === 0;
+  const ordinary = ordered.filter((task) => task.type === "task");
+  const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordinary.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
+  const tasks = ordinary.map(({ version, properties: _properties, ...task }) => {
+    const state = dependencyStates.get(task.id);
+    if (state === undefined || state.taskVersion !== version) throw new GraphDataError();
+    const { blockedBy, ready } = state;
     if (task.status === "todo") { summary.todo++; if (ready) summary.ready++; else summary.blocked++; }
     else if (task.status === "in_progress") summary.inProgress++;
     else if (task.status === "done") summary.done++;

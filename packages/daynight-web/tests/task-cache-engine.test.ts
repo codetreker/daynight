@@ -21,8 +21,11 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, sessions: {}, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
+  const blockedBy = task.dependsOn.filter(id => !tasks.some(candidate => candidate.id === id && (candidate.status === "done" || candidate.status === "cancelled")));
+  return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === "todo" && blockedBy.length === 0 }];
+})), ...changes });
 const signal = () => new AbortController().signal;
 const worker = (changes: Partial<WorkerClaim> = {}): WorkerClaim => ({
   claimId: taskId(91), state: "active", userId, workerId: taskId(92), machine: { id: taskId(93), name: "test" },
@@ -416,7 +419,7 @@ it("detects a missing independent row and rebuilds without accepting a smaller c
 
 it("detects corruption introduced after the request and invalidates its old baseline", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal()); const database = await inspect();
-  await database.put("summaries", { userId, projectId, taskId: taskId(1), summary: task(1, { dependsOn: [taskId(2)] }) });
+  await database.put("summaries", { userId, projectId, taskId: taskId(1), summary: task(1, { dependsOn: [taskId(2)] }), dependencyState: { taskVersion: 1n, blockedBy: [taskId(2)], ready: true } });
   await expect(cache.applySync(ticket, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ category: "corrupt" });
   expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", maxUpdatedAt: null }); expect(await database.getAll("summaries")).toEqual([]);
 });
@@ -467,7 +470,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { type: "task", parentId: null, assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
@@ -519,8 +522,45 @@ it("rechecks identity when another scope rotates its captured fence and preserve
 
 it("classifies invalid newly received dependencies as protocol data and preserves the valid baseline", async () => {
   const cache = scope(); const initial = await seed(cache);
-  await expect(delta(cache, [task(2, { dependsOn: [taskId(3)] })])).rejects.toMatchObject({ kind: "protocol", cause: { name: "GraphDataError" } });
+  await expect(delta(cache, [task(2, { dependsOn: [taskId(3)] })], { dependencyStates: { [taskId(2)]: { taskVersion: 1n, blockedBy: [taskId(4)], ready: false } } })).rejects.toMatchObject({ kind: "protocol" });
   expect((await cache.readProject(projectId, signal()))!.manifest).toEqual(initial.project.manifest);
+});
+
+it("persists and publishes readiness-only patches, preserving details and ignoring another version", async () => {
+  const first = scope(); const peer = scope();
+  const successor = task(1, { dependsOn: [taskId(2)] });
+  const initial = await seed(first, [successor]); await delta(peer, []);
+  const ticket = await first.beginSync(projectId, signal());
+  const detail = detailFixture(projectId, taskId(1), { dependsOn: [taskId(2)], blockedBy: [taskId(2)], ready: false });
+  await first.detailTransaction(ticket, signal(), async (details, manifest) => {
+    const { blockedBy: _blockedBy, ready: _ready, ...intrinsic } = detail;
+    await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail: intrinsic, byteSize: 1, lastUsedAt: 1 });
+  });
+  const listener = vi.fn(); peer.subscribe(listener); Channel.hints = [];
+  const update = await delta(first, [], { dependencyStates: { [taskId(1)]: { taskVersion: 1n, blockedBy: [], ready: true } } });
+  expect(update.changed).toBe(true); expect(update.changedTaskIds).toEqual([taskId(1)]);
+  expect(update.project.graph.tasks[0]).toMatchObject({ ready: true, blockedBy: [] });
+  expect(update.project.index).not.toBe(initial.project.index);
+  await vi.waitFor(() => expect(peer.getAuthorizedProject(projectId)?.graph.tasks[0]?.ready).toBe(true));
+  expect(listener).toHaveBeenCalled(); expect(Channel.hints).toHaveLength(1);
+  const database = await inspect();
+  expect((await database.get("summaries", [userId, projectId, taskId(1)]))?.dependencyState).toEqual({ taskVersion: 1n, blockedBy: [], ready: true });
+  expect(await database.getAll("details")).toHaveLength(1);
+  const stale = await delta(first, [], { dependencyStates: { [taskId(1)]: { taskVersion: 2n, blockedBy: [taskId(2)], ready: false } } });
+  expect(stale.changed).toBe(false); expect(stale.project.graph.tasks[0]?.ready).toBe(true);
+  first.dispose(); expect((await scope().readProject(projectId, signal()))?.graph.tasks[0]?.ready).toBe(true);
+});
+
+it("keeps Goals in resource existence while replacing an epoch and rejects late responses", async () => {
+  const cache = scope(); const initial = await seed(cache, [task(1)]);
+  const stale = await cache.beginSync(projectId, signal());
+  const goal = task(3, { type: "goal", allowAgents: false });
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(await cache.observeHistory(ticket, nextEpoch, signal())).toBe("current");
+  const result = await cache.applySync(ticket, response([goal], { mode: "snapshot", epoch: nextEpoch }), signal());
+  expect(result.project.summaries.has(goal.id)).toBe(true); expect(result.project.index.nodes.has(goal.id)).toBe(false);
+  expect(result.project.graph.tasks).toEqual([]); expect(result.project.manifest.cacheGeneration).not.toBe(initial.project.manifest.cacheGeneration);
+  await expect(cache.applySync(stale, response([task(1)], { mode: "delta" }), signal())).rejects.toMatchObject({ name: "AbortError" });
 });
 
 it("reports an unexpected native transaction abort as storage failure with its original cause and retains all committed data", async () => {

@@ -358,7 +358,6 @@ describe("invalid graph snapshots", () => {
     { ...valid, tasks: [null] }, { ...valid, tasks: [{ ...valid.tasks[0], id: null }] },
     { ...valid, tasks: [{ ...valid.tasks[0], id: "" }] },
     { ...valid, tasks: [...valid.tasks, valid.tasks[0]] },
-    changedTask(valid, B, { dependsOn: [C], blockedBy: [C] }),
     changedTask(valid, B, { dependsOn: [B], blockedBy: [B] }),
     changedTask(valid, B, { dependsOn: [A, A] }),
     changedTask(valid, B, { blockedBy: [A, A] }),
@@ -393,6 +392,21 @@ describe("invalid graph snapshots", () => {
     expect(index.nodes.size).toBe(1001);
     expect(projectChain(index, roots[0]!.id).edges).toHaveLength(5970);
   });
+});
+
+it("retains visible components without inventing hidden prerequisites or overriding authoritative readiness", () => {
+  const input = graph([{ id: A, dependsOn: [C, D], externalDependsOn: [D] }, { id: B, dependsOn: [A] }]);
+  const authoritative = changedTask(input, A, { blockedBy: [D], ready: false });
+  const index = buildGraphIndex(authoritative);
+  expect(index.representativeIds).toEqual([A]);
+  expect(index.components.get(A)!.memberIds).toEqual(new Set([A, B]));
+  expect(index.nodes.get(A)!.blockedBy).toEqual([D]);
+  expect(projectChain(index, A).edges).toEqual([{ source: A, target: B, external: false }]);
+  expect(tracePrerequisites(index, B)).toEqual(new Set([B, A]));
+  const stalePredecessor = graph([{ id: A }, { id: B, dependsOn: [A] }]);
+  const staleIndex = buildGraphIndex({ ...changedTask(stalePredecessor, B, { blockedBy: [], ready: true }),
+    summary: { ...stalePredecessor.summary, ready: 2, blocked: 0 } });
+  expect(staleIndex.nodes.get(B)).toMatchObject({ blockedBy: [], ready: true });
 });
 
 it("distinguishes delivered, cancelled and mixed terminal Goal outcomes while retaining dependency edges", () => {

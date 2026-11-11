@@ -12,7 +12,7 @@ import { parseProjectOwnership } from "./team-parse";
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
-import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, string, timestamp } from "./validation";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, taskTypeFields, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
@@ -55,8 +55,11 @@ const taskDependencies = (data: Record<string, unknown>): Pick<GraphTask, "depen
 
 const graphTask = (value: unknown): GraphTask => {
   const data = record(value);
+  const typed = taskTypeFields(data);
+  if (typed.type !== "task") return malformed();
   return {
     id: id(data.id),
+    ...typed,
     titlePreview: string(data.titlePreview),
     titleTruncated: boolean(data.titleTruncated),
     ...taskStatusFields(data),
@@ -104,6 +107,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   if (!isTaskVersion(version)) return malformed();
   const parsed = {
     id: id(data.id),
+    ...taskTypeFields(data),
     projectId: id(data.projectId),
     title: nonemptyString(data.title),
     description: string(data.description),
@@ -122,6 +126,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     updatedAt: timestamp(data.updatedAt),
   };
   if (parsed.projectId !== projectId || parsed.id !== taskId) return malformed();
+  if (parsed.type === "goal" && (parsed.status === "proposed" || parsed.dependsOn.length !== 0 || parsed.blockedBy.length !== 0 || parsed.ready || parsed.allowAgents || parsed.requiredPlatform !== null)) return malformed();
   readPullRequests(parsed.properties);
   readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
