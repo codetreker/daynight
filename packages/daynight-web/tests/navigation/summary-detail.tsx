@@ -23,9 +23,13 @@ const beginTaskRead = scope.beginTaskRead.bind(scope);
 scope.beginTaskRead = (...args) => { directReads++; return beginTaskRead(...args); };
 
 const project = await admitTaskGraph(scope, graphFixture([detail]), { epoch: taskSyncEpoch(projectId), versionForTask: () => detail.version, propertiesForTask: () => detail.properties });
-const snapshot = (revision: number): GraphSnapshot => ({ graph: project.graph, index: project.index, summaries: project.summaries,
-  workerMachines: project.workerMachines, pausedTaskIds: project.pausedTaskIds, observedAt: null,
-  receivedMonotonic: performance.now(), receivedAt: null, revision, localTime: Date.now() });
+const snapshot = (revision: number): GraphSnapshot => {
+  const common = { graph: project.graph, index: project.index, summaries: project.summaries,
+    workerMachines: project.workerMachines, pausedTaskIds: project.pausedTaskIds, receivedMonotonic: performance.now() };
+  return revision === 0
+    ? { ...common, observedAt: null, receivedAt: null, revision: 0, localTime: Date.now() }
+    : { ...common, observedAt: project.graph.observedAt, receivedAt: Date.now(), revision };
+};
 
 const Fixture = () => {
   const [revision, setRevision] = useState<number | null>(null);
