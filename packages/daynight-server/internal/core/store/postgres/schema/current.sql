@@ -1,4 +1,4 @@
--- Schema snapshot version: 60
+-- Schema snapshot version: 61
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -687,6 +687,8 @@ CREATE TABLE "tasks" (
     "deleted_at" timestamp with time zone,
     "assigned_to" "uuid",
     "cancelled_at" timestamp with time zone,
+    "type" "text" DEFAULT 'task'::"text" NOT NULL,
+    "parent_id" "uuid",
     CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
     CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
     CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
@@ -1542,7 +1544,11 @@ CREATE INDEX "tasks_project_created_id" ON "tasks" USING "btree" ("project_id", 
 
 CREATE INDEX "tasks_project_id_id_idx" ON "tasks" USING "btree" ("project_id", "id");
 
+CREATE INDEX "tasks_project_parent_created_id" ON "tasks" USING "btree" ("project_id", "parent_id", "created_at", "id");
+
 CREATE INDEX "tasks_project_status_created_id" ON "tasks" USING "btree" ("project_id", "status", "created_at", "id");
+
+CREATE INDEX "tasks_project_type_created_id" ON "tasks" USING "btree" ("project_id", "type", "created_at", "id");
 
 CREATE INDEX "tasks_project_updated_id" ON "tasks" USING "btree" ("project_id", "updated_at", "id");
 

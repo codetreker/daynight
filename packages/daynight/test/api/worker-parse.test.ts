@@ -27,6 +27,9 @@ const malformedWorkers: unknown[] = [
 ];
 
 describe("worker ownership read DTO", () => {
+  it("accepts the additional ordinary resource type and parent fields", () => {
+    expect(parseTask({ ...task, type: "task", parentId: null }, projectId, taskId)).toEqual(task);
+  });
   it.each([undefined, "", "invalid", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", true, 1, {}, []].map((assignedTo) => ({ assignedTo })))("requires the native nullable assignment on worker task resources %#", ({ assignedTo }) => {
     expect(() => parseTask({ ...task, assignedTo }, projectId, taskId)).toThrow("invalid response");
   });

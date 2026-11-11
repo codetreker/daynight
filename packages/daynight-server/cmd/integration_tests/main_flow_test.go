@@ -15,6 +15,29 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func assertOrdinaryType(t *testing.T, item map[string]any) {
+	t.Helper()
+	parent, present := item["parentId"]
+	if item["type"] != "task" || !present || parent != nil {
+		t.Fatalf("ordinary resource type/parent differs: %+v", item)
+	}
+}
+
+func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
+	t.Helper()
+	items, ok := page[field].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("resource page has no %s: %+v", field, page)
+	}
+	for _, value := range items {
+		item, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("resource is not an object: %+v", value)
+		}
+		assertOrdinaryType(t, item)
+	}
+}
+
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
 	t.Run("personal worker prompts", func(t *testing.T) { serverAPIPromptNormalFlow(t, f) })
@@ -25,6 +48,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatalf("created Project differs: %+v", project)
 		}
 		task := createTask(t, f, project, "MCP context task", nil)
+		ready := createTask(t, f, project, "MCP ready task", map[string]any{"status": "todo"})
 
 		client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
 		session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
@@ -77,8 +101,23 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatalf("resolved Project differs: %+v", resolved)
 		}
 		actual := call("task_show", map[string]any{"projectId": resolved["id"], "taskId": task.ID, "view": "full"})
+		assertOrdinaryType(t, actual)
 		if actual["id"] != task.ID || actual["projectId"] != project.ID || actual["title"] != task.Title {
 			t.Fatalf("Task from resolved Project differs: %+v", actual)
+		}
+		listed := call("task_list", map[string]any{"projectId": project.ID, "view": "summary"})
+		assertOrdinaryPage(t, listed, "items")
+		readyPage := call("task_ready", map[string]any{"projectId": project.ID, "view": "summary"})
+		assertOrdinaryPage(t, readyPage, "items")
+		items := readyPage["items"].([]any)
+		found := false
+		for _, value := range items {
+			if value.(map[string]any)["id"] == ready.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("ready Task missing from MCP result: %+v", readyPage)
 		}
 	})
 	t.Run("task lifecycle", func(t *testing.T) {
@@ -88,6 +127,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatalf("initial task state differs: %+v", task)
 		}
 		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK), task)
+		assertOrdinaryType(t, requestJSON[map[string]any](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK))
 		updated := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "title": "Updated task", "description": "Normal API content"}, http.StatusOK)
 		if updated.ID != task.ID || updated.Version != task.Version+1 || updated.Title != "Updated task" || updated.Description != "Normal API content" {
 			t.Fatalf("task update differs: %+v", updated)
@@ -119,6 +159,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		first := createTask(t, f, project, "Cache title", map[string]any{"dependsOn": []string{root.ID}})
 		second := createTask(t, f, project, "Other title", map[string]any{"description": "Normal cache content"})
 		page := requestJSON[api.TaskSearchPage](t, f, http.MethodPost, taskCollection(project.ID)+"/search", map[string]any{"query": "cache", "limit": 1}, http.StatusOK)
+		assertOrdinaryPage(t, requestJSON[map[string]any](t, f, http.MethodPost, taskCollection(project.ID)+"/search", map[string]any{"query": "cache", "limit": 1}, http.StatusOK), "items")
 		if page.ProjectID != project.ID || page.Total != 2 || len(page.Items) != 1 || page.NextCursor == nil {
 			t.Fatalf("first search page differs: %+v", page)
 		}
@@ -138,6 +179,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatalf("ID search differs: %+v", idPage)
 		}
 		graph := requestJSON[api.TaskGraph](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+first.ID, nil, http.StatusOK)
+		assertOrdinaryPage(t, requestJSON[map[string]any](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+first.ID, nil, http.StatusOK), "tasks")
 		if graph.Project.ID != project.ID || graph.Summary.Total != 2 || len(graph.Tasks) != 2 {
 			t.Fatalf("graph identity/count differs: %+v", graph)
 		}
@@ -153,6 +195,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		project := createProject(t, f, "API properties and sync")
 		task := createTask(t, f, project, "Synchronized task", nil)
 		baseline := requestJSON[api.TaskSync](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK)
+		assertOrdinaryPage(t, requestJSON[map[string]any](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK), "tasks")
 		if baseline.Project.ID != project.ID || baseline.Epoch == "" || baseline.ObservedAt.IsZero() {
 			t.Fatalf("snapshot identity differs: %+v", baseline)
 		}

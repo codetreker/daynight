@@ -23,6 +23,8 @@ type TaskSearchMatch struct {
 }
 type TaskSearchItem struct {
 	ID          string             `json:"id"`
+	Type        string             `json:"type"`
+	ParentID    *string            `json:"parentId"`
 	ProjectID   string             `json:"projectId"`
 	Title       string             `json:"title"`
 	Status      string             `json:"status"`

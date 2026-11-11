@@ -497,9 +497,9 @@ func TestTaskPriorityListStorageFailures(t *testing.T) {
 	}{
 		{"fence query", `DROP TABLE tasks`, true},
 		{"list query", `DROP TABLE task_dependencies`, false},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,type,parent_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
 		{"iteration", `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
-			ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+			ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,type,parent_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := readerStore(t)
@@ -598,7 +598,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	readerExec(t, s, `CREATE FUNCTION reject_sync_detail() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
+		CREATE VIEW tasks AS SELECT id, project_id, type, parent_id, title, reject_sync_detail() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
@@ -656,8 +656,8 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{
 		{"query", "DROP TABLE tasks"},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
+		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,type,parent_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
+		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,type,parent_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := readerStore(t)

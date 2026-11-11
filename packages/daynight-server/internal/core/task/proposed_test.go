@@ -15,7 +15,7 @@ func TestCreateCandidateDefaultsToProposedAndAllowsConfirmedTodo(t *testing.T) {
 		if status != nil {
 			want = *status
 		}
-		if err != nil || values.Status != want || values.AllowAgents {
+		if err != nil || values.Status != want || values.Type != model.TaskTypeTask || values.ParentID != nil || values.AllowAgents {
 			t.Fatalf("creation status %v: values=%+v err=%v", status, values, err)
 		}
 	}

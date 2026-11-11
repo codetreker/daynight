@@ -85,12 +85,15 @@ func testFixture() *searchFixture {
 }
 func TestSearchPageAndCursor(t *testing.T) {
 	f := testFixture()
+	parent := root
+	f.rows.Items[0].Type = model.TaskTypeTask
+	f.rows.Items[0].ParentID = &parent
 	request := Request{Query: "cache", Limit: 1}
 	page, err := Search(context.Background(), f, principal(), projectID, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 2 || len(page.Items) != 1 || page.NextCursor == nil || page.Items[0].Context == nil || page.Items[0].Context.TaskID != root || len(page.Items[0].Match.Fields) != 1 || page.Items[0].Match.Fields[0] != "title" {
+	if page.Total != 2 || len(page.Items) != 1 || page.Items[0].Type != model.TaskTypeTask || page.Items[0].ParentID == nil || *page.Items[0].ParentID != root || page.NextCursor == nil || page.Items[0].Context == nil || page.Items[0].Context.TaskID != root || len(page.Items[0].Match.Fields) != 1 || page.Items[0].Match.Fields[0] != "title" {
 		t.Fatalf("unexpected page %+v", page)
 	}
 	request.Cursor = page.NextCursor

@@ -46,12 +46,12 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor != nil {
 				t.Fatalf("first input=%+v", input)
 			}
-			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
+			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, Type: model.TaskTypeTask, ParentID: &secondID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
 		case 2:
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor == nil || *input.Cursor != cursor {
 				t.Fatalf("continuation=%+v", input)
 			}
-			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: secondID, ProjectID: projectID, Title: "Other", Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"description"}, DescriptionSnippet: &snippet}}}}, nil
+			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: secondID, Type: model.TaskTypeTask, ProjectID: projectID, Title: "Other", Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"description"}, DescriptionSnippet: &snippet}}}}, nil
 		default:
 			if input.Query != "no-such-term" || input.Limit != 50 {
 				t.Fatalf("empty input=%+v", input)
@@ -62,13 +62,13 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	response := projectRequest(h, http.MethodPost, path, `{"query":"cache","limit":1}`)
 	page := decodeResponse[api.TaskSearchPage](t, response, 200)
 	captureSearchFixture(t, "first-page", response.Body.Bytes())
-	if page.ProjectID != testProjectID || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != firstID || page.NextCursor == nil || *page.NextCursor != cursor || page.Items[0].Context == nil || page.Items[0].Context.TaskID != testTaskID {
+	if page.ProjectID != testProjectID || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != firstID || page.Items[0].Type != "task" || page.Items[0].ParentID == nil || *page.Items[0].ParentID != secondID || page.NextCursor == nil || *page.NextCursor != cursor || page.Items[0].Context == nil || page.Items[0].Context.TaskID != testTaskID {
 		t.Fatalf("first=%+v", page)
 	}
 	response = projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": "cache", "limit": 1, "cursor": *page.NextCursor}))
 	next := decodeResponse[api.TaskSearchPage](t, response, 200)
 	captureSearchFixture(t, "next-page", response.Body.Bytes())
-	if next.Total != 2 || len(next.Items) != 1 || next.Items[0].ID != secondID || next.NextCursor != nil || next.Items[0].Match.DescriptionSnippet == nil || *next.Items[0].Match.DescriptionSnippet != snippet {
+	if next.Total != 2 || len(next.Items) != 1 || next.Items[0].ID != secondID || next.Items[0].Type != "task" || next.Items[0].ParentID != nil || next.NextCursor != nil || next.Items[0].Match.DescriptionSnippet == nil || *next.Items[0].Match.DescriptionSnippet != snippet || !strings.Contains(response.Body.String(), `"parentId":null`) {
 		t.Fatalf("next=%+v", next)
 	}
 	response = projectRequest(h, http.MethodPost, path, `{"query":"no-such-term"}`)
@@ -163,12 +163,12 @@ func TestTaskSearchIDFixtureContract(t *testing.T) {
 			if input.Query != "id:"+id {
 				t.Fatalf("query=%q", input.Query)
 			}
-			return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, ProjectID: pid, Title: "Search task", Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id"}}}}}, nil
+			return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, Type: model.TaskTypeTask, ProjectID: pid, Title: "Search task", Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id"}}}}}, nil
 		}
 		if input.Query != id {
 			t.Fatalf("query=%q", input.Query)
 		}
-		return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, ProjectID: pid, Title: id, Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id", "title", "description"}, DescriptionSnippet: &snippet}}}}, nil
+		return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, Type: model.TaskTypeTask, ProjectID: pid, Title: id, Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id", "title", "description"}, DescriptionSnippet: &snippet}}}}, nil
 	}
 	path := taskCollection(testProjectID) + "/search"
 	for i, tc := range []struct {
@@ -177,7 +177,7 @@ func TestTaskSearchIDFixtureContract(t *testing.T) {
 	}{{"id-only", "id:" + id, []string{"id"}}, {"mixed-fields", id, []string{"id", "title", "description"}}} {
 		response := projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": tc.query}))
 		page := decodeResponse[api.TaskSearchPage](t, response, 200)
-		if len(page.Items) != 1 || page.Items[0].ID != id || strings.Join(page.Items[0].Match.Fields, ",") != strings.Join(tc.fields, ",") || (page.Items[0].Match.DescriptionSnippet != nil) != (i == 1) {
+		if len(page.Items) != 1 || page.Items[0].ID != id || page.Items[0].Type != "task" || page.Items[0].ParentID != nil || strings.Join(page.Items[0].Match.Fields, ",") != strings.Join(tc.fields, ",") || (page.Items[0].Match.DescriptionSnippet != nil) != (i == 1) {
 			t.Fatalf("page=%+v", page)
 		}
 		captureSearchFixture(t, tc.name, response.Body.Bytes())

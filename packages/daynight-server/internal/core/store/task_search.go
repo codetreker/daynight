@@ -43,6 +43,8 @@ type TaskSearchQuery struct {
 }
 
 type TaskSearchRow struct {
+	Type                   model.TaskType
+	ParentID               *string
 	ID, Title, Description string
 	Status                 model.TaskStatus
 	AssignedTo             *string

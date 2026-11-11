@@ -104,7 +104,7 @@ func TestTaskObservationSchemasMatchActualProtocolResults(t *testing.T) {
 	task := taskFixtureTask()
 	project := model.Project{ID: testProjectID}
 	project.Ownership.TeamID = testUserID
-	graph := model.TaskGraph{Project: project, ObservedAt: task.CreatedAt, Tasks: []model.GraphTask{{ID: task.ID, TitlePreview: task.Title, Status: task.Status, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}}
+	graph := model.TaskGraph{Project: project, ObservedAt: task.CreatedAt, Tasks: []model.GraphTask{{ID: task.ID, Type: task.Type, TitlePreview: task.Title, Status: task.Status, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}}
 	stub := &queryStub{items: []store.TaskPriorityItem{{Task: task}}, graph: graph}
 	if err := registerTaskQueryTools(f.entry, stub); err != nil {
 		t.Fatal(err)

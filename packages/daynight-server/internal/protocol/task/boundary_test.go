@@ -68,7 +68,7 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform := model.PlatformLinux
-	task := model.Task{ID: id, ProjectID: id, Title: title, Description: description, Status: model.TaskInProgress, Properties: properties, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, StartedAt: &now, CompletedAt: &now, CancelledAt: &now, AssignedTo: &id, RequiredPlatform: &platform, DependsOn: deps, ExternalDependsOn: deps, BlockedBy: deps}
+	task := model.Task{ID: id, ProjectID: id, Type: model.TaskTypeTask, ParentID: &id, Title: title, Description: description, Status: model.TaskInProgress, Properties: properties, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, StartedAt: &now, CompletedAt: &now, CancelledAt: &now, AssignedTo: &id, RequiredPlatform: &platform, DependsOn: deps, ExternalDependsOn: deps, BlockedBy: deps}
 	for _, extended := range []bool{false, true} {
 		var encoded, production bytes.Buffer
 		n, err := taskprotocol.EncodeREST(&encoded, task, extended, taskcore.MaxTaskResponseJSONBytes)

@@ -75,7 +75,7 @@ func RequireVersion(current, observed int64) error {
 
 func CurrentWrite(current model.Task) store.TaskWrite {
 	return store.TaskWrite{
-		AssignedTo: current.AssignedTo, RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents,
+		Type: current.Type, ParentID: current.ParentID, AssignedTo: current.AssignedTo, RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents,
 		Title: current.Title, Description: current.Description, Properties: taskproperty.Clone(current.Properties),
 		Status: current.Status, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn,
 	}
@@ -111,7 +111,7 @@ func CreateCandidate(id string, input CreateTask) (store.TaskWrite, error) {
 	if err != nil {
 		return store.TaskWrite{}, err
 	}
-	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
+	values := store.TaskWrite{Type: model.TaskTypeTask, AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: status, Properties: props}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id)
 	if err != nil {
 		return store.TaskWrite{}, err
