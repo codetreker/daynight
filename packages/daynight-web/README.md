@@ -752,8 +752,9 @@ locally without cleanup, automatic reads or navigation. On admission, cleanup
 uses the original cache generation. Withdrawal is not started, and navigation
 and dialog closure are skipped, when the submitted dialog, input or route has
 since changed. If persistent cleanup fails after withdrawal, retry targets the
-original denied generation without broadcasting withdrawal again or resending
-DELETE; a stale ticket cannot clear a newer generation. Cleanup and navigation
+matching user, Project, user fence and denied generation without broadcasting
+withdrawal again or resending DELETE. The denial may use a different ticket;
+a stale ticket cannot clear a newer generation. Cleanup and navigation
 can be retried independently. A dispatched request
 with an unknown outcome is never replayed, and a later 404 does not prove that
 the deletion succeeded. Settings saves, ownership transfers and deletion share

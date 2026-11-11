@@ -967,7 +967,8 @@ export class TaskCacheScope {
     if (signal.aborted) return Promise.reject(signal.reason);
     if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
     const denied = this.deniedProjects.get(ticket.projectId);
-    if (denied !== ticket || !this.canRevokeProject(ticket)) return Promise.resolve(false);
+    if (denied === undefined || denied.userId !== ticket.userId || denied.projectId !== ticket.projectId ||
+      denied.userFence !== ticket.userFence || denied.cacheGeneration !== ticket.cacheGeneration || !this.canRevokeProject(ticket)) return Promise.resolve(false);
     return this.waitForScopeWork(this.clearDeniedProject(ticket.projectId, false, signal), signal).then(() => true);
   }
   async beginSync(projectId: string, signal: AbortSignal): Promise<TaskSyncTicket> {

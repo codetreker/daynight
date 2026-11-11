@@ -395,7 +395,10 @@ it("keeps the current route and does not refresh when an old deletion cannot rev
   } finally { scope.dispose(); browserNavigation().dispose(); }
 });
 
-it.each(["original", "new generation"] as const)("retries failed deletion cleanup with %s state", async (generation) => {
+it.each([
+  ["deletion", "original"], ["deletion", "new generation"],
+  ["background", "original"], ["background", "new generation"],
+] as const)("retries %s cleanup failure with %s state", async (source, generation) => {
   browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings`);
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }), signal = scope.signal;
   const taskId = "00000000-0000-4000-8000-000000000099";
@@ -403,6 +406,12 @@ it.each(["original", "new generation"] as const)("retries failed deletion cleanu
   const sync = taskSyncFromGraph(graphFixture([task]), { actorAccess: access, versionForTask: () => task.version, propertiesForTask: () => task.properties });
   const apply = async () => { const ticket = await scope.beginSync(projectId, signal); await scope.applySync(ticket, sync, signal); };
   const pending = Promise.withResolvers<Response>();
+  const cleanupGate = Promise.withResolvers<void>();
+  const ready = scope.ready.bind(scope); let blockNextReady = false, cleanupWaiting = false;
+  vi.spyOn(scope, "ready").mockImplementation(async (readySignal) => {
+    if (blockNextReady) { blockNextReady = false; cleanupWaiting = true; await cleanupGate.promise; }
+    await ready(readySignal);
+  });
   const revoke = vi.spyOn(scope, "revokeProject"), retry = vi.spyOn(scope, "retryDeniedProjectCleanup"), refresh = vi.fn();
   const events: unknown[] = [];
   const unsubscribe = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) events.push(event); });
@@ -428,13 +437,27 @@ it.each(["original", "new generation"] as const)("retries failed deletion cleanu
   };
   vi.stubGlobal("fetch", fetcher);
   await apply();
+  const backgroundTicket = await scope.beginSync(projectId, signal);
   const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   try {
     render(<Subject />, { taskCache: { scope } });
     const dialog = await open(); confirm(dialog);
     await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
     injectFailure = true;
+    let background: Promise<unknown> | null = null;
+    if (source === "background") {
+      blockNextReady = true;
+      act(() => { background = scope.revokeProject(backgroundTicket, signal).catch((error: unknown) => error); });
+      await waitFor(() => expect(cleanupWaiting).toBe(true));
+    }
     await act(async () => pending.resolve(json({ projectId, deleted: true })));
+    if (source === "background") {
+      await waitFor(() => expect(revoke).toHaveBeenCalledTimes(2));
+      const deleteTicket = revoke.mock.calls[1]![0];
+      expect(deleteTicket).not.toBe(backgroundTicket);
+      expect(deleteTicket).toMatchObject({ userId: backgroundTicket.userId, userFence: backgroundTicket.userFence, projectId, cacheGeneration: backgroundTicket.cacheGeneration });
+      await act(async () => { cleanupGate.resolve(); await background; });
+    }
     expect(await screen.findByText("Deletion succeeded, but local cache cleanup failed.")).toBeVisible();
     expect(screen.getByText(/Project deleted/)).toBeVisible(); expect(failures).toBe(1);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -454,7 +477,7 @@ it.each(["original", "new generation"] as const)("retries failed deletion cleanu
     expect(screen.queryByText("Deletion succeeded, but local cache cleanup failed.")).toBeNull();
     expect(screen.getByText(/Project deleted/)).toBeVisible();
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
-    expect(revoke).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce(); expect(events).toHaveLength(eventCount);
+    expect(revoke).toHaveBeenCalledTimes(source === "background" ? 2 : 1); expect(retry).toHaveBeenCalledOnce(); expect(events).toHaveLength(eventCount);
     if (generation === "original") {
       expect((await db.get("projects", [userId, projectId]))?.state).toBe("invalidated");
       expect(await db.get("summaries", [userId, projectId, taskId])).toBeUndefined();
@@ -464,7 +487,7 @@ it.each(["original", "new generation"] as const)("retries failed deletion cleanu
       expect(await db.get("summaries", [userId, projectId, taskId])).toBeDefined();
       expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible(); expect(input).toHaveValue("new input");
     }
-  } finally { db.close(); fault.mockRestore(); unsubscribe(); scope.dispose(); browserNavigation().dispose(); }
+  } finally { cleanupGate.resolve(); db.close(); fault.mockRestore(); unsubscribe(); scope.dispose(); browserNavigation().dispose(); }
 });
 
 it("shows a retained settings link as unavailable when the Project is gone", async () => {
