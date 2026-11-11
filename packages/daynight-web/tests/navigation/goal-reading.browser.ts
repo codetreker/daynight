@@ -179,12 +179,18 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     await graphOpener.click();
     const graphDialog = page.locator('.task-chain-dialog');
     await expect(graphDialog.locator('.task-pause-count')).toHaveText(zh ? '1 已暂停' : '1 paused');
-    await expect(graphDialog.locator('.task-node-paused .task-paused-badge')).toHaveText(badgeLabel);
-    await expect(graphDialog.locator('.task-node-paused .task-paused-badge')).toHaveClass(/compact/);
-    await expect(graphDialog.locator('.task-node-paused .task-paused-badge')).toBeVisible();
-    expect(await graphDialog.locator('.task-node-paused .task-paused-badge').evaluate(element => {
+    const graphBadge = graphDialog.locator('.task-node-paused .task-paused-badge');
+    await expect(graphBadge).toHaveText(badgeLabel);
+    await expect(graphBadge).toHaveClass(/compact/);
+    await expect(graphBadge).toBeVisible();
+    expect(await graphBadge.evaluate(element => {
       const badge = element.getBoundingClientRect(), node = element.closest('.task-node')!.getBoundingClientRect();
       return badge.width > 0 && badge.height > 0 && badge.left >= node.left - 1 && badge.right <= node.right + 1 && badge.top >= node.top - 1 && badge.bottom <= node.bottom + 1;
+    })).toBe(true);
+    await graphDialog.getByRole('button', { name: zh ? '适应画布' : 'Fit to canvas' }).click();
+    await expect.poll(() => graphBadge.evaluate(element => {
+      const badge = element.getBoundingClientRect(), canvas = element.closest('.task-graph-canvas')!.getBoundingClientRect();
+      return badge.left >= canvas.left && badge.right <= canvas.right && badge.top >= canvas.top && badge.bottom <= canvas.bottom;
     })).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`graph-${mode}.png`) });
     await graphDialog.getByRole('button', { name: zh ? 'First task，详情' : 'First task, Details' }).click();
