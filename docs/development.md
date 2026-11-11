@@ -832,13 +832,19 @@ outcome. The public `/` introduction and local example use that same language
 state. `/login` owns authentication and `/projects` is the workspace index; the
 [public entry design](design/daynight-landing.md) owns route composition,
 public navigation hints and metadata. The header's book icon and visible Setup guide link, immediately before
-the language selector, open public `/setup` in a new tab. Its expanded bilingual steps cover CLI
-installation, device login, repository project discovery or creation, Agent skill
-installation and registering a first task. Commands stay selectable and provide
-copy feedback; the current origin is informational. The guide mounts outside the
-authenticated shell and makes no API requests, including identity or provider
-discovery, on direct access, reload, language changes or foreground return.
-The [guide decision](../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md) records the rationale for its boundaries; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
+the language selector, open public `/setup` in a new tab. Its expanded bilingual
+sections cover MCP client configuration, authorization and read-only verification,
+and the independent CLI and Agent skill setup. The current origin determines the
+MCP endpoint but does not configure the CLI. Selectable commands share copy
+feedback. The guide mounts outside the authenticated shell and makes no API,
+fetch or XHR requests during reading and interactions. Validate the production
+entry in a real browser across both languages, all three MCP clients, desktop,
+390px and 320px widths and long endpoints; check exact displayed and copied
+commands and the POSIX shell guidance (including Git Bash on Windows), stale
+clipboard results, keyboard access and zero-request lifecycle.
+Static guide checks do not prove an actual OAuth authorization or MCP call.
+The [path decision](../.agents/notes/implemented/feature/2026-11-11-setup-mcp-guide.md)
+records the trade-offs; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
 own the complete outcomes. With the Go API running on loopback, use:
 
 ```text

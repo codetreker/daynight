@@ -1,5 +1,5 @@
 import type { ToolPathTelemetry } from "./worker-tool-paths.js";
-import type { TaskCreationStatus, TaskStatus } from "../task/status.js";
+import type { TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
 export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
@@ -372,7 +372,9 @@ export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: strin
 export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
-  readonly status?: TaskCreationStatus;
+  readonly type?: "task" | "goal";
+  readonly parentId?: string | null;
+  readonly status?: TaskStatus;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
   readonly description?: string;
@@ -382,6 +384,7 @@ export type CreateTaskInput = {
 };
 export type UpdateTaskInput = {
   readonly version: bigint;
+  readonly parentId?: string | null;
   readonly allowAgents?: boolean;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly assignedTo?: string | null;
@@ -419,6 +422,8 @@ export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly previousClaimId: string;
 };
 export type TaskFilters = {
+  readonly type?: "task" | "goal";
+  readonly parentId?: string | null;
   readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
@@ -443,7 +448,7 @@ export type TaskSearchItem = {
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;

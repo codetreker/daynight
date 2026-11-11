@@ -308,12 +308,3 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
-
-type startupRevokedCredential struct{ httpAuthenticationDAO }
-
-func (d *startupRevokedCredential) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
-	if _, err := d.httpAuthenticationDAO.Authenticate(ctx, kind, hash, now); err != nil {
-		return model.Principal{}, err
-	}
-	return model.Principal{}, &model.Fault{Code: "unauthenticated", Message: "Credential has been revoked."}
-}

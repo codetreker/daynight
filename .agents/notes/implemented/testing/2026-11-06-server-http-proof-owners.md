@@ -26,19 +26,21 @@ respective fixture dependencies. The
 [test-writing rules](../../../../docs/writing_tests.md) own responsibility and
 integration restrictions.
 
-Task and Session HTTP units control directly called service/use-case results
+Task and Session adapter tests control directly called service/use-case results
 while retaining actual credential middleware, HTTP encoding, response loss and
-resource or socket observations. Session tests use typed operation callbacks
-and opaque archive capabilities, with actual published frames, Ping/Pong,
-backpressure, cancellation and drain. Service, Core and Store tests retain their
+resource or socket observations. Session adapter tests use typed operation
+callbacks and opaque archive capabilities, with actual published frames,
+Ping/Pong, backpressure, cancellation and drain. The
+[protocol component decision](2026-11-11-session-protocol-component-ownership.md)
+retains real services and engines for scenarios that depend on their cooperation. Service, Core and Store tests retain their
 lower orchestration, rule and physical mechanisms. The
 [Session protocol decision](2026-11-07-session-protocol-test-completion.md)
 preserves the initial cursor, permission and ping corrections.
 
 Root composition and domain protocol cases remain separate when they observe
 different preparation, behavior or dependencies. Root tests retain relay
-shutdown before dependency release, independently bound terminal recovery,
-startup, native serialization and channel regressions. Their HTTP control and
+shutdown before dependency release and representative cross-route startup
+behavior. Their HTTP control and
 WebSocket traffic share one actual application and Engine; strict DAO plans
 supply persistence inputs and independent proposed-write/completion facts.
 Actual SQL, lock waits, database-clock expiry and committed readback remain
@@ -76,9 +78,9 @@ survive consolidation.
 
 The original consolidation reduced repeated fixture and scenario execution
 while preserving product behavior and the actual mechanisms being tested.
-Later Task and Session HTTP isolation move their collaborators to direct lower
-operations; root composition isolation supplies strict DAO facts while retaining
-actual modules and runtime mechanisms. Logical, protocol, physical storage and
+Later adapter isolation controls direct lower operations; protocol component
+and root composition tests supply strict DAO facts while retaining actual
+modules and runtime mechanisms. Logical, protocol, physical storage and
 normal full-application observations retain separate owners. A historical
 reduction of duplicate bodies does not require full-application preparation for
 every HTTP assertion.

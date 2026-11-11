@@ -1,4 +1,4 @@
-package server
+package session_test
 
 import (
 	"bytes"
@@ -17,56 +17,33 @@ import (
 	"github.com/google/uuid"
 )
 
-func terminalRequest(h http.Handler, method, path, body, protocol string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, path, strings.NewReader(body))
-	authorizeResourceRequest(h, r)
-	r.Header.Set("Content-Type", "application/json")
-	if protocol != "" {
-		r.Header.Set(v2.ProtocolHeader, protocol)
-	}
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	return w
-}
-
-type terminalHTTPFixture struct {
+type terminalRecoveryFixture struct {
 	h        *resourceTestHandler
-	app      *sessionApplication
-	backend  *sessionHTTPFixture
+	app      *realSessionApplication
+	backend  *realSessionFixture
 	record   map[string]any
 	inserted *store.TerminalRegistration
 	saved    []byte
-	plan     *httpCallPlan
+	plan     *terminalRecoveryCallPlan
+	t        *testing.T
 	server   *httptest.Server
 	base     string
 	message  v2.Message
 }
 
-func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
+func terminalRecoverySetup(t *testing.T) terminalRecoveryFixture {
 	t.Helper()
-	backend := sessionHTTPSetupMode(t, model.AgentControlModeHerdr, false)
+	backend := realSessionSetupMode(t, model.AgentControlModeHerdr, false)
 	h, app, server := backend.handler, backend.application, backend.server
 	task := backend.task
-	w := apiWorker(t, task.Properties)
-	cfg := configuredTestConfig()
+	w := backend.sessionTask.Worker
 	projectID := task.ProjectID
 	pane := "pane_1"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: projectID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.Server.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	f := terminalHTTPFixture{h: h, app: app, backend: backend, server: server, base: taskPath(task) + "/sessions", message: m}
+	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: projectID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: "https://daynight.example.com", Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
+	f := terminalRecoveryFixture{h: h, app: app, backend: backend, server: server, base: backend.base, message: m, t: t}
 	return f
 }
-func terminalMessage(t *testing.T, w *httptest.ResponseRecorder) v2.Message {
-	t.Helper()
-	if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
-	m, e := v2.DecodeMessage(w.Body.Bytes())
-	if e != nil {
-		t.Fatalf("%s: %v", w.Body.String(), e)
-	}
-	return m
-}
-func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v2.Payload) v2.Message {
+func (f terminalRecoveryFixture) messageRequest(t *testing.T, kind string, payload v2.Payload) v2.Message {
 	t.Helper()
 	m := f.message
 	m.Type = kind
@@ -82,7 +59,7 @@ func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v
 }
 
 func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testing.T) {
-	f := terminalHTTPSetup(t)
+	f := terminalRecoverySetup(t)
 	ctx := context.Background()
 	reg := f.message.Payload.(v2.Registration)
 	native := "original-native"
@@ -154,24 +131,30 @@ func terminalRecoveryCalls(lock string, work map[string]int) map[string]int {
 	}
 	return counts
 }
-func (f *terminalHTTPFixture) expect(t *testing.T, counts map[string]int) {
+func (f *terminalRecoveryFixture) expect(t *testing.T, counts map[string]int) {
 	t.Helper()
-	f.plan = newHTTPCallPlan(t, counts)
+	f.plan = newTerminalRecoveryCallPlan(t, counts)
 	f.saved = nil
 	f.backend.store.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		return f.run(ctx, fn)
 	}
 }
-func (f *terminalHTTPFixture) run(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-	d := &terminalRecoveryDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: f.backend.store.t}, f: f, t: f.backend.store.t}
-	err := fn(sessionHTTPScope{t: f.backend.store.t, dao: d})
+func (f *terminalRecoveryFixture) run(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	defer func() {
+		if failure := recover(); failure != nil {
+			f.t.Errorf("terminal transaction panicked: %v", failure)
+			panic(failure)
+		}
+	}()
+	d := &terminalRecoveryDAO{f: f, t: f.t}
+	err := fn(realSessionScope{t: f.t, dao: d})
 	f.plan.Verify()
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, err
 	}
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
-func (f *terminalHTTPFixture) assertSaved(t *testing.T, key string, expected any) {
+func (f *terminalRecoveryFixture) assertSaved(t *testing.T, key string, expected any) {
 	t.Helper()
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(f.saved, &fields); err != nil {
@@ -190,8 +173,8 @@ func (f *terminalHTTPFixture) assertSaved(t *testing.T, key string, expected any
 }
 
 type terminalRecoveryDAO struct {
-	sessionHTTPRejectedDAO
-	f *terminalHTTPFixture
+	store.SessionDAO
+	f *terminalRecoveryFixture
 	t *testing.T
 }
 
@@ -206,21 +189,21 @@ func (d *terminalRecoveryDAO) LockArchiveTask(ctx context.Context, project, id s
 }
 func (d *terminalRecoveryDAO) task(ctx context.Context, project, id string) (store.SessionTask, error) {
 	if project != d.f.backend.task.ProjectID || id != d.f.backend.task.ID {
-		unexpectedHTTPCall(d.t, "Terminal Task address")
+		terminalRecoveryUnexpected(d.t, "Terminal Task address")
 	}
-	return sessionHTTPCopy(d.f.backend.sessionTask), ctx.Err()
+	return routeCopy(d.f.backend.sessionTask), ctx.Err()
 }
 func (d *terminalRecoveryDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
 	d.f.plan.Called("LockCredential")
 	if p != d.f.h.principal || now.IsZero() {
-		unexpectedHTTPCall(d.t, "Terminal principal")
+		terminalRecoveryUnexpected(d.t, "Terminal principal")
 	}
 	return ctx.Err()
 }
 func (d *terminalRecoveryDAO) ProjectAccess(ctx context.Context, user, project string) (model.ProjectAccess, error) {
 	d.f.plan.Called("ProjectAccess")
 	if user != d.f.h.principal.UserID || project != d.f.backend.task.ProjectID {
-		unexpectedHTTPCall(d.t, "Terminal Project access")
+		terminalRecoveryUnexpected(d.t, "Terminal Project access")
 	}
 	return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectAdmin}, ctx.Err()
 }
@@ -232,26 +215,26 @@ func (d *terminalRecoveryDAO) FindTerminalRegistration(ctx context.Context, id, 
 	d.f.plan.Called("FindTerminalRegistration")
 	in := d.f.message.Payload.(v2.Registration)
 	if id != d.f.message.SessionID || registration != in.RegistrationID || claim != d.f.message.ClaimID || project != in.Owner.ProjectID || task != in.Owner.TaskID {
-		unexpectedHTTPCall(d.t, "Terminal registration address")
+		terminalRecoveryUnexpected(d.t, "Terminal registration address")
 	}
 	return "", model.ErrNotFound
 }
 func (d *terminalRecoveryDAO) InsertTerminal(ctx context.Context, in store.TerminalRegistration) error {
 	d.f.plan.Called("InsertTerminal")
-	d.f.inserted = new(sessionHTTPCopy(in))
+	d.f.inserted = new(routeCopy(in))
 	return ctx.Err()
 }
 func (d *terminalRecoveryDAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
 	d.f.plan.Called("LockTerminal")
 	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal Session id")
+		terminalRecoveryUnexpected(d.t, "Terminal Session id")
 	}
 	return []byte(jsonBody(d.t, d.f.record)), ctx.Err()
 }
 func (d *terminalRecoveryDAO) SaveTerminal(ctx context.Context, id string, raw []byte, seen *time.Time, instance string) error {
 	d.f.plan.Called("SaveTerminal")
 	if id != d.f.message.SessionID || instance != d.f.inserted.ServerInstance || seen == nil {
-		unexpectedHTTPCall(d.t, "Terminal write identity")
+		terminalRecoveryUnexpected(d.t, "Terminal write identity")
 	}
 	d.f.saved = bytes.Clone(raw)
 	return ctx.Err()
@@ -259,21 +242,21 @@ func (d *terminalRecoveryDAO) SaveTerminal(ctx context.Context, id string, raw [
 func (d *terminalRecoveryDAO) ExpireTerminalOperations(ctx context.Context, id string, now time.Time) error {
 	d.f.plan.Called("ExpireTerminalOperations")
 	if id != d.f.message.SessionID || now.IsZero() {
-		unexpectedHTTPCall(d.t, "Terminal expiry arguments")
+		terminalRecoveryUnexpected(d.t, "Terminal expiry arguments")
 	}
 	return ctx.Err()
 }
 func (d *terminalRecoveryDAO) TerminalAutomationAllowed(ctx context.Context, task string) (bool, error) {
 	d.f.plan.Called("TerminalAutomationAllowed")
 	if task != d.f.backend.task.ID {
-		unexpectedHTTPCall(d.t, "Terminal automation Task")
+		terminalRecoveryUnexpected(d.t, "Terminal automation Task")
 	}
 	return true, ctx.Err()
 }
 func (d *terminalRecoveryDAO) TerminalInputPending(ctx context.Context, id string) (bool, error) {
 	d.f.plan.Called("TerminalInputPending")
 	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal pending Session")
+		terminalRecoveryUnexpected(d.t, "Terminal pending Session")
 	}
 	return false, ctx.Err()
 }
@@ -281,7 +264,7 @@ func (d *terminalRecoveryDAO) TerminalInputPending(ctx context.Context, id strin
 func (d *terminalRecoveryDAO) TerminalArchive(ctx context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
 	d.f.plan.Called("TerminalArchive")
 	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal archive Session")
+		terminalRecoveryUnexpected(d.t, "Terminal archive Session")
 	}
 	return v2.ArchiveStatus{}, nil, "", model.ErrNotFound
 }
@@ -289,7 +272,38 @@ func (d *terminalRecoveryDAO) TerminalArchive(ctx context.Context, id string) (v
 func (d *terminalRecoveryDAO) InvalidateTerminalOperations(ctx context.Context, id string) error {
 	d.f.plan.Called("InvalidateTerminalOperations")
 	if id != d.f.message.SessionID {
-		unexpectedHTTPCall(d.t, "Terminal invalidate Session")
+		terminalRecoveryUnexpected(d.t, "Terminal invalidate Session")
 	}
 	return ctx.Err()
+}
+
+type terminalRecoveryCallPlan struct {
+	t          *testing.T
+	want, seen map[string]int
+}
+
+func newTerminalRecoveryCallPlan(t *testing.T, want map[string]int) *terminalRecoveryCallPlan {
+	t.Helper()
+	p := &terminalRecoveryCallPlan{t: t, want: want, seen: map[string]int{}}
+	t.Cleanup(p.Verify)
+	return p
+}
+func (p *terminalRecoveryCallPlan) Called(name string) {
+	p.seen[name]++
+	if p.seen[name] > p.want[name] {
+		terminalRecoveryUnexpected(p.t, name)
+	}
+}
+func (p *terminalRecoveryCallPlan) Verify() {
+	p.t.Helper()
+	for name, count := range p.want {
+		if p.seen[name] != count {
+			p.t.Errorf("DAO %s calls = %d, want %d", name, p.seen[name], count)
+		}
+	}
+}
+func terminalRecoveryUnexpected(t *testing.T, name string) {
+	t.Helper()
+	t.Errorf("unconfigured or extra DAO call: %s", name)
+	panic("unconfigured or extra DAO call: " + name)
 }

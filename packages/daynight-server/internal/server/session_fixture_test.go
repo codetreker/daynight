@@ -29,10 +29,6 @@ type sessionHTTPFixture struct {
 	mu                 sync.Mutex
 	record             store.SessionRecord
 	sessionTask        store.SessionTask
-	operations         []store.SessionOperation
-	intentIDs          []string
-	acceptedPlans      [][]string
-	queryRevision      int64
 	connectionCaptured chan struct{}
 	connectionCommit   chan struct{}
 	writes             sessionHTTPWrites

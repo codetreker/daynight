@@ -10,7 +10,7 @@ If B depends on A, A is the prerequisite and B the dependent. Diagrams point pre
 A → B → C
 ```
 
-Ordinary dependencies connect work in one ordinary chain; external dependencies provide prerequisites without joining chains. Both are within the **same Project**, affect blocking and participate in cycle checks. An ordinary chain is the connected component of ordinary edges treated as undirected, including branches/joins and all statuses; a standalone Task forms its own chain. Goal parent ownership is a different relationship.
+Ordinary dependencies connect work in one ordinary chain; external dependencies provide prerequisites without joining chains. Both are within the **same Project**, affect blocking and participate in cycle checks. An ordinary chain is the connected component of ordinary edges treated as undirected, including branches/joins and all statuses; a standalone Task forms its own chain. Goal parent ownership is a different relationship: Goals are neither dependency owners nor targets, and moving a Task between Goals does not change its edges.
 
 Classify from responsibility/input relationships, not terminal status, display layout or similar titles. UUIDs identify tasks; dependency collections are unordered sets with normalized identities/order. A source citation alone is not a scheduling edge.
 

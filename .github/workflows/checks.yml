@@ -374,7 +374,11 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-server-acceptance
-          path: packages/daynight-server/coverage.out
+          path: |
+            packages/daynight-server/coverage.out
+            packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.jsonl
+            packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.complete.json
+            packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.failed.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -443,7 +447,11 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-server-startup-shutdown
-          path: packages/daynight-server/startup-shutdown-coverage.out
+          path: |
+            packages/daynight-server/startup-shutdown-coverage.out
+            packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.jsonl
+            packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.complete.json
+            packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.failed.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

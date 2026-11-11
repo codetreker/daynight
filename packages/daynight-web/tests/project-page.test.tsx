@@ -1,6 +1,7 @@
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskSync } from "../src/api/client";
@@ -156,6 +157,40 @@ describe("project dashboard", () => {
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
     expect(listButton("另一任务链")).toBeTruthy();
     expect(input).toHaveFocus();
+  });
+
+  it("clears an applied search when the draft is deleted, cancelling an in-flight read", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
+    const hit = { id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await findListButton("另一任务链");
+    const ordinaryStatus = screen.getByLabelText("状态");
+    fireEvent.change(ordinaryStatus, { target: { value: "todo" } });
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    await user.type(input, "缓存{Enter}");
+    await screen.findByRole("button", { name: "打开任务：搜索命中" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(2));
+    const signal = vi.mocked(searchTasks).mock.calls[1]![4];
+    await user.keyboard("{Control>}a{/Control}未提交");
+    expect(screen.getByText("搜索结果：缓存")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开任务：搜索命中" })).toBeTruthy();
+    expect(signal.aborted).toBe(false);
+    await user.keyboard("{Control>}a{/Control}{Backspace}");
+    expect(input).toHaveValue(""); expect(input).toHaveFocus();
+    expect(signal.aborted).toBe(true);
+    expect(document.querySelector(".task-search-results")).toBeNull();
+    expect(document.querySelector(".task-search-filters")).toBeNull();
+    expect(taskTabs().getByRole("tab", { name: "任务链" })).toBeVisible();
+    expect(screen.getByLabelText("状态")).toHaveValue("todo");
+    expect(listButton("另一任务链")).toBeTruthy();
+    await act(async () => { pending.resolve({ projectId, total: 1, items: [{ ...hit, title: "迟到结果" }], nextCursor: null }); });
+    expect(screen.queryByRole("button", { name: "打开任务：迟到结果" })).toBeNull();
+    expect(document.querySelector(".task-search-results")).toBeNull();
+    expect(searchTasks).toHaveBeenCalledTimes(2);
   });
 
   it("reports syntax errors and selects the Unicode location in the submitted expression", async () => {

@@ -23,9 +23,10 @@ describe("public setup guide", () => {
   });
 
   it("renders the guide, title, breadcrumb and language controls without checking identity", async () => {
-    window.history.replaceState(null, "", "/setup?ref=welcome");
+    window.history.replaceState(null, "", "/setup?ref=welcome#cli");
     const fetcher = vi.fn(() => { throw new Error("The public guide must not request any API"); });
     vi.stubGlobal("fetch", fetcher);
+    const xhr = vi.spyOn(XMLHttpRequest.prototype, "open");
     const view = renderWithLocale(<SetupGuideShell />, { locale: "zh-CN" });
     expect(screen.getByRole("heading", { name: "连接工具，开始工作" })).toBeVisible();
     expect(document.title).toBe("使用引导 · Daynight");
@@ -33,7 +34,11 @@ describe("public setup guide", () => {
     expect(document.activeElement).toBe(screen.getByRole("main"));
     expect(within(screen.getByRole("navigation", { name: "面包屑" })).getByText("使用引导")).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("button", { name: /^使用.+登录$|^退出登录$/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /MCP 接入/ })).toHaveAttribute("href", "#mcp");
+    expect(screen.getByRole("link", { name: /CLI 与 Agent skill/ })).toHaveAttribute("href", "#cli");
+    fireEvent.change(screen.getByRole("combobox", { name: "客户端" }), { target: { value: "claude" } });
     fireEvent.change(screen.getByRole("combobox", { name: "语言 / Language" }), { target: { value: "en" } });
+    expect(screen.getByRole("combobox", { name: "Client" })).toHaveValue("claude");
     expect(screen.getByRole("heading", { name: "Set up your tools and start working" })).toBeVisible();
     expect(document.title).toBe("Setup guide · Daynight");
     expect(document.documentElement.lang).toBe("en");
@@ -50,11 +55,13 @@ describe("public setup guide", () => {
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
     expect(fetcher).not.toHaveBeenCalled();
-    expect(window.location.pathname + window.location.search).toBe("/setup?ref=welcome");
+    expect(xhr).not.toHaveBeenCalled();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe("/setup?ref=welcome#cli");
     view.unmount();
     renderWithLocale(<SetupGuideShell />, { locale: "en" });
     expect(screen.getByRole("heading", { name: "Set up your tools and start working" })).toBeVisible();
     expect(fetcher).not.toHaveBeenCalled();
+    expect(xhr).not.toHaveBeenCalled();
   });
 
   it("uses ordinary document links to leave the guide", () => {

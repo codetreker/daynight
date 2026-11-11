@@ -9,7 +9,7 @@ requires [write safety](write-safety.md).
 | --- | --- |
 | Project | Work associated with a Git repository. |
 | Task | One Project's ordinary work item (`type=task`) with status, metadata, dependencies, properties and materials. |
-| Goal | A typed objective resource (`type=goal`, `parentId=null`). This CLI exposes no Goal creation or parent-change options. |
+| Goal | A typed objective resource (`type=goal`, `parentId=null`) containing directly assigned Tasks. |
 | Step | Ordered Task-owned record. |
 | Thread | Persistent Task discussion. |
 | Session | Execution and its observed activity. |

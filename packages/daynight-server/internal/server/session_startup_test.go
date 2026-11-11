@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,7 +17,6 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -41,30 +39,6 @@ func startupRequest(f *sessionHTTPFixture, method, path, body string) *httptest.
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, request)
 	return response
-}
-
-func TestStartupReportBeforeHelloNegotiatesCurrent(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	report := startupBody(f)
-	updated := sendStartup(t, f, report)
-	if updated.Properties["sessionStartup"] == nil {
-		t.Fatal("startup response omitted its report")
-	}
-	value := startupReportValue(t, report)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
-	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
-	var expected map[string]any
-	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(current["startupReport"], expected) {
-		t.Fatalf("current lost startup evidence: %#v", current)
-	}
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(updated), &value), f.record)
-	legacy := decodeResponse[map[string]any](t, projectRequest(f.handler, http.MethodGet, f.base+"/current", ""), http.StatusOK)
-	if _, exists := legacy["startupReport"]; exists || len(legacy) != 2 {
-		t.Fatal("legacy current response changed shape")
-	}
 }
 
 func TestFailedStartupReportHTTPReadback(t *testing.T) {
@@ -149,50 +123,6 @@ func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api
 	return f.task
 }
 
-func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	startupExpectCurrent(t, f, startupSessionTask(t, startupTaskModel(f.task), nil), f.record)
-	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
-	if value, exists := current["startupReport"]; !exists || value != nil {
-		t.Fatal("missing evidence is not explicit null")
-	}
-	report := startupBody(f)
-	sendStartup(t, f, report)
-	version := f.task.Version
-	sendStartup(t, f, report)
-	if f.task.Version != version {
-		t.Fatal("identical report changed task version")
-	}
-	report["revision"] = "2"
-	report["startup"] = map[string]any{"state": "ready", "reasonCode": "ready"}
-	report["recovery"] = map[string]any{"state": "none", "reasonCode": nil}
-	sendStartup(t, f, report)
-	for _, field := range []string{"revision", "claimId", "sessionId", "executionGeneration", "controllerInstanceId"} {
-		bad := startupBody(f)
-		if field == "revision" {
-			bad[field] = "1"
-		} else if field == "executionGeneration" {
-			bad[field] = "2"
-		} else {
-			bad[field] = uuid.NewString()
-		}
-		badValue := startupReportValue(t, bad)
-		var matchedReport *sp.StartupReport = &badValue
-		if field == "claimId" {
-			matchedReport = nil
-		}
-		startupExpectWrite(t, f, startupTaskModel(f.task), matchedReport, field == "revision", nil, nil, f.handler.principal, nil)
-		response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad}))
-		assertProjectError(t, response, http.StatusConflict, "claim_conflict")
-	}
-	bad := startupBody(f)
-	bad["revision"] = "2"
-	badValue := startupReportValue(t, bad)
-	startupExpectWrite(t, f, startupTaskModel(f.task), &badValue, true, nil, nil, f.handler.principal, nil)
-	assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": bad})), http.StatusConflict, "claim_conflict")
-	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(f.task), jsonBody(t, map[string]any{"version": f.task.Version, "properties": map[string]any{"sessionStartup": report}})), http.StatusBadRequest, "invalid_input")
-}
-
 // The startup HTTP fixture supplies an explicit no-owner recovery result. The
 // actual service still performs recovery before changing the generation fence.
 func startupExpectEmptyMediaRecovery(t *testing.T, f *sessionHTTPFixture) {
@@ -244,90 +174,6 @@ func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	current = decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] == nil {
 		t.Fatal("current generation evidence not readable")
-	}
-}
-
-func TestStartupReportCannotWriteAfterCredentialRevocationOrCompletion(t *testing.T) {
-	for _, terminal := range []bool{false, true} {
-		t.Run(map[bool]string{false: "revoked", true: "completed"}[terminal], func(t *testing.T) {
-			f := sessionHTTPSetup(t)
-			report := startupBody(f)
-			if terminal {
-				current := startupTaskModel(f.task)
-				current.Status = model.TaskDone
-				current = startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "completed" })
-				startupExpectWrite(t, f, current, nil, false, nil, nil, f.handler.principal, nil)
-			} else {
-				f.store.WriteIdentityCall = func(ctx context.Context, work func(store.IdentityScope) error) (store.Completion, error) {
-					dao := &startupRevokedCredential{httpAuthenticationDAO: httpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: f.handler.principal, hash: secret.Hash(f.handler.token)}}
-					err := work(httpAuthenticationScope{t: t, dao: dao})
-					if dao.calls != 1 {
-						t.Errorf("revoked credential calls=%d, want1", dao.calls)
-					}
-					if err != nil {
-						return store.Completion{Outcome: store.TransactionNotCommitted}, err
-					}
-					return store.Completion{Outcome: store.TransactionCommitted}, nil
-				}
-			}
-			response := startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report}))
-			if terminal {
-				assertProjectError(t, response, http.StatusConflict, "claim_conflict")
-			} else {
-				assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
-			}
-		})
-	}
-}
-
-func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	sendStartup(t, f, startupBody(f))
-	current := startupTaskModel(f.task)
-	released := startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "released" })
-	released.Status, released.Version, released.UpdatedAt = model.TaskTodo, current.Version+1, current.UpdatedAt.Add(time.Second)
-	released.Ready = true
-	startupExpectWrite(t, f, current, nil, false, &released, nil, f.handler.principal, nil)
-	f.task = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskPath(f.task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
-	if !reflect.DeepEqual(f.task, startupTaskDocument(t, released)) {
-		t.Fatal("release changed unrelated Task state")
-	}
-	now := released.UpdatedAt.Add(time.Second)
-	claimID, workerID, worktreeID, machineID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	body := map[string]any{"version": released.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Startup worker"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": worktreeID}
-	claimed := released
-	claimed.Properties = taskproperty.Clone(released.Properties)
-	delete(claimed.Properties, "sessionStartup")
-	claimed.Properties["worker"] = rawProperty(t, api.WorkerClaim{ClaimID: claimID, State: "active", UserID: f.handler.principal.UserID, WorkerID: workerID, Machine: api.WorkerMachine{ID: machineID, Name: "Startup worker"}, Platform: "linux", Agent: "codex", AgentControlMode: "web", WorktreeID: worktreeID, Phase: "preparing", ClaimedAt: now})
-	claimed.Status, claimed.Version, claimed.UpdatedAt = model.TaskInProgress, released.Version+1, now
-	claimed.Ready = false
-	startupExpectWrite(t, f, released, nil, false, &claimed, &now, f.handler.principal, nil)
-	next := claimHTTPWorker(t, f.handler, f.task, body)
-	if next.Properties["sessionStartup"] != nil || !reflect.DeepEqual(next, startupTaskDocument(t, claimed)) {
-		t.Fatal("new claim retains old startup evidence or changes unrelated Task fields")
-	}
-}
-
-func TestStartupReportRejectsAnotherMemberAndForeignWorkerBinding(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	current := startupTaskModel(f.task)
-	other := f.handler.principal
-	other.UserID, other.CredentialID = uuid.NewString(), uuid.NewString()
-	otherStore := newHTTPTestStoreForPrincipal(t, other)
-	originalStore := f.store.httpTestStore
-	f.store.httpTestStore = otherStore
-	startupExpectWrite(t, f, current, nil, false, nil, nil, other, nil)
-	caller := resourceTestServerForPrincipal(t, f.store, attachmentTestFiles(t), io.Discard, other)
-	extendedWorkerTestHandler(caller)
-	body := jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": startupBody(f)})
-	assertProjectError(t, projectRequest(caller, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusForbidden, "forbidden")
-	f.store.httpTestStore = originalStore
-	for _, field := range []string{"workerId", "worktreeId"} {
-		t.Run(field, func(t *testing.T) {
-			report := startupReportValue(t, startupBody(f))
-			startupExpectWrite(t, f, current, &report, false, nil, nil, f.handler.principal, nil)
-			assertProjectError(t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusConflict, "claim_conflict")
-		})
 	}
 }
 

@@ -612,7 +612,10 @@ export const createApiClient = (options: {
     return parsed;
   };
   const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
+  const taskParentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
+    if (filters.type !== undefined && filters.type !== "task" && filters.type !== "goal") throw new Error("Task type must be task or goal.");
+    const parentId = taskParentInput(filters.parentId);
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be proposed, todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
@@ -627,13 +630,15 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
     const worker = readWorkerClaim(task.properties);
     if (
-      (filters.automaticCandidate === true && task.type !== "task")
+      (task.type !== (filters.type ?? "task"))
+      || (filters.parentId !== undefined && task.parentId !== taskParentInput(filters.parentId))
+      || (filters.automaticCandidate === true && task.type !== "task")
       || (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
       || (filters.status !== undefined && task.status !== filters.status)
       || (filters.ready !== undefined && task.ready !== filters.ready)
@@ -1246,16 +1251,22 @@ export const createApiClient = (options: {
       return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project, expectedUserId) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
-      if (input.status !== undefined && !isTaskCreationStatus(input.status)) throw new Error("Initial task status must be proposed or todo.");
+      if (input.type !== undefined && input.type !== "task" && input.type !== "goal") throw new Error("Task type must be task or goal.");
+      if (input.status !== undefined && (input.type === "goal" ? !isTaskStatus(input.status) || input.status === "proposed" : !isTaskCreationStatus(input.status))) throw new Error(input.type === "goal" ? "Initial Goal status must be todo, in_progress, done or cancelled." : "Initial task status must be proposed or todo.");
       const project = resourceId(projectId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
-      return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => {
+      const parentId = taskParentInput(input.parentId);
+      const goal = input.type === "goal";
+      return exchange({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", { kind: "json", ...(goal && assignedTo === undefined ? { requirePrincipal: true } : {}), parse: (value, metadata) => {
         const task = parseTask(value, project);
-        if (task.status !== (input.status ?? "proposed")) throw new ProtocolError("Task does not confirm the requested initial status.");
-        if (task.assignedTo !== (assignedTo === undefined ? null : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
+        if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null)) throw new ProtocolError("Task does not confirm the requested type and parent.");
+        if (task.status !== (input.status ?? (goal ? "todo" : "proposed"))) throw new ProtocolError("Task does not confirm the requested initial status.");
+        if (task.assignedTo !== (assignedTo === undefined ? (goal ? metadata.principalId : null) : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
         return task;
-      }, {
+      } }, [201], { kind: "json", value: {
         title: input.title,
+        ...(input.type === undefined ? {} : { type: input.type }),
+        ...(parentId === undefined ? {} : { parentId }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -1263,7 +1274,7 @@ export const createApiClient = (options: {
         ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
         ...(input.externalDependsOn === undefined ? {} : { externalDependsOn: input.externalDependsOn }),
         ...(input.properties === undefined ? {} : { properties: input.properties }),
-      });
+      } });
     },
     getTask: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -1358,7 +1369,10 @@ export const createApiClient = (options: {
       const project = resourceId(projectId);
       if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
       const normalized = taskFilterQuery(input);
+      const parentId = taskParentInput(input.parentId);
       const filters = {
+        ...(input.type === undefined ? {} : { type: input.type }),
+        ...(parentId === undefined ? {} : { parentId }),
         ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.ready === undefined ? {} : { ready: input.ready }),
@@ -1409,7 +1423,7 @@ export const createApiClient = (options: {
               const parsed = parseTaskSearchPage(value, project);
               const raw = value as { items: { assignedTo: string | null }[] };
               const assignment = filters.assignedTo === "me" ? principal : filters.assignedTo === "unassigned" ? null : filters.assignedTo;
-              if (parsed.items.some((item, index) => filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
+              if (parsed.items.some((item, index) => item.type !== (filters.type ?? "task") || parentId !== undefined && item.parentId !== parentId || filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
               return parsed;
             },
           }, [200], { kind: "json", value: { query: input.query, ...filters, limit: 100, ...(cursor === null ? {} : { cursor }) } }, true);
@@ -1452,13 +1466,10 @@ export const createApiClient = (options: {
     listReadyTasks: (projectId, limit, filters = {}) => {
       const project = resourceId(projectId);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Ready task limit must be an integer from 1 to 100.");
-      const { allowAgents, compatiblePlatform } = filters;
-      const query = new URLSearchParams({ ready: "true", limit: String(limit), ...(allowAgents === undefined ? {} : { allowAgents: String(allowAgents) }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
+      const query = new URLSearchParams({ ready: "true", limit: String(limit), ...taskFilterQuery(filters) });
       return request({ operation: "task.ready", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${query}`, "GET", (value) => {
         const page = parsePage(value, (item) => {
-          const task = parseTask(item, project);
-          if (!task.ready || (allowAgents !== undefined && task.allowAgents !== allowAgents) || (compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== compatiblePlatform)) throw new ProtocolError("Task does not match the requested ready filters.");
-          return task;
+          return filteredTask(item, project, { ...filters, ready: true }, undefined);
         }, (task) => task.id);
         if (page.items.length > limit) throw new ProtocolError("Ready task page exceeds the requested limit.");
         return page.items;
@@ -1467,12 +1478,15 @@ export const createApiClient = (options: {
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
+      const parentId = taskParentInput(input.parentId);
       return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
         const result = parseTask(value, project, task);
         if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
+        if (parentId !== undefined && result.parentId !== parentId) throw new ProtocolError("Task does not confirm the requested parent.");
         return result;
       }, {
         version: input.version,
+        ...(parentId === undefined ? {} : { parentId }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),

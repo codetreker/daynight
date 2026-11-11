@@ -513,7 +513,12 @@ test("Go module coverage and API integration prepare independent runners", () =>
   const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
-  assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
+  assert.deepEqual(artifactPaths(coverage), [
+    "packages/daynight-server/coverage.out",
+    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.jsonl",
+    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.complete.json",
+    "packages/daynight-server/.tmp/go-test-evidence/module/**/go-test.failed.json",
+  ]);
   assert.doesNotMatch(apiIntegration, /scripts\/check\.sh|server-validation|coverage\.out/);
   assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
@@ -531,7 +536,12 @@ test("startup and shutdown uses an independent selected runner and coverage arti
   const uploads = uploadSteps(startupShutdown);
   assert.equal(uploads.length, 1);
   assert.equal(artifactName(uploads[0]!), "daynight-server-startup-shutdown");
-  assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-server/startup-shutdown-coverage.out"]);
+  assert.deepEqual(artifactPaths(uploads[0]!), [
+    "packages/daynight-server/startup-shutdown-coverage.out",
+    "packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.jsonl",
+    "packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.complete.json",
+    "packages/daynight-server/.tmp/go-test-evidence/startup-shutdown/**/go-test.failed.json",
+  ]);
   assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.startup-shutdown.outcome != 'skipped' \}\}$/m);
   assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
   const jobMinutes = Number(startupShutdown.match(/^    timeout-minutes: (\d+)$/m)![1]);
