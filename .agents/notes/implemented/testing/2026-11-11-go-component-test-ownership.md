@@ -48,6 +48,10 @@ production constructor and configured callback assembly witness. Worker HTTP
 protocol matrices live with their Worker registrar, with real Service and Core
 where appropriate and narrow controlled
 capabilities for precise outcomes; HTTP fault classification belongs to httpx.
+Public OAuth authorization and token HTTP lifecycle scenarios live with their
+adapters, using real local Service and Core components, sockets and narrowly
+controlled DAO facts. Root retains the public profile and error-page assembly
+proofs and the fixture capabilities still used by its OAuth consumers.
 Project and Team HTTP organization scenarios use their real registrars and
 Service/Core with controlled DAO facts. Project, Team and Invitation MCP
 scenarios use a focused Entry host with those real collaborators and the SDK;

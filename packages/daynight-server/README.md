@@ -1217,6 +1217,27 @@ with `go test ./internal/core/store/postgres/identity ./internal/core/store/post
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
 
+### OAuth HTTP tests
+
+Public authorization and token lifecycle tests run with their HTTP adapters,
+real local Service and Core components, sockets and controlled DAO facts. They
+cover browser binding, code and token hash association, concurrent redemption,
+lost responses, refresh, replay and revocation without PostgreSQL. Controlled
+transaction outcomes and supplied rows are logical test facts, not persisted
+readback. Root tests retain the assembled public profile, MCP identity and error
+page wiring.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL \
+  go test -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/server/oauth/authorization ./internal/server/oauth/token \
+  -run 'TestOAuth(AuthorizationControlledHTTP|TokenLifecycleControlledHTTP)$'
+```
+
+The [component ownership decision](../../.agents/notes/implemented/testing/2026-11-11-go-component-test-ownership.md)
+records the test boundary and cost constraints.
+
 ### OAuth service tests
 
 The complete `internal/service/oauth` suite runs without PostgreSQL or UniAuth
