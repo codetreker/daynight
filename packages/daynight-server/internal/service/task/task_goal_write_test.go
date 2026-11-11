@@ -200,3 +200,30 @@ func TestGoalEndRejectsFreshClaimButAllowsReleasedResume(t *testing.T) {
 		})
 	}
 }
+
+func TestGoalRemoveExecutionPropertyIsRefused(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(map[bool]string{false: "current version", true: "stale version"}[stale], func(t *testing.T) {
+			f := newTaskRuleFixture(t)
+			ctx := t.Context()
+			goal := f.target
+			goal.Type = model.TaskTypeGoal
+			goal.Ready = false
+			f.current(ctx, goal)
+			f.write(ctx, store.Completion{Outcome: store.TransactionCommitted})
+			version := goal.Version
+			if stale {
+				version++
+			}
+			got, err := f.tasks.RemoveProperty(ctx, f.principal, f.project.ID, goal.ID, "paused", version)
+			code := "invalid_input"
+			if stale {
+				code = "version_conflict"
+			}
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Code != code || !reflect.DeepEqual(got, model.Task{}) {
+				t.Fatalf("remove execution property: %+v %v", got, err)
+			}
+		})
+	}
+}
