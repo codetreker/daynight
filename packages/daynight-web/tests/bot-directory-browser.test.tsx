@@ -217,22 +217,29 @@ it('keeps the previous complete listing when a resumed page changes connection a
   expect(screen.queryByRole('button', { name: 'project' })).toBeNull();
 });
 
-it('keeps paused controls focusable while rejecting every directory interaction', async () => {
+it.each(['authentication', 'enabled'])('keeps local directory text editable while rejecting remote actions during %s pause', async mode => {
   const fetch = fixture(() => ({ result: { ...directory(), nextCursor: 'page-2' } }));
   const view = mount(); await loaded();
   const filter = screen.getByRole('searchbox', { name: 'Filter loaded folders' });
-  filter.focus(); view.update({ enabled: false });
-  expect(path()).toHaveProperty('readOnly', true); expect(filter).toHaveProperty('readOnly', true);
+  filter.focus();
+  if (mode === 'authentication') act(() => { pauseAuthRequests(); });
+  else view.update({ enabled: false });
+  expect(path()).toHaveProperty('readOnly', false); expect(filter).toHaveProperty('readOnly', false);
   expect(path()).not.toBeDisabled(); expect(filter).not.toBeDisabled();
   for (const name of ['Go', 'Parent directory', 'Default directory', 'project', 'Load more folders', 'Select this directory']) {
     const control = button(name);
     expect(control).not.toBeDisabled(); expect(control).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(control);
   }
-  fireEvent.change(path(), { target: { value: '/forbidden-edit' } });
-  fireEvent.change(filter, { target: { value: 'forbidden-filter' } });
+  fireEvent.change(path(), { target: { value: '/local-edit' } });
+  fireEvent.change(filter, { target: { value: 'local-filter' } });
+  (path() as HTMLInputElement).setSelectionRange(1, 6);
+  fireEvent.keyDown(path(), { key: 'Enter' });
+  fireEvent.click(button('Go'));
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show hidden folders' }));
-  expect(path()).toHaveValue('/worker'); expect(filter).toHaveValue('');
+  expect(path()).toHaveValue('/local-edit'); expect(filter).toHaveValue('local-filter');
+  expect((path() as HTMLInputElement).selectionStart).toBe(1);
+  expect((path() as HTMLInputElement).selectionEnd).toBe(6);
   expect(screen.getByRole('checkbox', { name: 'Show hidden folders' })).not.toBeChecked();
   expect(fetch).toHaveBeenCalledOnce(); expect(view.onSelect).not.toHaveBeenCalled();
   expect(filter).toHaveFocus();
