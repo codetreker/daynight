@@ -422,7 +422,7 @@ cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维�
 `ready` 筛选在数据库中使用同一状态条件，`allowAgents`、`requiredPlatform` 和 `assignedTo` 使用 task 同行值；不能取一页后在应用中删掉 blocked、许可不匹配或平台不兼容的任务。
 分页边界应用于筛选后的结果，`nextCursor` 根据该结果中是否还有记录产生。仅 workerId 筛选的全部项目/页成功汇总后，调用者才可按自有 claim 清单缺席对账；带额外条件（包括 assignedTo）或部分页不是完整归属集合。
 
-人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与未删除任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
+人员读取复用 Tasks/ReadSnapshot 和项目读取权限。完整目录从原始成员ID与有效可见任务的DISTINCT assigned_to做UNION；限定模式从最多100个请求UUID出发，以成员主键及原生任务索引探测资格，再按资格LEFT JOIN users。保留原始候选ID与nullable users.id，使缺失资料行成为内部完整性错误，而合法nullable姓名/头像原样返回。所有结果与授权属于同一RR快照，事务完成错误优先于领域拒绝，失败不返回部分集合。[负责人设计](daynight-task-assignment.md#项目内人员读取)拥有完整请求与组装机制。
 
 ## 错误与诊断
 
