@@ -23,7 +23,10 @@ dispatch. Leaving the route cancels an undispatched confirmation. Settings saves
 and ownership transfers independently retain their original Project and user
 scope while a dispatched result still needs presentation. Returning to settings
 requires an authoritative read without silently rebasing a draft onto another
-settings version. Confirmed revocation and real failures retain their existing handling. The
+settings version. Settings saves settle local pending independently of presentation
+admission. The original owner retains cancellable publication and distinguishes
+confirmed receipts, known refusals and unconfirmed dispatches; the submitted draft
+revision prevents an old receipt from clearing a newer edit. Confirmed revocation and real failures retain their existing handling. The
 [transfer decision](../feature/2026-11-05-web-project-transfer.md) owns the
 receipt and unknown-result semantics.
 
@@ -44,7 +47,7 @@ unrelated private state after normal navigation.
 
 The existing UI remains stable across ordinary checks while a user-initiated
 write may wait for admission. A dispatched result can keep its settings owner
-alive until the original page can present it; the settings and transfer owners
+alive until the original page can present it, without keeping the local save busy; the settings and transfer owners
 must release independently. Confirmed Project revocation withdraws private
 content and invalidates reads without cancelling a dispatched save; its result
 waits for renewed access. Identity invalidation still retires the old scope,
