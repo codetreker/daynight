@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
+import { signalCommandGroup } from './command-process-group.mts';
 
 const [duration, grace, command, ...args] = process.argv.slice(2);
 const milliseconds = (value: string | undefined): number => {
@@ -20,12 +21,10 @@ try {
   let escalation: NodeJS.Timeout | undefined;
   const signalGroup = (signal: NodeJS.Signals): void => {
     if (child.pid === undefined) return;
-    try { process.kill(-child.pid, signal); }
+    try { signalCommandGroup(child.pid, signal); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        failed = true;
-        console.error('Unable to terminate the owned command process group:', error);
-      }
+      failed = true;
+      console.error('Unable to terminate the owned command process group:', error);
     }
   };
   const stop = (code: number): void => {
