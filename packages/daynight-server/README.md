@@ -1802,7 +1802,14 @@ records why database clocks and lock observations are required together.
 ### HTTP scenario ownership
 
 Root `internal/server` unit tests assemble actual modules, routes and HTTP
-authentication over controlled collaborators. The MCP Step lifecycle uses a
+authentication over controlled collaborators. Server assembly cases and their
+shared fixtures are grouped in `server_test.go`, `server_auth_test.go`,
+`server_oauth_test.go`, `server_routes_test.go` and `server_fixture_test.go`.
+Runtime tests and tagged Webhook application tests retain their separate owners
+and build constraints. Root route tests check the registered patterns and
+unauthenticated refusals, including protected method fallbacks. A source binding
+check supplements the live identity and Session lifecycle witnesses for the
+shared Authentication instance. The MCP Step lifecycle uses a
 focused Entry host with controlled operations; its Service, Core, Capturer and
 Store receivers retain lower coordination, rules and persistence proofs. Other
 DAO/scope fixtures supply fixed domain records, query results, proposed writes, call counts and transaction
