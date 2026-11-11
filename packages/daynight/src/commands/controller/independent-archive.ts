@@ -10,7 +10,7 @@ import { parseRegistrationResponse } from "../../session/controller-protocol.js"
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { recordStoppedControllerGeneration } from "./lifecycle-store.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
-import { writeDurableJson } from "./pending-content.js";
+import { writeDurableJson } from "../../platform/durable-json.js";
 
 /** Archive retry has no process launch, native resume, or business-input path. */
 export const retryIndependentArchive = async (input: { provider: SessionProvider; sessionId: string }, context: CliContext): Promise<void> => {
