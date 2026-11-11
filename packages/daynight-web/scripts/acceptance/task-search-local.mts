@@ -49,7 +49,8 @@ try {
   const port = await reserveLoopbackPort();
   const origin = `http://127.0.0.1:${port}`;
   fixture = await startAuthFixture({ binary: fixtureBinary, directory: path.join(directory, 'auth'), callbackURL: `${origin}/auth/callback`, signal: cancellation.signal });
-  server = spawn(binary, [], { cwd: serverRoot, stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env,
+  const serverEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('DAYNIGHT_')));
+  server = spawn(binary, ['--root', directory], { cwd: serverRoot, stdio: ['ignore', 'inherit', 'inherit'], env: { ...serverEnvironment,
     DAYNIGHT_LISTEN_ADDR: `127.0.0.1:${port}`, DAYNIGHT_PUBLIC_ORIGIN: origin,
     DAYNIGHT_DATABASE_URL: `postgres://daynight:daynight-search-local@127.0.0.1:${databasePort}/daynight?sslmode=disable`,
     DAYNIGHT_STORAGE_ROOT: path.join(directory, 'storage'), DAYNIGHT_UNIAUTH_URL: fixture.origin,

@@ -17,6 +17,7 @@ import (
 	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
 	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+	transferconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer/config"
 	oauthconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth/config"
 	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 
@@ -87,13 +88,15 @@ func appTestConfig(t *testing.T) config.Config {
 			t.Error(err)
 		}
 	})
-	return config.Config{
+	c := config.Config{
 		Database: databaseconfig.Config{URL: "postgres://app:app@database.invalid/app?sslmode=disable"},
 		Storage:  storageconfig.Config{Root: filepath.Join(root, "storage")},
 		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "app", AppSecret: "secret", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
+	c.MCP.Transfer = transferconfig.DefaultConfig()
+	return c
 }
 
 func TestOpenAppRejectsInvalidConfigurationBeforeOpeningResources(t *testing.T) {
@@ -103,7 +106,7 @@ func TestOpenAppRejectsInvalidConfigurationBeforeOpeningResources(t *testing.T) 
 		c.UniAuth.AppID, c.UniAuth.AppSecret = "private:invalid-app-id", "credential-not-for-diagnostics"
 		app, err := OpenApp(context.Background(), c)
 		var failure *configvalue.ConfigurationError
-		if app != nil || !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+		if app != nil || !errors.As(err, &failure) || failure.Field != "app_id" {
 			t.Fatalf("invalid credentials reached composition or lost diagnosis: %v", err)
 		}
 		cause := errors.Unwrap(failure)
@@ -199,7 +202,7 @@ func TestOpenAppValidatesBeforeOpeningStorage(t *testing.T) {
 	c.UniAuth.AppID = "invalid:app"
 	app, err := OpenApp(context.Background(), c)
 	var failure *configvalue.ConfigurationError
-	if app != nil || !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+	if app != nil || !errors.As(err, &failure) || failure.Field != "app_id" {
 		t.Fatalf("invalid credentials not rejected: app=%v, error=%v", app, err)
 	}
 	if _, err := os.Stat(c.Storage.Root); !errors.Is(err, os.ErrNotExist) {

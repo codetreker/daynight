@@ -2,6 +2,7 @@ package config
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
@@ -10,11 +11,30 @@ type Config struct {
 	Root string `yaml:"root"`
 }
 
-func DefaultConfig() Config { return Config{} }
+type Patch struct {
+	Root *string `yaml:"root"`
+}
+
+func (p Patch) ApplyTo(c *Config) error {
+	if p.Root != nil {
+		c.Root = *p.Root
+	}
+	return nil
+}
+
+func DefaultConfig() Config { return Config{Root: "storage"} }
+
+func (c *Config) ResolvePaths(root string) error {
+	if strings.TrimSpace(c.Root) == "" || strings.IndexFunc(c.Root, unicode.IsControl) >= 0 {
+		return &configvalue.ConfigurationError{Field: "root", Rule: "must be nonempty and contain no control characters"}
+	}
+	c.Root = configvalue.ResolvePath(root, c.Root)
+	return nil
+}
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.Root) == "" {
-		return &configvalue.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "is required"}
+	if strings.TrimSpace(c.Root) == "" || strings.IndexFunc(c.Root, unicode.IsControl) >= 0 {
+		return &configvalue.ConfigurationError{Field: "root", Rule: "must be nonempty and contain no control characters"}
 	}
 	return nil
 }

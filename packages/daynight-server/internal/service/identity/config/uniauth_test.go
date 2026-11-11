@@ -94,14 +94,14 @@ func TestIdentityEnvironmentAndRequiredFields(t *testing.T) {
 			case "DAYNIGHT_UNIAUTH_CALLBACK_URL":
 				updated.CallbackURL = value
 			}
-			if err := updated.Validate(); err == nil || err.Error() != field+" is required" {
+			if err := updated.Validate(); err == nil || err.Error() != map[string]string{"DAYNIGHT_UNIAUTH_URL": "url", "DAYNIGHT_UNIAUTH_APP_ID": "app_id", "DAYNIGHT_UNIAUTH_APP_SECRET": "app_secret", "DAYNIGHT_UNIAUTH_CALLBACK_URL": "callback_url"}[field]+" is required" {
 				t.Fatalf("missing %s: %v", field, err)
 			}
 		}
 	}
 	for _, value := range []string{"true", "false", "2", "secret-value"} {
 		values["DAYNIGHT_ALLOW_LOOPBACK_HTTP"] = value
-		if err := c.ApplyEnvironment(lookup, func(string, string) {}); err == nil || err.Error() != "DAYNIGHT_ALLOW_LOOPBACK_HTTP must be 0 or 1" {
+		if err := c.ApplyEnvironment(lookup, func(string, string) {}); err == nil || err.Error() != "allow_loopback_http must be 0 or 1" {
 			t.Fatalf("invalid flag: %v", err)
 		}
 	}

@@ -615,14 +615,14 @@ cd packages/daynight-server
 source scripts/env.sh
 go build -o .tmp/daynight-server ./cmd/daynight-server
 export DAYNIGHT_DATABASE_URL='postgres://daynight:password@127.0.0.1:5432/daynight?sslmode=disable'
-export DAYNIGHT_STORAGE_ROOT="$PWD/.tmp/storage"
+export DAYNIGHT_ROOT="$PWD/.tmp/server-root"
 export DAYNIGHT_PUBLIC_ORIGIN='http://127.0.0.1:8787'
 export DAYNIGHT_UNIAUTH_URL='https://identity.example.com'
 export DAYNIGHT_UNIAUTH_APP_ID='<registered-app-id>'
 export DAYNIGHT_UNIAUTH_APP_SECRET='<server-side-app-secret>'
 export DAYNIGHT_UNIAUTH_CALLBACK_URL='http://127.0.0.1:8787/api/v1/auth/callback'
 export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
-.tmp/daynight-server
+.tmp/daynight-server --root "$DAYNIGHT_ROOT"
 ```
 
 `web:build` typechecks and builds the web package, validates the real output and
@@ -641,11 +641,24 @@ UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
 owns the shared authentication setup.
 
-Startup configuration fields, defaults, environment decoding and validation belong to their respective modules. `internal/config` assembles these types and invokes cross-module checks before resources are opened. An empty environment value retains the existing default; the storage root is required and relative paths use the process working directory.
+The server selects an absolute root from `--root`, `DAYNIGHT_ROOT`, or
+`/var/lib/daynight`, in that order. It reads optional `config/config.yml` and
+`config/config.local.yml` under that root, then applies explicitly set environment
+variables. Copy [config.example.yml](config/config.example.yml) to the root's
+config directory and keep credentials private. Defaults apply once before the
+files; a field in a later layer replaces the earlier value, including false,
+zero, empty strings and collections. Explicitly empty numeric, flag and duration
+environment values are invalid. Unknown YAML fields are ignored; duplicate keys,
+invalid types, null known fields, malformed or multiple documents fail startup.
+Relative file paths resolve against the root; storage defaults to `storage`.
+Loading configuration does not create directories or open business resources.
+Modules own their fields, defaults and validation; `internal/config` coordinates
+loading and cross-module checks.
 
-The executable accepts no command-line arguments. Arguments are rejected before
-configuration, database connections or HTTP listeners are initialized, and the
-diagnostic does not echo their contents.
+The executable accepts `--root` for normal startup or after `verify-storage`.
+Unknown, repeated and extra arguments fail before business resources open, without
+echoing argument values. `verify-storage` validates only database and storage
+semantics and opens the backup storage read-only. Logs remain on stderr.
 
 Use credentials suitable for the local PostgreSQL instance. The process validates
 the connection before listening and exits nonzero on startup or shutdown failure.
@@ -658,7 +671,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
-| `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
+| `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
@@ -675,10 +688,10 @@ diagnostics and cause categories.
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
-| `DAYNIGHT_IMAGE_NODE_PATH` | Absolute clean path to the pinned Node.js 24 executable | Unconfigured |
-| `DAYNIGHT_IMAGE_HELPER_PATH` | Absolute clean path to the packaged image validation helper | Unconfigured |
-| `DAYNIGHT_IMAGE_MANIFEST_PATH` | Absolute clean path to the helper and engine SHA-256 manifest | Unconfigured |
-| `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Absolute clean private staging directory (mode 0700) | Unconfigured |
+| `DAYNIGHT_IMAGE_NODE_PATH` | Path to the pinned Node.js 24 executable | Unconfigured |
+| `DAYNIGHT_IMAGE_HELPER_PATH` | Path to the packaged image validation helper | Unconfigured |
+| `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
+| `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
 Image validation settings are configured together or omitted together. Omitting
 them retains text service and refuses new image uploads. A configured runtime,

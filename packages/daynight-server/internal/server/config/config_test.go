@@ -53,7 +53,7 @@ func TestDefaultsAndEnvironment(t *testing.T) {
 		before := c
 		err := c.ApplyEnvironment(func(key string) (string, bool) { return "secret-value", key == field }, mark)
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != field || c != before {
+		if !errors.As(err, &failure) || failure.Field != map[string]string{"DAYNIGHT_STARTUP_TIMEOUT": "startup_timeout", "DAYNIGHT_SHUTDOWN_TIMEOUT": "shutdown_timeout", "DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "allow_http_test_origin"}[field] || c != before {
 			t.Fatalf("invalid %s was not rejected safely: %+v %v", field, c, err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestServerValidation(t *testing.T) {
 	c := DefaultConfig()
 	for _, value := range []string{"", " \t"} {
 		c.PublicOrigin = value
-		if err := c.Validate(); err == nil || err.Error() != "DAYNIGHT_PUBLIC_ORIGIN is required" {
+		if err := c.Validate(); err == nil || err.Error() != "public_origin is required" {
 			t.Fatalf("origin %q: %v", value, err)
 		}
 	}
@@ -77,7 +77,7 @@ func TestServerValidation(t *testing.T) {
 	for _, address := range []string{"localhost:80", ":80", "0.0.0.0:80", "[::]:80", "192.0.2.1:80", "[::1%eth0]:80", "127.0.0.1", "127.0.0.1:word", "127.0.0.1:-1", "127.0.0.1:65536", "127.0.0.1:080"} {
 		c.ListenAddress = address
 		var failure *configvalue.ConfigurationError
-		if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_LISTEN_ADDR" {
+		if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "listen_address" {
 			t.Errorf("invalid address %q: %v", address, err)
 		}
 	}
@@ -116,13 +116,13 @@ func TestMetricsAndListenerValidation(t *testing.T) {
 		metrics := MetricsConfig{MetricsListenAddress: tc.value}
 		for _, err := range []error{metrics.Validate(), ValidateListeners(server, metrics)} {
 			var failure *configvalue.ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_METRICS_LISTEN_ADDR" || failure.Rule != tc.rule {
+			if !errors.As(err, &failure) || failure.Field != "metrics_listen_address" || failure.Rule != tc.rule {
 				t.Errorf("invalid metrics %q: %v", tc.value, err)
 			}
 		}
 	}
 	var failure *configvalue.ConfigurationError
-	if err := ValidateListeners(server, MetricsConfig{MetricsListenAddress: "0.0.0.0:8787"}); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_METRICS_LISTEN_ADDR" || failure.Rule != "must use a different nonzero port from DAYNIGHT_LISTEN_ADDR" {
+	if err := ValidateListeners(server, MetricsConfig{MetricsListenAddress: "0.0.0.0:8787"}); !errors.As(err, &failure) || failure.Field != "metrics_listen_address" || failure.Rule != "must use a different nonzero port from DAYNIGHT_LISTEN_ADDR" {
 		t.Errorf("same nonzero port: %v", err)
 	}
 	server.ListenAddress = "127.0.0.1:0"
@@ -130,7 +130,7 @@ func TestMetricsAndListenerValidation(t *testing.T) {
 		t.Errorf("zero ports may match: %v", err)
 	}
 	server.ListenAddress = "invalid"
-	if err := ValidateListeners(server, MetricsConfig{MetricsListenAddress: "invalid"}); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_LISTEN_ADDR" {
+	if err := ValidateListeners(server, MetricsConfig{MetricsListenAddress: "invalid"}); !errors.As(err, &failure) || failure.Field != "listen_address" {
 		t.Errorf("server error should precede metrics: %v", err)
 	}
 }

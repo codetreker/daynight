@@ -31,7 +31,7 @@ func TestLoadAndValidateRejectUniAuthBeforeListenAddress(t *testing.T) {
 			}
 			for _, err := range []error{loadErr, c.Validate()} {
 				var failure *configvalue.ConfigurationError
-				if !errors.As(err, &failure) || !strings.Contains(failure.Field, tc.field) || failure.Cause == nil || !strings.Contains(failure.Cause.Error(), tc.cause) {
+				if !errors.As(err, &failure) || !strings.Contains(failure.Field, testRelativeField(tc.field)) || failure.Cause == nil || !strings.Contains(failure.Cause.Error(), tc.cause) {
 					t.Fatalf("expected UniAuth error before listen address: %v", err)
 				}
 				if strings.Contains(err.Error(), tc.value) || strings.Contains(failure.Cause.Error(), tc.value) {

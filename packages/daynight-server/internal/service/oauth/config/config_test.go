@@ -21,7 +21,7 @@ func TestPreregisteredClients(t *testing.T) {
 	for _, value := range []string{`[]`, `null`, `{"known":null}`, `{"known":{"client_id":"other","redirect_uris":["https://client.example/callback"]}}`, `{"a":{},"a":{}}`, valid + ` {}`, strings.Repeat("x", 1<<20+1)} {
 		err := apply(value)
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != oauthClientsField || strings.Contains(err.Error(), value) {
+		if !errors.As(err, &failure) || failure.Field != "preregistered_clients" || strings.Contains(err.Error(), value) {
 			t.Fatalf("invalid preregistration accepted or disclosed: %v", err)
 		}
 	}
