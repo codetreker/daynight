@@ -907,9 +907,11 @@ and the same numerical thresholds.
 
 ### Project HTTP tests
 
-`internal/server/project` tests use strict direct Project and Membership operation
-callbacks and the real request-authentication parser. They retain HTTP routing,
-parsing, argument propagation, DTOs, error/log classification, cancellation and
+`internal/server/project` tests use the real request-authentication parser and
+Project registrar. Protocol cases use strict direct operation callbacks where
+precise outcomes are needed; organization scenarios also execute real Project
+Service and Core over controlled DAO facts. They retain HTTP routing, parsing,
+argument propagation, DTOs, error/log classification, cancellation and
 response-write failure mechanisms. Their ordinary test binary clears database
 and UniAuth fixture configuration; run the complete adapter suite independently:
 
@@ -919,7 +921,7 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/project
 ```
 
-Business decisions remain with Core and Service tests. PostgreSQL COMMIT response
+Core and Service tests own their complete business decision matrices. PostgreSQL COMMIT response
 loss, transaction effects and independent persisted readback belong to Store
 owners; retained files and reopen behavior belong to local storage tests. The
 explicit `acceptance`-tagged process-restart witness retains its real isolated
@@ -1739,7 +1741,11 @@ entry-point drain and restart persistence. The
 [root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
 records these fixtures and the distinction between logical and physical evidence.
 
-Domain packages own their HTTP adapters. Task and Session HTTP unit tests
+Domain packages own their HTTP adapters. Project and Team organization scenarios
+use their real registrars, authentication parser, Service and Core with narrow
+controlled DAO facts. Root retains actual `New` fallback, health and cross-route
+projection proofs; supplied query results and completion do not prove persistence.
+Task and Session HTTP unit tests
 control directly called service/use-case results while retaining actual
 credential middleware, HTTP encoding, response loss and socket/resource
 handling. Their [Task](#business-rules-and-dao-mocks) and
@@ -1802,9 +1808,11 @@ physical persistence.
 
 ### MCP protocol tests
 
-`internal/server/mcp` tests use controlled direct service/use-case operations
-while executing the actual Entry, HTTP transport, SDK, schemas and tool response
-encoding. Principals and domain results are explicit facts; operations verify
+`internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
+schemas and tool response encoding. Most use controlled direct service/use-case
+operations; Project, Team and Invitation organization scenarios also execute
+real Service and Core with controlled DAO facts through a host registering only
+their adapters. Principals and domain results are explicit facts; operations verify
 arguments, context, authority and calls. Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;

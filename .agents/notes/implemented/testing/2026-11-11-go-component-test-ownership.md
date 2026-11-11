@@ -36,6 +36,10 @@ with their implementations, while Root retains real assembly, route coexistence
 and protected API proofs. Worker HTTP protocol matrices live with their Worker
 registrar, with real Service and Core where appropriate and narrow controlled
 capabilities for precise outcomes; HTTP fault classification belongs to httpx.
+Project and Team HTTP organization scenarios use their real registrars and
+Service/Core with controlled DAO facts. Project, Team and Invitation MCP
+scenarios use a focused Entry host with those real collaborators and the SDK;
+Root retains full catalog, default authentication and cross-route proofs.
 The [test-writing rules](../../../../docs/writing_tests.md)
 own the current requirements.
 

@@ -202,8 +202,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("attachment close: %#v", closed)
 	}
 
-	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
-
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
 	instrumented := newApp()
