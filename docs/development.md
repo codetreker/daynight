@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
@@ -775,6 +776,57 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Public Markdown image integration
+
+The separate `Markdown external-image integration` workflow owns the normal
+public-source persistence regression for the Controller Markdown source module.
+It runs when the regression or its direct capture owners change, and supports
+manual dispatch. It does not add public-network dependencies to ordinary unit
+tests or product E2E. The workflow builds current CLI, Go and related runtime
+artifacts, uses isolated PostgreSQL and test authentication, saves one HTTP and
+one HTTPS image through production source/capture/relay components, then reads
+the same service resource after origin access is denied and the Controller
+process has stopped. Controlled Markdown and identity inputs are identified in
+the result; this does not prove native-model vision or browser rendering.
+
+Run the workflow on a standard GitHub-hosted `ubuntu-24.04` VM. Its entry point
+is `node packages/daynight/scripts/external-image-acceptance.ts --run-directory
+<checkout>/.tmp/external-image-acceptance/<run-id>`. Network setup refuses local,
+self-hosted and non-Linux execution. It requires Node.js 24, pnpm 11.28.6,
+Go 1.27.2, Docker, Python 3, curl, iproute2, iptables, nftables and dnsutils.
+The workflow prepares these tools and independently invokes the same entry
+point with `--cleanup` after execution.
+
+The job-owned Controller namespace has IPv6 disabled and an installed egress
+policy. Its service/DNS exceptions compare both original and final addresses
+and ports; protected targets remain denied after DNAT in INPUT and FORWARD.
+Actual host addresses/routes and the two owned Docker containers/networks,
+including their labels, addresses and aliases, supply the deployment inventory.
+The trusted external-image profile binds its policy identity to the installed
+rule digest.
+Source shutdown adds a separate deny and verifies per-protocol counter increases
+for probes pinned to the captured peer, without modifying product guards or
+fabricating DNS, peer or TLS results. All namespace processes, network links,
+firewall entries and changes to host forwarding have an owned cleanup receipt.
+Cleanup confirms process exit with pidfds before deleting namespace names;
+unconfirmed exit keeps the names and guards and produces a failed receipt.
+
+The workflow uploads only the run directory's `results/`, including source
+revision, image identities and hashes, network observations and cleanup
+receipts. Private configuration, tokens, keys, database files and image storage
+are excluded. A failed public request, changed DNS address or incomplete cleanup
+remains a failure. The [integration decision](../.agents/notes/implemented/testing/2026-11-11-public-markdown-image-integration.md)
+records scope and alternatives; the [source design](design/session-image-sources.md#可信部署出口配置)
+owns the product deployment contract.
+
+The network orchestrator's offline safety checks can run locally without
+privileges or network changes:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 packages/daynight/scripts/external-image-network.test.py
+bash -n packages/daynight/scripts/external-image-network.sh
+```
 
 ## Product E2E
 
