@@ -17,9 +17,11 @@ The existing deletion operation and result owners retain the original user,
 Project, operation, dispatch and receipt facts. They settle the local operation
 without waiting for presentation admission, preserving confirmed, rejected,
 undispatched and dispatched-but-unknown outcomes. Publication and cleanup
-remain subject to the original identity and resource admission. Cleanup, dialog
-closure and navigation are skipped when the submitted editor revision or location
-no longer matches.
+remain subject to the original identity and resource admission. Withdrawal is
+not started, and dialog closure and navigation are skipped, when the submitted
+editor revision or location no longer matches. If persistent cleanup fails after
+withdrawal, retry targets the original denied generation without a second
+withdrawal notification; a stale ticket cannot clear a newer generation.
 The owners hold and cancel delayed publication on replacement or disposal.
 The [Web design](../../../../docs/design/daynight-web.md#项目删除) owns the
 complete interaction. This refines the immediate withdrawal in the original

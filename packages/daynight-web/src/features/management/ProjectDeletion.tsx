@@ -121,9 +121,12 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       if (signal.aborted || !latest.current.active || !latest.current.onRoute || !latest.current.dialog || fresh?.teamRole !== "admin") throw new Error("Project deletion admission changed");
       const receipt = await deleteProject(projectId, scope.userId, signal, scope.principalMismatch, () => { op.dispatched = true; });
       const confirmedTicket = ticket;
+      let cleanupStarted = false;
       const finish = async (publicationSignal: AbortSignal = scope.signal): Promise<void | "skipped"> => {
-        if (!stillEditing()) { guard.release("delete"); onRetentionChange?.(false); return "skipped"; }
-        const revoked = await scope.revokeProject(confirmedTicket, publicationSignal);
+        if (!cleanupStarted && !stillEditing()) { guard.release("delete"); onRetentionChange?.(false); return "skipped"; }
+        publicationSignal.throwIfAborted();
+        const work = cleanupStarted ? scope.retryDeniedProjectCleanup(confirmedTicket, publicationSignal) : scope.revokeProject(confirmedTicket, publicationSignal, true, undefined, true, () => { cleanupStarted = true; });
+        const revoked = await work;
         await scope.ready(publicationSignal);
         if (revoked && stillEditing()) setDialog(false);
         guard.release("delete"); onRetentionChange?.(false);

@@ -1,4 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { IDBObjectStore } from "fake-indexeddb";
+import { openDB } from "idb";
 import { beforeEach, expect, it, vi } from "vitest";
 import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import type { ProjectAccess } from "../src/api/auth-types";
@@ -10,6 +12,7 @@ import { DeletionResultNotices, useDeletionNavigation } from "../src/features/ma
 import { useProjectManagementGuard } from "../src/features/management/ProjectManagementGuard";
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from "../src/features/projects/ProjectAccess";
 import { createTaskCacheScope } from "../src/features/task-cache/project-cache";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from "../src/features/task-cache/database";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
 import { personalTeamPage } from "./helpers/team";
@@ -390,6 +393,78 @@ it("keeps the current route and does not refresh when an old deletion cannot rev
     expect(window.location.pathname).toBe(`/projects/${projectId}/settings`);
     expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible();
   } finally { scope.dispose(); browserNavigation().dispose(); }
+});
+
+it.each(["original", "new generation"] as const)("retries failed deletion cleanup with %s state", async (generation) => {
+  browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings`);
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }), signal = scope.signal;
+  const taskId = "00000000-0000-4000-8000-000000000099";
+  const task = detailFixture(projectId, taskId);
+  const sync = taskSyncFromGraph(graphFixture([task]), { actorAccess: access, versionForTask: () => task.version, propertiesForTask: () => task.properties });
+  const apply = async () => { const ticket = await scope.beginSync(projectId, signal); await scope.applySync(ticket, sync, signal); };
+  const pending = Promise.withResolvers<Response>();
+  const revoke = vi.spyOn(scope, "revokeProject"), retry = vi.spyOn(scope, "retryDeniedProjectCleanup"), refresh = vi.fn();
+  const events: unknown[] = [];
+  const unsubscribe = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) events.push(event); });
+  const put = IDBObjectStore.prototype.put;
+  let injectFailure = false, failures = 0;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (injectFailure && this.name === "projects" && (args[0] as { state?: string }).state === "invalidated") {
+      injectFailure = false; failures++; throw new DOMException("Injected cleanup failure", "QuotaExceededError");
+    }
+    return put.apply(this, args);
+  });
+  const fetcher = vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith("/access")) return Promise.resolve(json(access));
+    if (url.includes("/deletion-preview")) return Promise.resolve(json(preview));
+    if (init?.method === "DELETE") return pending.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  let session!: ProjectAccessSession;
+  const CaptureAccess = () => { session = useProjectAccess(projectId).session; return null; };
+  const Subject = () => {
+    const guard = useProjectManagementGuard(), navigation = useDeletionNavigation(scope, refresh);
+    return <ProjectAccessBoundary projectId={projectId} initialRead><CaptureAccess /><ProjectDeletion projectId={projectId} active onRoute unavailable={false} guard={guard} onDeleted={navigation.complete} /><DeletionResultNotices state={navigation} /></ProjectAccessBoundary>;
+  };
+  vi.stubGlobal("fetch", fetcher);
+  await apply();
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  try {
+    render(<Subject />, { taskCache: { scope } });
+    const dialog = await open(); confirm(dialog);
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
+    injectFailure = true;
+    await act(async () => pending.resolve(json({ projectId, deleted: true })));
+    expect(await screen.findByText("Deletion succeeded, but local cache cleanup failed.")).toBeVisible();
+    expect(screen.getByText(/Project deleted/)).toBeVisible(); expect(failures).toBe(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((await db.get("projects", [userId, projectId]))?.state).toBe("active");
+    expect(await db.get("summaries", [userId, projectId, taskId])).toBeDefined();
+    let fresh: ReturnType<typeof scope.getAuthorizedProject> = null, input: HTMLElement | null = null;
+    if (generation === "new generation") {
+      await act(async () => { await apply(); await session.revalidateAfterMutation(); });
+      fresh = scope.getAuthorizedProject(projectId); expect(fresh).not.toBeNull();
+      const reopened = await open();
+      input = within(reopened).getByLabelText("Enter the project name to confirm");
+      fireEvent.change(input, { target: { value: "new input" } });
+    }
+    const eventCount = events.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));
+    await screen.findByRole("button", { name: "Dismiss" });
+    expect(screen.queryByText("Deletion succeeded, but local cache cleanup failed.")).toBeNull();
+    expect(screen.getByText(/Project deleted/)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+    expect(revoke).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce(); expect(events).toHaveLength(eventCount);
+    if (generation === "original") {
+      expect((await db.get("projects", [userId, projectId]))?.state).toBe("invalidated");
+      expect(await db.get("summaries", [userId, projectId, taskId])).toBeUndefined();
+    } else {
+      expect(scope.getAuthorizedProject(projectId)).toBe(fresh);
+      expect((await db.get("projects", [userId, projectId]))?.state).toBe("active");
+      expect(await db.get("summaries", [userId, projectId, taskId])).toBeDefined();
+      expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible(); expect(input).toHaveValue("new input");
+    }
+  } finally { db.close(); fault.mockRestore(); unsubscribe(); scope.dispose(); browserNavigation().dispose(); }
 });
 
 it("shows a retained settings link as unavailable when the Project is gone", async () => {
