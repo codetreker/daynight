@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -813,5 +815,187 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	defer stopRead()
 	if _, _, err := controller.Read(read); err == nil {
 		t.Fatal("controller connection remained open after shutdown")
+	}
+}
+
+type webhookHTTPApplicationFixture struct {
+	t           *testing.T
+	cfg         config.Config
+	store       *httpTestStore
+	runtime     *Runtime
+	cancel      context.CancelFunc
+	done        chan error
+	user, token string
+}
+
+func (f *webhookHTTPApplicationFixture) start() {
+	f.t.Helper()
+	client, err := service.NewIdentityClient(f.cfg.UniAuth)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	app := service.NewModules(f.cfg, f.store, func(context.Context) error { return nil }, attachmentTestFiles(f.t), client)
+	// Routes consume the selected service. Process tests own OpenApp's worker and resource assembly.
+	app.Webhooks = &webhookservice.Service{DB: f.store, ConfigurationExpansionAvailable: f.cfg.Webhook.Enabled, DispatchEnabled: f.cfg.Webhook.Enabled, Random: bytes.NewReader(nil)}
+	handler, err := New(app, f.cfg, testLogger())
+	if err != nil {
+		if cleanup := app.Close(context.Background()); cleanup != nil {
+			f.t.Error(cleanup)
+		}
+		f.t.Fatal(err)
+	}
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.Server.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+	if err != nil {
+		if cleanup := handler.Shutdown(context.Background()); cleanup != nil {
+			f.t.Error(cleanup)
+		}
+		if cleanup := app.Close(context.Background()); cleanup != nil {
+			f.t.Error(cleanup)
+		}
+		f.t.Fatal(err)
+	}
+	root, cancel := context.WithCancel(context.Background())
+	f.runtime, f.cancel, f.done = runtime, cancel, make(chan error, 1)
+	go func() { f.done <- runtime.Run(root) }()
+}
+func (f *webhookHTTPApplicationFixture) stop() {
+	f.t.Helper()
+	if f.cancel == nil {
+		return
+	}
+	f.cancel()
+	select {
+	case err := <-f.done:
+		if err != nil {
+			f.t.Errorf("runtime shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		f.t.Error("runtime shutdown timed out")
+	}
+	f.cancel = nil
+}
+func (f *webhookHTTPApplicationFixture) request(method, path, body string) (int, []byte) {
+	f.t.Helper()
+	req, err := http.NewRequest(method, "http://"+f.runtime.Address()+path, strings.NewReader(body))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: f.token})
+	req.Header.Set("Origin", f.cfg.Server.PublicOrigin)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			f.t.Error(err)
+		}
+	}()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if path != "/readyz" && (response.Header.Get("Daynight-User-ID") != f.user || response.Header.Get("Cache-Control") != "no-store") {
+		f.t.Fatalf("missing authentication headers: %v", response.Header)
+	}
+	return response.StatusCode, data
+}
+func (f *webhookHTTPApplicationFixture) expect(method, path, body string, status int) []byte {
+	f.t.Helper()
+	got, data := f.request(method, path, body)
+	if got != status {
+		f.t.Fatalf("%s %s: got %d want %d: %s", method, path, got, status, data)
+	}
+	return data
+}
+
+type rootWebhookReadScope struct {
+	store.WebhookHistoryReader
+	store.WebhookReadScope
+	store.WebhookReader
+	store.CredentialReader
+	t         *testing.T
+	principal model.Principal
+	mu        sync.Mutex
+	calls     []string
+}
+
+func (s *rootWebhookReadScope) CredentialDAO() store.CredentialReader { return s }
+func (s *rootWebhookReadScope) WebhookDAO() store.WebhookReader       { return s }
+func (s *rootWebhookReadScope) Credential(_ context.Context, p model.Principal) (store.ThreadCredential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "Credential")
+	if p != s.principal {
+		s.t.Fatalf("principal = %#v", p)
+	}
+	return store.ThreadCredential{}, nil
+}
+func (s *rootWebhookReadScope) Policy(_ context.Context, version int64) (webhook.Policy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "Policy")
+	if version != 1 {
+		s.t.Fatalf("policy version = %d", version)
+	}
+	return webhook.Policy{Version: 1}, nil
+}
+func (s *rootWebhookReadScope) Endpoints(_ context.Context, owner webhook.Owner) ([]webhook.Endpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "Endpoints")
+	if owner != (webhook.Owner{Kind: "personal", ID: s.principal.UserID}) {
+		s.t.Fatalf("owner = %#v", owner)
+	}
+	return []webhook.Endpoint{}, nil
+}
+
+func TestWebhookRuntimeRouteAssembly(t *testing.T) {
+	principal := defaultHTTPPrincipal()
+	principal.Kind = model.SessionCredential
+	database := newHTTPTestStoreForPrincipal(t, principal)
+	var scopes []*rootWebhookReadScope
+	var scopesMu sync.Mutex
+	database.ReadWebhookSnapshotCall = func(_ context.Context, fn func(store.WebhookReadScope) error) error {
+		scope := &rootWebhookReadScope{t: t, principal: principal}
+		scopesMu.Lock()
+		scopes = append(scopes, scope)
+		scopesMu.Unlock()
+		return fn(scope)
+	}
+	c := configuredTestConfig()
+	c.Server.ShutdownTimeout = 5 * time.Second
+	f := &webhookHTTPApplicationFixture{t: t, cfg: c, store: database, user: principal.UserID, token: httpTestToken(principal.Kind)}
+	t.Cleanup(f.stop)
+	f.start()
+	f.expect("GET", "/readyz", "", 200)
+	catalog := f.expect("GET", "/api/v1/webhook-event-types", "", 200)
+	var data struct {
+		Items   []any `json:"items"`
+		Service struct {
+			Dispatch bool `json:"dispatchEnabled"`
+		} `json:"service"`
+	}
+	if err := json.Unmarshal(catalog, &data); err != nil || len(data.Items) != 6 || data.Service.Dispatch {
+		t.Fatalf("catalog: %s (%v)", catalog, err)
+	}
+	empty := f.expect("GET", "/api/v1/me/webhooks", "", 200)
+	if !bytes.Contains(empty, []byte(`"items":[]`)) {
+		t.Fatalf("collection: %s", empty)
+	}
+	f.stop()
+	scopesMu.Lock()
+	defer scopesMu.Unlock()
+	if len(scopes) != 2 {
+		t.Fatalf("scope count: %d", len(scopes))
+	}
+	for i, want := range [][]string{{"Credential", "Policy"}, {"Credential", "Endpoints"}} {
+		scopes[i].mu.Lock()
+		got := append([]string(nil), scopes[i].calls...)
+		scopes[i].mu.Unlock()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("scope %d calls: %v, want %v", i, got, want)
+		}
 	}
 }

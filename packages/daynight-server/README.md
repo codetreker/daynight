@@ -1460,6 +1460,14 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/service/webhook
 ```
 
+The `internal/server/webhook` suite exercises management and history mappings
+through the real registrar, service and core with controlled DAO observations.
+Its supplied delivery generations do not demonstrate recovery. Root's ordinary
+`TestWebhookRuntimeRouteAssembly` retains the real `New` and `Start` wiring.
+`webhooktest` selects the full application management and ACL cases; physical
+recovery and no-redelivery run separately with `stress,webhooktest`. The shared
+application fixture is available under `stress || webhooktest`.
+
 Capture source facts and producer invocation belong to their Task, Step, Thread
 and Worker owners. PostgreSQL tests retain the real operation fences, actor
 reads, multi-record rollback, source/capture atomicity, lease and retention locks,
