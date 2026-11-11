@@ -2492,16 +2492,26 @@ They do not create another generation or send the assignment. A successful
 launch still requires durable native process identity before input admission;
 an unknown response or a crash cannot authorize another launch or replay.
 
-Startup, recovery and continuation prompts require autonomous decisions within
-the task scope and existing authorization. Human intervention requires specific
-information, a decision, authorization or an action that the agent cannot supply
-within that scope and authority. Before waiting for that intervention, the
-managed agent sets its own task's `paused` property to true with an observed
-exact version and confirms the same assignment and pause before waiting. It
-reports the issue and retains session context; the user chooses how to respond.
-After verifying resolution, the original assignment and permission to resume,
-it clears the pause and confirms false or absence before continuing. Independent
-user restrictions still apply. The [Worker execution contract](../../docs/spec/daynight-worker.md)
+Startup, macOS recovery or continuation, and periodic ping prompts share an
+autonomous execution policy. The agent checks the task, repository constraints
+and evidence, adjusts its approach, steps and task decisions, investigates failed
+approaches and chooses feasible alternatives, and records significant deviations
+and their reasons. It preserves confirmed business goals, scope, acceptance,
+external commitments and authorization. Ordinary information gaps, unavailable
+tools, failed approaches, recoverable errors and obsolete steps alone do not
+trigger a pause.
+
+A request for a specific human decision requires an evidenced severe design
+conflict: confirmed requirements or architecture constraints cannot all be met,
+no feasible compatible alternative exists, and resolution requires changing a
+confirmed constraint. Before waiting, the agent records the evidence, affected
+requirements, alternatives considered and decision needed, then sets its own
+task's `paused` property to true with an observed exact version and confirms the
+same assignment and pause. It retains session context; the user chooses how to
+respond. After verifying resolution, the original assignment and permission to
+resume, it clears the pause and confirms false or absence before continuing.
+Independent user pauses, restrictions and revocations, `allowAgents=false`, and
+claim or assignment changes remain binding. The [Worker execution contract](../../docs/spec/daynight-worker.md)
 owns readback, failure and conflict handling.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt

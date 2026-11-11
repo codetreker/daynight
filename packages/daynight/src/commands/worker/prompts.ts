@@ -6,7 +6,7 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
-import { assignmentInstruction, humanInterventionInstruction, ongoingWaitInstruction, completionInstruction } from "./execution-contract.js";
+import { assignmentInstruction, autonomousExecutionInstruction, humanInterventionInstruction, ongoingWaitInstruction, completionInstruction } from "./execution-contract.js";
 
 export const appendWorkerPrompts = (builtin: string, values: WorkerPromptTuple): string => {
   const blocks = (["user", "project", "worker"] as const)
@@ -41,6 +41,7 @@ export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatfor
     "The current execution environment is worker-managed.",
     "This is a background task. Make decisions autonomously within this assignment and its existing authorization.",
     assignmentInstruction,
+    autonomousExecutionInstruction,
     humanInterventionInstruction,
     ongoingWaitInstruction,
     completionInstruction,
@@ -49,10 +50,21 @@ export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatfor
   ].join("\n\n");
 };
 
+export const workerContinuationPrompt = (task: ClaimIdentity): string => [
+  `Continue the original assigned task for project ${task.projectId}, task ${task.taskId}, original claim ${task.claimId} in its original native conversation and worktree.`,
+  assignmentInstruction,
+  autonomousExecutionInstruction,
+  humanInterventionInstruction,
+  ongoingWaitInstruction,
+  completionInstruction,
+].join("\n\n");
+
 export const workerPingPrompt = (task: ClaimIdentity): string => [
   "<system remider>",
   `This is the worker's periodic check for project ${task.projectId}, task ${task.taskId}, original claim ${task.claimId}.`,
   "Continue the current assignment in its original native conversation and worktree, preserving its scope, existing authorization and worker-managed execution rules. This is a background task. Make decisions autonomously within that scope and authorization.",
+  assignmentInstruction,
+  autonomousExecutionInstruction,
   humanInterventionInstruction,
   ongoingWaitInstruction,
   completionInstruction,

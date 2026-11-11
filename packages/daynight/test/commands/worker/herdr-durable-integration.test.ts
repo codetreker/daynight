@@ -1435,7 +1435,12 @@ it("keeps a blocked macOS recovery input fixed and respects a later task pause",
     f.changeTask({ properties: originalTask.properties });
     await driver.advance(input); await driver.advance(input);
     expect(f.inputs).toHaveLength(2);
-    expect(f.inputs[1]).toEqual({ initial: false, body: "Continue the original assigned task under its existing authorization.\n\n----- begin user prompt -----\ncaptured\n----- end user prompt -----" });
+    expect(f.inputs[1]).toMatchObject({ initial: false });
+    expect(f.inputs[1]!.body).toContain("inspect the current task, repository rules and available evidence");
+    expect(f.inputs[1]!.body).toContain("no feasible alternative preserves the confirmed goal and constraints");
+    expect(f.inputs[1]!.body).toContain("If allowAgents is false, stop immediately");
+    expect(f.inputs[1]!.body).toContain("----- begin user prompt -----\ncaptured\n----- end user prompt -----");
+    expect(f.inputs[1]!.body).not.toContain("later");
     expect(f.launches).toHaveLength(2);
   } finally { store.close(); }
 });
