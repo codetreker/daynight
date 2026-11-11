@@ -19,9 +19,17 @@ references retain their own projections. Ordinary creation explicitly supplies
 `task` and no parent, and public writes do not expose either field. The shared
 MCP output schemas describe the typed resource and Goal progress shape.
 
+The CLI strictly reads the type and parent fields, accepts Goal progress and a
+not-applicable Session observation, and confines graph nodes to ordinary Tasks.
+Existing status and deletion commands read the target identity before writing;
+Goal terminal transitions and deletion require an impact confirmation or an
+explicit force flag. The preflight does not replace a caller's version or retry
+an unknown write. This prepares existing ID-based commands before public Goal
+creation is enabled.
+
 The [server design](../../../../docs/design/daynight-server.md) owns the deployed
-storage and API mechanics. Type-specific operations, Goal reads and public
-creation are separate capabilities and are not enabled by these columns.
+storage and API mechanics. Type-specific server operations, Goal production and
+public creation are separate capabilities and are not enabled by these columns.
 
 ## Alternatives
 
@@ -39,4 +47,5 @@ Existing ordinary data keeps its identity and behavior, and consumers can learn
 the added fields before new resource types are publicly created. The database
 does not enforce cross-row parent semantics; later business operations must own
 those checks and visibility rules. Storage and schema alone do not provide Goal
-lifecycle, progress or parent mutation.
+lifecycle, progress production or parent mutation. CLI preflight adds a read even
+when the caller supplies a version; the server remains authoritative for writes.

@@ -8,6 +8,7 @@ import type { runServerCommand } from "../server/runtime.js";
 import { taskDefinition } from "./definition.js";
 import { isTerminalTaskStatus } from "../../task/status.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
+import { CliCancelledError } from "../../cli/cancellation.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -20,6 +21,19 @@ const defaultDependencies: TaskCommandDependencies = {
 };
 
 const taskPriority = (task: Task): number => task.status === "in_progress" ? 0 : task.ready ? 1 : task.status === "todo" ? 2 : task.status === "proposed" ? 3 : 4;
+
+const confirmGoalChange = async (context: CliContext, action: "status" | "delete", taskId: string, projectId: string, signal: AbortSignal): Promise<void> => {
+  const impact = action === "status"
+    ? "Its Tasks retain their statuses; new automatic claims are excluded. Already claimed Tasks continue."
+    : "The Goal and all its Tasks become invisible; their Goal membership is retained. Running Tasks will stop through the existing process after a subsequent successful observation.";
+  context.stderr(`Goal ${taskId} in Project ${projectId}: ${impact}\n`);
+  if (context.prompt?.isInteractive !== true) throw new Error("This Goal operation requires interactive confirmation or --force.");
+  let answer: string;
+  try { answer = await context.prompt.ask("Continue? [y/N]: ", signal); }
+  finally { context.prompt.close(); }
+  signal.throwIfAborted();
+  if (!/^(?:y|yes)$/i.test(answer)) throw new CliCancelledError("Goal operation cancelled.");
+};
 
 const compileDependencies = async (
   ordinary: readonly string[] | undefined,
@@ -240,8 +254,13 @@ export const runTaskCommand = async (
       unsupportedObservation = task.session.observation === "unsupported";
       return command.options.has("--json") ? renderTaskJson(task) : renderTask(task);
     }
-    const version = expectedVersion === undefined ? (await api.getTask(project.id, taskId!)).version : expectedVersion;
+    const observed = (setsStatus || name === "delete" || expectedVersion === undefined) ? await api.getTask(project.id, taskId!) : undefined;
+    const version = expectedVersion ?? observed!.version;
     operation.check();
+    if (observed?.type === "goal" && !command.options.has("--force") && (name === "delete" || (setsStatus && isTerminalTaskStatus(command.values[1] as Task["status"])))) {
+      await confirmGoalChange(context, name === "delete" ? "delete" : "status", taskId!, project.id, operation.signal);
+      operation.check();
+    }
     if (name === "delete") {
       await api.deleteTask(project.id, taskId!, { version, ...(command.options.has("--remove-depends") ? { removeDepends: true } : {}) });
       operation.check();

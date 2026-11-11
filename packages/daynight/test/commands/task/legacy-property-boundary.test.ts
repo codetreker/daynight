@@ -49,13 +49,13 @@ it("keeps completed claim history on a maximum-version completion no-op", async 
   const claimId = "dddddddd-4444-4444-8444-444444444444", workerId = "eeeeeeee-5555-4555-8555-555555555555";
   const maximum = 9_223_372_036_854_775_807n;
   const worker = { claimId, state: "completed", userId: projectId, workerId, machine: { id: workerId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: workerId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
-  const completed = { id: taskId, projectId, title: "Task", description: "Preserved", properties: { worker, pullRequests: [{ url: "opaque\0delivery", title: "Worker evidence" }] }, status: "done", allowAgents: false, assignedTo: null, requiredPlatform: null, version: maximum, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time };
+  const completed = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "Preserved", properties: { worker, pullRequests: [{ url: "opaque\0delivery", title: "Worker evidence" }] }, status: "done", allowAgents: false, assignedTo: null, requiredPlatform: null, version: maximum, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time };
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => new URL(String(url)).pathname === `/api/v1/projects/${projectId}` ? json(project) : json(completed));
   const f = fixture(fetch);
   expect(await f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", String(maximum)])).toBe(0);
   const output = f.context.stdout.mock.calls[0]![0];
   for (const value of [`Status: done\n`, `Version: ${maximum}\n`, claimId, workerId, "original-native-session", '"state":"completed"', "opaque\\u0000delivery"]) expect(output).toContain(value);
-  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "PUT"]);
-  expect(parseApiJson(String(fetch.mock.calls[1]![1]!.body))).toEqual({ version: maximum, status: "done", claimId });
+  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "GET", "PUT"]);
+  expect(parseApiJson(String(fetch.mock.calls[2]![1]!.body))).toEqual({ version: maximum, status: "done", claimId });
   expect(f.context.stderr).not.toHaveBeenCalled();
 });

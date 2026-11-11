@@ -37,8 +37,10 @@ and protected API proofs. Task HTTP reads, writes and sync run with their real
 Task components and narrowly controlled snapshot and project-write capabilities;
 Task deletion retains a Root cross-route tombstone proof. The Task assignee
 stress sample retains the real application, SQL capture and query plans at the
-Task adapter. The [test-writing rules](../../../../docs/writing_tests.md) own the
-current requirements.
+Task adapter. Worker HTTP protocol matrices live with their Worker registrar,
+with real Service and Core where appropriate and narrow controlled capabilities
+for precise outcomes; HTTP fault classification belongs to httpx. The
+[test-writing rules](../../../../docs/writing_tests.md) own the current requirements.
 
 ## Alternatives
 
