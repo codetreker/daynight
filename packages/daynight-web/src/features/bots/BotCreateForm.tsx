@@ -34,12 +34,22 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const [defaultsError, setDefaultsError] = useState<unknown>(null), [error, setError] = useState<unknown>(null);
   const [validation, setValidation] = useState<'name' | 'cwd' | null>(null), [busy, setBusy] = useState(false), [checking, setChecking] = useState(false);
   const [confirmed, setConfirmed] = useState(() => confirmedBotCreations(scope));
+  const unresolvedChange = useRef(onUnresolvedRequestChange); unresolvedChange.current = onUnresolvedRequestChange;
   useEffect(() => {
     const update = () => setConfirmed(confirmedBotCreations(scope));
     const unsubscribe = subscribeConfirmedBotCreations(scope, update); update();
     return unsubscribe;
   }, [scope]);
-  const unknown = unresolvedRequest !== null && !confirmed.some(result => result.request.id === unresolvedRequest.id);
+  const confirmedRequestId = unresolvedRequest !== null && confirmed.some(result => result.request.id === unresolvedRequest.id) ? unresolvedRequest.id : null;
+  useEffect(() => {
+    if (confirmedRequestId === null) return;
+    const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
+    void scope.ready(signal).then(() => {
+      if (!signal.aborted && !authRequestsPaused() && !scope.isInvalidated && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
+    }).catch(cause => { if (!signal.aborted && !isAbortError(cause)) setError(cause); });
+    return () => controller.abort();
+  }, [scope, confirmedRequestId]);
+  const unknown = unresolvedRequest !== null && confirmedRequestId === null;
   const controlsEnabled = enabled && !scope.isInvalidated && !authRequestsPaused();
   const admitted = useRef(controlsEnabled); admitted.current = controlsEnabled;
   const selected = defaults?.workers.find(item => item.workerId === (workerId ?? defaults.workerId));

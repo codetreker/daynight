@@ -360,3 +360,21 @@ it('does not navigate when a dispatched response arrives after a temporary pause
   expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
   expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
 });
+
+it('reconciles a confirmed identity after its publishing form closes during pause', async () => {
+  const pending = deferred<api.BotDefinition>();
+  vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });
+  const { pauseAuthRequests } = await import('../src/api/client');
+  mount(); await flush(); name(); submit(); await flush();
+  let resume!: () => void;
+  act(() => { resume = pauseAuthRequests(); });
+  pending.resolve(bot); await flush();
+  fireEvent.click(screen.getByRole('button', { name: 'Close creation form' })); await flush();
+  act(() => resume());
+  fireEvent.click(screen.getByRole('button', { name: 'Open form' })); await flush();
+  expect(screen.getByText('Assistant creation confirmed.')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Check creation' })).toBeNull();
+  name('New draft'); await flush();
+  expect(assistantCreateSubmit()).toBeEnabled();
+  expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
+});
