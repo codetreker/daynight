@@ -168,6 +168,9 @@ func TestAppCloseRetainsResourcesUntilOperationFinishes(t *testing.T) {
 	if err := app.Close(deadline); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("close did not wait for operation: %v", err)
 	}
+	if app.ProducersStopped() {
+		t.Fatal("active operation reported as stopped")
+	}
 	if next, err := app.Engine.BeginOperation(); err == nil {
 		next.Close()
 		t.Fatal("closing engine admitted a new operation")
@@ -184,6 +187,9 @@ func TestAppCloseRetainsResourcesUntilOperationFinishes(t *testing.T) {
 	op.Close()
 	if err := app.Close(ctx); err != nil {
 		t.Fatalf("close retry: %v", err)
+	}
+	if !app.ProducersStopped() {
+		t.Fatal("drained application still reports active producers")
 	}
 	if err := app.Ready(ctx); err == nil {
 		t.Fatal("database remained open after operation finished")
@@ -428,6 +434,9 @@ func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("file close ignored caller deadline")
 	}
+	if !app.ProducersStopped() {
+		t.Fatal("file close timeout obscured stopped producers")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	err := app.Close(ctx)
 	cancel()
@@ -437,6 +446,9 @@ func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
 	release()
 	if err := app.Close(context.Background()); !errors.Is(err, failure) {
 		t.Fatalf("file failure lost on retry: %v", err)
+	}
+	if !app.ProducersStopped() {
+		t.Fatal("file close failure obscured stopped producers")
 	}
 	if err := app.Close(context.Background()); !errors.Is(err, failure) {
 		t.Fatalf("file failure lost on repeated close: %v", err)

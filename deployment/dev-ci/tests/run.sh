@@ -92,9 +92,9 @@ run_case() {
   assert_contains "$manifest" '"schemaVersion":1'
   assert_contains "$manifest" '"phase":"finished"'
   [[ ! -e ${manifest%manifest.json}.bootstrap.pipe ]]
-  if [[ $scenario == attachment-volume-left ]]; then
+  if [[ $scenario == attachment-volume-left || $scenario == log-volume-left ]]; then
     assert_contains "$manifest" '"cleanupResult":"failed"'
-    [[ -f $FAKE_DOCKER_STATE/attachment-volume && -f $FAKE_DOCKER_STATE/image ]]
+    [[ -f $FAKE_DOCKER_STATE/${scenario%-left} && -f $FAKE_DOCKER_STATE/image ]]
   elif [[ $scenario == cleanup-failure* ]]; then
     assert_contains "$manifest" '"cleanupResult":"failed"'
     [[ -f $FAKE_DOCKER_STATE/resources && -f $FAKE_DOCKER_STATE/image ]]
@@ -107,7 +107,7 @@ run_case() {
   [[ $(< "$manifest") != *private-fixture-secret* ]]
   local private_dir="$repository_dir/.tmp/dev-ci-private/$(< "$FAKE_DOCKER_STATE/project")"
   private_dir=${private_dir/daynight-dev-ci-/}
-  if [[ $scenario != cleanup-failure* && $scenario != attachment-volume-left ]]; then
+  if [[ $scenario != cleanup-failure* && $scenario != attachment-volume-left && $scenario != log-volume-left ]]; then
     [[ ! -d $private_dir ]]
   else
     [[ $(< "$private_dir/auth.env") != *private-fixture-secret* ]]
@@ -133,7 +133,7 @@ assert_contains "$(manifest_for "$FAKE_DOCKER_STATE")" '"result":"passed"'
 assert_contains "$(manifest_for "$FAKE_DOCKER_STATE")" '"imageId":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
 assert_contains "$(manifest_for "$FAKE_DOCKER_STATE")" '"containerIds":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]'
 project="$(< "$FAKE_DOCKER_STATE/project")"
-assert_contains "$(manifest_for "$FAKE_DOCKER_STATE")" "\"volumeNames\":[\"${project}_postgres-data\",\"${project}_attachment-data\"]"
+assert_contains "$(manifest_for "$FAKE_DOCKER_STATE")" "\"volumeNames\":[\"${project}_postgres-data\",\"${project}_attachment-data\",\"${project}_server-logs\"]"
 run_case build-failure 30 true
 run_case fixture-architecture 1 true
 fixture_override=$DAYNIGHT_UNIAUTH_FIXTURE_BINARY
@@ -168,6 +168,13 @@ assert_contains "${failed_manifest%manifest.json}recovery-manifest.json" '"clean
 assert_contains "$failed_manifest" '"cleanupResult":"failed"'
 printf '%s\n' 'PASS bounded recovery retains original receipt'
 run_case attachment-volume-left 1 true
+run_case log-volume-left 1 true
+project="$(< "$FAKE_DOCKER_STATE/project")"
+rm "$FAKE_DOCKER_STATE/log-volume"
+export FAKE_DOCKER_SCENARIO=passed
+bash "$runner" --cleanup "${project#daynight-dev-ci-}" > "$FAKE_DOCKER_STATE/recovery-output" 2>&1
+assert_contains "$(manifest_for "$FAKE_DOCKER_STATE" | sed 's/manifest.json$/recovery-manifest.json/')" '"cleanupResult":"passed"'
+[[ ! -f $FAKE_DOCKER_STATE/image ]]
 
 for callback_status in 0 49; do
   run_case "descendant-$callback_status" "$callback_status" bash -c '

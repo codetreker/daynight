@@ -666,6 +666,16 @@ Unknown, repeated and extra arguments fail before business resources open, witho
 echoing argument values. `verify-storage` validates only database and storage
 semantics and opens the backup storage read-only. Logs remain on stderr.
 
+Normal startup acquires an exclusive lock in `logs/.writer.lock` under the
+selected root, then appends the same JSON records to stderr and
+`logs/daynight-server.log`. The private directory and newly created files use
+0700 and 0600 permissions. The active file rotates at 100 MiB, retaining ten
+numbered files; an oversized record remains intact. Each server instance needs
+its own root and log directory, even when it shares an absolute storage root.
+The lock file persists across restarts. A logging failure stops the server with a
+nonzero exit and a safe `logging_failed` diagnostic on stderr when available.
+Writes are synchronous but do not promise per-record fsync.
+
 Use credentials suitable for the local PostgreSQL instance. The process validates
 the connection before listening and exits nonzero on startup or shutdown failure.
 It never logs the database URL, driver error text, SQL, request body, or query
@@ -3229,14 +3239,14 @@ daynight task set-property TASK_ID pullRequests '[{"url":"https://github.com/own
 daynight task remove-property TASK_ID pullRequests --project PROJECT_ID --if-version 4
 ```
 
-To inspect a failure, match its response `requestId` with JSON logs on stderr:
+To inspect a failure, match its response `requestId` with JSON logs:
 
 ```bash
-jq 'select(.request_id == "REQUEST_ID")' .tmp/server.jsonl
+jq 'select(.request_id == "REQUEST_ID")' "$DAYNIGHT_ROOT/logs/daynight-server.log"
 ```
 
-Capture stderr to that project-local path when starting the process; submitted
-URLs, bodies, SQL and credentials are excluded from logs.
+The same records are written to stderr. Submitted URLs, bodies, SQL and
+credentials are excluded from logs.
 
 ## Built-process acceptance and CI evidence
 

@@ -458,6 +458,15 @@ service 在 snapshot callback 内保留缺失结果但返回成功，待只读�
 信息、请求体及仓库地址中的认证材料；不直接记录原始
 driver 错误或完整请求体。成功日志提供方法、路由模板、状态和耗时。
 
+普通服务在 root 选定后先独占 `logs/.writer.lock`，再打开追加日志并加载配置。
+一个 JSON handler 同步写 stderr 与 `logs/daynight-server.log`，文件达到 100 MiB
+时按编号保留十个旧文件；超大单条记录保持完整。不同进程须使用不同日志目录，
+可通过绝对 storage 路径共享数据。文件或 stderr 失败会取消服务并导致非零退出，
+安全的 `logging_failed` 诊断直接写 stderr。生产者停止后关闭文件并释放锁；锁文件
+保留供下次启动使用。stderr 管道断开时，普通服务将 SIGPIPE 转为写入错误，仍尝试
+文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
+完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
+
 诊断服务失败时，先以响应 `requestId` 定位日志，再沿组件和阶段定位失败；数据库
 问题另外检查迁移版本及 PostgreSQL 日志。验收应通过非法状态、版本冲突和受控
 数据库故障确认错误码、日志关联和脱敏内容，不能只检查健康请求的输出。

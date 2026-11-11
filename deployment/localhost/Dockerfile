@@ -29,7 +29,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/daynight-server ./
 FROM node:24-bookworm-slim
 
 RUN groupadd --gid 10001 daynight && useradd --uid 10001 --gid daynight --no-create-home daynight \
-    && mkdir -p /var/lib/daynight/storage && chown 10001:10001 /var/lib/daynight/storage
+    && mkdir -p /var/lib/daynight/storage /var/lib/daynight/logs \
+    && chmod 0700 /var/lib/daynight/logs \
+    && chown 10001:10001 /var/lib/daynight/storage /var/lib/daynight/logs
 COPY --from=build --chmod=0555 /out/daynight-server /usr/local/bin/daynight-server
 COPY --from=web /out/image-validation /opt/daynight/image-validation
 ENV DAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node \

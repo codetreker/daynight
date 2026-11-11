@@ -51,6 +51,7 @@ type App struct {
 	persistenceClosed chan struct{}
 	filesClosed       chan struct{}
 	closed            bool
+	producersStopped  bool
 	closeErr          error
 }
 
@@ -131,6 +132,10 @@ func OpenApp(ctx context.Context, c config.Config) (*App, error) {
 	return OpenAppWithLogger(ctx, c, slog.Default())
 }
 
+// ErrAppCleanupIncomplete indicates that a failed open could not finish stopping
+// its producers. The process must retain resources those producers may still use.
+var ErrAppCleanupIncomplete = errors.New("application startup cleanup incomplete")
+
 // OpenAppWithLogger uses the server's structured logger for owned background work.
 func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger) (*App, error) {
 	return openApp(ctx, c, logger, appOpeners{
@@ -197,7 +202,13 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
 		defer done()
-		return nil, errors.Join(cause, app.Close(cleanup))
+		if err := app.Close(cleanup); err != nil {
+			if !app.ProducersStopped() {
+				return nil, errors.Join(cause, ErrAppCleanupIncomplete, err)
+			}
+			return nil, errors.Join(cause, err)
+		}
+		return nil, cause
 	}
 	if c.Monitoring.Redis.RedisURL != "" {
 		if open.monitoring == nil {
@@ -289,6 +300,7 @@ func (a *App) Close(ctx context.Context) error {
 	if err := a.Engine.Stop(ctx); err != nil {
 		return err
 	}
+	a.producersStopped = true
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -354,4 +366,11 @@ func (a *App) Close(ctx context.Context) error {
 	a.closed = true
 	a.closeErr = a.monitoringErr
 	return errors.Join(a.closeErr, ctx.Err())
+}
+
+// ProducersStopped reports whether all application-owned log producers stopped.
+func (a *App) ProducersStopped() bool {
+	<-a.closeLock
+	defer func() { a.closeLock <- struct{}{} }()
+	return a.producersStopped
 }

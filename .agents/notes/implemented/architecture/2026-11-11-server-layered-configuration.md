@@ -39,5 +39,6 @@ Deployments can use private overrides without changing the base file, and
 explicit empty or zero values are distinguishable from absent fields. The YAML
 loader must reject invalid earlier layers even when later layers override them.
 Existing relative storage paths change their base and operators must verify their
-actual data directory when migrating. File logging and deployment-owned YAML
-remain separate delivery units.
+actual data directory when migrating. Deployment-owned YAML remains a separate
+delivery unit. The [file logging decision](../feature/2026-11-11-server-file-logging.md)
+owns output and process-lifetime rules.
