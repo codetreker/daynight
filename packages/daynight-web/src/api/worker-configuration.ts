@@ -137,7 +137,7 @@ export const parseWorkerConfiguration = (value: unknown, options: WorkerConfigur
   return { desired, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}) };
 };
 
-export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean };
+export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean };
 const url = (workerId: string) => `/api/v1/me/workers/${requestId(workerId)}/configuration`;
 export const getWorkerConfiguration = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission & { readonly toolPathsSupported?: boolean }): Promise<WorkerConfigurationResource> => {
   const userId = requestId(admission.userId);
@@ -162,8 +162,9 @@ export const saveWorkerConfiguration = async (workerId: string, revision: string
     if (toolHeader !== null && toolHeader !== '1' || toolsSupported && toolHeader !== '1') throw new ApiError('protocol', response.status);
     const resource = parseWorkerConfiguration(data, { controlMode: response.headers.get('Daynight-Worker-Control-Mode') === '1', toolPaths: toolsSupported && toolHeader === '1' });
     if (resource.desired === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || JSON.stringify(resource.desired.value) !== JSON.stringify(validated)) throw new ApiError('protocol', response.status);
+    admission.onConfirmed?.(resource);
     return resource;
-  });
+  }, undefined, false, admission.onRejected);
 };
 export const listWorkerConfigurationProjects = async (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<ProjectPage> => {
   const userId = requestId(admission.userId), parameters = new URLSearchParams();
