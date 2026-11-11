@@ -21,7 +21,7 @@ func TestMCPOriginsConfigurationAndValidationOrder(t *testing.T) {
 	for _, invalid := range []string{"https://client.example/path", "https://client.example?", "null", "https://client.example,", "https://user@client.example", "https://CLIENT.example", "https://client.example#fragment"} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": invalid}))
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" || failure.Cause == nil || strings.Contains(err.Error(), invalid) {
+		if !errors.As(err, &failure) || failure.Field != "allowed_origins" || failure.Cause == nil || strings.Contains(err.Error(), invalid) {
 			t.Errorf("invalid MCP origin %q: %v", invalid, err)
 		}
 	}
@@ -34,11 +34,11 @@ func TestMCPOriginsConfigurationAndValidationOrder(t *testing.T) {
 		t.Fatalf("callback error must precede MCP origin: %v", err)
 	}
 	c.UniAuth.CallbackURL = c.Server.PublicOrigin + "/api/v1/auth/callback"
-	if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" {
+	if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "allowed_origins" {
 		t.Fatalf("MCP origin must precede credential validation: %v", err)
 	}
 	c.MCP.Origins.AllowedOrigins = nil
-	if err := c.Validate(); !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+	if err := c.Validate(); !errors.As(err, &failure) || !strings.Contains(failure.Field, "app_id") {
 		t.Fatalf("invalid credential was not validated: %v", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestOAuthPreregisteredClients(t *testing.T) {
 	for _, value := range []string{`[]`, `null`, `{"known":null}`, `{"known":{"client_id":"other","redirect_uris":["https://client.example/callback"]}}`, `{"a":{},"a":{}}`, valid + ` {}`} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS": value}))
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS" || strings.Contains(err.Error(), value) {
+		if !errors.As(err, &failure) || failure.Field != "preregistered_clients" || strings.Contains(err.Error(), value) {
 			t.Fatalf("invalid preregistration accepted or disclosed: %v", err)
 		}
 	}
@@ -60,7 +60,6 @@ func TestOAuthPreregisteredClients(t *testing.T) {
 
 func configuredTestConfig() Config {
 	c := DefaultConfig()
-	c.MCP.Transfer.TempBudgetBytes = 0
 	c.MCP.Transfer.ReservedFreeBytes = 0
 	c.Database.URL = "postgres://database"
 	c.Storage.Root = "storage"
@@ -116,7 +115,7 @@ func TestMonitoringRedisConfiguration(t *testing.T) {
 	for _, value := range []string{" ", "https://example.com", "unix:///tmp/redis.sock", "redis://host:word", "redis://host:", "redis://host:0", "redis://host:99999", "redis://host/-1", "redis://host?db=-1", "redis://host?db=", "redis://host?pool_size=2147483648", "redis://host?min_idle_conns=999999999", "redis://host?db=0&db=1", "redis://host/invalid", "redis://user:secret@bad%host"} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_REDIS_URL": value}))
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_REDIS_URL" || strings.Contains(err.Error(), "secret") {
+		if !errors.As(err, &failure) || failure.Field != "redis_url" || strings.Contains(err.Error(), "secret") {
 			t.Fatalf("invalid Redis URL accepted or disclosed: %v", err)
 		}
 	}
@@ -135,7 +134,7 @@ func TestMCPTemporaryCapacityConfiguration(t *testing.T) {
 		for _, value := range []string{"-1", "+1", "01", "1GiB", "9223372036854775808"} {
 			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
 			var failure *configvalue.ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != field {
+			if !errors.As(err, &failure) || failure.Field != testRelativeField(field) {
 				t.Fatalf("accepted %s=%q: %v", field, value, err)
 			}
 		}
@@ -149,7 +148,7 @@ func TestConfigRejectsInvalidInputs(t *testing.T) {
 	for _, field := range []string{"DAYNIGHT_STARTUP_TIMEOUT", "DAYNIGHT_SHUTDOWN_TIMEOUT", "DAYNIGHT_TASK_SYNC_OVERLAP"} {
 		for _, value := range []string{"-1s", "0s", "password", "1", "99999999999999999999h"} {
 			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || !strings.Contains(err.Error(), field) || strings.Contains(err.Error(), value) {
+			if err == nil || !strings.Contains(err.Error(), testRelativeField(field)) || strings.Contains(err.Error(), value) {
 				t.Fatalf("invalid duration not safely diagnosed: %v", err)
 			}
 		}
@@ -190,9 +189,9 @@ func TestConfigRejectsInvalidInputs(t *testing.T) {
 }
 
 func TestStorageRootConfiguration(t *testing.T) {
-	for _, root := range []string{"", " \t"} {
+	for _, root := range []string{" \t"} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_STORAGE_ROOT": root}))
-		if err == nil || err.Error() != "DAYNIGHT_STORAGE_ROOT is required" {
+		if err == nil || err.Error() != "root must be nonempty and contain no control characters" {
 			t.Fatalf("missing root was not diagnosed: %v", err)
 		}
 	}
@@ -210,7 +209,7 @@ func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) 
 	} {
 		for _, value := range []string{"", " \t"} {
 			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || err.Error() != field+" is required" {
+			if err == nil || err.Error() != testRelativeField(field)+" is required" {
 				t.Fatalf("missing %s was not diagnosed: %v", field, err)
 			}
 		}
@@ -218,7 +217,7 @@ func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) 
 	for _, field := range []string{"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN", "DAYNIGHT_ALLOW_LOOPBACK_HTTP"} {
 		for _, value := range []string{"true", "false", "2", "secret-value"} {
 			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || err.Error() != field+" must be 0 or 1" {
+			if err == nil || err.Error() != testRelativeField(field)+" must be 0 or 1" {
 				t.Fatalf("invalid %s flag was not safely diagnosed: %v", field, err)
 			}
 		}
@@ -249,7 +248,7 @@ func TestWebhookConfiguration(t *testing.T) {
 	for _, v := range []string{"true", "yes", "2"} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": v}))
 		var invalid *configvalue.ConfigurationError
-		if !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_WEBHOOK_ENABLED" {
+		if !errors.As(err, &invalid) || invalid.Field != "enabled" {
 			t.Fatalf("invalid flag %q: %v", v, err)
 		}
 	}
@@ -287,7 +286,7 @@ func TestImageValidationConfiguration(t *testing.T) {
 			copy[field] = invalid
 			_, err := LoadConfig(configEnvironment(copy))
 			var failure *configvalue.ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != field {
+			if !errors.As(err, &failure) || failure.Field != testRelativeField(field) {
 				t.Fatalf("accepted invalid %s: %v", field, err)
 			}
 		}
@@ -300,7 +299,46 @@ func TestEnvironmentDecodingPreservesErrorOrder(t *testing.T) {
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "invalid",
 	}))
 	var failure *configvalue.ConfigurationError
-	if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_TASK_SYNC_OVERLAP" {
+	if !errors.As(err, &failure) || failure.Field != "overlap" {
 		t.Fatalf("task sync duration must be decoded before the HTTP flag: %v", err)
+	}
+}
+
+func testRelativeField(env string) string {
+	switch env {
+	case "DAYNIGHT_MCP_TEMP_BUDGET_BYTES":
+		return "temp_budget_bytes"
+	case "DAYNIGHT_MCP_RESERVED_FREE_BYTES":
+		return "reserved_free_bytes"
+	case "DAYNIGHT_STARTUP_TIMEOUT":
+		return "startup_timeout"
+	case "DAYNIGHT_SHUTDOWN_TIMEOUT":
+		return "shutdown_timeout"
+	case "DAYNIGHT_TASK_SYNC_OVERLAP":
+		return "overlap"
+	case "DAYNIGHT_PUBLIC_ORIGIN":
+		return "public_origin"
+	case "DAYNIGHT_UNIAUTH_URL":
+		return "url"
+	case "DAYNIGHT_UNIAUTH_APP_ID":
+		return "app_id"
+	case "DAYNIGHT_UNIAUTH_APP_SECRET":
+		return "app_secret"
+	case "DAYNIGHT_UNIAUTH_CALLBACK_URL":
+		return "callback_url"
+	case "DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN":
+		return "allow_http_test_origin"
+	case "DAYNIGHT_ALLOW_LOOPBACK_HTTP":
+		return "allow_loopback_http"
+	case "DAYNIGHT_IMAGE_NODE_PATH":
+		return "node_path"
+	case "DAYNIGHT_IMAGE_HELPER_PATH":
+		return "helper_path"
+	case "DAYNIGHT_IMAGE_MANIFEST_PATH":
+		return "manifest_path"
+	case "DAYNIGHT_IMAGE_TEMP_DIRECTORY":
+		return "temporary_directory"
+	default:
+		return env
 	}
 }

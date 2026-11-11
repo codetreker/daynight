@@ -429,3 +429,41 @@ func TestMCPShutdownReusesDrainAndClosesAllAdmission(t *testing.T) {
 		t.Fatalf("shutdown after work finished: %v", err)
 	}
 }
+
+// newAdapterHost exercises selected adapters through the real Entry and SDK.
+func newAdapterHost(t *testing.T, auth Authenticator, output io.Writer, register func(*Entry, string) error) (*httptest.Server, *Entry) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(nil)
+	var entry *Entry
+	started := false
+	t.Cleanup(func() {
+		if started {
+			server.Close()
+		} else {
+			_ = server.Listener.Close()
+		}
+		if entry != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := entry.Shutdown(ctx); err != nil {
+				t.Errorf("MCP shutdown: %v", err)
+			}
+		}
+	})
+	origin := "http://" + server.Listener.Addr().String()
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	var err error
+	entry, err = New(auth, origin, nil, logger, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := register(entry, origin); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", entry)
+	server.Config.Handler = httpx.RequestLogging(logger, mux)
+	server.Start()
+	started = true
+	return server, entry
+}

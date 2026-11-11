@@ -22,7 +22,7 @@ func TestConfiguration(t *testing.T) {
 	for _, value := range []string{" ", "https://example.com", "unix:///tmp/redis.sock", "redis://host:word", "redis://host:", "redis://host:0", "redis://host:99999", "redis://host/-1", "redis://host?db=-1", "redis://host?db=", "redis://host?pool_size=2147483648", "redis://host?min_idle_conns=999999999", "redis://host?db=0&db=1", "redis://host/invalid", "redis://user:secret@bad%host"} {
 		err := (Config{RedisURL: value}).Validate()
 		var failure *configvalue.ConfigurationError
-		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_REDIS_URL" || failure.Cause == nil || strings.Contains(err.Error(), "secret") {
+		if !errors.As(err, &failure) || failure.Field != "redis_url" || failure.Cause == nil || strings.Contains(err.Error(), "secret") {
 			t.Fatalf("invalid Redis URL accepted or disclosed: %v", err)
 		}
 	}

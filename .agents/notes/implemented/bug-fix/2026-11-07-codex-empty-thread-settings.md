@@ -10,6 +10,11 @@ cold resume then keeps the original thread identity but resolves different
 settings. Reapplying startup configuration during resume would overwrite later
 settings that the user changed inside the native conversation.
 
+The metadata check must also distinguish the original database from a
+replacement at the same path. Default numeric filesystem stats cannot represent
+every 64-bit file ID exactly, so distinct live file objects can share the same
+rounded identity and incorrectly confirm another database's committed row.
+
 ## Decision
 
 The shared Codex Provider materializes the empty rollout through its existing
@@ -43,13 +48,25 @@ therefore requires both the new rollout record and committed resume metadata.
 The metadata reader resolves managed `sqliteHome`, effective `sqlite_home`,
 the actual child's `CODEX_SQLITE_HOME`, and native home in priority order. It
 supports the verified `state_5.sqlite` layout rather than scanning for a likely
-database. Each observation opens a read-only, file-must-exist connection with
-zero busy timeout, selects the original ID, path, cwd and both settings in one
-row, then closes the connection. Only explicit fields constrain settings.
-WAL remains visible; no transaction spans polls and no native database is
-created, migrated, checkpointed or written. Missing files, rows and unmatched
-values wait within the shared deadline; unsupported schemas, corruption and
-identity changes fail. JSONL is checked again after metadata confirmation.
+database. The first existing ordinary file binds the canonical path and exact
+`bigint` device and inode values. Every observation uses `lstat` with
+`bigint: true` before and after its SQLite read, checking the original identity
+and canonical path at both boundaries. It opens a read-only, file-must-exist
+connection with zero busy timeout, selects the original ID, path, cwd and both
+settings in one row, then closes the connection. Only explicit fields constrain
+settings. WAL remains visible; no transaction spans polls and no native database
+is created, migrated, checkpointed or written. A missing database before identity
+binding, missing rows and unmatched values wait within the shared deadline;
+unsupported schemas, corruption, nonfiles and identity changes fail. A bound
+path disappearing also fails. JSONL is checked again after metadata confirmation.
+
+Exact stat values are required by the filesystem representation, not by SQLite:
+Node's Windows adapter exposes the
+[64-bit file ID as the inode](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/deps/uv/src/win/fs.c#L1971),
+then [converts stat fields to the selected numeric type](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/src/node_file-inl.h#L89).
+The [default Float64 stat array](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/src/node_file.h#L78)
+loses integer precision above the safe-integer range. Requesting bigint stats
+preserves file identity without changing a stored format or public API.
 
 The rollout reader uses one file handle, checks replacement and truncation,
 and bounds bytes. Configuration reads, the single update and both persistence
@@ -110,6 +127,11 @@ without adding another native mutation or restarting the production thread.
 **Persist resolved defaults too.** That would freeze values the caller omitted
 and turn display fallbacks into user intent.
 
+**Keep numeric file identity.** Comparing rounded device and inode values can
+accept distinct 64-bit identities, even while the original database still
+exists. Converting those rounded values to strings or bigint afterward cannot
+recover the discarded bits; both stat observations must request exact values.
+
 ## Consequences
 
 Explicit fresh choices add one settings RPC, two configuration reads and
@@ -121,7 +143,14 @@ recovery could rebuild it. Resume and omitted initial choices gain no such
 dependency. The dual barrier supports process-crash recovery, not a guarantee
 of durability across power loss.
 Fixture tests cover request ordering, omission, unchanged resume and failure
-cleanup; native-version evidence is still required to establish actual cold
-persistence. The change does not repair historical threads whose original
-choices were never persisted, change interactive controls confirmation, or
-weaken the existing identity and stop-proof gates for recovery.
+cleanup. Real SQLite and filesystem tests cover committed snapshots, locks,
+replacement, symlinks, corruption and row ownership. A focused regression
+controls only stat IDs to distinguish `2^53` from `2^53 + 1`, whose numeric
+representations are equal, and rejects both device and inode changes between
+polls and across one SQLite read. These controlled IDs establish the precision
+boundary independently of the filesystem's allocated IDs; they do not measure
+the IDs assigned by a particular platform run. Native-version evidence is still
+required to establish actual cold persistence. The change does not repair
+historical threads whose original choices were never persisted, change
+interactive controls confirmation, or weaken the existing identity and
+stop-proof gates for recovery.

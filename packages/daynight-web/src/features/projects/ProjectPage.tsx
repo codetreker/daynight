@@ -152,7 +152,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   useEffect(() => {
     if (snapshot === null) return;
-    if (detailSelection !== null && detailSelection.source === "summary" && detailSelection.revision !== snapshot.revision && !snapshot.index.nodes.has(detailSelection.id)) {
+    if (detailSelection !== null && detailSelection.source === "summary" && detailSelection.revision !== snapshot.revision && !snapshot.summaries.has(detailSelection.id)) {
       setDetailSelection(null);
       setNotice({ kind: "selected-task-removed" });
     }

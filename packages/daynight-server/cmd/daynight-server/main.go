@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 
@@ -21,25 +27,79 @@ import (
 var exit = os.Exit
 
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.LookupEnv, os.Stderr))
 }
 
-func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
-	if len(args) == 1 && args[0] == "verify-storage" {
-		return verifyStorageCommand(ctx, getenv, stderr)
+type rootFlag struct {
+	value string
+	set   bool
+}
+
+func (r *rootFlag) String() string { return r.value }
+func (r *rootFlag) Set(value string) error {
+	if r.set {
+		return errors.New("duplicate root")
 	}
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
-	if len(args) != 0 {
-		httpx.LogFailure(logger, ctx, "configuration", "arguments", &configvalue.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})
+	r.value, r.set = value, true
+	return nil
+}
+
+func parseCommand(args []string, lookup func(string) (string, bool)) (string, string, error) {
+	command := "server"
+	if len(args) > 0 && args[0] == "verify-storage" {
+		command, args = "verify-storage", args[1:]
+	}
+	var root rootFlag
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Var(&root, "root", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return command, "", &configvalue.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"}
+	}
+	if !root.set {
+		root.value, root.set = lookup("DAYNIGHT_ROOT")
+		if !root.set {
+			root.value = "/var/lib/daynight"
+		}
+	}
+	if strings.TrimSpace(root.value) == "" || !filepath.IsAbs(root.value) || strings.IndexFunc(root.value, unicode.IsControl) >= 0 {
+		return command, "", &configvalue.ConfigurationError{Field: "root", Rule: "must be a nonempty absolute path without control characters"}
+	}
+	return command, root.value, nil
+}
+
+func run(ctx context.Context, args []string, lookup func(string) (string, bool), stderr io.Writer) int {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		slog.New(slog.NewJSONHandler(stderr, nil)).ErrorContext(ctx, "run identity generation failed")
 		return 1
+	}
+	command := "server"
+	if len(args) > 0 && args[0] == "verify-storage" {
+		command = "verify-storage"
+	}
+	logger := slog.New(slog.NewJSONHandler(stderr, nil)).With("run_id", hex.EncodeToString(id[:]), "pid", os.Getpid(), "command", command)
+	command, root, err := parseCommand(args, lookup)
+	if err != nil {
+		httpx.LogFailure(logger, ctx, "configuration", "arguments", err)
+		return 1
+	}
+	if command == "verify-storage" {
+		return verifyStorageCommand(ctx, root, lookup, stderr, logger)
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg, err := config.LoadConfig(getenv)
+	cfg, err := config.LoadServer(root, lookup)
 	if err != nil {
-		httpx.LogFailure(logger, ctx, "configuration", "load", err)
+		phase := "validate"
+		var configErr *configvalue.ConfigurationError
+		if errors.As(err, &configErr) && configErr.Phase != "" {
+			phase = configErr.Phase
+		}
+		httpx.LogFailure(logger, ctx, "configuration", phase, err)
 		return 1
 	}
+	logger.InfoContext(ctx, "configuration_loaded", "event", "configuration_loaded", "component", "configuration", "local_override_loaded", cfg.LocalOverrideLoaded)
 	startup, cancelStartup := context.WithTimeout(ctx, cfg.Server.StartupTimeout)
 	defer cancelStartup()
 	app, err := service.OpenAppWithLogger(startup, cfg, logger)

@@ -1,3 +1,4 @@
+import { summariesForGraph } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
@@ -35,11 +36,11 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const projectId = id(100);
 const timestamp = '2026-10-20T09:00:00.123456789Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
-const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
-const node = (task: TaskDetail): GraphTask => ({ assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
+const node = (task: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
   status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
 });
@@ -53,7 +54,7 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },
   };
-  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
   snapshotDetails.set(value, tasks);
   return value;
 };

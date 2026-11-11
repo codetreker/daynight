@@ -14,11 +14,11 @@ const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
-const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
+const task = { type: "task" as const, parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
+const graphTask = { type: "task" as const, parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -42,6 +42,14 @@ const mockResponse = (value: unknown, status = 200) => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("response parsing", () => {
+  it("requires typed resources and rejects a Goal in the ordinary graph", () => {
+    expect(parseTaskDetail({ ...task, type: "goal", ready: false }, projectId, taskId)).toMatchObject({ type: "goal", parentId: null });
+    expect(parseTaskDetail({ ...task, parentId: otherId }, projectId, taskId).parentId).toBe(otherId);
+    for (const change of [{ type: undefined }, { type: "unknown" }, { parentId: undefined }, { type: "goal", parentId: otherId }]) {
+      expect(() => parseTaskDetail({ ...task, ...change }, projectId, taskId)).toThrow("invalid response");
+    }
+    expect(() => parseTaskGraph({ ...graph, tasks: [{ ...graphTask, type: "goal" }] }, projectId)).toThrow("invalid response");
+  });
   it("requires the external subset on both full tasks and graph nodes", () => {
     const { externalDependsOn: _fullSubset, ...missingTask } = task;
     const { externalDependsOn: _graphSubset, ...missingNode } = graphTask;

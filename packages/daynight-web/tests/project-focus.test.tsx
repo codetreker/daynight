@@ -28,7 +28,7 @@ const rootId = '20000000-0000-0000-0000-000000000001';
 const selectedId = '20000000-0000-0000-0000-000000000002';
 const remainingId = '20000000-0000-0000-0000-000000000003';
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, blockedBy: dependsOn,
   ready: dependsOn.length === 0, createdAt: timestamp, updatedAt: timestamp,
 });

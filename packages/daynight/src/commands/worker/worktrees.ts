@@ -22,6 +22,9 @@ type Owner = ResourceOwner & { leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
+
+/** The Git manager and execution backends share the selected task target. */
+export const selectedWorktreePath = (repositoryRoot: string, taskId: string): string => path.join(repositoryRoot, ".worktrees", "daynight", taskId);
 const prefix = "daynight-worker:";
 const removing = new Set<string>();
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -112,7 +115,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const bindingFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeBinding => {
     const identity = coordinates(owner);
     if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
-    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: path.join(repository.root, ".worktrees", "daynight", identity.taskId), branch: `daynight/${identity.taskId}` };
+    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: selectedWorktreePath(repository.root, identity.taskId), branch: `daynight/${identity.taskId}` };
   };
   const readers = { directory, ordinaryFile, markerOwner: (marker: string) => coordinates(markerOwner(marker)) };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>

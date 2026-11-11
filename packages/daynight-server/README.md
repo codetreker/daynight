@@ -621,14 +621,14 @@ cd packages/daynight-server
 source scripts/env.sh
 go build -o .tmp/daynight-server ./cmd/daynight-server
 export DAYNIGHT_DATABASE_URL='postgres://daynight:password@127.0.0.1:5432/daynight?sslmode=disable'
-export DAYNIGHT_STORAGE_ROOT="$PWD/.tmp/storage"
+export DAYNIGHT_ROOT="$PWD/.tmp/server-root"
 export DAYNIGHT_PUBLIC_ORIGIN='http://127.0.0.1:8787'
 export DAYNIGHT_UNIAUTH_URL='https://identity.example.com'
 export DAYNIGHT_UNIAUTH_APP_ID='<registered-app-id>'
 export DAYNIGHT_UNIAUTH_APP_SECRET='<server-side-app-secret>'
 export DAYNIGHT_UNIAUTH_CALLBACK_URL='http://127.0.0.1:8787/api/v1/auth/callback'
 export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
-.tmp/daynight-server
+.tmp/daynight-server --root "$DAYNIGHT_ROOT"
 ```
 
 `web:build` typechecks and builds the web package, validates the real output and
@@ -647,11 +647,24 @@ UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
 owns the shared authentication setup.
 
-Startup configuration fields, defaults, environment decoding and validation belong to their respective modules. `internal/config` assembles these types and invokes cross-module checks before resources are opened. An empty environment value retains the existing default; the storage root is required and relative paths use the process working directory.
+The server selects an absolute root from `--root`, `DAYNIGHT_ROOT`, or
+`/var/lib/daynight`, in that order. It reads optional `config/config.yml` and
+`config/config.local.yml` under that root, then applies explicitly set environment
+variables. Copy [config.example.yml](config/config.example.yml) to the root's
+config directory and keep credentials private. Defaults apply once before the
+files; a field in a later layer replaces the earlier value, including false,
+zero, empty strings and collections. Explicitly empty numeric, flag and duration
+environment values are invalid. Unknown YAML fields are ignored; duplicate keys,
+invalid types, null known fields, malformed or multiple documents fail startup.
+Relative file paths resolve against the root; storage defaults to `storage`.
+Loading configuration does not create directories or open business resources.
+Modules own their fields, defaults and validation; `internal/config` coordinates
+loading and cross-module checks.
 
-The executable accepts no command-line arguments. Arguments are rejected before
-configuration, database connections or HTTP listeners are initialized, and the
-diagnostic does not echo their contents.
+The executable accepts `--root` for normal startup or after `verify-storage`.
+Unknown, repeated and extra arguments fail before business resources open, without
+echoing argument values. `verify-storage` validates only database and storage
+semantics and opens the backup storage read-only. Logs remain on stderr.
 
 Use credentials suitable for the local PostgreSQL instance. The process validates
 the connection before listening and exits nonzero on startup or shutdown failure.
@@ -664,7 +677,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
-| `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
+| `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
@@ -681,10 +694,10 @@ diagnostics and cause categories.
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
-| `DAYNIGHT_IMAGE_NODE_PATH` | Absolute clean path to the pinned Node.js 24 executable | Unconfigured |
-| `DAYNIGHT_IMAGE_HELPER_PATH` | Absolute clean path to the packaged image validation helper | Unconfigured |
-| `DAYNIGHT_IMAGE_MANIFEST_PATH` | Absolute clean path to the helper and engine SHA-256 manifest | Unconfigured |
-| `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Absolute clean private staging directory (mode 0700) | Unconfigured |
+| `DAYNIGHT_IMAGE_NODE_PATH` | Path to the pinned Node.js 24 executable | Unconfigured |
+| `DAYNIGHT_IMAGE_HELPER_PATH` | Path to the packaged image validation helper | Unconfigured |
+| `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
+| `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
 Image validation settings are configured together or omitted together. Omitting
 them retains text service and refuses new image uploads. A configured runtime,
@@ -915,9 +928,11 @@ and the same numerical thresholds.
 
 ### Project HTTP tests
 
-`internal/server/project` tests use strict direct Project and Membership operation
-callbacks and the real request-authentication parser. They retain HTTP routing,
-parsing, argument propagation, DTOs, error/log classification, cancellation and
+`internal/server/project` tests use the real request-authentication parser and
+Project registrar. Protocol cases use strict direct operation callbacks where
+precise outcomes are needed; organization scenarios also execute real Project
+Service and Core over controlled DAO facts. They retain HTTP routing, parsing,
+argument propagation, DTOs, error/log classification, cancellation and
 response-write failure mechanisms. Their ordinary test binary clears database
 and UniAuth fixture configuration; run the complete adapter suite independently:
 
@@ -927,7 +942,7 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/project
 ```
 
-Business decisions remain with Core and Service tests. PostgreSQL COMMIT response
+Core and Service tests own their complete business decision matrices. PostgreSQL COMMIT response
 loss, transaction effects and independent persisted readback belong to Store
 owners; retained files and reopen behavior belong to local storage tests. The
 explicit `acceptance`-tagged process-restart witness retains its real isolated
@@ -1425,10 +1440,11 @@ transaction completion separately selects `committed`, `not_committed` or
 facts; recording a write does not automatically change those responses.
 
 Bot registration checks its complete inserted identity, registration bytes and
-durable initial Snapshot independently from the returned initial Snapshot. Root
-Bot expiry HTTP tests supply direct operation outcomes while retaining routing,
-authentication, request parsing, response encoding and blocked-operation
-barriers. They do not prove a database lock or rollback. The
+durable initial Snapshot independently from the returned initial Snapshot. The
+Bot package's expiry HTTP tests supply direct operation outcomes while retaining
+routing, authentication, request parsing, response encoding and blocked-operation
+barriers. They do not prove a database lock or rollback; the former Root fixture
+also registered routes locally without calling `New`. The
 [Bot expiry HTTP decision](../../.agents/notes/implemented/testing/2026-11-10-bot-expiry-http-test-owners.md)
 records the proof allocation.
 
@@ -1747,7 +1763,11 @@ entry-point drain and restart persistence. The
 [root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
 records these fixtures and the distinction between logical and physical evidence.
 
-Domain packages own their HTTP adapters. Task and Session HTTP unit tests
+Domain packages own their HTTP adapters. Project and Team organization scenarios
+use their real registrars, authentication parser, Service and Core with narrow
+controlled DAO facts. Root retains actual `New` fallback, health and cross-route
+projection proofs; supplied query results and completion do not prove persistence.
+Task and Session HTTP unit tests
 control directly called service/use-case results while retaining actual
 credential middleware, HTTP encoding, response loss and socket/resource
 handling. Their [Task](#business-rules-and-dao-mocks) and
@@ -1810,10 +1830,16 @@ physical persistence.
 
 ### MCP protocol tests
 
-`internal/server/mcp` tests use controlled direct service/use-case operations
-while executing the actual Entry, HTTP transport, SDK, schemas and tool response
-encoding. Principals and domain results are explicit facts; operations verify
-arguments, context, authority and calls. Unconfigured calls fail independently
+`internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
+schemas and tool response encoding. Most use controlled direct service/use-case
+operations; Project, Team and Invitation organization scenarios also execute
+real Service and Core with controlled DAO facts through a host registering only
+their adapters. Bot's completed-response loss test also uses real Service and
+Core, the SDK and socket through a Bot-only host; its later reads use explicitly
+supplied DAO facts, not persisted readback. The Root MCP and REST Bot lifecycle
+retains shared application construction. Principals and domain results are
+explicit facts; operations verify arguments, context, authority and calls.
+Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;
 its Tasks dependency still serves ready and dependency reads. The Root Step
@@ -2308,7 +2334,7 @@ summary responses have separate encoding budgets. Four CAS conflicts return
 409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
 write returns `503 monitoring_write_outcome_unknown`; callers must read back an
 unknown result before deciding what to do. Current access filters associated
-names, IDs and private details without changing the Worker's total capacity.
+names, IDs and private details, including claim failure worktree paths, without changing the Worker's total capacity. Deploy all Servers that accept and preserve the optional field before strict CLI/Web readers, then enable Worker production. Before rollback to a reader or Server that rejects it, stop production and allow affected frames to expire naturally after 3600 seconds or be safely replaced without the field; do not delete keys, renew TTLs or replay uncertain writes.
 
 Summary reads first admit the entire Worker batch and read only each bounded
 Redis header. A current PostgreSQL snapshot rechecks Workers and projects the

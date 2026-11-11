@@ -13,7 +13,7 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({
 
 const render = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
-const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null,
+const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
   requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });

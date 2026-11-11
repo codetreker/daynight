@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,24 @@ import (
 func testEnvironment(t *testing.T) map[string]string {
 	t.Helper()
 	return testEnvironmentAt(t, testAddress(t))
+}
+
+func lookupTestEnvironment(values map[string]string) func(string) (string, bool) {
+	return func(key string) (string, bool) { value, ok := values[key]; return value, ok }
+}
+
+func writeTestConfig(t *testing.T, root string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "config.yml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testEnvironmentAt(t *testing.T, address string) map[string]string {
@@ -122,7 +141,7 @@ func TestRunRejectsArgumentsBeforeConfiguration(t *testing.T) {
 	for _, args := range [][]string{{"unknown-secret"}, {"migrate-attachment-layout"}, {"migrate-attachment-layout", "plan"}, {"migrate-attachment-layout", "apply", "--operation-id", "secret-operation"}, {"migrate-attachment-layout", "resume", "--operation-id", "secret-operation"}} {
 		var output bytes.Buffer
 		reads := 0
-		code := run(context.Background(), args, func(string) string { reads++; return "" }, &output)
+		code := run(context.Background(), args, func(string) (string, bool) { reads++; return "", false }, &output)
 		var event struct {
 			Component  string `json:"component"`
 			Phase      string `json:"phase"`
@@ -139,6 +158,72 @@ func TestRunRejectsArgumentsBeforeConfiguration(t *testing.T) {
 	}
 }
 
+func TestCommandRootSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		args          []string
+		env           map[string]string
+		command, root string
+		invalid       bool
+	}{
+		{name: "default", command: "server", root: "/var/lib/daynight"},
+		{name: "environment", env: map[string]string{"DAYNIGHT_ROOT": "/environment"}, command: "server", root: "/environment"},
+		{name: "flag takes precedence", args: []string{"--root=/flag"}, env: map[string]string{"DAYNIGHT_ROOT": "invalid"}, command: "server", root: "/flag"},
+		{name: "verify", args: []string{"verify-storage", "--root", "/backup"}, command: "verify-storage", root: "/backup"},
+		{name: "empty flag", args: []string{"--root="}, invalid: true},
+		{name: "empty environment", env: map[string]string{"DAYNIGHT_ROOT": ""}, invalid: true},
+		{name: "relative", args: []string{"--root", "relative-secret"}, invalid: true},
+		{name: "control", args: []string{"--root", "/root\nsecret"}, invalid: true},
+		{name: "duplicate", args: []string{"--root", "/one", "--root=/two"}, invalid: true},
+		{name: "extra", args: []string{"--root=/one", "secret"}, invalid: true},
+		{name: "wrong order", args: []string{"--root=/one", "verify-storage"}, invalid: true},
+		{name: "unknown flag", args: []string{"--secret=value"}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command, root, err := parseCommand(tc.args, lookupTestEnvironment(tc.env))
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("invalid arguments accepted")
+				}
+				return
+			}
+			if err != nil || command != tc.command || root != tc.root {
+				t.Fatalf("command=%q root=%q error=%v", command, root, err)
+			}
+		})
+	}
+}
+
+func TestConfigurationFailureIsSafeAndIdentifiesRun(t *testing.T) {
+	root := testStorageRoot(t)
+	if err := os.Mkdir(filepath.Join(root, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "config.yml"), []byte("database:\n  url: [sensitive-yaml-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if code := run(t.Context(), []string{"--root", root}, lookupTestEnvironment(nil), &output); code != 1 {
+		t.Fatalf("code=%d", code)
+	}
+	var event struct {
+		RunID     string `json:"run_id"`
+		PID       int    `json:"pid"`
+		Command   string `json:"command"`
+		Component string `json:"component"`
+		Phase     string `json:"phase"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &event); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(event.RunID) || event.PID != os.Getpid() || event.Command != "server" || event.Component != "configuration" || event.Phase != "decode" {
+		t.Fatalf("unexpected configuration event: %s", output.String())
+	}
+	if strings.Contains(output.String(), "sensitive-yaml-value") || strings.Contains(output.String(), root) {
+		t.Fatalf("unsafe diagnostic: %s", output.String())
+	}
+}
+
 func TestRunStartupFailures(t *testing.T) {
 	for _, override := range []map[string]string{
 		{"DAYNIGHT_DATABASE_URL": ""},
@@ -151,7 +236,7 @@ func TestRunStartupFailures(t *testing.T) {
 			values[key] = value
 		}
 		var output bytes.Buffer
-		if code := run(context.Background(), nil, func(key string) string { return values[key] }, &output); code != 1 {
+		if code := run(context.Background(), []string{"--root", testStorageRoot(t)}, lookupTestEnvironment(values), &output); code != 1 {
 			t.Fatalf("startup failure returned %d", code)
 		}
 		if strings.Contains(output.String(), "top-secret") || !strings.Contains(output.String(), `"phase":"`) {
@@ -159,7 +244,7 @@ func TestRunStartupFailures(t *testing.T) {
 		}
 	}
 	var output bytes.Buffer
-	if code := run(context.Background(), nil, func(string) string { return "" }, &output); code != 1 || !strings.Contains(output.String(), "DAYNIGHT_DATABASE_URL is required") {
+	if code := run(context.Background(), []string{"--root", testStorageRoot(t)}, lookupTestEnvironment(nil), &output); code != 1 || !strings.Contains(output.String(), "database.url is required") {
 		t.Fatalf("configuration error is not actionable: %s", &output)
 	}
 	values := testEnvironment(t)
@@ -169,12 +254,12 @@ func TestRunStartupFailures(t *testing.T) {
 	}
 	defer listener.Close()
 	values["DAYNIGHT_LISTEN_ADDR"] = listener.Addr().String()
-	if code := run(context.Background(), nil, func(key string) string { return values[key] }, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
+	if code := run(context.Background(), []string{"--root", testStorageRoot(t)}, lookupTestEnvironment(values), &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
 		t.Fatalf("occupied listener was not diagnosed: %s", &output)
 	}
 	t.Run("worker startup failure", func(t *testing.T) {
 		values := processAPIEnvironment(t)
-		cfg, err := config.LoadConfig(func(key string) string { return values[key] })
+		cfg, err := config.LoadServer(testStorageRoot(t), lookupTestEnvironment(values))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -250,12 +335,19 @@ func (w *stoppingWriter) snapshot() (string, string) {
 
 func TestRunStopsAfterStartup(t *testing.T) {
 	values := testEnvironment(t)
+	root := testStorageRoot(t)
+	writeTestConfig(t, root, map[string]any{
+		"server":   map[string]any{"listen_address": values["DAYNIGHT_LISTEN_ADDR"], "public_origin": values["DAYNIGHT_PUBLIC_ORIGIN"], "allow_http_test_origin": true},
+		"database": map[string]any{"url": values["DAYNIGHT_DATABASE_URL"]},
+		"storage":  map[string]any{"root": values["DAYNIGHT_STORAGE_ROOT"]},
+		"uniauth":  map[string]any{"url": values["DAYNIGHT_UNIAUTH_URL"], "app_id": values["DAYNIGHT_UNIAUTH_APP_ID"], "app_secret": values["DAYNIGHT_UNIAUTH_APP_SECRET"], "callback_url": values["DAYNIGHT_UNIAUTH_CALLBACK_URL"], "allow_loopback_http": true},
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	output := &stoppingWriter{stop: cancel}
-	code := run(ctx, nil, func(key string) string { return values[key] }, output)
+	code := run(ctx, []string{"--root", root}, lookupTestEnvironment(nil), output)
 	logs, address := output.snapshot()
-	if code != 0 || !strings.Contains(logs, `"phase":"stopped"`) {
+	if code != 0 || !strings.Contains(logs, `"phase":"stopped"`) || !strings.Contains(logs, `"event":"configuration_loaded"`) {
 		t.Fatalf("clean shutdown returned %d: %s", code, logs)
 	}
 	if "http://"+address != values["DAYNIGHT_PUBLIC_ORIGIN"] {
@@ -272,7 +364,7 @@ func TestMainUsesProcessConfigurationAndExitCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	os.Args, os.Stderr = []string{"daynight-server"}, writer
+	os.Args, os.Stderr = []string{"daynight-server", "--root", testStorageRoot(t)}, writer
 	code := -1
 	exit = func(value int) { code = value }
 	main()
@@ -280,7 +372,7 @@ func TestMainUsesProcessConfigurationAndExitCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err := io.ReadAll(reader)
-	if err != nil || code != 1 || !bytes.Contains(output, []byte("DAYNIGHT_DATABASE_URL is required")) {
+	if err != nil || code != 1 || !bytes.Contains(output, []byte("database.url is required")) {
 		t.Fatalf("process configuration exit code %d: %s, %v", code, output, err)
 	}
 }

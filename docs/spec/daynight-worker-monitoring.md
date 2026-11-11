@@ -2,7 +2,7 @@
 
 认证账号可以向自己的近期 Worker 保存并读取一份当前运行观测。它表达运行、调度、容量和异常摘要，不提供日志、事件流、历史查询或补传。资源准入沿用 [Worker 快照合同](daynight-worker-snapshots.md) 的账号身份和 72 小时窗口；本接口不修改心跳、Task、claim 或执行所有权。[服务端设计](../design/daynight-worker-monitoring.md)描述实现与失败隔离。
 
-本页规定交换合同和生产者必须满足的语义；Worker 采集和完整组合验收分别有独立责任。所有字段必需，除非类型明确为 null。拒绝未知字段、重复字段、未知枚举、错误类型和格式，不补默认值。UUID 使用规范小写形式；sequence 为 `1` 至 `9223372036854775807` 的无前导零十进制字符串；时间解析 RFC3339Nano 后规范化为 UTC。计数和毫秒为不超过 2^53−1 的非负安全整数。
+本页规定交换合同和生产者必须满足的语义；Worker 采集和完整组合验收分别有独立责任。所有字段必需，除非明确标为可选或类型明确为 null。拒绝未知字段、重复字段、未知枚举、错误类型和格式，不补默认值。UUID 使用规范小写形式；sequence 为 `1` 至 `9223372036854775807` 的无前导零十进制字符串；时间解析 RFC3339Nano 后规范化为 UTC。计数和毫秒为不超过 2^53−1 的非负安全整数。
 
 ## 闭合状态模型
 
@@ -66,7 +66,11 @@ type AdmissionReason = {
   observedAt: string;
   nextAttemptAt: string | null;
 };
+type FailureWorktree =
+  | { kind: "project-relative"; path: string }
+  | { kind: "unavailable"; reason: "different-volume" | "invalid-path" | "limit-exceeded" };
 type Failure = {
+  worktree?: FailureWorktree;
   operationId: string;
   component: string;
   phase: string;
@@ -128,6 +132,8 @@ ExecutionPhase 中的 preparing/executing/verifying/completing/waiting/paused �
 
 Failure 的 component 使用 `runtime`、`scheduler`、`configuration`、`inventory`、`project`、`resources`、`execution`、`cleanup`、`archive`、`monitoring`；phase 必须取对应组件已有阶段：runtime/scheduler/inventory/project/resources/configuration/archive 使用 SchedulerPhase，execution 使用 ExecutionPhase，cleanup 使用 CleanupPhase，monitoring 使用 DeliveryFailure.phase。诊断分类、精确固定文本、适用 scope 和来源映射由“诊断内容准入”定义，不接受任意日志消息。
 
+`worktree` 只允许在 claim scope 的 Failure 中出现，缺席表示没有适用或可信的项目根与工作区绑定，不能补默认值。`project-relative.path` 相对 `WorkerProject.localPath`，以 `/` 分隔，最多 4096 UTF-8 bytes；同目录为 `.`，同卷外部位置允许规范前导 `..`。拒绝绝对路径、UNC 或驱动器前缀、反斜线、控制字符、孤立代理项、空段、可消除的点段和尾分隔符。已知绑定无法表示时以 `unavailable` 明示不同卷或共享、路径无效或超限。路径不证明目录存在、执行所有权或访问权限，不加入摘要、恢复、活动或投递错误。
+
 operationId/cycleId/runId/claim ID 为 UUID；reservationId 为按下文方式生成的规范小写 UUID，运行内同一责任稳定。roles 非空且去重。Scope.project 能表示没有 Task 的项目准备/配置失败，不能使用 worker scope 暴露项目原因。
 
 capacity 为 null 表示从未获得容量观测；有旧观测则保留其 observedAt 和 stale。limit 沿用配置 1–64，occupied 保留真实总数，available=max(0,limit−occupied)，不从截断后的 reservations 反推。完整搜索成功耗尽才可报告 no-ready-tasks；未知/失败/覆盖不足不能报告该原因。
@@ -138,7 +144,7 @@ lastProgressAt 为 null 表示未观测到真实进展；deadlineAt 为 null 表
 
 PUT 完整 JSON 及规范化正文各最多 256 KiB。activities/reservations/currentFailures 上限为 128/128/32；reasons 最多 16；roles 最多 5。字符串 UTF-8 上限：component/type/code 64 bytes、cause/explanation 2048 bytes、requestId 128 bytes。诊断原因与恢复说明使用下文固定摘要，truncated 标记必须为 false；输入不能由服务端静默截断，生产者构造有界观测并置 partial。
 
-观测器保留完整准入计数，详情按阻塞/异常优先、首次观测时间、稳定 ID 排序截取。所有时间、质量、完整计数均独立于被截取的明细。Server 在权限过滤和名称补充后按真实 Go JSON escaping 再执行响应预算，保留精确容量与无名称故障摘要，逐项加入标签/普通活动，超限明确 labelsOmitted/detailCoverage=partial。
+观测器保留完整准入计数，详情按阻塞/异常优先、首次观测时间、稳定 ID 排序截取。所有时间、质量、完整计数均独立于被截取的明细。达到编码预算时，先按既有顺序裁减活动和容量责任；在移除完整异常前，按 Go JSON 编码体积从大到小、稳定顺序将相对路径转为 `unavailable/limit-exceeded` 并标记 partial，重新计量。单字段超限也显式标 partial；内存记录不受快照裁减影响。Server 在权限过滤和名称补充后按真实 Go JSON escaping 再执行响应预算，在包含 worktree 与 labels-omitted 占位的完整准入基础上保留精确容量与无名称故障摘要，逐项加入标签/普通活动，超限明确 labelsOmitted/detailCoverage=partial。
 
 ## 诊断内容准入
 
@@ -195,6 +201,8 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 - UUID 和数值限制防止可信 Worker 意外搬运原文，不能防止有上报权限的恶意 Worker 将信息编码进 UUID、计数或时间。服务端不能从输入证明自报运行事实或语义 scope 的真实性；监控不作为执行所有权证明。当前权限过滤与账号隔离仍是独立的访问边界。
 
 PUT 对未知 type/code、错误配对、非固定文本、true 截断标记、非法 ID 或可判定的 scope 违例返回 400；不得静默修正。Redis 已存值读取时若违反合同，返回 monitoring_unavailable，而不是 absent 或原样返回。日志保留内部错误链但不记录原始状态或凭据。
+
+worktree 是独立的 typed 字段，不放宽 StructuredCause 的路径禁令。部署时先更新所有 Server 使其接受、保存、重验并过滤字段，再更新严格 CLI/Web 读者，最后启用 Worker 生产者。回滚到拒绝该字段的读者或 Server 前停止生产并等待相关帧按 3600 秒 TTL 自然过期或安全替换为不含字段的观测；不删键、续期或重放未知写入。
 
 既有码和固定句不得重定义或复用为新含义。新增分类须先让所有 Server 副本部署并确认支持，再部署能识别它的严格 Web 消费者，最后让 Worker 上报。新 Server 接受旧表，未知值按闭合合同拒绝。回滚到不能读取新码的 Server 前，须先停止新码生产并等待相关帧过期或安全地被旧兼容状态替换；否则保留能读取新码的 Server。不提供旧监控 Redis 帧兼容；协议演进不得依赖各组件同时升级。
 

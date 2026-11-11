@@ -31,7 +31,7 @@ func TestMetricsAddress(t *testing.T) {
 		t.Run(tc.value, func(t *testing.T) {
 			_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_METRICS_LISTEN_ADDR": tc.value}))
 			var failure *configvalue.ConfigurationError
-			if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_METRICS_LISTEN_ADDR" || failure.Rule != tc.rule || failure.Cause != nil {
+			if !errors.As(err, &failure) || failure.Field != "metrics_listen_address" || failure.Rule != tc.rule || failure.Cause != nil {
 				t.Fatalf("metrics address %q: %#v", tc.value, err)
 			}
 		})

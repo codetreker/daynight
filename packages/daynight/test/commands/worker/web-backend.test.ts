@@ -119,11 +119,12 @@ it("reports in-flight Web worktree and startup stages without changing operation
   const original = new Error("original startup failure");
   const launcher = { prepare: vi.fn(async () => { enteredStart(); await startBarrier; throw original; }), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
-  const phases = vi.fn();
-  backend.setMonitoringObserver({ observePhase: (...args) => { phases(...args); throw new Error("observer failed"); } });
+  const phases = vi.fn(), selected = vi.fn();
+  backend.setMonitoringObserver({ observeWorktree: (...args) => { selected(...args); throw new Error("observer failed"); }, observePhase: (...args) => { phases(...args); throw new Error("observer failed"); } });
   const result = backend.advance(input, new AbortController().signal);
   try {
     await worktreeEntered;
+    expect(selected).toHaveBeenCalledWith(expect.objectContaining({ claimId: input.claimId }), input.repositoryPath, path.join(input.repositoryPath, ".worktrees", "daynight", input.taskId));
     expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "worktree-preparation" }, false, undefined);
     releaseWorktree(); await startEntered;
     expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");

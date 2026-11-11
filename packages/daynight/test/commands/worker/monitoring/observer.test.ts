@@ -356,3 +356,34 @@ it.each(["archive_incomplete", "projection_gap"] as const)("reports typed archiv
   expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic("recovery-blocked"));
   expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
 });
+
+describe("failure worktree snapshots", () => {
+  it("copies locations and preserves them through retry-only updates", () => {
+    const observer = createMonitoringObserver({ runId });
+    const scope = { kind: "claim", ...identity(1) } as const;
+    const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
+    const worktree = { kind: "project-relative" as const, path: ".worktrees/a" };
+    observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree });
+    worktree.path = "changed";
+    const first = observer.capture("1");
+    expect(first.currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
+    if (first.currentFailures[0]?.worktree?.kind === "project-relative") first.currentFailures[0].worktree.path = "mutated";
+    observer.updateFailureRetry(id, "running");
+    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: ".worktrees/a" });
+  });
+  it("reduces largest Go-encoded paths before discarding failures and restores later snapshots", () => {
+    const observer = createMonitoringObserver({ runId });
+    for (let i = 0; i < 32; i++) {
+      const scope = { kind: "claim", ...identity(i) } as const;
+      const id = observer.startActivity({ kind: "execution", phase: "executing", scope });
+      observer.fail({ operationId: id, component: "execution", phase: "executing", scope, error: new Error(secret), worktree: { kind: "project-relative", path: "<".repeat(4096) } });
+    }
+    const captured = observer.capture("1");
+    expect(captured.currentFailures).toHaveLength(32);
+    expect(captured.detailCoverage).toBe("partial");
+    expect(captured.currentFailures.some(f => f.worktree?.kind === "unavailable")).toBe(true);
+    expect(goJsonBytes({ expectedRevision: runId, observation: captured })).toBeLessThanOrEqual(256 * 1024);
+    for (const f of captured.currentFailures.slice(1)) observer.discardFailure(f.operationId);
+    expect(observer.capture("2").currentFailures[0]?.worktree).toEqual({ kind: "project-relative", path: "<".repeat(4096) });
+  });
+});

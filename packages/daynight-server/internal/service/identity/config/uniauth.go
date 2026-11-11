@@ -16,19 +16,24 @@ import (
 // https://github.com/codetreker/uniauth/blob/0978963813fcefd9d553f6cb9bcc319084c764b3/sdk/go/validation.go
 func (c Config) ValidateCredentials() error {
 	var cause error
+	var field string
 	u, err := url.Parse(c.URL)
 	switch {
 	case err != nil || !utf8.ValidString(c.URL) || u.Hostname() == "" || u.Opaque != "" || u.User != nil || strings.ContainsAny(c.URL, "?#") || (u.EscapedPath() != "" && u.EscapedPath() != "/"):
+		field = "url"
 		cause = errors.New("uniauth: BaseURL must be an origin without credentials, query, or fragment")
 	case !allowedUniAuthScheme(u, c.AllowLoopbackHTTP):
+		field = "url"
 		cause = errors.New("uniauth: BaseURL requires HTTPS or explicitly enabled loopback HTTP")
 	case !validUniAuthValue(c.AppID, 128) || strings.Contains(c.AppID, ":"):
+		field = "app_id"
 		cause = errors.New("uniauth: App ID requires 1 to 128 UTF-8 bytes without a colon")
 	case !validUniAuthValue(c.AppSecret, 512):
+		field = "app_secret"
 		cause = errors.New("uniauth: App Secret requires 1 to 512 UTF-8 bytes")
 	}
 	if cause != nil {
-		return &configvalue.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_URL / DAYNIGHT_UNIAUTH_APP_ID / DAYNIGHT_UNIAUTH_APP_SECRET", Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: cause}
+		return &configvalue.ConfigurationError{Field: field, Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: cause}
 	}
 	return nil
 }

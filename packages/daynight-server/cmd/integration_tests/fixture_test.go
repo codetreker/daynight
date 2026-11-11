@@ -292,7 +292,7 @@ func newFixture(t *testing.T) *fixture {
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
 		"DAYNIGHT_STARTUP_TIMEOUT": "10s", "DAYNIGHT_SHUTDOWN_TIMEOUT": "2s", "DAYNIGHT_TASK_SYNC_OVERLAP": "10s",
 	}
-	command := exec.Command(binary)
+	command := exec.Command(binary, "--root", root)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "DAYNIGHT_") {
 			command.Env = append(command.Env, entry)

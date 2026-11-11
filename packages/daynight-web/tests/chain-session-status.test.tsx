@@ -18,7 +18,7 @@ vi.mock('../src/features/task-session-summary/TaskSessionSummaryProvider', () =>
 }));
 const time = '2026-11-04T10:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({
-  id, titlePreview: id, titleTruncated: false, assignedTo: null, status, dependsOn, externalDependsOn,
+  type: 'task', parentId: null, id, titlePreview: id, titleTruncated: false, assignedTo: null, status, dependsOn, externalDependsOn,
   blockedBy: [], ready: false, requiredPlatform: null, allowAgents: true, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 const graph: TaskGraph = {
