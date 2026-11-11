@@ -21,8 +21,10 @@ HTTP unit responsibilities follow the
 
 ## Decision
 
-The regular `internal/server/session` suite executes actual routes with direct
-Session use-case mocks. The private
+The [protocol component decision](2026-11-11-session-protocol-component-ownership.md)
+retains real Session service and engine collaborators for protocol scenarios
+whose fences and sequencing depend on them. Adapter-only tests execute actual
+routes with direct Session use-case mocks. The private
 [service binding](../../../../packages/daynight-server/internal/server/session/service_calls.go)
 projects existing production methods into typed callbacks. Test-only aliases
 provide those same calls without constructing a real service, engine or DAO.
