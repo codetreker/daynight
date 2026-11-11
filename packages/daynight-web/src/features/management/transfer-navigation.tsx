@@ -3,15 +3,19 @@ import { ApiError } from "../../api/client";
 import type { CurrentUser } from "../../api/auth-types";
 import type { ProjectTransferReceipt } from "../../api/project-transfer";
 import { getTeam } from "../../api/teams";
+import { browserNavigation, type BrowserLocation } from "../../app/navigation";
 import { navigate } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
+
+export type TransferNavigationContext = { readonly location: BrowserLocation | null; readonly ownsEditor: () => boolean };
 
 type TransferResult = {
   readonly receipt: ProjectTransferReceipt;
   readonly navigation: "none" | "checking" | "error" | "ready";
   readonly destination: string | null;
   readonly error: unknown;
+  readonly context: TransferNavigationContext;
 };
 
 // The receipt remains visible while the source Team is checked; this read does
@@ -23,7 +27,7 @@ export const useTransferNavigation = (admission: TaskCacheScope, user: CurrentUs
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => { ++current.current; active.current?.abort(); }, []);
 
-  const resolveSource = (receipt: ProjectTransferReceipt, generation: number, location: string | null) => {
+  const resolveSource = (receipt: ProjectTransferReceipt, generation: number, context: TransferNavigationContext) => {
     if (active.current !== null || admission.isInvalidated || current.current !== generation) return;
     const controller = new AbortController(); active.current = controller;
     const signal = AbortSignal.any([controller.signal, admission.signal]);
@@ -50,21 +54,21 @@ export const useTransferNavigation = (admission: TaskCacheScope, user: CurrentUs
       }
       if (!valid()) return;
       setResult((previous) => previous === null ? null : { ...previous, navigation: "ready", destination });
-      if (location !== null && window.location.pathname + window.location.search + window.location.hash === location) navigate(destination);
+      if (context.location !== null && context.ownsEditor() && browserNavigation().snapshot() === context.location &&
+        window.location.pathname + window.location.search + window.location.hash === context.location.pathname + context.location.search + context.location.hash) navigate(destination);
     })();
   };
 
-  const complete = (receipt: ProjectTransferReceipt) => {
+  const complete = (receipt: ProjectTransferReceipt, context: TransferNavigationContext) => {
     active.current?.abort(); active.current = null;
     const generation = ++current.current;
-    const location = window.location.pathname === `/projects/${receipt.projectId}/settings` ? window.location.pathname + window.location.search + window.location.hash : null;
     refresh.current();
-    setResult({ receipt, navigation: receipt.actorAccess === null ? "checking" : "none", destination: null, error: null });
-    if (receipt.actorAccess === null) resolveSource(receipt, generation, location);
+    setResult({ receipt, navigation: receipt.actorAccess === null ? "checking" : "none", destination: null, error: null, context });
+    if (receipt.actorAccess === null) resolveSource(receipt, generation, context);
   };
   const retry = () => {
     if (result === null || result.receipt.actorAccess !== null || result.navigation !== "error") return;
-    resolveSource(result.receipt, current.current, window.location.pathname + window.location.search + window.location.hash);
+    resolveSource(result.receipt, current.current, result.context);
   };
   const dismiss = () => { ++current.current; active.current?.abort(); active.current = null; setResult(null); };
   return { result, complete, retry, dismiss };

@@ -14,9 +14,10 @@ import { validateHerdrPromptInput } from "./herdr/rpc.js";
 import { validateMacosPromptInput } from "./herdr/terminal-input.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { CleanupTarget } from "./execution-stop.js";
 import { selectedWorktreePath, type createWorkerGitManager } from "./worktrees.js";
 
-export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
+export type WorkerEvent = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
 export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
 export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large"; observation: HerdrAgentObservation | null };
@@ -49,7 +50,8 @@ export type ExecutionDependencies = {
 };
 export const isWorkerCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
-  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every((failure) => isWorkerCancellation(failure, signal));
+  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every((failure) => isWorkerCancellation(failure, signal))
+    && (error.cause === undefined || isWorkerCancellation(error.cause, signal));
   return error === signal.reason || (error instanceof OperationError && error.kind === "cancelled" && error.cause === signal.reason)
     || (error instanceof Error && error.cause !== undefined && isWorkerCancellation(error.cause, signal));
 };

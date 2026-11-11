@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { createLocaleRender } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../src/api/client';
+import { ApiError, pauseAuthRequests } from '../src/api/client';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskAttachments } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
@@ -57,6 +57,179 @@ const showDeleteConfirmation = (path: string) => {
 
 
 describe('task attachments', () => {
+  it('preserves displayed content and upload drafts while blocking remote actions until resume', async () => {
+    const api = fixture([file('one.txt'), file('two.txt')]);
+    open(api);
+    fireEvent.click(await findFileButton(/^one\.txt/));
+    await screen.findByText('Contents of one.txt');
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    const source = new File(['draft'], 'draft.txt', { type: 'text/plain' });
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), source);
+    fireEvent.change(screen.getByLabelText('目标相对路径'), { target: { value: 'drafts/edit.txt' } });
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expect(screen.getByText('Contents of one.txt')).toBeVisible();
+      expect(fileButton(/^one\.txt/)).toHaveAttribute('aria-pressed', 'true');
+      const download = screen.getByText('下载', { selector: 'a' });
+      const newTab = screen.getByLabelText('在新标签页打开');
+      for (const link of [download, newTab]) {
+        expect(link).toHaveAttribute('aria-disabled', 'true');
+        expect(link).not.toHaveAttribute('href');
+        expect(link).not.toHaveAttribute('download');
+        fireEvent.click(link, { ctrlKey: true });
+        fireEvent.keyDown(link, { key: 'Enter' });
+      }
+      fireEvent.change(screen.getByLabelText('目标相对路径'), { target: { value: 'drafts/changed.txt' } });
+      expect((screen.getByLabelText('选择一个文件') as HTMLInputElement).files?.[0]).toBe(source);
+      expect(screen.getByLabelText('目标相对路径')).toHaveValue('drafts/changed.txt');
+      fireEvent.click(fileButton(/^two\.txt/));
+      expect(api.readText).toHaveBeenCalledTimes(1);
+      fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+      expect(api.put).not.toHaveBeenCalled();
+      expect(api.remove).not.toHaveBeenCalled();
+    } finally { act(() => resume()); }
+    await screen.findByText('Contents of two.txt');
+    expect(screen.getByText('下载', { selector: 'a' })).toHaveAttribute('href');
+    expect(screen.getByText('下载', { selector: 'a' })).toHaveAttribute('download');
+    expect(screen.getByLabelText('目标相对路径')).toHaveValue('drafts/changed.txt');
+  });
+
+  it('aborts pending reads and writes and refuses late results across pause', async () => {
+    const lateRead = deferred<string>();
+    const lateWrite = deferred<Attachment>();
+    const api = fixture([file('one.txt'), file('two.txt')]);
+    vi.mocked(api.readText).mockImplementationOnce(async () => lateRead.promise);
+    vi.mocked(api.put).mockImplementationOnce(async () => lateWrite.promise);
+    open(api);
+    fireEvent.click(await findFileButton(/^one\.txt/));
+    await waitFor(() => expect(api.readText).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['a'], 'upload.txt'));
+    fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    const readSignal = vi.mocked(api.readText).mock.calls[0]![3]!;
+    const writeSignal = vi.mocked(api.put).mock.calls[0]![4]!;
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expect(readSignal.aborted).toBe(true);
+      expect(writeSignal.aborted).toBe(true);
+      expect(screen.getByLabelText('目标相对路径')).not.toBeDisabled();
+      await act(async () => { lateRead.resolve('stale content'); lateWrite.resolve(file('upload.txt')); });
+      expect(screen.queryByText('stale content')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('目标相对路径')).toHaveValue('upload.txt');
+      expect(fileButton(/^one\.txt/)).toHaveAttribute('aria-pressed', 'true');
+    } finally { act(() => resume()); }
+    await screen.findByText('Contents of one.txt');
+  });
+
+  it('keeps the loaded native preview mounted when selection changes during pause', async () => {
+    const api = fixture([file('image.png', 'image/png'), file('other.txt')]);
+    open(api);
+    fireEvent.click(await findFileButton(/^image\.png/));
+    const image = await screen.findByRole('img', { name: 'image.png' });
+    fireEvent.load(image);
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      fireEvent.click(fileButton(/^other\.txt/));
+      expect(image).not.toBeVisible();
+      expect(api.readText).not.toHaveBeenCalled();
+      fireEvent.click(fileButton(/^image\.png/));
+      expect(screen.getByRole('img', { name: 'image.png' })).toBe(image);
+      expect(image).toBeVisible();
+    } finally { act(() => resume()); }
+  });
+
+  it('cancels a preview and resumes it even when pause and resume share a render', async () => {
+    const pending = deferred<string>();
+    const api = fixture([file('one.txt')]);
+    vi.mocked(api.readText).mockReturnValueOnce(pending.promise);
+    open(api);
+    fireEvent.click(await findFileButton(/^one\.txt/));
+    await waitFor(() => expect(api.readText).toHaveBeenCalledTimes(1));
+    const signal = vi.mocked(api.readText).mock.calls[0]![3]!;
+    await act(async () => { const resume = pauseAuthRequests(); resume(); });
+    expect(signal.aborted).toBe(true);
+    await screen.findByText('Contents of one.txt');
+    await act(async () => { pending.resolve('stale content'); });
+    expect(screen.queryByText('stale content')).not.toBeInTheDocument();
+  });
+
+  it('keeps a completed multi-page inventory without rereading it on resume', async () => {
+    const api = fixture();
+    vi.mocked(api.list).mockImplementation(async (_project, _task, options) => options.cursor === undefined
+      ? { items: [file('first.txt')], nextCursor: 'next' }
+      : { items: [file('later.txt')], nextCursor: null });
+    open(api);
+    await findFileButton(/^later\.txt/);
+    expect(api.list).toHaveBeenCalledTimes(2);
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expect(fileButton(/^first\.txt/)).toBeVisible();
+      expect(fileButton(/^later\.txt/)).toBeVisible();
+    } finally { await act(async () => { resume(); }); }
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(fileButton(/^later\.txt/)).toBeVisible();
+  });
+
+  it('retains the published multi-page inventory while an interrupted refresh recovers and fails', async () => {
+    const interrupted = deferred<AttachmentPage>();
+    let rejectContinuation!: (error: Error) => void;
+    const continuation = new Promise<AttachmentPage>((_resolve, reject) => { rejectContinuation = reject; });
+    const api = fixture();
+    vi.mocked(api.list)
+      .mockResolvedValueOnce({ items: [file('first.txt')], nextCursor: 'next' })
+      .mockResolvedValueOnce({ items: [file('later.txt')], nextCursor: null })
+      .mockReturnValueOnce(interrupted.promise)
+      .mockResolvedValueOnce({ items: [file('first.txt')], nextCursor: 'next' })
+      .mockReturnValueOnce(continuation);
+    open(api);
+    await findFileButton(/^later\.txt/);
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expect(vi.mocked(api.list).mock.calls[2]![3]!.aborted).toBe(true);
+      expect(fileButton(/^later\.txt/)).toBeVisible();
+    } finally { await act(async () => { resume(); }); }
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(5));
+    expect(fileButton(/^first\.txt/)).toBeVisible();
+    expect(fileButton(/^later\.txt/)).toBeVisible();
+    await act(async () => { rejectContinuation(new Error('continuation failed')); });
+    expect(fileButton(/^later\.txt/)).toBeVisible();
+    expect(screen.getByRole('alert')).toBeVisible();
+    await act(async () => { interrupted.resolve({ items: [file('stale.txt')], nextCursor: null }); });
+    expect(screen.queryByText('stale.txt')).not.toBeInTheDocument();
+  });
+
+  it('publishes the recovered inventory only after its final page succeeds', async () => {
+    const interrupted = deferred<AttachmentPage>();
+    const continuation = deferred<AttachmentPage>();
+    const api = fixture();
+    vi.mocked(api.list)
+      .mockResolvedValueOnce({ items: [file('first.txt')], nextCursor: 'next' })
+      .mockResolvedValueOnce({ items: [file('later.txt')], nextCursor: null })
+      .mockReturnValueOnce(interrupted.promise)
+      .mockResolvedValueOnce({ items: [file('new-first.txt')], nextCursor: 'next' })
+      .mockReturnValueOnce(continuation.promise);
+    open(api);
+    await findFileButton(/^later\.txt/);
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
+    await act(async () => { const resume = pauseAuthRequests(); resume(); });
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(5));
+    expect(fileButton(/^later\.txt/)).toBeVisible();
+    expect(screen.queryByText('new-first.txt')).not.toBeInTheDocument();
+    await act(async () => { continuation.resolve({ items: [file('new-later.txt')], nextCursor: null }); });
+    expect(fileButton(/^new-first\.txt/)).toBeVisible();
+    expect(fileButton(/^new-later\.txt/)).toBeVisible();
+    expect(screen.queryByText('later.txt')).not.toBeInTheDocument();
+  });
+
   it('shows only root entries and preserves manual directory choices through refresh', async () => {
     const api = fixture([file('root.txt'), file('docs/design/spec.md'), file('docs/readme.txt'), file('images/icon.svg')]);
     open(api);

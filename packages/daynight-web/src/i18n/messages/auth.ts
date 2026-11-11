@@ -1,6 +1,8 @@
 import type { ProjectRole } from "../../api/auth-types";
 
 export type AuthMessages = {
+  readonly completion: { readonly title: string; readonly loading: string; readonly syncError: string; readonly retrySync: string; readonly refreshRequired: string };
+  readonly accountChange: { readonly message: string; readonly reload: string };
   readonly roles: Readonly<Record<ProjectRole, string>>;
   readonly shell: {
     readonly sidebar: {

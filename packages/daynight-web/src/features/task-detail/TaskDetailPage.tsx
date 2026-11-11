@@ -1,5 +1,6 @@
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { navigate, navigateTaskDetail, type TaskDetailNavigation } from '../../app/router';
 import { useResourceHistory } from '../../app/use-page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -45,13 +46,20 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
     targetTrigger.current = trigger;
     history.select({ goalChildren: null, externalGoal: { id: node.parentId, witness: id, navigation: { tab: 'overview', path: null }, goalChildren: null } });
   };
+  const returnToRoot = (href: string) => {
+    history.select({ goalChildren: null, externalGoal: null }, true, () => {
+      // URL entries inherit the retained selection; publish the cleared view first.
+      flushSync(() => {});
+      navigate(href);
+    });
+  };
   return <div className="task-detail-page-container">
     {access.status === 'unavailable' && <section className="state-box" role="alert"><h1>{shell.accessUnavailable}</h1><p>{shell.accessUnavailableDetail}</p><a className="button primary" href="/projects" onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate('/projects'); }}>{app.returnToProjects}</a></section>}
     {history.error && <div className="notice error" role="alert">{locale === 'zh-CN' ? '页面导航状态无效。' : 'Invalid page navigation state.'}</div>}
     <div className="task-detail-page-content" hidden={access.status === 'unavailable' || history.error} inert={access.status === 'unavailable' || history.error}>
     <ResourcePageDraftHost projectId={projectId} taskId={taskId}>
-    <TypedDetail key={`${projectId}/${taskId}`} presentation="page" fullscreen={{ active: fullscreen, onChange: setFullscreen }} projectId={projectId} taskId={taskId} snapshot={graph.snapshot} observation={{ kind: 'direct' }} graphError={graph.error} navigation={navigation} onNavigate={(selection) => select(taskId, selection)} onSelectTask={(id) => select(id, { tab: 'overview', path: null })} onRefreshGraph={graph.refresh} onNavigateExternalTask={navigateExternalTask} goalChildren={history.selection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...history.selection, goalChildren }, options?.replace)} />
-    {target !== null && <ResourceExternalDraftHost parentId={target.id}><TaskDetailDialog key={target.id} projectId={projectId} taskId={target.id} snapshot={graph.snapshot} initialWitness={target.witness} navigation={target.navigation} onNavigate={(navigation) => history.select({ ...history.selection, externalGoal: { ...target, navigation } })} goalChildren={target.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...history.selection, externalGoal: { ...target, goalChildren } }, options?.replace)} onNavigateExternalTask={navigateExternalTask} onRefreshGraph={graph.refresh} onSelectTask={(id) => select(id, { tab: 'overview', path: null })} onClose={() => history.select({ ...history.selection, externalGoal: null }, true)} onRestoreFocus={() => { const trigger = targetTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus(); else document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title')?.focus(); }} /></ResourceExternalDraftHost>}
+    <TypedDetail key={`${projectId}/${taskId}`} presentation="page" fullscreen={{ active: fullscreen, onChange: setFullscreen }} projectId={projectId} taskId={taskId} snapshot={graph.snapshot} observation={{ kind: 'direct' }} graphError={graph.error} navigation={navigation} onNavigate={(selection) => select(taskId, selection)} onSelectTask={(id) => select(id, { tab: 'overview', path: null })} onRefreshGraph={graph.refresh} onNavigateExternalTask={navigateExternalTask} onNavigateParent={returnToRoot} goalChildren={history.selection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...history.selection, goalChildren }, options?.replace)} />
+    {target !== null && <ResourceExternalDraftHost parentId={target.id}><TaskDetailDialog key={target.id} projectId={projectId} taskId={target.id} snapshot={graph.snapshot} initialWitness={target.witness} navigation={target.navigation} onNavigate={(navigation) => history.select({ ...history.selection, externalGoal: { ...target, navigation } })} goalChildren={target.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...history.selection, externalGoal: { ...target, goalChildren } }, options?.replace)} onNavigateExternalTask={navigateExternalTask} onNavigateParent={returnToRoot} onRefreshGraph={graph.refresh} onSelectTask={(id) => select(id, { tab: 'overview', path: null })} onClose={() => history.select({ ...history.selection, externalGoal: null }, true)} onRestoreFocus={() => { const trigger = targetTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus(); else document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title')?.focus(); }} /></ResourceExternalDraftHost>}
     </ResourcePageDraftHost>
     </div>
   </div>;

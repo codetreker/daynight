@@ -2,6 +2,7 @@ import { readCodexConfiguration } from "./herdr/codex-config.js";
 import type { WorkerPaths } from "./paths.js";
 import type { HerdrExecutionContext, HerdrExecutionOwner, HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import type { Operation } from "../../api/operation.js";
+import type { ExecutionStopObserver, TerminalCleanupContext } from "./execution-stop.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
@@ -88,8 +89,9 @@ export type WorkerHerdrLifecycle = {
   /** Original lifecycle path, without reading recording contents or archive state. */
   worktreePath?(owner: HerdrExecutionOwner): string | null;
   isStopped(owner: HerdrExecutionOwner): boolean;
+  observeExecutionStop: ExecutionStopObserver;
   stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;
-  cleanup?(owner: HerdrExecutionOwner, prompt: string, operation: Operation): Promise<boolean>;
+  cleanup(owner: HerdrExecutionOwner, prompt: string, operation: Operation, scope: TerminalCleanupContext): Promise<boolean>;
   close(): void;
 };
 export type WorkerHerdrInput = {

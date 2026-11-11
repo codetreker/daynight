@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { Blob as NodeBlob } from 'node:buffer';
 import { useState } from 'react';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -8,9 +9,11 @@ import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessionProvider } from '../src/features/task-detail/TaskDetailSession';
 import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
-import { TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
+import { FixedSessionRecording, TaskSessionHost, suspendStaticSessionMediaForAccountRefresh } from '../src/features/task-agent-session/TaskSessionHost';
+import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
+import { sessionImageBytes } from './helpers/sessionImages';
 import { fixtureTaskEpoch, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/terminal-sessions', async original => ({ ...await original<typeof import('../src/api/terminal-sessions')>(), createTerminalSessionApi: vi.fn() }));
@@ -121,4 +124,51 @@ it('defers a recording response already in flight until the same account is veri
     act(() => { resume?.(); resume = undefined; setChecking(false); });
     expect(await screen.findByText('First frame')).toBeVisible(); expect(api.archive).toHaveBeenCalledOnce();
   } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+
+it('stops direct recorded media immediately while keeping the displayed image and rejecting late bytes', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const bytes = sessionImageBytes('png');
+  const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const resource = (id: string, name: string) => ({ resourceId: id, revision: '1', name, status: 'available' as const, mediaType: 'image/png', byteLength: String(bytes.length), sha256, width: 3, height: 2, frameCount: 1, error: null });
+  const first = resource('00000012-1111-4111-8111-111111111111', 'First.png');
+  const second = resource('00000013-1111-4111-8111-111111111111', 'Second.png');
+  const archive = { schemaVersion: 3 as const, sessionId: item.sessionId, claimId, executionGeneration: '1', controllerId: projectId, controllerInstanceId: taskId, provider: 'codex' as const, nativeSessionId: null, completeness: 'complete' as const,
+    entries: [{ entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message' as const, content: [{ type: 'text' as const, text: 'Retained recording.' }, ...[first, second].map((value, index) => ({ type: 'image' as const, imageId: index === 0 ? '00000014-1111-4111-8111-111111111111' : '00000015-1111-4111-8111-111111111111', resourceId: value.resourceId, label: value.name }))] }],
+    resources: [first, second].map(value => ({ resource: value, blobId: '00000016-1111-4111-8111-111111111111' })) };
+  const status = { state: 'ready' as const, sha256: 'a'.repeat(64), byteLength: '1024', errorCode: null, schemaVersion: 3 as const, completeness: 'complete' as const };
+  const record = { ...item, agentControlMode: 'web' as const, contentKind: 'native_timeline' as const, archive: status };
+  let finish!: (bytes: Uint8Array<ArrayBuffer>) => void;
+  const reader = { readResource: vi.fn((value: typeof first, _signal: AbortSignal) => value.resourceId === first.resourceId ? Promise.resolve(bytes) : new Promise<Uint8Array<ArrayBuffer>>(resolve => { finish = resolve; })), close: vi.fn(async () => {}) };
+  const api = { nativeArchive: vi.fn(async () => ({ status, archive })), resources: vi.fn(() => reader) };
+  vi.stubGlobal('Blob', NodeBlob);
+  vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3, height: 2, close: vi.fn() })));
+  const scopes = vi.spyOn(pageImageStore, 'createScope');
+  const content = (current: boolean) => <TaskCacheProvider scope={scope}><FixedSessionRecording projectId={projectId} api={api as never} item={record} active current={current} /></TaskCacheProvider>;
+  const view = render(content(true));
+  try {
+    const image = await screen.findByRole('img', { name: first.name });
+    await waitFor(() => expect(reader.readResource).toHaveBeenCalledTimes(2));
+    const images = scopes.mock.results[0]!.value;
+    const pending = reader.readResource.mock.calls.find(([value]) => value.resourceId === second.resourceId)!;
+    act(() => { suspendStaticSessionMediaForAccountRefresh(scope); suspendStaticSessionMediaForAccountRefresh(scope); });
+    expect(pending[1].aborted).toBe(true);
+    expect(reader.close).toHaveBeenCalledOnce();
+    expect(images.valid).toBe(true); expect(images.canRead()).toBe(false); expect(images.canDownload()).toBe(false);
+    expect(screen.getByText('Retained recording.')).toBeVisible(); expect(screen.getByRole('img', { name: first.name })).toBe(image);
+    await act(async () => finish(bytes));
+    view.rerender(content(false)); view.rerender(content(true));
+    expect(screen.getByRole('img', { name: first.name })).toBe(image);
+    expect(screen.queryByRole('img', { name: second.name })).toBeNull();
+    expect(reader.readResource).toHaveBeenCalledTimes(2);
+    view.unmount(); expect(images.valid).toBe(false);
+    expect(reader.close).toHaveBeenCalledOnce();
+    const later = render(content(true));
+    try {
+      expect(await screen.findByText('Retained recording.')).toBeVisible();
+      expect(reader.readResource).toHaveBeenCalledTimes(2);
+      expect(api.resources).toHaveBeenCalledOnce();
+      expect(scopes.mock.results[1]!.value.canRead()).toBe(false);
+    } finally { later.unmount(); }
+  } finally { view.unmount(); scope.dispose(); scopes.mockRestore(); }
 });

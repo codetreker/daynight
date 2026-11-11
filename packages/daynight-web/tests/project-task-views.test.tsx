@@ -1,3 +1,4 @@
+import { browserNavigation } from "../src/app/navigation";
 import { summariesForGraph } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
@@ -92,6 +93,7 @@ const syncFixture = createGraphSyncFixture({ propertiesForTask: (task) => ({ pul
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${project}`);
   syncFixture.reset(); workerClaims.clear();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -455,6 +457,7 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fireEvent.click(tab('chains')); expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(window.localStorage.getItem(key('project-view'))).toBeNull();
+    act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
   });
@@ -476,10 +479,12 @@ describe('project task views', () => {
     expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(540);
     cleanup(); view = mount(); await findTab('standalone');
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 540, behavior: 'instant' });
+    act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
     scroll = 120; fireEvent(window, new Event('pagehide'));
     expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll', otherProject))!)).toBe(120);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />); await findTab('standalone');
     expect(scroll).toBe(540);
   });
@@ -704,6 +709,7 @@ describe('project overview and task workspace', () => {
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seed(canonicalTask(0), 'done'), seed(canonicalTask(1), 'done', [canonicalTask(0)]), ...seeds.slice(1)], 2);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
     expect(chainRow(canonicalTask(0))).toHaveFocus();
@@ -712,6 +718,7 @@ describe('project overview and task workspace', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(scrollIntoView).toHaveBeenCalledOnce();
     state.snapshot = mockNavigationSnapshot([...state.snapshot.graph.tasks, seed(canonicalTask(9))], 3);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(scrollIntoView).toHaveBeenCalledOnce();
   });
@@ -726,6 +733,7 @@ describe('project overview and task workspace', () => {
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot(tasks, 2);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
@@ -744,6 +752,7 @@ describe('project overview and task workspace', () => {
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seeds[0]!, seed(canonicalTask(2), 'done', [canonicalTask(1)]), ...seeds.slice(2)], 2);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
     expect(chainRow()).toHaveFocus();
@@ -758,12 +767,14 @@ describe('project overview and task workspace', () => {
     const view = mountOverview();
     const navigate = getNavigate();
     state = { ...state, snapshot: null, status: 'error', error: new ApiError('server', 404, 'not_found', 'missing-project') };
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
     expect(sectionTab('tasks')).toHaveFocus();
     expect(screen.getByRole('heading', { name: '项目不存在' })).toBeVisible();
     expect(scrollIntoView).not.toHaveBeenCalled();
     state = { ...state, snapshot: mockNavigationSnapshot(seeds, 3), status: 'ready', error: null };
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(scrollIntoView).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -890,12 +901,14 @@ describe('project overview and task workspace', () => {
     expect(screen.getAllByRole('tab')).toHaveLength(2);
     fireEvent.click(sectionTab('tasks'));
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
+    act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />);
     await screen.findByRole('heading', { name: otherProject });
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
     expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
     expect(window.localStorage.getItem(key('project-section', otherProject))).toBeNull();
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
@@ -1156,6 +1169,7 @@ describe('recent task browsing and pagination', () => {
     fireEvent.click(screen.getByTestId(`external-${first}`));
     fireEvent.click(screen.getByTestId(`external-${second}`));
     state.snapshot = mockNavigationSnapshot(refreshed, 2);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(removed.isConnected).toBe(false);
     expect(document.getElementById(`task-graph-${canonicalTask(3)}`)).toBeVisible();
@@ -1178,10 +1192,12 @@ describe('recent task browsing and pagination', () => {
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
     expect(document.getElementById(`task-graph-${canonicalTask(1)}`)).toBeVisible();
     state.snapshot = mockNavigationSnapshot(refreshed, 2);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     await waitFor(() => expect(trigger).toHaveFocus());
     state.snapshot = mockNavigationSnapshot(initial, 3);
+    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
   });

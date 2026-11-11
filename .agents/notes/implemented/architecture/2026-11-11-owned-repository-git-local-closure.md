@@ -37,6 +37,7 @@ observation and does not restore sealed process-tree termination.
 A caller can remain pending indefinitely when a local resource never closes.
 Local closure does not prove that descendants which escaped or detached their
 stdio have stopped; they can still mutate resources after handover. The port does
-not itself change Worker callers or introduce a process inventory. The
+not itself introduce a process inventory. [Worker mutation ownership](2026-11-11-worker-git-mutation-closure.md)
+describes its use at Worker gates. The
 [repository Git design](../../../../docs/design/daynight-project-task.md#git-定位与仓库身份)
 describes both execution paths.

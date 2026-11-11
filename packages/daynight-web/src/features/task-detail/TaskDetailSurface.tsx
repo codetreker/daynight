@@ -5,7 +5,7 @@ import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused } from '../../api/client';
-import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
+import { navigate, parseRoute, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
 import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRequestTaskDraftAction, useRetireTaskDraft } from './TaskDraftNavigation';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
@@ -39,7 +39,6 @@ import { TaskPullRequests } from './TaskPullRequests';
 import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
 import { TaskAssigneeSelect } from '../task-assignment/TaskAssigneeSelect';
-import { TaskParentControl } from './TaskOrganization';
 import { TaskAssignmentFeedback } from '../task-assignment/TaskAssignmentFeedback';
 import { DetailFrame, useDetailFullscreen, useDetailOverlay, type DetailFullscreen } from './DetailFrame';
 import '../../styles/task-detail.css';
@@ -54,6 +53,7 @@ type TaskDetailCommonProps = {
   readonly projectId: string;
   readonly taskId: string;
   readonly parentGoalId?: string;
+  readonly onNavigateParent?: (href: string) => void;
   readonly snapshot?: GraphSnapshot | null;
   readonly observation?: TaskObservationInput;
   readonly graphError?: unknown;
@@ -99,11 +99,20 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
 
 type TaskDetailState = ReturnType<typeof useTaskDetail>;
 
-const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen, task, parentGoalId }: TaskDetailSurfaceProps & { readonly task: TaskDetailState }) => {
+const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen, task, parentGoalId, onNavigateParent }: TaskDetailSurfaceProps & { readonly task: TaskDetailState }) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const requestTaskAction = useRequestTaskDraftAction();
   const requestClose = () => { if (onClose !== undefined) { if (parentGoalId === undefined) browserNavigation().requestAction(onClose); else requestTaskAction(onClose); } };
+  const followGoalLink: import('react').MouseEventHandler<HTMLAnchorElement> = (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const current = parseRoute(window.location.pathname, window.location.search);
+    const target = parseRoute(event.currentTarget.pathname, event.currentTarget.search);
+    if (onNavigateParent !== undefined && (current.kind === 'task' || current.kind === 'attachment') && target.kind === 'task' && current.projectId === target.projectId && current.taskId === target.taskId) {
+      const href = event.currentTarget.href;
+      event.preventDefault(); onNavigateParent(href);
+    } else followProjectLink(event);
+  };
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
   const selection = navigation === undefined ? localNavigation.scope === scope ? localNavigation.value : { tab: 'overview', path: null } as const : navigation;
@@ -277,7 +286,6 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />}
                 </div>
                 <TaskPauseControl paused={readTaskPaused(detail.properties) === true} disabled={!task.canUnpause} mutation={task.mutation} onUnpause={() => task.unpause(detail.version)} fallbackFocus={titleRef} />
-                <TaskParentControl key={`${scope}/${task.historyGeneration}`} detail={detail} snapshot={snapshot} disabled={!task.canSetParent} mutation={task.mutation} onSelect={task.setParent} onReconcile={task.reconcile} />
                 {currentClaim !== null && access.error !== null && <div role="alert"><TaskDetailError error={access.error} /><button className="button" type="button" onClick={() => { void access.session.revalidate(); }}>{messages.workspace.projects.retry}</button></div>}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry} profileRecoveryUrl={popout}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => { if (authRequestsPaused()) return; const review = { kind: 'withdraw' as const, detail, claimId: currentClaim.claimId }; void access.session.revalidate().then((fresh) => { if (fresh !== null && dialogRef.current?.isConnected && mayWithdrawClaim(currentClaim, viewer.userId, fresh.effectiveRole)) requestConfirmation(review); }); } } : {})} />}
@@ -291,10 +299,18 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                       <h4>{m.description}</h4>
                       {description}
                     </section>
-                    <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                   </div>
                   <aside className="task-detail-aside" aria-label={m.relationsMetadata}>
+                    <section className="task-detail-section" aria-label={m.currentGoal}>
+                      <h4>{m.currentGoal}</h4>
+                      {detail.parentId === null ? <p className="task-detail-description">{m.noGoal}</p> : (() => {
+                        const goal = snapshot?.summaries.get(detail.parentId);
+                        const title = goal?.type === 'goal' ? `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}` : detail.parentId;
+                        return <a className="task-goal-link" href={taskDetailUrl(projectId, detail.parentId, { tab: 'overview', path: null })} onClick={followGoalLink}>{title}</a>;
+                      })()}
+                    </section>
                     {direct && relations.error !== null && <div role="alert"><ProjectGraphErrorDetail error={relations.error} /><button className="button" type="button" onClick={refreshRelations}>{m.retry}</button></div>}
+                    <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                     <section className="task-detail-section" aria-label={m.dependencies}>
                       <h4>{m.countedHeading({ label: m.dependencies, count: format.number(detail.dependsOn.length) })}</h4>
                       {detail.dependsOn.length === 0 ? <p className="task-detail-description">{m.noDependencies}</p> : <ul className="task-detail-relations">{detail.dependsOn.map((id) => relation(id, detail.externalDependsOn.includes(id)))}</ul>}

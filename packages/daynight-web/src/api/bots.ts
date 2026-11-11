@@ -199,14 +199,14 @@ export async function getBotDefaults(workerId: string | null, signal: AbortSigna
 export class BotCreationUnknown extends Error {
   constructor(readonly id: string, cause: unknown) { super('The Bot creation outcome is unknown.', { cause }); this.name = 'BotCreationUnknown'; }
 }
-export async function createBot(input: CreateBotInput, signal: AbortSignal, admission: WorkerReadAdmission): Promise<BotDefinition> {
+export async function createBot(input: CreateBotInput, signal: AbortSignal, admission: WorkerReadAdmission & { readonly onDispatch?: () => void }): Promise<BotDefinition> {
   const expected = requestId(admission.userId), target = requestId(input.id);
   let body: string;
   try { body = JSON.stringify({ id: target, name: botName(input.name), ...(input.overrides === undefined ? {} : { overrides: overrides(input.overrides) }) }); }
   catch { throw new ApiError('protocol'); }
   let dispatched = false;
   try {
-    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; });
+    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
     return await json(response, signal, value => {
       if (response.status !== 200) throw new ApiError('protocol', response.status);

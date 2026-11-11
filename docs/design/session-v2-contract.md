@@ -196,6 +196,12 @@ ACK 才能延长浏览器可用期。过期后需重新 acquire，不能通过�
 成功必须为 manual；release 成功必须为 suspended；resume 成功必须为 automation。
 浏览器不能以未关联的 control_state 或 queued/dispatching 结果自行取得控制。
 
+Terminal 客户端的 `suspendForAccountRefresh()` 不依赖当前身份或执行准入：它同步
+关闭 channel、取消读取并停止续约、回执查询及重连，保留已显示的 Session 与画面。
+已派发操作按原 unknown 规则收尾；该客户端在页面刷新前不能因可见性恢复而重新
+派发。普通可见性暂停仍可恢复，真正撤权和失效仍执行原有清理。具体展示与输入
+规则见 [Herdr Session 页面设计](herdr-session-web.md#实时连接与人工输入)。
+
 这些补充消息及 renew 动作须由能力发现明确声明，不能只凭同一 v2 字符串推断
 旧 Worker 已实现。未匹配的组合保持不可用，不降级为原生输入或即时授予。
 

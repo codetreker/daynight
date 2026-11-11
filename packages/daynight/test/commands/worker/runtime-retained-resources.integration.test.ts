@@ -117,7 +117,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   ]));
   cancellation.abort(); await execution;
   expect(lifecycle.close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
-  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), "shutdown", expect.any(Number), undefined, true);
+  expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), immediateStop: true });
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
   expect(await readFile(retainedJournal, "utf8")).toBe("retained Herdr journal marker");

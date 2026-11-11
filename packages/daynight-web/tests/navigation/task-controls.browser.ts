@@ -130,6 +130,115 @@ test('ID search keeps long results readable and opens the correct task on narrow
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
 });
 
+test('history protects a summary task draft before restoring its earlier direct search detail', async ({ page }) => {
+  const writes = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  await page.getByRole('button', { name: 'Open task: Target task' }).click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog).toHaveAccessibleName('Target task');
+  const directEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(dialog).toHaveCount(0);
+  await input.fill('');
+  await page.locator(`#standalone-task-${taskId}`).click();
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Keep this summary draft');
+  await page.evaluate(() => history.go(-3));
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Keep this summary draft');
+  await page.evaluate(() => history.go(-3));
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(directEntry);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await expect(dialog.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
+
+test('returning from direct search detail to the earlier summary loads Steps', async ({ page }) => {
+  const writes = await install(page);
+  const dialog = await openDialog(page);
+  const summaryEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('summary');
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(dialog).toHaveCount(0);
+  const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
+  await input.fill(`id:${taskId}`); await input.press('Enter');
+  await page.getByRole('button', { name: 'Open task: Target task' }).click();
+  await expect(dialog).toHaveAccessibleName('Target task');
+  expect(await page.evaluate(() => history.state.__daynightNavigation.view.selection.detail.source)).toBe('direct');
+  await page.evaluate(() => history.go(-2));
+  await expect.poll(() => page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(summaryEntry);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+});
+
+test('summary detail waits for a snapshot and retains its real editor through snapshot loss', async ({ page }) => {
+  const writes = await install(page);
+  await page.goto('/summary-detail-fixture');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const directReads = () => page.evaluate(() => (window as unknown as { summaryDetailFixture: { directReads(): number } }).summaryDetailFixture.directReads());
+  const setRevision = (value: number | null) => page.evaluate(revision => (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void } }).summaryDetailFixture.setRevision(revision), value);
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(0);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
+  await expect(dialog.getByRole('status', { name: 'Loading task details' })).toBeVisible();
+  expect(await directReads()).toBe(0);
+  await setRevision(1);
+  await expect(dialog).toHaveAccessibleName('Target task');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Retained after snapshot loss');
+  const original = await draft.elementHandle();
+  await setRevision(null);
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
+  await expect(draft).toHaveValue('Retained after snapshot loss');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  expect(await directReads()).toBe(0);
+  expect(writes).toEqual([]);
+});
+
+test('a direct Goal retains its editor when the summary snapshot is not yet available', async ({ page }) => {
+  await install(page);
+  const goal = detailFixture(projectId, taskId, { type: 'goal', title: 'Target goal', version: 5n, ready: false });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, route => route.fulfill({ status: 200, body: stringifyWireJson(goal), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) } }));
+  await page.goto('/summary-detail-fixture?resource=goal');
+  await page.waitForFunction(() => 'summaryDetailFixture' in window);
+  const goalDialog = page.getByRole('dialog', { name: 'Target goal' });
+  await goalDialog.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  const draft = editor.getByRole('textbox', { name: 'Description', exact: true });
+  await draft.fill('Goal draft across observation changes');
+  const original = await draft.elementHandle();
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setSource(value: 'summary'): void } }).summaryDetailFixture.setSource('summary'));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:none');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(0));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:0');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await page.evaluate(() => (window as unknown as { summaryDetailFixture: { setRevision(value: number): void } }).summaryDetailFixture.setRevision(1));
+  await expect(page.getByTestId('summary-fixture-stage')).toHaveText('summary:1');
+  await expect(editor).toBeVisible(); await expect(draft).toHaveValue('Goal draft across observation changes');
+  expect(await draft.evaluate((element, previous) => element === previous, original)).toBe(true);
+});
+
 test('Step status and position menus stay in a short viewport and return keyboard focus', async ({ page }) => {
   const writes = await install(page);
   const dialog = await openDialog(page);
@@ -520,3 +629,74 @@ for (const state of ['in_progress', 'done'] as const) {
     expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]);
   });
 }
+
+test('linked PRs remain readable in the overview sidebar across detail presentations', async ({ page }) => {
+  test.setTimeout(60_000);
+  const url = `https://example.com/${'long-path'.repeat(25)}`;
+  const pullRequests = Array.from({ length: 101 }, (_, index) => ({ title: `PR ${index + 1} ${'long-title'.repeat(15)}`, url }));
+  let update!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, false, false, false, false, undefined, { description: 'Task description', properties: { pullRequests } }, { exposeUpdate: value => { update = value; } });
+  const dialog = await openDialog(page);
+  for (const width of [1440, 800, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const aside = dialog.getByRole('complementary', { name: 'Task relationships and metadata' });
+    const prs = aside.getByRole('region', { name: 'Linked PRs' });
+    const prerequisites = aside.getByRole('region', { name: 'Prerequisites', exact: true });
+    await expect(prs.getByRole('heading')).toHaveText('Linked PRs · 101');
+    await expect(dialog.locator('.task-detail-main').getByRole('region', { name: 'Linked PRs' })).toHaveCount(0);
+    expect(await prs.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prerequisites.elementHandle())).toBe(true);
+    expect(await prs.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const mainBox = await dialog.locator('.task-detail-main').boundingBox();
+    const asideBox = await aside.boundingBox();
+    expect(mainBox && asideBox).not.toBeNull();
+    if (width <= 600) expect(asideBox!.y).toBeGreaterThan(mainBox!.y);
+    else expect(asideBox!.x).toBeGreaterThan(mainBox!.x);
+  }
+  const prs = dialog.getByRole('region', { name: 'Linked PRs' });
+  const link = prs.getByRole('link').first();
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  await link.focus(); await expect(link).toBeFocused();
+  const next = prs.getByRole('button', { name: 'Next page' });
+  await next.focus(); await page.keyboard.press('Enter');
+  await expect(prs).toContainText('Items 101–101 of 101');
+  await expect(prs).toContainText('PR 101');
+  await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+  await expect(dialog.getByRole('region', { name: 'Linked PRs' })).toContainText('PR 101');
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const direct = page.locator('.task-detail-page');
+  await expect(direct.getByRole('complementary', { name: 'Task relationships and metadata' }).getByRole('region', { name: 'Linked PRs' })).toBeVisible();
+  await direct.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+  const directPrs = direct.getByRole('region', { name: 'Linked PRs' });
+  await expect(directPrs).toBeVisible();
+  await directPrs.getByRole('button', { name: 'Next page' }).click();
+  const pageSelect = directPrs.getByRole('combobox', { name: 'Linked PR page' });
+  await pageSelect.focus();
+  update({ description: 'Refreshed task description', version: 6n });
+  await page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}`, { timeout: 20_000 });
+  await expect(direct.getByText('Refreshed task description')).toBeVisible();
+  await expect(pageSelect).toHaveValue('1');
+  await expect(pageSelect).toBeFocused();
+  await page.goto(`/projects/${projectId}/tasks/${previousId}`);
+  await expect(page.getByRole('heading', { name: 'History origin' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Linked PRs' })).toContainText('No linked PRs');
+});
+
+test('linked PR empty state survives relation errors and language changes in direct detail', async ({ page }) => {
+  await install(page, false, false, false, false, false, undefined, { properties: { pullRequests: [] } });
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Relation service unavailable', requestId: 'relation-error' } }) }));
+  await page.route(`**/api/v1/projects/${projectId}/task-graph**`, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Relation service unavailable', requestId: 'relation-error' } }) }));
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const detail = page.locator('.task-detail-page');
+  const aside = detail.getByRole('complementary', { name: 'Task relationships and metadata' });
+  const prs = aside.getByRole('region', { name: 'Linked PRs' });
+  const error = aside.getByRole('alert');
+  const prerequisites = aside.getByRole('region', { name: 'Prerequisites', exact: true });
+  await expect(error).toBeVisible();
+  await expect(prs).toContainText('No linked PRs');
+  expect(await error.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prs.elementHandle())).toBe(true);
+  expect(await prs.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prerequisites.elementHandle())).toBe(true);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await expect(detail.getByRole('region', { name: '关联 PR' })).toContainText('暂无关联 PR');
+});

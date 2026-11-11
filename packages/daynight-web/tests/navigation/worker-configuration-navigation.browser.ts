@@ -39,7 +39,7 @@ const install = async (page: Page) => {
 const open = async (page: Page) => {
   await page.goto('/workers');
   await page.locator(`a.worker-card[href="${workerPath}"]`).click();
-  await page.locator('#worker-tab-configuration').click();
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
   await expect(page.locator('#config-maxConcurrent')).toHaveValue('2');
 };
 const back = (page: Page) => page.locator('a.worker-back-link').click();
@@ -61,21 +61,21 @@ for (const width of [1360, 390]) {
       await back(page); await page.keyboard.press('Escape'); await expect(input).toBeFocused();
       await input.fill('-'); await back(page); await expect(dialog(page)).toBeVisible();
       await discard(page).click(); await expect(page).toHaveURL(/\/workers$/);
-      await page.locator(`a.worker-card[href="${workerPath}"]`).click(); await page.locator('#worker-tab-configuration').click();
+      await page.locator(`a.worker-card[href="${workerPath}"]`).click(); await page.locator('[data-worker-tab="configuration"]:visible').click();
       await expect(input).toHaveValue('2'); expect(state.writes).toEqual([]);
     });
 
     test('retains invalid raw input through tabs and guards indexed back and forward', async ({ page }) => {
       await install(page); await open(page);
       const args = page.locator('#config-native-args'); await args.fill('[invalid');
-      await page.locator('#worker-tab-overview').click(); await expect(dialog(page)).toHaveCount(0);
+      await page.locator('[data-worker-tab="overview"]:visible').click(); await expect(dialog(page)).toHaveCount(0);
       await page.goBack(); await expect(args).toBeVisible(); await expect(dialog(page)).toHaveCount(0);
-      await page.goBack(); await expect(page.locator('#worker-tab-overview')).toHaveAttribute('aria-selected', 'true');
+      await page.goBack(); await expect(page.locator('[data-worker-tab="overview"]:visible')).toHaveAttribute('aria-selected', 'true');
       await page.goBack(); await expect(dialog(page)).toBeVisible();
       await keep(page).click(); await expect(page).toHaveURL(workerPath); await expect(args).toBeVisible();
       await expect(args).toHaveValue('[invalid'); await expect(args).toBeFocused();
       await back(page); await discard(page).click(); await expect(page).toHaveURL(/\/workers$/);
-      await page.goBack(); await page.locator('#worker-tab-configuration').click(); await args.fill('[forward draft');
+      await page.goBack(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await args.fill('[forward draft');
       await page.goForward(); await expect(dialog(page)).toBeVisible(); await page.keyboard.press('Escape');
       await expect(page).toHaveURL(workerPath); await expect(args).toHaveValue('[forward draft');
       await page.goForward(); await discard(page).click(); await expect(page).toHaveURL(/\/workers$/);
@@ -84,11 +84,11 @@ for (const width of [1360, 390]) {
     test('leaves clean, discarded and saved configurations without prompting', async ({ page }) => {
       const state = await install(page); await open(page);
       await back(page); await expect(dialog(page)).toHaveCount(0); await expect(page).toHaveURL(/\/workers$/);
-      await page.locator('a.worker-card').click(); await page.locator('#worker-tab-configuration').click();
+      await page.locator('a.worker-card').click(); await page.locator('[data-worker-tab="configuration"]:visible').click();
       await page.locator('#config-maxConcurrent').fill('4');
       await page.getByRole('button', { name: '取消修改', exact: true }).click(); await back(page);
       await expect(dialog(page)).toHaveCount(0); await expect(page).toHaveURL(/\/workers$/);
-      await page.locator('a.worker-card').click(); await page.locator('#worker-tab-configuration').click();
+      await page.locator('a.worker-card').click(); await page.locator('[data-worker-tab="configuration"]:visible').click();
       await page.locator('#config-maxConcurrent').fill('5');
       await page.getByRole('button', { name: '保存配置', exact: true }).click();
       await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
@@ -139,7 +139,7 @@ for (const width of [1360, 390]) {
       });
       await expect(dialog(page)).toHaveCount(0);
       expect(await page.locator('input, textarea').evaluateAll(elements => elements.some(element => (element as HTMLInputElement).value === '[private'))).toBe(false);
-      await page.locator('#worker-tab-configuration').click();
+      await page.locator('[data-worker-tab="configuration"]:visible').click();
       await expect(page.locator('#config-native-args')).toHaveValue('[]'); expect(state.writes).toEqual([]);
     });
 
@@ -170,12 +170,12 @@ for (const width of [1360, 320]) {
     const state = await install(page); await open(page);
     const args = page.locator('#config-native-args'); await args.fill('[private draft');
     await args.evaluate(element => { (window as unknown as { workerDraftNode: Element }).workerDraftNode = element; });
-    const configuration = page.locator('#worker-tab-configuration'), overview = page.locator('#worker-tab-overview');
+    const configuration = page.locator('[data-worker-tab="configuration"]:visible'), overview = page.locator('[data-worker-tab="overview"]:visible');
     const length = await page.evaluate(() => history.length);
     await configuration.click(); expect(await page.evaluate(() => history.length)).toBe(length);
     await configuration.focus(); await page.keyboard.press('Home');
     await expect(overview).toHaveAttribute('aria-selected', 'true');
-    await expect(page.locator('#worker-panel-configuration')).toHaveAttribute('inert', '');
+    await expect(page.locator('.worker-page:visible [data-worker-panel="configuration"]')).toHaveAttribute('inert', '');
     await page.goBack(); await expect(configuration).toHaveAttribute('aria-selected', 'true');
     await expect(args).toHaveValue('[private draft');
     expect(await args.evaluate(element => element === (window as unknown as { workerDraftNode: Element }).workerDraftNode)).toBe(true);
@@ -199,7 +199,7 @@ test('invalid Worker history exposes an error without destroying the retained ow
   await page.goBack(); await page.goForward();
   await expect(page.getByRole('alert')).toHaveText('页面导航状态无效。');
   await expect(args).toBeHidden();
-  await page.goBack(); await page.locator('#worker-tab-configuration').click();
+  await page.goBack(); await page.locator('[data-worker-tab="configuration"]:visible').click();
   await expect(args).toHaveValue('[private');
   expect(await args.evaluate(element => element === (window as unknown as { workerErrorNode: Element }).workerErrorNode)).toBe(true);
 });

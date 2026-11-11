@@ -94,7 +94,13 @@ let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.persist.mockReset();
-  mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
+  mocks.delay.mockImplementation((milliseconds: number, value?: unknown, options?: { signal?: AbortSignal }) => new Promise((resolve, reject) => {
+    const signal = options?.signal;
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", cancel); resolve(value); }, milliseconds);
+    const cancel = () => { clearTimeout(timer); reject(signal?.reason); };
+    signal?.addEventListener("abort", cancel, { once: true });
+  }));
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });

@@ -17,8 +17,9 @@ latest capacity observation is full. The independent maintenance owner checks
 that condition again immediately before starting an attempt; it never interrupts
 an upload already in progress. Its nonblocking ownership and shutdown behavior
 remain as described in the [maintenance decision](../architecture/2026-11-11-worker-archive-maintenance.md).
-Cleanup retains its original ownership and
-capacity until archival and worktree removal are confirmed. The scheduling and
+Cleanup retains its original resource ownership until archival and worktree
+removal are confirmed. The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
+independently releases the slot after the original execution stops. The scheduling and
 request rules are owned by the [Worker design](../../../../docs/design/daynight-worker.md).
 
 Archive requests retain the HTTP status and structured service error code. Only
@@ -41,9 +42,10 @@ continues to retain incomplete originals for low-frequency condition probes.
 
 ## Alternatives
 
-**Release capacity while archive remains pending.** This would bypass the
-worktree retention barrier and the rule that failed cleanup continues to own
-capacity. Priority and bounded retries preserve those guarantees.
+**Release capacity while archive remains pending.** At the time this alternative
+was considered, failed cleanup retained capacity together with the worktree
+barrier. The later [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
+separates the stopped execution slot from that retained barrier.
 
 **Queue requests or increase archive slots on the service.** This would change
 the specified immediate busy response and the service's resource envelope for

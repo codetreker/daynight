@@ -19,7 +19,7 @@ import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
+import { createReconcileWake } from "./reconcile-wake.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
@@ -64,13 +64,23 @@ import { browseWorkerDirectory } from "./read-only/directory.js";
 import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModelInput } from "./read-only/models.js";
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
-import { createWorkerGitManager } from "./worktrees.js";
+import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
 import { createWorkerToolSelectionRuntime } from "./tool-selection-runtime.js";
 import { readWebToolActivity } from "./tool-activity.js";
 import type { ActiveToolSelection } from "./tool-selection.js";
 import { createNativeSelectionVerifier } from "./native-selection.js";
+
+const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
+  emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
+    ...(pending.owner === undefined ? {} : { identity: pending.owner }), component: "git", phase: pending.command, attemptId: pending.attemptId, error: pending.error });
+};
+const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Parameters<typeof createWorkerGitManager>[0]["reportSettled"]> => (pending, settlement) => {
+  emit({ kind: "git-local-closed", message: `Git ${pending.command} local resources closed.`, projectId: pending.projectId,
+    ...(pending.owner === undefined ? {} : { identity: pending.owner }), component: "git", phase: pending.command, attemptId: pending.attemptId,
+    ...(settlement.cleanupErrors.length === 0 ? {} : { error: new AggregateError(settlement.cleanupErrors, "Repository Git local cleanup reported errors.", { cause: pending.error }) }) });
+};
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
   if (platform !== "macos") return false;
@@ -197,7 +207,10 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildWorkerPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
       },
-      emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
+      emit: event => {
+        const task = event.task === undefined ? null : store.getTask(event.task);
+        emit({ kind: event.kind, message: event.message, ...(event.task === undefined ? {} : { identity: { projectId: event.task.projectId, taskId: event.task.taskId, claimId: event.task.claimId, worktreeId: event.task.worktreeId } }), ...(task === null ? {} : { task }), ...(event.component === undefined ? {} : { component: event.component }), ...(event.phase === undefined ? {} : { phase: event.phase }), ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }), ...(event.runKey === undefined ? {} : { runKey: event.runKey }), ...(event.error === undefined ? {} : { error: event.error }) });
+      },
     });
     return { webStore, webBackend, launcher, archiveMaintenance, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
   } catch (error) {
@@ -311,7 +324,7 @@ export const runWorker = async (options: {
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
-    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
+    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit) })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
     const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
       unobservedLocalMappings.add(binding.projectId);
@@ -407,7 +420,7 @@ export const runWorker = async (options: {
     const nativeActivities = new Map<string, { operationId: string; revision: string }>();
     let monitoringTargetSignature: string | undefined;
     let effectiveSignature = "";
-    let configurationChanged = new AbortController();
+    const reconcileWake = createReconcileWake();
     let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
@@ -497,7 +510,7 @@ export const runWorker = async (options: {
           if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
         }
         const signature = JSON.stringify(snapshot.effective);
-        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); configurationChanged.abort(); }
+        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); reconcileWake.request(); }
         const current = view(snapshot);
         coordinator?.updateConfiguration(current ?? { repositories: [], targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false });
         scheduleInitialRemovals?.();
@@ -844,6 +857,7 @@ export const runWorker = async (options: {
             return (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
+          requestReconcile: reconcileWake.request,
           promptSource: currentPromptSource,
           onPromptDemand: projectIds => { if (currentPromptSource.setDemand(projectIds)) reporter!.demandChanged(); },
           buildPrompt: web.buildPrompt, emit, signal });
@@ -915,6 +929,7 @@ export const runWorker = async (options: {
     };
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
+      const revision = reconcileWake.snapshot();
       void toolRuntime.prepareWebCandidates(signal).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
       try {
         const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
@@ -945,16 +960,13 @@ export const runWorker = async (options: {
       if (signal.aborted) break;
       const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
       observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
-      const changed = configurationChanged;
-      if (!changed.signal.aborted && fallback !== null && manager.current().desired === null) {
+      if (reconcileWake.snapshot() === revision && fallback !== null && manager.current().desired === null) {
         const nextAttemptAt = new Date(Date.now() + (interval ?? 1_000)).toISOString();
         for (const [projectId, failure] of fallbackPreparationFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt }); });
         for (const [projectId, failure] of fallbackNativeFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setNativeConfigurationReason({ kind: "project", projectId }, { observedAt: failure.observedAt, nextAttemptAt }); });
       }
-      try {
-        if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
-      } catch (error) { if (!changed.signal.aborted && !isWorkerCancellation(error, signal)) throw error; }
-      finally { if (configurationChanged === changed) configurationChanged = new AbortController(); }
+      try { await reconcileWake.waitAfter(revision, interval ?? 1_000, signal); }
+      catch (error) { if (!isWorkerCancellation(error, signal)) throw error; }
       observeMonitoring(m => m.setNextPoll(null));
     }
   } catch (error) {
@@ -1032,7 +1044,7 @@ export const runWorkerControl = async (options: {
     const userId = await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit) });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths, readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...legacyHerdrToolSelections(store)] });
@@ -1192,7 +1204,10 @@ export const runWorkerResources = async (options: {
     store = openWorkerStore(paths.databaseFile);
     const project = store.getProject(request);
     if (!project || path.join(project.localPath, ".worktrees", "daynight", request.taskId) !== resource.worktreePath) throw new Error("The original worktree path has no matching project binding.");
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory,
+      reportPending: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local cleanup remains pending for project ${pending.projectId}; waiting for local close.\n`),
+      reportSettled: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local resources closed for project ${pending.projectId}.\n`),
+    });
     const result = await archive.dispose(request, operation, async () => {
       operation.check();
       const fresh = archive.resources().find(value => value.sessionId === request.sessionId);

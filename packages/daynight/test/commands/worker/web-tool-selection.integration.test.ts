@@ -151,7 +151,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     console.error(JSON.stringify({ fixture: "web-tool-selection", generations, nativeReceipts: await receipts(), nativeRequests: await requests(), relayErrors }));
   });
   const shutdown = async (identity: ClaimIdentity) => {
-    const result = await execution.backend.cleanup(current(identity), "shutdown", Date.now() + 20_000, AbortSignal.timeout(60_000), true);
+    const result = await execution.backend.cleanup(current(identity), { kind: "shutdown", deadline: Date.now() + 20_000, signal: AbortSignal.timeout(60_000), immediateStop: true });
     expect(result.complete).toBe(true);
     const saved = journal(identity);
     if (saved?.controllerProcess) await stopped(saved.controllerProcess, saved.nativeProcesses);
