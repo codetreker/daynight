@@ -86,8 +86,8 @@ configuration; tests and acceptance tooling use the separate full-workspace
 `pnpm web:typecheck` command. The image includes the CLI source tree required by
 shared protocols and their transitive imports. The script embeds generated assets
 in the Go 1.27.2 binary, recreates the service containers while preserving the
-PostgreSQL and attachment volumes, and waits up to 120 seconds for their health
-checks. Redis is required to start but has no health gate on Server. Build time
+PostgreSQL, attachment and server log volumes, and waits up to 120 seconds for
+their health checks. Redis is required to start but has no health gate on Server. Build time
 is separate from that readiness timeout. The final nonroot runtime image contains
 the server binary, Node.js 24 and the lockfile-selected sharp dependency closure.
 The pinned image-validation helper and its build manifest live under
@@ -95,9 +95,10 @@ The pinned image-validation helper and its build manifest live under
 Controller validation. Provider image profiles remain disabled until their full
 native evidence exists. It prepares the required writable
 `DAYNIGHT_STORAGE_ROOT` for UID/GID `10001:10001`. The Compose-managed
-`attachment-data` volume mounts at that root. Docker initializes a fresh volume
-from the image directory with its ownership, so the server writes as UID 10001
-without a privileged startup process.
+`attachment-data` volume mounts at that root. The `server-logs` volume mounts at
+`/var/lib/daynight/logs`. Docker initializes fresh volumes from the image
+directories with their ownership, so the server writes as UID 10001 without a
+privileged startup process.
 
 Open the configured public origin, `http://127.0.0.1:8787/` with the template,
 and sign in through UniAuth. The dashboard provides project creation, member and
@@ -229,6 +230,12 @@ docker compose ps
 docker compose logs --follow
 ```
 
+Server JSON logs also append to `server-logs` as `daynight-server.log`, with up
+to ten numbered rotated files. Each normal server needs its own log volume;
+the log writer holds an exclusive lock for the process lifetime. The `run_id`
+field associates configuration and logging diagnostics with one server start.
+Logs are separate from the database and attachment backup pair.
+
 `/healthz` and `/readyz` are public database probes. They do not require a login
 and do not call UniAuth; a ready server can still report a UniAuth login failure.
 Both the gateway and server health checks use `/readyz`.
@@ -284,7 +291,7 @@ pending logins to expire (10 minutes). The migration fails without deleting
 valid pending transactions; retry after they are consumed or expired. Do not run
 old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
-the epoch and both volumes. Retain the private deployment configuration and the
+the epoch and both data volumes. Retain the private deployment configuration and the
 corresponding UniAuth application registration separately from the application
 data. Stop the stack and retain all application data:
 
@@ -293,7 +300,8 @@ docker compose down
 ```
 
 To deliberately delete projects, tasks, authentication records, attachment
-metadata/files and Session archive metadata/bodies, remove both volumes:
+metadata/files, Session archive metadata/bodies and the server logs, remove the
+volumes:
 
 ```bash
 docker compose down --volumes

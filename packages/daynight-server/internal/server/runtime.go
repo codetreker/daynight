@@ -31,14 +31,15 @@ type Runtime struct {
 	admissionState
 	metrics *metricsServer
 
-	closeLock  chan struct{}
-	graceDone  bool
-	graceErr   error
-	relayDone  bool
-	relay      <-chan error
-	appDrain   <-chan error
-	appDrained bool
-	appClosed  bool
+	closeLock        chan struct{}
+	graceDone        bool
+	graceErr         error
+	relayDone        bool
+	relay            <-chan error
+	appDrain         <-chan error
+	appDrained       bool
+	appClosed        bool
+	transportDrained bool
 }
 
 type MetricsEndpoint struct {
@@ -415,6 +416,7 @@ func (r *Runtime) finish(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	r.transportDrained = true
 	if !r.appClosed && r.closeApp != nil {
 		if err := r.closeApp(ctx); err != nil {
 			return err
@@ -457,6 +459,13 @@ func (r *Runtime) MetricsAddress() string {
 		return ""
 	}
 	return r.metrics.listener.Addr().String()
+}
+
+// TransportDrained reports whether all admitted transport work has stopped.
+func (r *Runtime) TransportDrained() bool {
+	_ = r.acquireClose(context.Background())
+	defer func() { r.closeLock <- struct{}{} }()
+	return r.transportDrained
 }
 
 func (r *Runtime) Run(ctx context.Context) error {

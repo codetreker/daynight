@@ -87,6 +87,7 @@ JS
       [[ $scenario != cleanup-failure* ]] || exit 32
       rm -f "$FAKE_DOCKER_STATE/resources"
       if [[ $scenario == attachment-volume-left ]]; then touch "$FAKE_DOCKER_STATE/attachment-volume"; fi
+      if [[ $scenario == log-volume-left ]]; then touch "$FAKE_DOCKER_STATE/log-volume"; fi
       ;;
     *) exit 93 ;;
   esac
@@ -117,13 +118,17 @@ elif [[ $command == ps || $command == volume || $command == network ]]; then
     project="$(< "$FAKE_DOCKER_STATE/project")"
     case $command in
       ps) printf '%s\n' "$container_id" ;;
-      volume) printf '%s\n' "${project}_postgres-data" "${project}_attachment-data" ;;
+      volume) printf '%s\n' "${project}_postgres-data" "${project}_attachment-data" "${project}_server-logs" ;;
       network) printf '%s\n' "$network_id" ;;
     esac
   fi
   if [[ $command == volume && -f $FAKE_DOCKER_STATE/attachment-volume ]]; then
     project="$(< "$FAKE_DOCKER_STATE/project")"
     printf '%s\n' "${project}_attachment-data"
+  fi
+  if [[ $command == volume && -f $FAKE_DOCKER_STATE/log-volume ]]; then
+    project="$(< "$FAKE_DOCKER_STATE/project")"
+    printf '%s\n' "${project}_server-logs"
   fi
 else
   exit 89

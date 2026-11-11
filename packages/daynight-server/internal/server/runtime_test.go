@@ -566,11 +566,17 @@ func TestCloseRetriesTimedOutHTTPDrainWithoutClosingApp(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("application closed after the runtime budget: %d", calls.Load())
 	}
+	if runtime.TransportDrained() {
+		t.Fatal("timed-out transport reported as drained")
+	}
 	if err := runtime.Close(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("retry lost grace timeout: %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("application closed more than once: %d", calls.Load())
+	}
+	if !runtime.TransportDrained() {
+		t.Fatal("completed transport drain was not recorded")
 	}
 }
 

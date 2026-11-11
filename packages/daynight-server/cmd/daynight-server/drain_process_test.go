@@ -30,7 +30,7 @@ func TestServerProcessDrainWritesAndLogs(t *testing.T) {
 			values := processAPIEnvironment(t)
 			gateway := testauth.StartGateway(t, values["DAYNIGHT_UNIAUTH_CALLBACK_URL"])
 			values["DAYNIGHT_UNIAUTH_URL"], values["DAYNIGHT_UNIAUTH_APP_ID"], values["DAYNIGHT_UNIAUTH_APP_SECRET"] = gateway.Origin, gateway.AppID, gateway.AppSecret
-			values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "5s"
+			values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "10s"
 			if forced {
 				values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "500ms"
 			}
@@ -45,6 +45,15 @@ func TestServerProcessDrainWritesAndLogs(t *testing.T) {
 			parsed.RawQuery = query.Encode()
 			values["DAYNIGHT_DATABASE_URL"] = parsed.String()
 			process := startPersistenceProcess(t, values)
+			var processRoot string
+			for _, entry := range process.cmd.Env {
+				if strings.HasPrefix(entry, "DAYNIGHT_TEST_ROOT=") {
+					processRoot = strings.TrimPrefix(entry, "DAYNIGHT_TEST_ROOT=")
+				}
+			}
+			if processRoot == "" {
+				t.Fatal("server process root is missing")
+			}
 			browser := testauth.Browser(t)
 			testauth.Login(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"], "alice")
 			token := testauth.CreatePAT(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"])
@@ -202,6 +211,15 @@ func TestServerProcessDrainWritesAndLogs(t *testing.T) {
 					t.Fatalf("write finished before lock release: status=%d error=%v", got.status, got.err)
 				default:
 				}
+				contender := startLoggingProcess(t, processRoot, "server", values)
+				if err := contender.wait(t); err == nil || !strings.Contains(contender.logs.String(), `"phase":"lock"`) || !strings.Contains(contender.logs.String(), `"cause":"busy"`) {
+					t.Fatalf("draining process did not retain its log lock: %v; %s", err, contender.logs.String())
+				}
+				select {
+				case got := <-resultChannel:
+					t.Fatalf("write finished before lock release: status=%d error=%v", got.status, got.err)
+				default:
+				}
 				if err := lock.Rollback(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -234,6 +252,14 @@ func TestServerProcessDrainWritesAndLogs(t *testing.T) {
 					t.Fatalf("drained write receipt: %+v %v", after, err)
 				}
 				before = after
+				reacquired := startLoggingProcess(t, processRoot, "server", values)
+				reacquired.ready(t, values["DAYNIGHT_PUBLIC_ORIGIN"])
+				if err := reacquired.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+				if err := reacquired.wait(t); err != nil {
+					t.Fatalf("reacquired process did not stop cleanly: %v; %s", err, reacquired.logs.String())
+				}
 			}
 			var stopped, canceled, deadline bool
 			for _, line := range strings.Split(strings.TrimSpace(process.logs.String()), "\n") {
