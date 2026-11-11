@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -27,8 +28,8 @@ type Authentication struct {
 	callbackPath string
 }
 
-func NewAuthentication(identity identityOperations, settings config.AuthSettings, logger *slog.Logger) (*Authentication, error) {
-	origin, callbackPath, err := config.ValidateAuthSettings(settings, identity.CallbackURL())
+func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger) (*Authentication, error) {
+	origin, callbackPath, err := authconfig.ValidateAuthSettings(settings, identity.CallbackURL())
 	if err != nil {
 		return nil, err
 	}

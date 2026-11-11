@@ -12,13 +12,13 @@ import (
 
 func TestAppMetricsIsolationAndOfficialCollectors(t *testing.T) {
 	c := appTestConfig(t)
-	c.MetricsListenAddress = "127.0.0.1:0"
+	c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 	first, _, err := openTestApp(t, context.Background(), c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := appTestConfig(t)
-	other.MetricsListenAddress = "127.0.0.1:0"
+	other.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 	second, _, err := openTestApp(t, context.Background(), other, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestMetricsDisabledAndRegistrationFailureCleanup(t *testing.T) {
 		t.Run(map[bool]string{false: "disabled", true: "registration failure"}[enabled], func(t *testing.T) {
 			c := appTestConfig(t)
 			if enabled {
-				c.MetricsListenAddress = "127.0.0.1:0"
+				c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 			}
 			backend := newAppBackend(t)
 			open := appTestOpeners(t, c, backend)
@@ -105,7 +105,7 @@ func TestAppRegistersItsPersistenceCollector(t *testing.T) {
 	var backends [2]*appBackend
 	for i := range apps {
 		c := appTestConfig(t)
-		c.MetricsListenAddress = "127.0.0.1:0"
+		c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 		var err error
 		apps[i], backends[i], err = openTestApp(t, context.Background(), c, nil)
 		if err != nil {
@@ -138,7 +138,7 @@ func TestAppRegistersItsPersistenceCollector(t *testing.T) {
 
 func TestPersistenceCollectorRegistrationFailureCleansResources(t *testing.T) {
 	c := appTestConfig(t)
-	c.MetricsListenAddress = "127.0.0.1:0"
+	c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 	backend := newAppBackend(t)
 	open := appTestOpeners(t, c, backend)
 	open.metrics = func() (*prometheus.Registry, error) {
@@ -158,7 +158,7 @@ func TestPersistenceCollectorRegistrationFailureCleansResources(t *testing.T) {
 
 func TestMissingMetricsRegistryCleansResources(t *testing.T) {
 	c := appTestConfig(t)
-	c.MetricsListenAddress = "127.0.0.1:0"
+	c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 	backend := newAppBackend(t)
 	open := appTestOpeners(t, c, backend)
 	open.metrics = func() (*prometheus.Registry, error) { return nil, nil }

@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -27,7 +28,7 @@ func TestIdentityAuthenticationConfiguration(t *testing.T) {
 		{"https://daynight.example.com", false, true}, {"https://daynight.example.com", true, true}, {"http://localhost:8787", true, true}, {"http://127.0.0.1:8787", true, true}, {"http://[::1]:8787", true, true}, {"http://127.0.0.1:8787", false, false}, {"http://dev.localhost:8787", true, true}, {"http://localhost.example.com", true, true}, {"http://192.168.1.1", true, true}, {"https://example.com/", false, false}, {"https://example.com?x=1", false, false}, {"https://user@example.com", false, false}, {"https://example.com#secret", false, false}, {"invalid", false, false}, {"https://%zz", false, false}, {"https://example.com:443", false, false}, {"https://EXAMPLE.com", false, false}, {"https://:443", false, false}, {"https://example.com:65536", false, false}, {"https://example.com:", false, false}, {"https://example.com:0443", false, false}, {"http://127.0.0.1:80", true, false},
 	} {
 		identity := identityservice.New(nil, client, test.origin+"/api/v1/auth/callback")
-		auth, err := NewAuthentication(identity, config.AuthSettings{PublicOrigin: test.origin, AllowHTTPTestOrigin: test.allow}, logger)
+		auth, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: test.origin, AllowHTTPTestOrigin: test.allow}, logger)
 		if (err == nil) != test.valid {
 			t.Fatalf("origin %s allow=%t: %v", test.origin, test.allow, err)
 		}
@@ -41,7 +42,7 @@ func TestIdentityAuthenticationConfiguration(t *testing.T) {
 			}
 		}
 	}
-	_, err = NewAuthentication(identityservice.New(nil, client, "https://wrong.example/api/v1/auth/callback"), config.AuthSettings{PublicOrigin: "https://example.com"}, logger)
+	_, err = NewAuthentication(identityservice.New(nil, client, "https://wrong.example/api/v1/auth/callback"), authconfig.AuthSettings{PublicOrigin: "https://example.com"}, logger)
 	if err == nil {
 		t.Fatal("mismatched callback accepted")
 	}

@@ -34,13 +34,13 @@ type webhookHTTPApplicationFixture struct {
 
 func (f *webhookHTTPApplicationFixture) start() {
 	f.t.Helper()
-	client, err := service.NewIdentityClient(f.cfg)
+	client, err := service.NewIdentityClient(f.cfg.UniAuth)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	app := service.NewModules(f.cfg, f.store, func(context.Context) error { return nil }, attachmentTestFiles(f.t), client)
 	// Routes consume the selected service. Process tests own OpenApp's worker and resource assembly.
-	app.Webhooks = &webhookservice.Service{DB: f.store, ConfigurationExpansionAvailable: f.cfg.WebhookEnabled, DispatchEnabled: f.cfg.WebhookEnabled, Random: webhookHTTPRandom()}
+	app.Webhooks = &webhookservice.Service{DB: f.store, ConfigurationExpansionAvailable: f.cfg.Webhook.Enabled, DispatchEnabled: f.cfg.Webhook.Enabled, Random: webhookHTTPRandom()}
 	handler, err := New(app, f.cfg, testLogger())
 	if err != nil {
 		if cleanup := app.Close(context.Background()); cleanup != nil {
@@ -48,7 +48,7 @@ func (f *webhookHTTPApplicationFixture) start() {
 		}
 		f.t.Fatal(err)
 	}
-	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.Server.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
 	if err != nil {
 		if cleanup := handler.Shutdown(context.Background()); cleanup != nil {
 			f.t.Error(cleanup)
@@ -85,7 +85,7 @@ func (f *webhookHTTPApplicationFixture) request(method, path, body string) (int,
 		f.t.Fatal(err)
 	}
 	req.AddCookie(&http.Cookie{Name: "__Host-daynight_session", Value: f.token})
-	req.Header.Set("Origin", f.cfg.PublicOrigin)
+	req.Header.Set("Origin", f.cfg.Server.PublicOrigin)
 	req.Header.Set("Content-Type", "application/json")
 	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 	database.WriteWebhookCall = plans.write
 	t.Cleanup(plans.verify)
 	c := configuredTestConfig()
-	c.ShutdownTimeout = 5 * time.Second
+	c.Server.ShutdownTimeout = 5 * time.Second
 	f := &webhookHTTPApplicationFixture{t: t, cfg: c, store: database, user: principal.UserID, token: httpTestToken(principal.Kind)}
 	t.Cleanup(f.stop)
 	now := time.Now().UTC()
@@ -198,7 +198,7 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 		t.Fatalf("disabled error: %s", reject)
 	}
 	f.stop()
-	f.cfg.WebhookEnabled = true
+	f.cfg.Webhook.Enabled = true
 	f.start()
 	body, op = create("62222222-2222-4222-8222-222222222222")
 	planMutation(op, true)
@@ -212,7 +212,7 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 		t.Fatalf("endpoint response %s err=%v", created, err)
 	}
 	f.stop()
-	f.cfg.WebhookEnabled = false
+	f.cfg.Webhook.Enabled = false
 	f.start()
 	f.expect("GET", "/readyz", "", 200)
 	planEndpoint()
@@ -256,7 +256,7 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 		t.Fatalf("recovered history response: %s", history)
 	}
 	f.stop()
-	f.cfg.WebhookEnabled = true
+	f.cfg.Webhook.Enabled = true
 	f.start()
 	f.expect("GET", "/readyz", "", 200)
 	planEndpoint()

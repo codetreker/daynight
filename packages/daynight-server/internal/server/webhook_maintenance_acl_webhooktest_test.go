@@ -36,7 +36,7 @@ func startControlledMaintenanceFixture(f *webhookApplicationFixture, roots *x509
 		f.t.Fatal(err)
 	}
 	closeApp := func(cause error) {
-		ctx, cancel := context.WithTimeout(context.Background(), f.cfg.ShutdownTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), f.cfg.Server.ShutdownTimeout)
 		defer cancel()
 		f.t.Fatalf("composition: %v; cleanup: %v", cause, app.Close(ctx))
 	}
@@ -47,9 +47,9 @@ func startControlledMaintenanceFixture(f *webhookApplicationFixture, roots *x509
 	if err != nil {
 		closeApp(err)
 	}
-	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, f.cfg.Server.ShutdownTimeout, testLogger(), handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
 	if err != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), f.cfg.ShutdownTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), f.cfg.Server.ShutdownTimeout)
 		defer cancel()
 		handler.BeginShutdown()
 		if cleanupErr := handler.Shutdown(ctx); cleanupErr != nil {
@@ -60,7 +60,7 @@ func startControlledMaintenanceFixture(f *webhookApplicationFixture, roots *x509
 	root, cancel := context.WithCancel(context.Background())
 	if err = app.Start(root); err != nil {
 		cancel()
-		ctx, stop := context.WithTimeout(context.Background(), f.cfg.ShutdownTimeout)
+		ctx, stop := context.WithTimeout(context.Background(), f.cfg.Server.ShutdownTimeout)
 		defer stop()
 		f.t.Fatalf("start: %v; cleanup: %v", err, runtime.Close(ctx))
 	}
@@ -84,11 +84,11 @@ func TestWebhookProductionMaintenancePauseAndACL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	c := configuredTestConfig()
-	c.DatabaseURL = testutil.ScopedDatabaseURL(t)
-	c.StorageRoot = filepath.Join(testStorageRoot(t), "storage")
-	c.ShutdownTimeout = 5 * time.Second
-	c.WebhookEnabled = true
-	db, err := postgres.Open(ctx, c.DatabaseURL)
+	c.Database.URL = testutil.ScopedDatabaseURL(t)
+	c.Storage.Root = filepath.Join(testStorageRoot(t), "storage")
+	c.Server.ShutdownTimeout = 5 * time.Second
+	c.Webhook.Enabled = true
+	db, err := postgres.Open(ctx, c.Database.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestWebhookProductionMaintenancePauseAndACL(t *testing.T) {
 	endpoint := created.Endpoint.ID
 	path := "/api/v1/me/webhooks/" + endpoint
 	f.stop()
-	f.cfg.WebhookEnabled = false
+	f.cfg.Webhook.Enabled = false
 	startControlledMaintenanceFixture(f, roots)
 	asAdmin := func() { f.user, f.token = admin, adminToken }
 	asOwner := func() { f.user, f.token = owner, ownerToken }
@@ -234,7 +234,7 @@ func TestWebhookProductionMaintenancePauseAndACL(t *testing.T) {
 	default:
 	}
 	f.stop()
-	f.cfg.WebhookEnabled = true
+	f.cfg.Webhook.Enabled = true
 	startControlledMaintenanceFixture(f, roots)
 	stillPaused := task("omitted after dispatch resumes but endpoint paused")
 	count(1)

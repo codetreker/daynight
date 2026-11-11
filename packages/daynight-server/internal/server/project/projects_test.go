@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/google/uuid"
@@ -497,7 +497,7 @@ func resourceTestServerForPrincipal(t *testing.T, database *httpTestStore, outpu
 			return model.Principal{}, authhttp.Failure()
 		}
 		return principal, nil
-	}, config.AuthSettings{PublicOrigin: projectTestOrigin}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: projectTestOrigin}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

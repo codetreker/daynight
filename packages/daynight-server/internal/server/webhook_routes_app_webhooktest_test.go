@@ -40,11 +40,11 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	c := configuredTestConfig()
-	c.DatabaseURL = testutil.ScopedDatabaseURL(t)
-	c.StorageRoot = filepath.Join(testStorageRoot(t), "storage")
-	c.ShutdownTimeout = 5 * time.Second
-	c.WebhookEnabled = true
-	db, err := postgres.Open(ctx, c.DatabaseURL)
+	c.Database.URL = testutil.ScopedDatabaseURL(t)
+	c.Storage.Root = filepath.Join(testStorageRoot(t), "storage")
+	c.Server.ShutdownTimeout = 5 * time.Second
+	c.Webhook.Enabled = true
+	db, err := postgres.Open(ctx, c.Database.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 			t.Fatalf("%s %s status=%d want=%d body=%s", method, path, resp.StatusCode, want, data)
 		}
 		subject := resp.Header.Get("Daynight-User-ID")
-		if resp.Header.Get("Cache-Control") != "no-store" || (origin == c.PublicOrigin && subject != user) || (origin != c.PublicOrigin && subject != "") {
+		if resp.Header.Get("Cache-Control") != "no-store" || (origin == c.Server.PublicOrigin && subject != user) || (origin != c.Server.PublicOrigin && subject != "") {
 			t.Fatalf("private/auth headers %s %s: %v", method, path, resp.Header)
 		}
 		kind, _, e := mime.ParseMediaType(resp.Header.Get("Content-Type"))
@@ -115,10 +115,10 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 		return result
 	}
 	get := func(path string) map[string]any {
-		return request("GET", path, nil, "application/json", c.PublicOrigin, 200)
+		return request("GET", path, nil, "application/json", c.Server.PublicOrigin, 200)
 	}
 	write := func(method, path string, input any, status int) map[string]any {
-		return request(method, path, input, "application/json", c.PublicOrigin, status)
+		return request(method, path, input, "application/json", c.Server.PublicOrigin, status)
 	}
 	operation := func() map[string]any {
 		return map[string]any{"operationId": uuid.NewString(), "issuedAt": time.Now().UTC().Format(time.RFC3339Nano), "expectedUserId": user}
@@ -204,7 +204,7 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 	malformed["enabled"] = true
 	malformed["destination"] = map[string]any{"kind": "http", "adapterVersion": "1", "configuration": map[string]any{"url": receiver.URL}}
 	malformed["subscriptions"] = []any{}
-	invalid := request("POST", bases[0], malformed, "text/plain", c.PublicOrigin, 400)
+	invalid := request("POST", bases[0], malformed, "text/plain", c.Server.PublicOrigin, 400)
 	if invalid["error"].(map[string]any)["code"] != "invalid_input" {
 		t.Fatalf("media error=%v", invalid)
 	}
@@ -284,14 +284,14 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 		if get(ep.base + "/operations/" + manual["operationId"].(string))["operationId"] != manual["operationId"] {
 			t.Fatal("manual receipt missing")
 		}
-		bad := request("GET", path+"/deliveries/"+delivery+"/attempts?generation=01", nil, "application/json", c.PublicOrigin, 400)
+		bad := request("GET", path+"/deliveries/"+delivery+"/attempts?generation=01", nil, "application/json", c.Server.PublicOrigin, 400)
 		if bad["error"].(map[string]any)["code"] != "invalid_input" {
 			t.Fatalf("generation error=%v", bad)
 		}
 	}
 	// Verify the exact same routes remain mounted while deployment is disabled.
 	f.stop()
-	f.cfg.WebhookEnabled = false
+	f.cfg.Webhook.Enabled = false
 	startControlledMaintenanceFixture(f, roots)
 	disabled := get("/api/v1/webhook-event-types")["service"].(map[string]any)
 	if disabled["dispatchEnabled"] != false || disabled["configurationExpansionAvailable"] != false {
@@ -307,7 +307,7 @@ func TestWebhookProductionManagementRoutes(t *testing.T) {
 		if write("DELETE", path, remove, 200)["endpoint"].(map[string]any)["lifecycle"] != "deleted" {
 			t.Fatal("delete did not return tombstone")
 		}
-		missing := request("GET", path+"/signing-secret", nil, "application/json", c.PublicOrigin, 404)
+		missing := request("GET", path+"/signing-secret", nil, "application/json", c.Server.PublicOrigin, 404)
 		if missing["error"].(map[string]any)["code"] != "not_found" {
 			t.Fatalf("deleted secret=%v", missing)
 		}

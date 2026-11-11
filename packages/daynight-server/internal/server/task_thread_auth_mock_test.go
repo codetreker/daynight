@@ -59,9 +59,9 @@ func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 	t.Cleanup(f.server.Close)
 	config := configuredTestConfig()
 	f.origin = "https://" + f.server.Listener.Addr().String()
-	config.PublicOrigin = f.origin
-	config.UniAuthCallbackURL = f.origin + "/api/v1/auth/callback"
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	config.Server.PublicOrigin = f.origin
+	config.UniAuth.CallbackURL = f.origin + "/api/v1/auth/callback"
+	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(&f.logs, nil))
 	handler, err := newTestHandler(Dependencies{Store: f.database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
