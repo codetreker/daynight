@@ -31,6 +31,11 @@ const server = createServer(socket => {
         if (process.env.DAYNIGHT_TEST_BRIDGE_MODE === "open-race") setTimeout(() => respond(id, { sessionId: params.sessionId }), 50);
         else respond(id, { sessionId: params.sessionId });
       } else if (method === "runtime.shutdown" && process.env.DAYNIGHT_TEST_BRIDGE_MODE === "graceful-shutdown") { respond(id, {}); socket.end(); server.close(); }
+      else if (method === "session.permissions.handlePendingPermissionRequest" && params.requestId === "source-request") {
+        assert.equal(params.result.kind, "reject");
+        write({ method: "session.event", params: { sessionId: params.sessionId, event: { type: "permission.completed", id: "source-complete", data: { requestId: "source-request", result: { kind: "denied-interactively-by-user", feedback: params.result.feedback } } } } });
+        respond(id, {});
+      }
       else if (method === "session.options.update" || method === "session.destroy" || method === "runtime.shutdown" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
       else if (method === "session.model.getCurrent") respond(id, { modelId: "fixture-model" });
       else if (method === "session.getMetadata") respond(id, { session: { sessionId: params.sessionId, isRemote: false, context: { cwd: process.cwd() } } });
@@ -45,7 +50,11 @@ const server = createServer(socket => {
         else if (params.cursor === "base64") respond(id, { events: [{ type: "user.message", id: "base64-event", data: { content: "keep text", attachments: [{ type: "blob", mimeType: "image/png", data: "eHk" }, { type: "blob", mimeType: "image/png", data: "not!base64" }] } }], cursor: "base64", hasMore: false, cursorStatus: "valid" });
         else respond(id, { events: [event], cursor: "cursor-1", hasMore: false, cursorStatus: "valid" });
       } else if (method === "ping") {
-        if (params.message === "emit") { write({ method: "session.event", params: { sessionId: "fixture-session", event } }); respond(id, {}); }
+        if (typeof params.message === "string" && params.message.startsWith('{"kind":"source-permission"')) {
+          const source = JSON.parse(params.message);
+          write({ method: "session.event", params: { sessionId: "fixture-session", event: { type: "permission.requested", id: "source-requested", data: { requestId: "source-request", permissionRequest: { kind: "read", path: source.path, intention: source.intention } } } } }); respond(id, {});
+        }
+        else if (params.message === "emit") { write({ method: "session.event", params: { sessionId: "fixture-session", event } }); respond(id, {}); }
         else if (params.message === "malformed") socket.write("Content-Length: 134217729\r\n\r\n");
         else if (params.message === "hold") continue;
         else respond(id, { message: params.message, timestamp: 1 });

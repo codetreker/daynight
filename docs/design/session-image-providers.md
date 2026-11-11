@@ -1,6 +1,6 @@
 # Session 图片原生 Provider 设计
 
-本文定义 Codex、Claude Code、Copilot 的图片输入、接受证据、原生图片投影和有界历史读取。三 Provider 的文字和图片共用结构化 `send` 入口，分别通过原生编码器、证据 matcher 和有界读取器接入公共存储。运行时只对证据完整的 executable、SDK、backend 和模型组合开放图片资格；本地实现和受控回归不表示真实模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
+当前图片设计与验收范围为 Codex、Copilot。本文同时保留已实现 Claude Code 适配的兼容与拒绝语义；它不属于当前图片交付目标，未知图片资格和本地来源权限继续拒绝。三个既有适配器的文字和图片共用结构化 `send` 入口，分别通过原生编码器、证据 matcher 和有界读取器接入公共存储。运行时只对证据完整的 executable、SDK、backend 和模型组合开放图片资格；本地实现和受控回归不表示真实模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
 
 [协议与存储设计](session-image-contracts.md)是 `send`、能力、operation、occurrence、capture、错误、预算和字节存储的唯一公共定义。Provider 只实现各自原生编码器、强关联证据和来源投影，不另建上传协议、数据库或预览接口。本地及外部来源使用[来源采集设计](session-image-sources.md)，展示使用[浏览器设计](session-image-browser.md)，封存与恢复使用[归档设计](session-image-archives.md)。[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-providers.md)保留备选与维护代价。
 
@@ -73,6 +73,8 @@ live、final、原生恢复和分页共用一个 normalizer。稳定原生 item 
 
 sourceKey 来自版本化的原生位置 tuple，包含 canonical item/operation、container、callId、原生 part ID 或源数组索引；不含 URL、path 或 bytes。文字 delta 只更新文字槽，异步图片保持 entry/imageId 和工具状态，已终结工具不被迟到 start 改回 running。
 
+用户消息中只有一个 string text block 且其余均为 image/localImage 时，该正文保留 Markdown 资格，包括已接受输入及历史。完整性来自原生终态或已持久化原输入；多 text block 不合并为一个可采集正文，纯图不添加空正文。Markdown bindings 复用稳定正文 partId，原生图片仍保持原位置、imageId 和接受回执。
+
 | 原生形态 | 来源与所属 |
 | --- | --- |
 | userMessage.content 的 text/localImage/image | 保留顺序。自有操作关联原件；外来 localImage 交安全本地读取，data URL 交 inline 解码，历史 HTTP(S) 交外部采集。 |
@@ -110,7 +112,7 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 
 实际 executable 从 SDK 的 `spawnClaudeCodeProcess` 观察，不猜测固定 `cli.js`。helper 在该入口探测版本，并结合实际 spawn 环境和 SDK effective settings 判断 backend；覆盖冲突、不可解析的设置来源或未执行的 policy helper 均不能证明 first-party backend。模型别名、点号与短横线拼写不自行等同，必须取得精确 resolved model 或经过独立验证的映射。这些运行时身份事实只定位待验证组合，不证明图片准入资格；版本匹配、模型目录及公开视觉限制不能替代该组合的原生接受、几何和平台证据。
 
-当前没有已完成资格验证的 Claude 图片 profile。因此即使 SDK、CLI、Anthropic backend 和精确模型均已确认，生产能力仍报告 `send:unknown`、未知 geometry、空媒体类型和零图片额度；adapter 在读取图片文件或原生提交前拒绝图片输入。模型 readback 仍更新真实模型身份，不会自行开放图片能力。受控 adapter 测试使用测试内的能力替身验证原生编码和接受处理，不提供生产配置开关；开放资格须先取得完整证据并更新相应 profile。
+Claude 图片能力不在当前设计与验收范围，且当前没有已完成资格验证的 Claude 图片 profile。因此即使 SDK、CLI、Anthropic backend 和精确模型均已确认，生产能力仍报告 `send:unknown`、未知 geometry、空媒体类型和零图片额度；adapter 在读取图片文件或原生提交前拒绝图片输入。模型 readback 仍更新真实模型身份，不会自行开放图片能力。受控 adapter 测试使用测试内的能力替身验证原生编码和接受处理，不提供生产配置开关；开放资格须先取得完整证据并更新相应 profile。
 
 原生限制单位必须明确；编码上限 L 按 `4 * ceil(rawBytes / 3) <= L` 换算，不把 5 MB 编码额度当 5 MiB 文件。请求整体还受历史、工具和文字影响。累计上下文超过某阈值的几何限制必须纳入公共 geometry，不能以单条图数或普通 decoder 的 16384 上限代替 backend profile。
 
@@ -219,6 +221,6 @@ bridge 失败只暂停媒体并留下当前连接未知；是否恢复/停止遵
 
 canonical aliases 只由可信 native ID 关联事务添加，不能用 hash 猜并。已 committed 永远读服务原件，格式错误、源消失、权限变化保留原位置与安全错误。结束时停止新源 IO，结算原捕获；unknown 或已保存 bytes 损坏不能伪装“从未采集”。
 
-Windows、macOS、Linux 分别验证原生 adapter、helper/bridge 进程树与资源回收，native 进程峰值和 Controller/SDK 宿主峰值分开记录。没有真实模型输出的特定助手图片形态可标 native_not_produced；三个 Provider 的纯图及图文输入不能据此豁免。
+Windows、macOS、Linux 分别验证原生 adapter、helper/bridge 进程树与资源回收，native 进程峰值和 Controller/SDK 宿主峰值分开记录。没有真实模型输出的特定助手图片形态可标 native_not_produced；Codex、Copilot 的纯图及图文输入不能据此豁免。
 
 必须验证：各 Provider 实际原生 payload 的类型/顺序/bytes、唯一调用数、精确接受关联、第二图失败零调用、回执丢失和迟到、模型与权限变化、重复同图与乱序历史、工具归属、合法边界和恶意大帧、控制不饿死、源变化后的原摘要、Controller 离线的归档读取及旧文本兼容。受控 SDK/RPC 证明本地调用和状态处理，真实 profile 证明原生接受与模型视觉消费；二者不能互相替代。
