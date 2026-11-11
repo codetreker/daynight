@@ -484,10 +484,9 @@ result scope and evidence limits.
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
 delivery. This repository manages concrete work in Daynight; use the
 [`using-daynight` manual](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-for product operations and follow the [development workflow](.agents/skills/development-workflow/SKILL.md). Use
-[`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
-a bounded change request into a clear task, choose its required operating
-system, and hand it off to a Worker. Use
+for product operations. Follow the [development workflow](.agents/skills/development-workflow/SKILL.md)
+to prepare a clear task, select its required operating system, and hand it off to
+a Worker when authorized. Use
 [`optimize-unit-tests`](.agents/skills/optimize-unit-tests/SKILL.md) to reduce test
 runtime, resource use and CI completion time while preserving defect detection.
 See the [repository skills](.agents/skills/) for decision notes, scope choices

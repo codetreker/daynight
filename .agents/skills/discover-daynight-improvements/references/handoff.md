@@ -1,10 +1,12 @@
 # Hand Off Findings
 
-Register and hand off each confirmed finding as its own Daynight task. Apply the
-`dispatch-small-change` skill for task content, platform selection, registration
-and handoff, `development-workflow` for task content and the Goal protocol,
-and `daynight --skill` for product operations and write safety. This reference adds what an investigation needs on top of them: a
-separate production context, duplicate checks across a busy project, package
+Register and hand off each confirmed finding as its own Daynight task. Follow
+[task creation](../../development-workflow/references/create-task.md) for task
+content, platform selection and registration, and [handoff](../../development-workflow/references/handoff.md)
+for content and responsibility review. Use the development workflow Goal protocol
+for requirement candidates and the `using-daynight` manual (`daynight --skill`)
+for product operations and write safety. This reference adds investigation needs:
+a separate production context, duplicate checks across a busy project, package
 attachments, review against the local package and reconciliation of uncertain
 writes.
 
