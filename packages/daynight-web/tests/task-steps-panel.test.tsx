@@ -5,7 +5,7 @@ import type { StepsResource, TaskStep } from "../src/api/task-steps";
 import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
-const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), edit: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
+const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), edit: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string; version?: bigint }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
 vi.mock("../src/features/task-detail/useTaskSteps", () => ({ useTaskSteps: () => read }));
 const listeners = vi.hoisted(() => new Set<() => void>());
 vi.mock("../src/features/task-detail/TaskDetailSession", () => ({ useTaskDetailSessions: () => ({
@@ -153,7 +153,7 @@ describe("adding a Step", () => {
     return read.add.mock.calls[0]![0] as string;
   };
   const setAddMutation = (stepId: string, phase: string, requestId = "request-add", error: unknown = null) => {
-    read.mutation = { operation: { action: "stepAdd", stepId, requestId }, phase, error, reconciling: false, reconciliationError: null };
+    read.mutation = { operation: { action: "stepAdd", stepId, requestId, version: 3n }, phase, error, reconciling: false, reconciliationError: null };
   };
 
   it("retains newer local edits when a confirmed receipt is published after a pause", () => {
@@ -169,11 +169,46 @@ describe("adding a Step", () => {
       fireEvent.change(title(), { target: { value: "A newer draft" } });
       resume();
       Object.assign(read.mutation, { publicationPending: false });
-      read.resource = { ...resource([...read.resource!.steps, { ...steps[0]!, id: stepId, title: "  Review 第 2 轮  " }]), version: 4n };
+      read.resource = { ...resource([...read.resource!.steps, { ...steps[0]!, id: stepId, title: "  Review 第 2 轮  ", description: "**Result**\n[next](file.md)", status: "in_progress" }]), version: 4n };
       view.rerender(panel()); publish();
+      fireEvent.click(screen.getByRole("button", { name: "Return to editing step" }));
       expect(title()).toHaveValue("A newer draft");
+      save();
       expect(read.add).toHaveBeenCalledOnce();
+      expect(read.edit).toHaveBeenCalledExactlyOnceWith(stepId, "A newer draft", "**Result**\n[next](file.md)", 4n);
     } finally { resume(); }
+  });
+  it("keeps a confirmed add editable after leaving and returning during delayed publication", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    setAddMutation(stepId, "confirmed");
+    Object.assign(read.mutation, { publicationPending: true });
+    view.rerender(panel()); publish();
+    view.rerender(panel(false)); view.rerender(panel());
+    const created = { ...steps[0]!, id: stepId, title: "  Review 第 2 轮  ", description: "**Result**\n[next](file.md)", status: "in_progress" as const };
+    read.resource = { ...resource([...read.resource!.steps, created]), version: 4n };
+    Object.assign(read.mutation, { publicationPending: false });
+    view.rerender(panel()); publish();
+    fireEvent.click(screen.getByRole("button", { name: "Return to editing step" }));
+    const editor = draftForm();
+    const retained = editor.getByRole("textbox", { name: "Title" });
+    expect(retained).toHaveValue(created.title); expect(retained).toBeEnabled();
+    fireEvent.change(retained, { target: { value: "Next edit" } });
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    expect(read.add).toHaveBeenCalledOnce();
+    expect(read.edit).toHaveBeenCalledExactlyOnceWith(stepId, "Next edit", created.description, 4n);
+  });
+  it("retains an added draft without adopting a later unverified Step instance", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); const stepId = submit();
+    setAddMutation(stepId, "confirmed"); Object.assign(read.mutation, { publicationPending: true });
+    view.rerender(panel()); publish(); view.rerender(panel(false)); view.rerender(panel());
+    read.resource = { ...resource([...read.resource!.steps, { ...steps[0]!, id: stepId, title: "Different current step" }]), version: 5n };
+    Object.assign(read.mutation, { publicationPending: false }); view.rerender(panel()); publish();
+    expect(draftForm().getByRole("textbox", { name: "Title" })).toHaveValue("  Review 第 2 轮  ");
+    expect(draftForm().getByRole("textbox", { name: "Title" })).toBeEnabled();
+    expect(draftForm().getByRole("alert")).toHaveTextContent("no longer available");
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(read.add).toHaveBeenCalledOnce(); expect(read.edit).not.toHaveBeenCalled();
   });
 
   it("validates the title, previews the same Markdown, and submits unmodified fields with a reserved short ID", () => {
@@ -747,6 +782,66 @@ describe("insertion and editing share a draft", () => {
 describe("editing a Step", () => {
   const open = (id: string) => { fireEvent.click(document.querySelector(`[data-step-id="${id}"] .step-disclosure`)!); fireEvent.click(stepRow(id).getByRole("button", { name: "Edit step" })); };
   const form = () => within(document.querySelector(".step-edit-form")!);
+  it("keeps a confirmed edit usable after leaving and returning during delayed publication", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Saved edit" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    read.mutation = { operation: { action: "stepEdit", stepId: "00000000", requestId: "request-edit", version: 3n }, phase: "confirmed", error: null, reconciling: false, reconciliationError: null };
+    Object.assign(read.mutation, { publicationPending: true });
+    view.rerender(panel()); publish();
+    view.rerender(panel(false)); view.rerender(panel());
+    read.resource = { ...resource([{ ...steps[0]!, title: "Saved edit" }, ...steps.slice(1, 4)]), version: 4n };
+    Object.assign(read.mutation, { publicationPending: false });
+    view.rerender(panel()); publish();
+    const retained = form().getByRole("textbox", { name: "Title" });
+    expect(retained).toHaveValue("Saved edit"); expect(retained).toBeEnabled();
+    fireEvent.change(retained, { target: { value: "Later edit" } });
+    read.edit.mockReturnValue("request-later");
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenLastCalledWith("00000000", "Later edit", "Result 1", 4n);
+    expect(read.edit).toHaveBeenCalledTimes(2);
+  });
+  it("retains newer text and requires review of later content before a new edit", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Submitted" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    read.mutation = { operation: { action: "stepEdit", stepId: "00000000", requestId: "request-edit", version: 3n }, phase: "confirmed", error: null, reconciling: false, reconciliationError: null };
+    Object.assign(read.mutation, { publicationPending: true }); view.rerender(panel()); publish();
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "My newer draft" } });
+    read.resource = { ...resource([{ ...steps[0]!, title: "Changed elsewhere", description: "Current" }, ...steps.slice(1, 4)]), version: 5n };
+    Object.assign(read.mutation, { publicationPending: false }); view.rerender(panel()); publish();
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("My newer draft");
+    expect(form().getByText("Changed elsewhere")).toBeVisible();
+    expect(form().getByText("Current")).toBeVisible();
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(form().getByRole("button", { name: "Use current version" }));
+    expect(form().getByRole("button", { name: "Save" })).toBeEnabled();
+    read.resource = { ...resource([{ ...steps[0]!, title: "Changed again", description: "Latest" }, ...steps.slice(1, 4)]), version: 6n }; view.rerender(panel());
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(form().getByText("Changed again")).toBeVisible();
+    fireEvent.click(form().getByRole("button", { name: "Use current version" }));
+    read.edit.mockReturnValue("request-new"); fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenLastCalledWith("00000000", "My newer draft", "Result 1", 6n);
+    expect(read.edit).toHaveBeenCalledTimes(2);
+  });
+  it("retains the draft without adopting a replacement Step with the same ID", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Submitted" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    read.mutation = { operation: { action: "stepEdit", stepId: "00000000", requestId: "request-edit", version: 3n }, phase: "confirmed", error: null, reconciling: false, reconciliationError: null };
+    Object.assign(read.mutation, { publicationPending: true }); view.rerender(panel()); publish();
+    view.rerender(panel(false)); view.rerender(panel());
+    read.resource = { ...resource([{ ...steps[0]!, title: "Replacement", createdAt: "2026-11-04T12:34:56.123456Z" }, ...steps.slice(1, 4)]), version: 5n };
+    Object.assign(read.mutation, { publicationPending: false }); view.rerender(panel()); publish();
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Submitted");
+    expect(form().getByRole("textbox", { name: "Title" })).toBeEnabled();
+    expect(form().getByRole("alert")).toHaveTextContent("no longer available");
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(read.edit).toHaveBeenCalledOnce();
+  });
   it("keeps a single ID-bound draft across pages and requires a decision before switching", () => {
     read.resource = resource(steps.slice(0, 101));
     renderWithLocale(panel(), { locale: "en" });

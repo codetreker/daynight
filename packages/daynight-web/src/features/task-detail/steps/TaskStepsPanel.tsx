@@ -12,7 +12,7 @@ import { StepStatusMenu } from "./StepStatusMenu";
 import "../../../styles/task-steps.css";
 
 const PAGE_SIZE = 100;
-type StepDraft = { key: number; revision: number; submittedRevision: number | null; submittedNavigation: number | null; kind: "add" | "edit"; id: string; title: string; description: string; status: StepStatus; originalTitle: string; originalDescription: string; originalCreatedAt: string | null; retired: boolean; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; initialAnchorCreatedAt: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
+type StepDraft = { key: number; revision: number; submittedRevision: number | null; submittedNavigation: number | null; submittedContent: { title: string; description: string; status: StepStatus } | null; review: { version: bigint; acknowledged: boolean } | null; kind: "add" | "edit"; id: string; title: string; description: string; status: StepStatus; originalTitle: string; originalDescription: string; originalCreatedAt: string | null; retired: boolean; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; initialAnchorCreatedAt: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
 const isDirty = (draft: StepDraft | null) => draft !== null && (draft.title !== draft.originalTitle || draft.description !== draft.originalDescription || draft.kind === "add" && (draft.status !== "todo" || draft.placement !== draft.initialPlacement || draft.anchorId !== draft.initialAnchorId || draft.anchorCreatedAt !== draft.initialAnchorCreatedAt) || draft.requestId !== null);
 const invalidText = (value: string) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
 // Textareas normalize CR and CRLF for display. Preserve untouched source spans when editing.
@@ -124,6 +124,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const workspace = useRef<HTMLElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const titleInput = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+  const skipEditFocus = useRef<number | null>(null);
   const chooseTarget = useRef<HTMLButtonElement>(null);
   const [choosingTarget, setChoosingTarget] = useState(false);
   const [anchorNeedsDecision, setAnchorNeedsDecision] = useState(false);
@@ -151,7 +152,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     if (mutation.publicationPending && mutation.operation !== null && "requestId" in mutation.operation) deferredOperations.current.add(mutation.operation.requestId);
     if (!mutation.publicationPending && (mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit")) {
       const requestId = mutation.operation.requestId;
-      setDraft((current) => current !== null && current.requestId === requestId && current.revision === current.submittedRevision && (!deferredOperations.current.has(requestId) || current.submittedNavigation === navigationRevision.current) ? { ...current, confirmed: current.confirmed || mutation.phase === "confirmed", uncertain: current.uncertain || mutation.phase === "unknown" } : current);
+      setDraft((current) => current !== null && current.requestId === requestId && current.revision === current.submittedRevision ? { ...current, confirmed: current.confirmed || mutation.phase === "confirmed", uncertain: current.uncertain || mutation.phase === "unknown" } : current);
     }
   }), [sessions, projectId, taskId]);
   const id = useId();
@@ -199,7 +200,8 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const mutation = state.mutation;
   const ownAdd = draft !== null && draft.requestId !== null && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit") && mutation.operation.requestId === draft.requestId ? mutation : null;
   const ownDelete = submittedDelete !== null && draft?.key === submittedDelete.draftKey && mutation.operation?.action === "stepDelete" && mutation.operation.requestId === submittedDelete.requestId ? mutation : null;
-  const frozen = draft?.confirmed === true || ownDelete !== null && !ownDelete.publicationPending && draft?.revision === submittedDelete?.draftRevision && (ownDelete.phase === "pending" || ownDelete.phase === "unknown" || ownDelete.phase === "confirmed") || ownAdd !== null && !ownAdd.publicationPending && draft?.revision === draft?.submittedRevision && (ownAdd.phase === "pending" || ownAdd.phase === "unknown" || ownAdd.phase === "confirmed");
+  const interruptedDraftNavigation = draft?.requestId !== null && draft?.requestId !== undefined && deferredOperations.current.has(draft.requestId) && draft.submittedNavigation !== navigationRevision.current;
+  const frozen = !interruptedDraftNavigation && draft?.confirmed === true || ownDelete !== null && !ownDelete.publicationPending && draft?.revision === submittedDelete?.draftRevision && (ownDelete.phase === "pending" || ownDelete.phase === "unknown" || ownDelete.phase === "confirmed") || ownAdd !== null && !ownAdd.publicationPending && !interruptedDraftNavigation && draft?.revision === draft?.submittedRevision && (ownAdd.phase === "pending" || ownAdd.phase === "unknown" || ownAdd.phase === "confirmed");
   const duplicateId = ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.code === "step_id_conflict";
   useEffect(() => {
     if (draft?.kind === "add" && ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 && draft.requestId && rejectedAnchorRequest.current !== draft.requestId) {
@@ -211,12 +213,23 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const closeDraft = () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setChoosingTarget(false); setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
   const cancelDraft = () => { if (dirty) { setDiscard(true); onConfirmationChange?.(true); } else { const target = draft?.kind === "edit" ? draft.id : ""; closeDraft(); setFocusStep(target); } };
   useEffect(() => {
-    if (draft === null || !draft.confirmed || resource === null || state.stale || state.error !== null || draft.kind === "edit" && (draft.retired || !resource.steps.some((step) => step.id === draft.id && step.createdAt === draft.originalCreatedAt))) return;
+    if (draft === null || ownAdd?.phase !== "confirmed" || ownAdd.publicationPending || ownAdd.reconciling || ownAdd.reconciliationError !== null || resource === null || state.stale || state.error !== null || draft.submittedContent === null || !interruptedDraftNavigation && draft.revision === draft.submittedRevision) return;
+    const operation = ownAdd.operation;
+    if (operation === null || (operation.action !== "stepAdd" && operation.action !== "stepEdit") || resource.version < operation.version) return;
+    const saved = resource.steps.find((step) => step.id === draft.id);
+    const matches = saved !== undefined && saved.title === draft.submittedContent.title && saved.description === draft.submittedContent.description && (draft.kind === "edit" || saved.status === draft.submittedContent.status);
+    if (draft.kind === "add" && resource.version <= operation.version || !matches && resource.version === operation.version) return;
+    const sameInstance = saved !== undefined && (draft.kind === "edit" ? saved.createdAt === draft.originalCreatedAt : matches && resource.version === operation.version + 1n);
+    if (draft.kind === "add") skipEditFocus.current = draft.key;
+    setDraft((current) => current !== draft ? current : { ...current, kind: "edit", originalTitle: matches && sameInstance ? saved!.title : current.submittedContent!.title, originalDescription: matches && sameInstance ? saved!.description : current.submittedContent!.description, originalCreatedAt: sameInstance ? saved!.createdAt : current.originalCreatedAt, retired: !sameInstance, review: sameInstance && !matches ? { version: resource.version, acknowledged: false } : null, requestId: null, submittedRevision: null, submittedNavigation: null, submittedContent: null, confirmed: false, uncertain: false });
+  }, [draft, ownAdd, resource, state.stale, state.error, interruptedDraftNavigation]);
+  useEffect(() => {
+    if (draft === null || !draft.confirmed || interruptedDraftNavigation || draft.revision !== draft.submittedRevision || resource === null || state.stale || state.error !== null || draft.kind === "edit" && (draft.retired || !resource.steps.some((step) => step.id === draft.id && step.createdAt === draft.originalCreatedAt))) return;
     const index = resource.steps.findIndex((step) => step.id === draft.id);
     if (index < 0) { setAddedMissing(true); setFocusStep(""); }
     else { setPage(Math.floor(index / PAGE_SIZE) + 1); setFocusStep(draft.id); }
     closeDraft();
-  }, [draft, resource, state.stale, state.error]);
+  }, [draft, resource, state.stale, state.error, interruptedDraftNavigation]);
   useLayoutEffect(() => {
     if (focusStep === null || !active) return;
     const target = focusStep === "" ? (addButton.current?.disabled ? titleInput.current : addButton.current) : workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${focusStep}"] .step-disclosure`);
@@ -290,7 +303,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     setAnchorNeedsDecision(false);
     titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setUndoUnavailable(false);
     const anchorCreatedAt = resource?.steps.find((step) => step.id === anchorId)?.createdAt ?? null;
-    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
+    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, review: null, kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
   }, [hasDraft, pages, resource]);
   const authPaused = authRequestsPaused();
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
@@ -306,9 +319,10 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const missingAnchor = draft?.kind === "add" && draft.placement !== "last" && draft.anchorId !== null && resource !== null && (anchor === null || anchor.createdAt !== draft.anchorCreatedAt);
   useEffect(() => { if (missingAnchor) setAnchorNeedsDecision(true); }, [missingAnchor]);
 
-  useLayoutEffect(() => { if (draft?.kind === "edit" && active) titleInput.current?.focus(); }, [draft?.kind, draft?.id, active]);
+  useLayoutEffect(() => { if (draft?.kind === "edit" && active) { if (skipEditFocus.current === draft.key) skipEditFocus.current = null; else titleInput.current?.focus(); } }, [draft?.kind, draft?.id, active]);
   const currentDraftStep = draft?.kind === "edit" ? resource?.steps.find((step) => step.id === draft.id) : undefined;
   const editTargetAvailable = draft?.kind === "edit" && !draft.retired && currentDraftStep?.createdAt === draft.originalCreatedAt;
+  const needsReview = draft?.review !== null && draft?.review !== undefined && (!draft.review.acknowledged || draft.review.version !== resource?.version);
   useEffect(() => {
     if (draft?.kind === "edit" && !draft.retired && resource !== null && !state.stale && state.error === null && !editTargetAvailable) {
       setDraft((current) => current === draft ? { ...current, retired: true, confirmed: false } : current);
@@ -318,7 +332,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     const step = resource?.steps.find((item) => item.id === stepId);
     if (!step) return;
     titleHistory.current = newHistory(step.title); descriptionHistory.current = newHistory(step.description); setUndoUnavailable(false);
-    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
+    setDraft({ key: ++draftKey.current, revision: 0, submittedRevision: null, submittedNavigation: null, submittedContent: null, review: null, kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
     setExpanded((previous) => new Set(previous).add(step.id));
     setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
   }, [resource]);
@@ -345,10 +359,10 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       event.preventDefault();
       if (!/[^\p{White_Space}]/u.test(draft.title) || invalidText(draft.title)) { setInvalidTitle(true); titleInput.current?.focus(); return; }
       if (invalidText(draft.description)) { setInvalidDescription(true); setPreview(false); return; }
-      if (resource === null || !state.canAdd || frozen || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))) return;
+      if (resource === null || !state.canAdd || frozen || ownAdd?.phase === "confirmed" || needsReview || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))) return;
       const placement = draft.placement === "last" ? undefined : draft.placement === "before" ? { before: draft.anchorId! } : { after: draft.anchorId! };
       const requestId = draft.kind === "edit" ? state.edit(draft.id, draft.title, draft.description, resource.version) : placement === undefined ? state.add(draft.id, draft.title, draft.description, draft.status, resource.version) : state.add(draft.id, draft.title, draft.description, draft.status, resource.version, placement);
-      if (requestId !== null) setDraft({ ...draft, requestId, submittedRevision: draft.revision, submittedNavigation: navigationRevision.current });
+      if (requestId !== null) setDraft({ ...draft, requestId, submittedRevision: draft.revision, submittedNavigation: navigationRevision.current, submittedContent: { title: draft.title, description: draft.description, status: draft.status }, review: null });
     }} onKeyDown={(event) => { if (event.key === "Escape" && !discard) { event.preventDefault(); event.stopPropagation(); cancelDraft(); } }}>
       <label>{m.addTitle}{draft.kind === "edit" ? <textarea className="step-title-editor" ref={titleInput as RefObject<HTMLTextAreaElement | null>} value={draft.title} disabled={frozen} aria-invalid={invalidTitle} aria-describedby={invalidTitle ? `${id}-title-error` : undefined} onChange={(event) => { const result = editText(titleHistory.current, draft.title, event.currentTarget.value, titleSelection.current); setDraft({ ...draft, revision: draft.revision + 1, title: result.value }); setUndoUnavailable(result.blocked); titleSelection.current = null; setInvalidTitle(false); }} /> : <input ref={titleInput as RefObject<HTMLInputElement | null>} autoFocus value={draft.title} disabled={frozen} aria-invalid={invalidTitle} aria-describedby={invalidTitle ? `${id}-title-error` : undefined} onChange={(event) => { setDraft({ ...draft, revision: draft.revision + 1, title: event.currentTarget.value }); setInvalidTitle(false); }} />}</label>
       {undoUnavailable && <p className="step-field-error" role="alert">{m.undoUnavailable}</p>}
@@ -360,7 +374,8 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       <textarea ref={descriptionInput} aria-label={m.description} aria-invalid={invalidDescription} aria-describedby={invalidDescription ? `${id}-description-error` : undefined} hidden={preview} value={draft.description} disabled={frozen} onChange={(event) => { const result = editText(descriptionHistory.current, draft.description, event.currentTarget.value, descriptionSelection.current); setDraft({ ...draft, revision: draft.revision + 1, description: result.value }); setUndoUnavailable(result.blocked); descriptionSelection.current = null; setInvalidDescription(false); }} />
       {invalidDescription && <p className="step-field-error" id={`${id}-description-error`} role="alert">{m.invalidText}</p>}
       {preview && <div className="step-add-preview">{draft.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(draft.description)}</div>}
-      {draft.kind === "edit" && currentDraftStep && (ownAdd?.phase === "reconciled" || currentDraftStep.title !== draft.originalTitle || currentDraftStep.description !== draft.originalDescription) && <div className="step-current-content"><strong>{m.currentContent}</strong><p>{currentDraftStep.title}</p>{currentDraftStep.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(currentDraftStep.description)}</div>}
+      {draft.kind === "edit" && currentDraftStep && (needsReview || ownAdd?.phase === "reconciled" || currentDraftStep.title !== draft.originalTitle || currentDraftStep.description !== draft.originalDescription) && <div className="step-current-content"><strong>{m.currentContent}</strong><p>{currentDraftStep.title}</p>{currentDraftStep.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(currentDraftStep.description)}</div>}
+      {needsReview && currentDraftStep && resource !== null && <div className="steps-error" role="alert"><p>{m.editChanged}</p><button className="button" type="button" disabled={!editTargetAvailable || state.stale || state.error !== null} onClick={() => setDraft({ ...draft, revision: draft.revision + 1, originalTitle: currentDraftStep.title, originalDescription: currentDraftStep.description, review: { version: resource.version, acknowledged: true } })}>{m.reviewCurrent}</button></div>}
       {draft.kind === "edit" && resource !== null && !editTargetAvailable && <div className="steps-error" role="alert">{m.editMissing}</div>}
       {draft.uncertain && ownAdd === null && <div className="steps-error" role="alert"><p>{m.addUnknownReconciled} <code>{draft.id}</code></p></div>}
       {ownAdd !== null && (ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.phase === "reconciled" || ownAdd.phase === "refused" || ownAdd.reconciliationError !== null) && <div className="steps-error" role="alert">
@@ -374,7 +389,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
         {ownAdd.reconciliationError !== null && <p>{m.checkFailed}</p>}
         {(ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.reconciliationError !== null) && <button className="button" type="button" disabled={ownAdd.reconciling} onClick={state.reconcile}>{ownAdd.reconciling ? m.checking : m.checkState}</button>}
       </div>}
-      <div className="step-add-actions"><button className="button" type="button" onClick={cancelDraft}>{m.cancel}</button><button className="button primary" type="submit" disabled={!state.canAdd || frozen || duplicateId || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))} aria-busy={ownAdd?.phase === "pending" || ownAdd?.reconciling}>{ownAdd?.phase === "pending" && <span className="spinner" aria-hidden="true" />}{m.save}</button></div>
+      <div className="step-add-actions"><button className="button" type="button" onClick={cancelDraft}>{m.cancel}</button><button className="button primary" type="submit" disabled={!state.canAdd || frozen || ownAdd?.phase === "confirmed" || needsReview || duplicateId || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))} aria-busy={ownAdd?.phase === "pending" || ownAdd?.reconciling}>{ownAdd?.phase === "pending" && <span className="spinner" aria-hidden="true" />}{m.save}</button></div>
     </form>;
 
   return <section className="steps-workspace" aria-label={m.title} ref={workspace}>

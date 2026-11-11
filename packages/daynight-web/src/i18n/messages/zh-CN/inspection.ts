@@ -22,7 +22,7 @@ export const inspection: InspectionMessages = {
     capacityDetails: (encoded, maximum) => `编码大小：${encoded} 字节；上限：${maximum} 字节。`,
     add: "添加步骤", addTitle: "标题", description: "说明（Markdown，可选）", initialStatus: "初始状态",
     addBefore: "在前面添加", addAfter: "在后面添加", addEnd: "末尾", chooseTarget: "选择目标", selectTarget: "选择目标步骤", confirmTarget: "选择", addMissing: "未找到目标步骤。请读取当前步骤并重新选择位置。",
-    undoUnavailable: "此撤销或重做已不可用，草稿保持不变。", editStep: "编辑步骤", returnEditing: "返回编辑步骤", discardEditQuestion: "放弃此步骤的修改？", editMissing: "此步骤已不存在，草稿仍保留。", editUnknown: "编辑结果未知，请读取当前步骤后再决定如何处理。", editRefused: "服务器拒绝了编辑。", currentContent: "当前步骤内容",
+    undoUnavailable: "此撤销或重做已不可用，草稿保持不变。", editStep: "编辑步骤", returnEditing: "返回编辑步骤", discardEditQuestion: "放弃此步骤的修改？", editMissing: "此步骤已不存在，草稿仍保留。", editUnknown: "编辑结果未知，请读取当前步骤后再决定如何处理。", editRefused: "服务器拒绝了编辑。", currentContent: "当前步骤内容", editChanged: "保存后此步骤已发生变化，请先检查当前内容，再保存草稿。", reviewCurrent: "使用当前版本",
     edit: "编辑", preview: "预览", save: "保存", cancel: "取消", titleRequired: "请输入包含非空白字符的标题。",
     discardTitle: "放弃未保存的修改？", discardQuestion: "放弃这个新步骤吗？", discardExplanation: "未保存的草稿将会丢失。", discard: "放弃", keep: "继续编辑",
     addConflict: "任务已变化。请先读取当前步骤，再决定是否重新保存。", addConflictReconciled: "已读取步骤，请检查草稿后再保存。",

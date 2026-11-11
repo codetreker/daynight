@@ -83,6 +83,25 @@ describe('Task Goal control', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('The Task changed');
     expect(onSelect).toHaveBeenCalledOnce();
   });
+  it('retains a later choice of the original Goal when the submitted move publishes', () => {
+    const operation = { action: 'parent' as const, parentId: 'b', version: detail.version };
+    const pending: TaskMutationState = { ...idle, operation, phase: 'confirmed', publicationPending: true };
+    const onSelect = vi.fn();
+    const view = renderWithLocale(<TaskParentControl detail={detail} snapshot={snapshot} disabled={false} mutation={idle} onSelect={onSelect} onReconcile={vi.fn()} />, { locale: 'en' });
+    const choice = screen.getByRole('combobox', { name: 'Current Goal' });
+    fireEvent.change(choice, { target: { value: 'b' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Goal membership' }));
+    view.rerender(<TaskParentControl detail={detail} snapshot={snapshot} disabled mutation={pending} onSelect={onSelect} onReconcile={vi.fn()} />);
+    fireEvent.change(choice, { target: { value: 'a' } });
+    const published = { ...detail, parentId: 'b', version: detail.version + 1n };
+    view.rerender(<TaskParentControl detail={published} snapshot={snapshot} disabled={false} mutation={{ ...pending, publicationPending: false }} onSelect={onSelect} onReconcile={vi.fn()} />);
+    expect(choice).toHaveValue('a');
+    expect(screen.getByRole('alert')).toHaveTextContent('The Task changed');
+    expect(screen.getByRole('button', { name: 'Save Goal membership' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current Task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Goal membership' }));
+    expect(onSelect).toHaveBeenLastCalledWith('a', published.version);
+  });
   it('requires a new review if the selected Task changes Goal or version before submission', () => {
     const setParent = vi.fn();
     const source = { ...detail, title: 'Selected Task', parentId: 'a' };
