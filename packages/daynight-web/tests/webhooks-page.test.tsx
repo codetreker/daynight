@@ -196,6 +196,21 @@ describe("Webhook configuration page", () => {
     } finally { resume?.(); }
   });
 
+  it("publishes a confirmed create after a pause when the user only focuses the unchanged draft", async () => {
+    const view = await mount({ initial: [] }); fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    const dialog = screen.getByRole("dialog"), name = within(dialog).getByRole("textbox", { name: /^Name$/ });
+    fireEvent.change(name, { target: { value: "Focused create" } }); fireEvent.change(within(dialog).getByRole("textbox", { name: /^Endpoint URL$/ }), { target: { value: "https://receiver.example/new" } });
+    view.holdNextWrite(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); const resume = pauseAuthRequests();
+    try {
+      fireEvent.click(name); name.focus(); const before = view.fetch.mock.calls.length;
+      await act(async () => { view.releaseWrite(); }); await screen.findByText("Original operation confirmed");
+      expect(screen.getByRole("dialog")).toBe(dialog); expect(view.fetch.mock.calls.length).toBe(before);
+      await act(async () => { resume(); }); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await screen.findByRole("heading", { name: "Focused create", level: 2 });
+      expect(location.search).toContain([...view.receipts.values()][0]!.endpointId); expect(view.writes).toHaveLength(1);
+    } finally { resume(); }
+  });
+
   it("resumes an explicit create receipt that arrives during an identity pause", async () => {
     const view = await mount({ initial: [] }); fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
     const dialog = screen.getByRole("dialog"); fireEvent.change(within(dialog).getByRole("textbox", { name: /^Name$/ }), { target: { value: "Recovered create" } });
