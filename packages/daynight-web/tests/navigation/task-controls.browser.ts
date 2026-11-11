@@ -631,9 +631,11 @@ for (const state of ['in_progress', 'done'] as const) {
 }
 
 test('linked PRs remain readable in the overview sidebar across detail presentations', async ({ page }) => {
+  test.setTimeout(60_000);
   const url = `https://example.com/${'long-path'.repeat(25)}`;
   const pullRequests = Array.from({ length: 101 }, (_, index) => ({ title: `PR ${index + 1} ${'long-title'.repeat(15)}`, url }));
-  await install(page, false, false, false, false, false, undefined, { description: 'Task description', properties: { pullRequests } });
+  let update!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, false, false, false, false, undefined, { description: 'Task description', properties: { pullRequests } }, { exposeUpdate: value => { update = value; } });
   const dialog = await openDialog(page);
   for (const width of [1440, 800, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
@@ -666,5 +668,35 @@ test('linked PRs remain readable in the overview sidebar across detail presentat
   const direct = page.locator('.task-detail-page');
   await expect(direct.getByRole('complementary', { name: 'Task relationships and metadata' }).getByRole('region', { name: 'Linked PRs' })).toBeVisible();
   await direct.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
-  await expect(direct.getByRole('region', { name: 'Linked PRs' })).toBeVisible();
+  const directPrs = direct.getByRole('region', { name: 'Linked PRs' });
+  await expect(directPrs).toBeVisible();
+  await directPrs.getByRole('button', { name: 'Next page' }).click();
+  const pageSelect = directPrs.getByRole('combobox', { name: 'Linked PR page' });
+  await pageSelect.focus();
+  update({ description: 'Refreshed task description', version: 6n });
+  await page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}`, { timeout: 20_000 });
+  await expect(direct.getByText('Refreshed task description')).toBeVisible();
+  await expect(pageSelect).toHaveValue('1');
+  await expect(pageSelect).toBeFocused();
+  await page.goto(`/projects/${projectId}/tasks/${previousId}`);
+  await expect(page.getByRole('heading', { name: 'History origin' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Linked PRs' })).toContainText('No linked PRs');
+});
+
+test('linked PR empty state survives relation errors and language changes in direct detail', async ({ page }) => {
+  await install(page, false, false, false, false, false, undefined, { properties: { pullRequests: [] } });
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Relation service unavailable', requestId: 'relation-error' } }) }));
+  await page.route(`**/api/v1/projects/${projectId}/task-graph**`, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Relation service unavailable', requestId: 'relation-error' } }) }));
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const detail = page.locator('.task-detail-page');
+  const aside = detail.getByRole('complementary', { name: 'Task relationships and metadata' });
+  const prs = aside.getByRole('region', { name: 'Linked PRs' });
+  const error = aside.getByRole('alert');
+  const prerequisites = aside.getByRole('region', { name: 'Prerequisites', exact: true });
+  await expect(error).toBeVisible();
+  await expect(prs).toContainText('No linked PRs');
+  expect(await error.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prs.elementHandle())).toBe(true);
+  expect(await prs.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prerequisites.elementHandle())).toBe(true);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await expect(detail.getByRole('region', { name: '关联 PR' })).toContainText('暂无关联 PR');
 });
