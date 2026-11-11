@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { waitForState as waitFor } from './helpers/waitForState';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskCacheError } from '../src/features/task-cache/database';
 import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { detailFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
@@ -82,19 +83,21 @@ it('retires an already-open child when a closed Goal deletion loses its receipt 
   expect(writes).toBe(1);
 });
 
-it('does not fence a later history from a stale retired reconciliation 410', async () => {
+it.each(['delete', 'edit'] as const)('does not fence a later history from a stale retired %s reconciliation 410', async action => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const replacement = '40000000-0000-4000-8000-000000000002';
   let loseWrite!: (error: Error) => void; const write = new Promise<Response>((_resolve, reject) => { loseWrite = reject; });
   let finishOldRead!: (response: Response) => void; const oldRead = new Promise<Response>(resolve => { finishOldRead = resolve; });
   let writes = 0; let reads = 0;
   vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
-    if (init?.method === 'DELETE') { writes++; return write; }
+    if (init?.method === 'DELETE' || init?.method === 'PATCH') { writes++; return write; }
     reads++; return reads === 1 ? Promise.resolve(response(goalDetail)) : oldRead;
   }));
   const owner = world(); const close = owner.sessions.subscribe(project, goal, () => {});
   owner.sessions.openDirect(project, goal); await waitFor(() => expect(owner.sessions.snapshot(project, goal).detail).toEqual(goalDetail));
-  owner.sessions.deleteTask(project, goal, goalDetail.version, false); await waitFor(() => expect(writes).toBe(1));
+  if (action === 'delete') owner.sessions.deleteTask(project, goal, goalDetail.version, false);
+  else owner.sessions.editGoal(project, goal, 'Edited', 'Description', goalDetail.version);
+  await waitFor(() => expect(writes).toBe(1));
   close(); loseWrite(new Error('response lost')); await waitFor(() => expect(reads).toBe(2));
   const original = await owner.scope.beginTaskRead(project, child, 1, 1, owner.scope.signal);
   expect(await owner.scope.observeHistory(original, replacement, owner.scope.signal)).toBe('retired');
@@ -104,4 +107,90 @@ it('does not fence a later history from a stale retired reconciliation 410', asy
   await oldRead; await new Promise(resolve => setTimeout(resolve, 0));
   expect(owner.scope.isTaskReadCurrent(current)).toBe(true);
   expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(false);
+});
+
+it.each([
+  { action: 'edit', outcome: 'refused' }, { action: 'edit', outcome: 'unknown' },
+  { action: 'status', outcome: 'refused' }, { action: 'status', outcome: 'unknown' },
+  { action: 'assignment', outcome: 'refused' }, { action: 'assignment', outcome: 'unknown' },
+] as const)('fences a peer child after a closed Goal $action observes deletion through $outcome', async ({ action, outcome }) => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  let finishWrite!: (response: Response) => void; let loseWrite!: (error: Error) => void;
+  const write = new Promise<Response>((resolve, reject) => { finishWrite = resolve; loseWrite = reject; });
+  let finishOld!: (response: Response) => void; const old = new Promise<Response>(resolve => { finishOld = resolve; });
+  let deleted = false; let childReads = 0; let firstSignal: AbortSignal | undefined; let writes = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH' || init?.method === 'PUT') { writes++; return write; }
+    if (url.endsWith(child)) {
+      childReads++;
+      if (childReads === 1) { firstSignal = init?.signal as AbortSignal; return old; }
+      return Promise.reject(new Error('offline'));
+    }
+    if (deleted) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
+    return Promise.resolve(response(goalDetail));
+  }));
+  const owner = world(), peer = world(); const close = owner.sessions.subscribe(project, goal, () => {});
+  peer.sessions.subscribe(project, child, () => {}); owner.sessions.openDirect(project, goal); peer.sessions.openDirect(project, child);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal).detail).toEqual(goalDetail));
+  await waitFor(() => expect(childReads).toBe(1));
+  if (action === 'edit') owner.sessions.editGoal(project, goal, 'Edited', 'Description', goalDetail.version);
+  else if (action === 'status') owner.sessions.setStatus(project, goal, 'done', goalDetail.version);
+  else owner.sessions.setAssignedTo(project, goal, child, goalDetail.version);
+  await waitFor(() => expect(writes).toBe(1));
+  close(); deleted = true;
+  if (outcome === 'unknown') loseWrite(new Error('response lost'));
+  else finishWrite(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
+  await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+  await waitFor(() => expect(childReads).toBeGreaterThan(1));
+  finishOld(response(childDetail)); await old; await new Promise(resolve => setTimeout(resolve, 0));
+  expect(peer.sessions.snapshot(project, child).detail).toBeNull();
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(writes).toBe(1);
+});
+
+it('retains the reviewed Goal epoch when a submitted edit loses its direct admission fence', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  let deleted = false; let writes = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') { deleted = true; writes++; return Promise.reject(new Error('response lost')); }
+    if (deleted && url.endsWith(goal)) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
+    if (deleted) return Promise.reject(new Error('offline'));
+    return Promise.resolve(response(url.endsWith(child) ? childDetail : goalDetail));
+  }));
+  const owner = world(), peer = world(); const close = owner.sessions.subscribe(project, goal, () => {});
+  peer.sessions.subscribe(project, child, () => {}); owner.sessions.openDirect(project, goal); peer.sessions.openDirect(project, child);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal).detail).toEqual(goalDetail));
+  await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toEqual(childDetail));
+  const original = owner.scope.verifyTaskRead.bind(owner.scope);
+  const verify = vi.spyOn(owner.scope, 'verifyTaskRead').mockImplementationOnce(original).mockImplementationOnce(original).mockRejectedValueOnce(new TaskCacheError('storage'));
+  owner.sessions.editGoal(project, goal, 'Edited', 'Description', goalDetail.version);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal)).toMatchObject({ detail: null, mutation: { phase: 'unknown', reconciliationError: { category: 'storage' } } }));
+  verify.mockRestore(); close();
+  await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toBeNull());
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(writes).toBe(1);
+});
+
+it('fences Goal history when an open edit reconciles a 410 after its direct admission fence fails', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  let deleted = false; let writes = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') { deleted = true; writes++; return Promise.reject(new Error('response lost')); }
+    if (deleted && url.endsWith(goal)) return Promise.resolve(wireResponse({ error: { code: 'task_deleted', message: 'Deleted', requestId: 'deleted' } }, { status: 410, headers: viewerHeaders(TEST_VIEWER_ID) }));
+    if (deleted) return Promise.reject(new Error('offline'));
+    return Promise.resolve(response(url.endsWith(child) ? childDetail : goalDetail));
+  }));
+  const owner = world(), peer = world(); owner.sessions.subscribe(project, goal, () => {});
+  peer.sessions.subscribe(project, child, () => {}); owner.sessions.openDirect(project, goal); peer.sessions.openDirect(project, child);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal).detail).toEqual(goalDetail));
+  await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toEqual(childDetail));
+  const original = owner.scope.verifyTaskRead.bind(owner.scope);
+  const verify = vi.spyOn(owner.scope, 'verifyTaskRead').mockImplementationOnce(original).mockImplementationOnce(original).mockRejectedValueOnce(new TaskCacheError('storage'));
+  owner.sessions.editGoal(project, goal, 'Edited', 'Description', goalDetail.version);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal)).toMatchObject({ detail: null, mutation: { phase: 'unknown', reconciliationError: { category: 'storage' } } }));
+  verify.mockRestore(); owner.sessions.reconcile(project, goal);
+  await waitFor(() => expect(owner.sessions.snapshot(project, goal)).toMatchObject({ status: 'deleted', mutation: { phase: 'reconciled', error: { category: 'storage' } } }));
+  await waitFor(() => expect(peer.sessions.snapshot(project, child).detail).toBeNull());
+  expect(Channel.messages.some(value => typeof value === 'object' && value !== null && 'uncertainEpoch' in value)).toBe(true);
+  expect(writes).toBe(1);
 });
