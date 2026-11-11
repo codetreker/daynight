@@ -34,6 +34,7 @@ function fixture({ empty = false, working = false, steer = true, configure }: { 
       view.rerender(<BotSessionHost cache={cache} displayBinding={bots[index]!.binding} actionBinding={bots[index]!.binding} />);
       const input = await screen.findByRole('textbox', { name: 'Message' });
       await waitFor(() => expect(input).toBeEnabled());
+      await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
       return input;
     },
     pause: (value: boolean) => act(() => { paused = value; cache.syncAvailability(); }),

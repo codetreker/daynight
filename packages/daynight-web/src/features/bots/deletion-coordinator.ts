@@ -83,7 +83,7 @@ export class BotDeletionCoordinator {
     this.applyDisplaySnapshots(record);
     // The original request outlives navigation; its result must clear stored
     // conversation state even after the page has detached its last cache.
-    if (record.result || record.phase === 'unavailable') clearBotStoredSessionState(this.scope.userId, record.id, record.sessionId ?? undefined);
+    if (record.result || record.phase === 'unavailable') clearBotStoredSessionState(this.scope.userId, record.id, record.sessionId ?? undefined, undefined, record.result ? 'deleted' : 'revoked');
     for (const cache of this.caches) this.apply(cache, record);
     this.persist();
     for (const listener of this.listeners) listener();

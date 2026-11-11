@@ -3,6 +3,7 @@ import { pauseAuthRequests, waitForAuthRequests } from '../src/api/client';
 import { sessionBinding } from '../../daynight/src/session/protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
 import { readFileSync } from 'node:fs';
+import { setTimeout as setRealTimeout, clearTimeout as clearRealTimeout } from 'node:timers';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskAgentSession } from '../src/features/task-agent-session/TaskAgentSession';
@@ -25,14 +26,28 @@ function fixture(snapshot = initial(), ownerUserId = userId) {
   const element = (current = true, active = true) => <TaskCacheProvider scope={scope}><TaskAgentSession ownerUserId={ownerUserId} projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active={active} current={current} /></TaskCacheProvider>;
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
+async function editableInput(): Promise<HTMLElement> {
+  const input = screen.getByRole('textbox');
+  // Recovery uses real IDB tasks even when the channel polling clock is fake.
+  await act(async () => new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => { observer.disconnect(); clearRealTimeout(timer); if (error) reject(error); else resolve(); };
+    const check = () => { if (!input.hasAttribute('readonly')) finish(); };
+    const observer = new MutationObserver(check);
+    const timer = setRealTimeout(() => finish(new Error('The saved draft did not finish restoring.')), 1000);
+    observer.observe(input, { attributes: true, attributeFilter: ['readonly'] }); check();
+  }));
+  return input;
+}
+const fakeSessionClock = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
 describe('production task session panel', () => {
   it('connects once, accepts input quietly, and retains drafts across permission refresh', async () => {
     const f = fixture(); const view = render(f.element());
     await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
     await screen.findByText('Ready', { exact: true });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'hello' } });
+    fireEvent.change(await editableInput(), { target: { value: 'hello' } });
     vi.mocked(f.api.command).mockImplementation(async (_id, command) => ({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: 'started', error: null }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
     expect(screen.queryByText('Accepted by provider')).toBeNull();
@@ -48,7 +63,9 @@ describe('production task session panel', () => {
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
     await screen.findByText('Ready', { exact: true });
     vi.mocked(f.api.command).mockRejectedValue(new Error('Lost acknowledgement'));
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'do once' } }); fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.change(await editableInput(), { target: { value: 'do once' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await screen.findByText('Unable to confirm whether this operation completed. Check the original operation.');
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
@@ -79,7 +96,7 @@ it('retains a task session channel and draft through a short identity pause, but
   await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
   f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
   await screen.findByText('Ready', { exact: true });
-  const input = screen.getByRole('textbox');
+  const input = await editableInput();
   fireEvent.change(input, { target: { value: 'keep draft' } });
   const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
   const resume = pauseAuthRequests();
@@ -181,7 +198,7 @@ it('shows live messages and disabled pending approval controls to another projec
 
 
 it('reads only the selected visible production Session panel and retains its channel on document return', async () => {
-  vi.useFakeTimers(); const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  fakeSessionClock(); const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   try {
     const f = fixture(); const view = render(f.element(true, false));
     await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(f.api.current).not.toHaveBeenCalled();
@@ -189,7 +206,7 @@ it('reads only the selected visible production Session panel and retains its cha
     expect(f.api.current).toHaveBeenCalledOnce();
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
     await act(async () => vi.advanceTimersByTimeAsync(0));
-    const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'retained on return' } });
+    const input = await editableInput(); fireEvent.change(input, { target: { value: 'retained on return' } });
     const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
     visibility.mockReturnValue('hidden'); act(() => document.dispatchEvent(new Event('visibilitychange')));
     await act(async () => vi.advanceTimersByTimeAsync(9000));
@@ -212,7 +229,7 @@ it('does not prefetch a selected Session while its document is initially hidden'
 });
 
 it('cancels a current read queued behind identity admission when the production panel hides', async () => {
-  vi.useFakeTimers(); let resume: (() => void) | undefined;
+  fakeSessionClock(); let resume: (() => void) | undefined;
   try {
     const f = fixture(); const view = render(f.element()); await act(async () => vi.advanceTimersByTimeAsync(0));
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
@@ -231,14 +248,14 @@ it('cancels a current read queued behind identity admission when the production 
 
 
 it('does not prefetch from Overview and restores a retained Session through the production tabs', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   try {
     const f = fixture(); render(<TaskDetailPanels overview={<p>Task overview</p>} attachments={null} session={active => f.element(true, active)} />);
     await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(f.api.current).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'Session' })); await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(f.api.current).toHaveBeenCalledOnce();
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' }); await act(async () => vi.advanceTimersByTimeAsync(0));
-    const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'retained through Overview' } });
+    const input = await editableInput(); fireEvent.change(input, { target: { value: 'retained through Overview' } });
     const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
     fireEvent.click(screen.getByRole('tab', { name: 'Overview' })); await act(async () => vi.advanceTimersByTimeAsync(9000));
     expect(f.api.current).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();

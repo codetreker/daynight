@@ -81,6 +81,11 @@ const actions = [
   { name: 'refreshControls', kind: 'refresh_controls', invoke: (client: TaskSessionClient) => client.refreshControls() },
 ];
 const stored = () => Object.fromEntries(Object.keys(sessionStorage).map(key => [key, sessionStorage.getItem(key)]));
+async function editableInput() {
+  const input = await screen.findByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
+  return input;
+}
 
 it('restores the original resident DOM and local state before the returning detail responds', async () => {
   localStorage.setItem(`daynight.web.session.display.v1:${JSON.stringify([BOT_USER, botId(101)])}`, '"standard"');
@@ -100,7 +105,7 @@ it('restores the original resident DOM and local state before the returning deta
       { kind: 'assistant_message', entryId: 'after', entrySeq: '3', revision: '1', content: [{ type: 'text', text: 'Later message' }] },
     ] });
   });
-  const a = await screen.findByRole('textbox', { name: 'Message' });
+  const a = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().historyReady).toBe(true));
   fireEvent.change(a, { target: { value: 'A local draft' } });
   const pane = f.resident().snapshot()[0]!, timeline = a.closest('.task-agent-session')!.querySelector<HTMLElement>('.session-timeline')!, reading = pane.reading.current;
@@ -125,7 +130,7 @@ it('restores the original resident DOM and local state before the returning deta
 });
 
 it.each(actions)('freezes $name before the navigation commit and rejects it until the returning detail is confirmed', async ({ invoke, kind }) => {
-  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = actionFixture(), input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
   fireEvent.change(input, { target: { value: 'Local draft' } });
   const a = f.resident().snapshot()[0]!, api = f.live[0]!.api, staleCall = () => invoke(a.client);
@@ -173,7 +178,7 @@ it.each(actions)('freezes $name before the navigation commit and rejects it unti
 });
 
 it('queries an original unknown operation while the returning detail is frozen without replaying or clearing a newer draft', async () => {
-  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  const f = actionFixture(), input = await editableInput();
   await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
   const a = f.resident().snapshot()[0]!, api = f.live[0]!.api;
   fireEvent.change(input, { target: { value: 'Original submission' } });

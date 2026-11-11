@@ -2139,7 +2139,7 @@ build context. It starts no service or database and does not run Go validation.
 Vitest suppresses console output from passing tests, including diagnostics from
 expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
-model and geometry workloads live in `.stress.ts` files and run only through
+model, geometry and original-image byte workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
 root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
@@ -2153,6 +2153,23 @@ and isolated browser profiles, and reports cleanup failures. If a forced stop
 leaves ownership uncertain, the command fails without claiming cleanup. Windows
 uses its process-tree terminator; orphaned browsers whose identity cannot be
 verified are reported rather than terminated.
+
+The Session draft browser fixture uses the production composer, Session client,
+image store and IndexedDB draft storage with controlled HTTP/WebSocket responses.
+It checks Blob restoration after refresh and tab closure, native cross-tab locks
+and conflicts, input ordering, undo, preview focus, and reconciliation of unknown
+sends. Its ordinary configuration runs through `web:test:browser` and the Web
+browser CI job. The 8/9-image and 10/20 MiB capacity cases run separately from this
+package and refuse CI:
+
+```bash
+pnpm exec playwright test --config tests/navigation/session-drafts-stress.config.ts
+```
+
+Set `DAYNIGHT_BROWSER_CHANNEL=chrome` to use an installed Chrome. Ordinary results
+are written to `.tmp/session-drafts-browser/`; capacity results use
+`.tmp/session-drafts-capacity/`. These tests prove browser behavior with controlled
+API results, without establishing live Worker or Provider image support.
 
 The attachment and task-reading fixtures exercise native frames, relative HTML
 resources, PDF page pixels, selection, focus and narrow reading layouts. Graph
@@ -2308,9 +2325,9 @@ after module detection. Each job prepares its own runner. Quality has a
 requires both to succeed when selected. The quality job runs full typechecking,
 the harness, the Docker Web build, Vitest/V8 collection and coverage checking
 serially with bounded stages and uploads coverage evidence. The browser job runs
-the assistant suite below without depending on the quality job or its artifacts. The module browser
-entry separately runs the navigation, Team, assistant and other fixture
-configurations.
+the assistant suite below and the ordinary Session draft suite without depending
+on the quality job or its artifacts. The module browser entry separately runs the
+navigation, Team, assistant and other fixture configurations.
 
 ## Independent browser checks
 

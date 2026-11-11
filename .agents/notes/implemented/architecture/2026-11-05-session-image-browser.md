@@ -15,10 +15,11 @@ consistently across live and recorded Sessions.
 The repository publishes the adopted
 [browser image design](../../../../docs/design/session-image-browser.md).
 The original decision established the browser design before its runtime existed.
-Shared saved-image display and preview now use the existing Session clients and
-archive reader. Persistent image drafts and native input remain separate delivery
-work. Their adopted design assigns immutable original Blobs, content revisions,
-references and frozen operation intent to IndexedDB. Short transactions
+Shared saved-image display, preview and persistent drafts use the existing Session
+clients and archive reader. `TaskSessionClient.imageDrafts` owns the draft
+controller; the original command and operation reader remain its transport.
+IndexedDB owns immutable original Blobs, content revisions, references and frozen
+operation intent. Short transactions
 with CAS protect concurrent tabs. Web Locks coordinate network mutations, while
 a durable single transition grants dispatch ownership. Unknown results retain
 the original operation and block another send.
@@ -34,8 +35,17 @@ and deletion dialogs.
 Pane lifetime retains its existing cache ownership; the
 [Bot cache decision](../../archived/architecture/2026-11-04-bot-session-cache.md)
 records that choice. The image design adds persistent Blob ownership outside that
-cache; evicting a pane does not authorize deleting a draft. It does not change
-current text behavior or enable image input.
+cache; evicting a pane does not authorize deleting a draft. Untouched text-only
+drafts retain their existing path. Activating an image draft imports its current
+text and any unresolved operation once, without replaying the old input. Removing
+all images keeps the persistent draft and its submission barrier.
+
+Account cleanup first commits an access tombstone, then removes sensitive draft
+content. Unknown operations retain only the original identity needed for later
+authorized observation. A renewed account cannot read content before unfinished
+cleanup completes; a deleted Session cannot be reopened through this mechanism.
+Cleanup failures remain visible and retryable. Local adapters have no fabricated
+service resource and use the shared preview store and decoder budgets.
 
 Saved-image scopes bind origin, actor, authorization generation and the actual
 Session fence/native identity or record namespace/revision. Cache previews retain
@@ -92,6 +102,10 @@ It preserves original bytes, native acceptance correlation, successor content an
 private scope isolation at that cost. Browser storage can still be cleared or
 evicted, so missing bytes are visible failures, not proof of successful recovery.
 Unknown operations and editable drafts are never evicted to free capacity.
+The browser implementation does not grant production image capability. Provider
+send and steer remain unavailable until their complete service and native profile
+qualifications are established. Controlled browser transport proves draft,
+persistence and UI behavior, not native image acceptance.
 
 Image operations use at least 44px touch targets. Media anchors retain a 2 CSS px
 bound without weakening the existing 1 CSS px text-prepend guarantee. Responsive

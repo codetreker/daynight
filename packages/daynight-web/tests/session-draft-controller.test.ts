@@ -1,0 +1,421 @@
+import { File } from 'node:buffer';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SESSION_PROTOCOL, type ImageCapabilities, type ImageTarget, type ImageUploadReceipt, type ImageUploadSpec, type SessionCommand, type SessionOperation } from '../../daynight/src/session/protocol';
+import type { SessionResourceClient } from '../../daynight/src/session/resource-client';
+import { ApiError } from '../src/api/client';
+import { imageCommandNotDispatched } from '../src/features/task-agent-session/operation-error';
+import { SessionDraftStore } from '../src/features/task-agent-session/drafts/draft-store';
+import { ImageDraftController, type ImageDraftContext } from '../src/features/task-agent-session/drafts/image-draft-controller';
+import { SessionImageStore, type LocalImageAssetAdapter } from '../src/features/task-agent-session/images/image-store';
+import { sessionImageBytes } from './helpers/sessionImages';
+
+const target: ImageTarget = { serverOrigin: 'https://daynight.test', actorUserId: '00000001-1111-4111-8111-111111111111', fence: { sessionId: '00000002-1111-4111-8111-111111111111', claimId: '00000003-1111-4111-8111-111111111111', executionGeneration: '1' }, expectedNativeSessionId: null };
+const capability: ImageCapabilities = { revision: '2', providerRevision: '1', expectedNativeSessionId: null, modelId: 'vision', controlsRevision: '1', send: 'supported', steer: 'unsupported', reasonCode: null, inputMediaTypes: ['image/png'], maxImageBytes: '10485760', maxMessageImageBytes: '20971520', maxImagesPerMessage: 8, geometry: { version: 1, known: true, maxWidth: 16384, maxHeight: 16384, maxPixels: 33554432, maxFrames: 256 } };
+const identity = { target, resolver: { kind: 'task' as const, projectId: 'p', taskId: 't' } };
+const file = (name = 'a.png', type = 'image/png') => new File(['image'], name, { type }) as unknown as globalThis.File;
+const locks = (): LockManager => {
+  const held = new Set<string>();
+  return { request: async (name: string, _options: LockOptions, callback: LockGrantedCallback<unknown>) => { if (held.has(name)) return callback(null); held.add(name); try { return await callback({ name, mode: 'exclusive' }); } finally { held.delete(name); } } } as LockManager;
+};
+const active: ImageDraftController[] = [], stores: SessionDraftStore[] = [];
+afterEach(async () => { await Promise.all(active.splice(0).map(controller => controller.close())); stores.splice(0).forEach(store => store.close()); });
+function fixture(lockManager: LockManager | null = locks()) {
+  const store = new SessionDraftStore(); stores.push(store);
+  const uploads = new Map<string, ImageUploadReceipt>(), mutations: string[] = [], commands: SessionCommand[] = [];
+  const receipt = (spec: ImageUploadSpec): ImageUploadReceipt => ({ uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: 'receiving', acceptedOffset: '0', spec: { name: spec.name, mediaType: spec.mediaType, byteLength: spec.byteLength, sha256: spec.sha256 }, resource: null, expiresAt: '2026-11-12T00:00:00Z', error: null });
+  const resources = {
+    capabilities: vi.fn(async () => ({ contentRevision: 2, capabilities: capability, budget: { revision: '1', maxBytes: '1073741824', committedBytes: '0', reservedBytes: '0', maxResources: 1000, committedResources: 0, reservedResources: 0 } })),
+    prepareUpload: vi.fn(async (spec: ImageUploadSpec) => { const saved = await store.readExisting(identity); expect(saved?.uploads.find(upload => upload.uploadId === spec.uploadId)?.pendingAction?.kind).toBe('prepare'); mutations.push('prepare'); const r = receipt(spec); uploads.set(spec.uploadId, r); return r; }),
+    writeUploadChunk: vi.fn(async (id: string, offset: string, bytes: Uint8Array) => { mutations.push('chunk'); const r = { ...uploads.get(id)!, acceptedOffset: String(Number(offset) + bytes.length) }; uploads.set(id, r); return r; }),
+    completeUpload: vi.fn(async (id: string) => { mutations.push('complete'); const before = uploads.get(id)!; const r: ImageUploadReceipt = { ...before, state: 'complete', resource: { resourceId: crypto.randomUUID(), revision: '1', name: before.spec.name, status: 'available', mediaType: before.spec.mediaType, byteLength: before.spec.byteLength, sha256: before.spec.sha256, width: 1, height: 1, frameCount: 1, error: null } }; uploads.set(id, r); return r; }),
+    getUpload: vi.fn(async (id: string) => { const r = uploads.get(id); if (!r) throw new Error('HTTP 404'); return r; }),
+    releaseUpload: vi.fn(async (id: string) => { const r: ImageUploadReceipt = { ...uploads.get(id)!, state: 'released', resource: null }; uploads.set(id, r); return r; }),
+  } as unknown as SessionResourceClient;
+  let context: ImageDraftContext | null = { identity, target, resources, capabilities: capability, active: true, canEdit: true, canSend: true, mode: 'send', expectedTurnId: null, authorizationGeneration: '1' };
+  const operation = (command: SessionCommand, state: SessionOperation['state']): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...target.fence, operationId: command.operationId, kind: command.kind, state, providerResult: null, error: null });
+  const dispatch = vi.fn(async (command: SessionCommand) => { commands.push(command); const persisted = await store.readExisting(identity); expect(persisted?.submission?.state).toBe('dispatch_claimed'); return operation(command, 'accepted'); });
+  const query = vi.fn(async (_fence: unknown, id: string) => operation(commands.find(command => command.operationId === id)!, 'accepted'));
+  const createAsset = (_blob: Blob, id: string) => ({ key: id, resource: null, release() {}, validate: async () => { if (_blob.type === 'image/bad') throw new Error('invalid image'); return { byteLength: _blob.size, mediaType: 'image/png' as const, sha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', await _blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join(''), width: 1, height: 1, frameCount: 1 }; } }) as unknown as LocalImageAssetAdapter;
+  const create = (overrides: Partial<ConstructorParameters<typeof ImageDraftController>[0]> = {}) => { const controller = new ImageDraftController({ store, locks: lockManager, getContext: () => context, dispatch, query, createAsset, ...overrides }); active.push(controller); return controller; };
+  return { store, create, resources, uploads, mutations, commands, dispatch, query, context: () => context!, setContext: (next: ImageDraftContext | null) => { context = next; }, operation };
+}
+
+describe('durable Session image coordination', () => {
+  it('discards an old execution original read before changing the current submission state', async () => {
+    const f = fixture(null), first = await f.store.openOwner(identity);
+    const saved = await f.store.saveDraft(first.owner, { draftId: first.editable!.draftId, expectedStoreVersion: first.editable!.storeVersion, text: 'Old frozen text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: { content: [{ type: 'text', text: 'Old frozen text' }], expectedTurnId: null } };
+    await f.store.freeze(saved.owner, { draftId: saved.editable!.draftId, expectedStoreVersion: saved.editable!.storeVersion, command });
+    const currentTarget = { ...target, expectedNativeSessionId: 'native-current' }, currentIdentity = { ...identity, target: currentTarget };
+    await f.store.openOwner(currentIdentity);
+    f.setContext({ ...f.context(), identity: currentIdentity, target: currentTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-current' } });
+    const controller = f.create(), held = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    const read = f.store.readExecutionSubmissions.bind(f.store);
+    vi.spyOn(f.store, 'readExecutionSubmissions').mockImplementationOnce(async (...args) => { const originals = await read(...args); entered.resolve(); await held.promise; return originals; });
+    const restoring = controller.sync(); await entered.promise;
+    const nextTarget = { ...currentTarget, fence: { ...currentTarget.fence, executionGeneration: '2' } }, nextIdentity = { ...identity, target: nextTarget };
+    await f.store.openOwner(nextIdentity); f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget });
+    await controller.sync(); expect(controller.getSnapshot().submission).toBeNull();
+    held.resolve(); await restoring; controller.setText('New execution text');
+    expect(controller.getSnapshot().submission).toBeNull();
+    await controller.flush(); expect(controller.getSnapshot().canSend).toBe(true); expect(f.commands).toEqual([]);
+  });
+  it('does not attach a pending selection to another native owner restored during activation', async () => {
+    const f = fixture(null), controller = f.create(); await controller.sync();
+    const held = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    const open = f.store.openOwner.bind(f.store);
+    vi.spyOn(f.store, 'openOwner').mockImplementationOnce(async (...args) => { const saved = await open(...args); entered.resolve(); await held.promise; return saved; });
+    const adding = controller.addFiles([file('original-target.png')], 'Original target text'); await entered.promise;
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-new' }, nextIdentity = { ...identity, target: nextTarget };
+    const next = await open(nextIdentity);
+    await f.store.saveDraft(next.owner, { draftId: next.editable!.draftId, expectedStoreVersion: next.editable!.storeVersion, text: 'New target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-new' } });
+    await controller.sync(); expect(controller.getSnapshot().text).toBe('New target text');
+    held.resolve(); await adding;
+    expect(controller.getSnapshot().items).toHaveLength(0);
+    expect((await f.store.readExisting(nextIdentity))?.editable?.items).toHaveLength(0);
+    expect(f.mutations).toEqual([]);
+  });
+  it.each(['authorization generation', 'temporary context loss'])('restarts unfinished restoration after %s without losing its submission barrier', async change => {
+    const f = fixture(null), first = await f.store.openOwner(identity);
+    const saved = await f.store.saveDraft(first.owner, { draftId: first.editable!.draftId, expectedStoreVersion: first.editable!.storeVersion, text: 'already submitted', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: { content: [{ type: 'text', text: 'already submitted' }], expectedTurnId: null } };
+    const frozen = await f.store.freeze(saved.owner, { draftId: saved.editable!.draftId, expectedStoreVersion: saved.editable!.storeVersion, command });
+    let release!: (value: typeof frozen) => void;
+    const delayed = new Promise<typeof frozen>(resolve => { release = resolve; });
+    const read = vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(delayed), controller = f.create(), initial = controller.sync();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    const admitted = f.context();
+    if (change === 'temporary context loss') { f.setContext(null); await controller.sync(); }
+    f.setContext({ ...admitted, authorizationGeneration: change === 'authorization generation' ? '2' : '1' });
+    try {
+      await controller.sync();
+      expect(controller.getSnapshot().active).toBe(true);
+      expect(controller.getSnapshot().submission?.operationId).toBe(command.operationId);
+      expect(controller.getSnapshot().canSend).toBe(false);
+    } finally { release(frozen); await initial; }
+    expect(controller.getSnapshot().submission?.operationId).toBe(command.operationId);
+  });
+  it('refreshes permission projection even when an unobserved short pause leaves the admission fingerprint unchanged', async () => {
+    const f = fixture(null), saved = await f.store.openOwner(identity), controller = f.create();
+    let release!: (value: typeof saved) => void;
+    const delayed = new Promise<typeof saved>(resolve => { release = resolve; });
+    const read = vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(delayed), initial = controller.sync();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    f.setContext({ ...f.context(), canEdit: false, active: false }); release(saved); await initial;
+    expect(controller.getSnapshot().readOnly).toBe(true);
+    f.setContext({ ...f.context(), canEdit: true, active: true }); await controller.sync();
+    expect(controller.getSnapshot().readOnly).toBe(false);
+  });
+  it('reports a shared load failure without rejecting repeated host sync calls', async () => {
+    const f = fixture(), controller = f.create(); let reject!: (error: Error) => void;
+    const loading = new Promise<null>((_resolve, fail) => { reject = fail; });
+    vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(loading);
+    const first = controller.sync(), second = controller.sync();
+    const results = Promise.allSettled([first, second]); reject(new Error('database closed while loading'));
+    expect((await results).map(result => result.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(controller.getSnapshot().error).not.toBeNull(); expect(controller.getSnapshot().active).toBe(true); expect(controller.getSnapshot().readOnly).toBe(true); expect(controller.getSnapshot().canSend).toBe(false);
+    await controller.retrySave(); expect(controller.getSnapshot().active).toBe(false);
+  });
+  it('drains a pending load when closed and never resumes storage work after losing its owner', async () => {
+    const f = fixture(), controller = f.create(); let resolve!: (value: null) => void;
+    const loading = new Promise<null>(done => { resolve = done; });
+    vi.spyOn(f.store, 'readExisting').mockReturnValueOnce(loading); const readOriginals = vi.spyOn(f.store, 'readExecutionSubmissions');
+    const opened = controller.sync(); let finished = false;
+    const closed = controller.close().then(() => { finished = true; }); f.setContext(null);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(finished).toBe(false); resolve(null); await Promise.all([opened, closed]);
+    expect(readOriginals).not.toHaveBeenCalled(); expect(finished).toBe(true);
+  });
+  it('persists the last admitted edit when the host closes and immediately drops its context', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'saved');
+    controller.setText('last keystroke'); const closed = controller.close(); f.setContext(null); await closed;
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('last keystroke');
+  });
+  it('persists a new edit after explicitly adopting another window saved conflict resolution', async () => {
+    const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'initial');
+    const other = new SessionDraftStore(); stores.push(other); const remote = await other.readExisting(identity);
+    await other.saveDraft(remote!.owner, { draftId: remote!.editable!.draftId, expectedStoreVersion: remote!.editable!.storeVersion, text: 'remote winner', items: remote!.editable!.items, rejectedCandidates: [], overflowRejectedCount: 0 });
+    controller.setText('competing local'); await controller.flush().catch(() => {}); expect(controller.getSnapshot().conflict).toBe(true);
+    await controller.resolveConflict('saved'); expect(controller.getSnapshot().text).toBe('remote winner');
+    controller.setText('new edit after resolving conflict'); await controller.close();
+    expect((await other.readExisting(identity))?.editable?.text).toBe('new edit after resolving conflict');
+  });
+  it('flushes a newly created successor without comparing it to the frozen draft content revision', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original'); await controller.send(); await controller.continueEditing();
+    controller.setText('successor last keystroke'); const closed = controller.close(); f.setContext(null); await closed;
+    const saved = await f.store.readExisting(identity); expect(saved?.editable?.text).toBe('successor last keystroke'); expect(saved?.frozen?.text).toBe('original');
+  });
+  it('flushes the admitted old-owner content before changing native targets', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'saved'); controller.setText('old owner last keystroke');
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }; f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    await controller.sync(); expect((await f.store.readExisting(identity))?.editable?.text).toBe('old owner last keystroke'); expect(controller.getSnapshot().text).toBe('');
+  });
+  it('keeps independent text available in browsers without IndexedDB', async () => {
+    const f = fixture(), controller = f.create(); vi.stubGlobal('indexedDB', undefined); const read = vi.spyOn(f.store, 'readExisting');
+    await controller.sync(); expect(controller.getSnapshot().active).toBe(false); expect(controller.getSnapshot().readOnly).toBe(false); expect(read).not.toHaveBeenCalled();
+  });
+  it('pauses document-hidden network work while saving local text and resumes on visibilitychange', async () => {
+    const f = fixture(), controller = f.create(); vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    await controller.addFiles([file()], 'hidden'); expect(f.mutations).toEqual([]); controller.setText('saved while hidden'); await controller.flush(); expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved while hidden');
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(() => expect(controller.getSnapshot().canSend).toBe(true)); expect(f.mutations).toEqual(['prepare', 'chunk', 'complete']);
+  });
+  it('aborts an in-flight upload on visibilitychange and observes its original identity when visible again', async () => {
+    const f = fixture(), controller = f.create(), prepare = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
+    let finish!: () => void, entered!: () => void, signal: AbortSignal | undefined;
+    const waiting = new Promise<void>(resolve => { finish = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    vi.mocked(f.resources.prepareUpload).mockImplementationOnce(async (spec, requestSignal) => { signal = requestSignal; const receipt = await prepare(spec, requestSignal); entered(); await waiting; return receipt; });
+    const added = controller.addFiles([file()], ''); await started;
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true); document.dispatchEvent(new Event('visibilitychange')); expect(signal?.aborted).toBe(true); finish(); await added;
+    expect(controller.getSnapshot().items[0]?.status).toBe('unknown'); await controller.checkStatus(); expect(f.resources.getUpload).not.toHaveBeenCalled();
+    hidden.mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(() => expect(controller.getSnapshot().canSend).toBe(true)); expect(f.resources.prepareUpload).toHaveBeenCalledOnce(); expect(f.resources.getUpload).toHaveBeenCalledOnce();
+  });
+  it('retains dirty text while permission review pauses writes and saves it when readmission returns', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'saved'); controller.setText('pending review');
+    f.setContext({ ...f.context(), canEdit: false, active: false }); await controller.sync(); await controller.flush();
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved'); expect(controller.getSnapshot().text).toBe('pending review'); expect(controller.getSnapshot().error).toBeNull();
+    f.setContext({ ...f.context(), canEdit: true, active: true }); await controller.sync(); expect((await f.store.readExisting(identity))?.editable?.text).toBe('pending review');
+  });
+  it.each(['selection', 'restoration'])('resumes the original bytes after permission checking interrupts image %s', async mode => {
+    const f = fixture(null), images = new SessionImageStore();
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3, height: 2, close() {} })));
+    const scope = images.createScope({ identity: { serverOrigin: target.serverOrigin, actorUserId: target.actorUserId, authorizationGeneration: '1', owner: { kind: 'session', fence: target.fence, nativeSessionId: null } }, read: async () => { throw new Error('unexpected network'); }, canRead: () => f.context().canEdit, canDownload: () => f.context().canEdit });
+    const createAsset = (blob: Blob, id: string) => images.createLocalAsset(scope, { key: id, blob });
+    const original = new File([sessionImageBytes('png')], 'good.png', { type: 'image/png' }) as unknown as globalThis.File;
+    let controller = f.create({ createAsset }), release!: (bytes: ArrayBuffer) => void, entered!: () => void;
+    const pending = new Promise<ArrayBuffer>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    let bytes = await original.arrayBuffer();
+    if (mode === 'restoration') {
+      await controller.addFiles([original], 'keep this original'); await controller.close(); controller = f.create({ createAsset });
+      const read = f.store.readBlob.bind(f.store);
+      vi.spyOn(f.store, 'readBlob').mockImplementationOnce(async (...args) => { const stored = await read(...args); bytes = await stored!.blob.arrayBuffer(); vi.spyOn(stored!.blob, 'arrayBuffer').mockImplementationOnce(() => { entered(); return pending; }); return stored; });
+    } else vi.spyOn(original, 'arrayBuffer').mockImplementationOnce(() => { entered(); return pending; });
+    const work = mode === 'restoration' ? controller.sync() : controller.addFiles([original], 'keep this original');
+    try {
+      await started; f.setContext({ ...f.context(), canEdit: false, active: false }); await controller.sync(); release(bytes); await work;
+      expect(controller.getSnapshot().items[0]?.validation).not.toBe('bytes_invalid');
+      f.setContext({ ...f.context(), canEdit: true, active: true }); await controller.sync(); await controller.retrySave();
+      expect(controller.getSnapshot().items[0]?.validation).toBe('valid'); expect(controller.getSnapshot().items[0]?.blobId).not.toBeNull();
+      const saved = await f.store.readExisting(identity); expect(saved?.editable?.items[0]?.validation).toBe('valid');
+      expect(await (await f.store.readBlob(saved!.owner, saved!.editable!.items[0]!.blobId!))!.blob.arrayBuffer()).toEqual(bytes);
+    } finally { release(bytes); await work; await controller.close(); await images.close(); }
+  });
+  it('leaves untouched text drafts outside IndexedDB until an image is added', async () => {
+    const f = fixture(), controller = f.create(); await controller.sync();
+    expect(controller.getSnapshot().active).toBe(false); expect(controller.getSnapshot().readOnly).toBe(false); expect(await f.store.readExisting(identity)).toBeNull();
+    await controller.addFiles([file()], 'original text');
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('original text');
+    expect(controller.getSnapshot().canSend).toBe(true);
+  });
+  it('discovers another window submission before sending from a previously empty owner', async () => {
+    const f = fixture(null), controller = f.create(); await controller.sync(); expect(controller.getSnapshot().active).toBe(false);
+    const other = new SessionDraftStore(); stores.push(other); const first = await other.openOwner(identity);
+    const saved = await other.saveDraft(first.owner, { draftId: first.editable!.draftId, expectedStoreVersion: first.editable!.storeVersion, text: 'other window draft', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+    const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: { content: [{ type: 'text', text: 'other window draft' }], expectedTurnId: null } };
+    await other.freeze(saved.owner, { draftId: saved.editable!.draftId, expectedStoreVersion: saved.editable!.storeVersion, command });
+    await controller.refreshForSend();
+    expect(controller.getSnapshot().active).toBe(true); expect(controller.getSnapshot().text).toBe('other window draft');
+    expect(controller.getSnapshot().submission?.operationId).toBe(command.operationId); expect(controller.getSnapshot().canSend).toBe(false); expect(f.commands).toHaveLength(0);
+  });
+  it('refuses the current send click after discovering another window changed the content revision', async () => {
+    const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'visible text');
+    const other = new SessionDraftStore(); stores.push(other); const saved = await other.readExisting(identity);
+    await other.saveDraft(saved!.owner, { draftId: saved!.editable!.draftId, expectedStoreVersion: saved!.editable!.storeVersion, text: 'other window text', items: saved!.editable!.items, rejectedCandidates: [], overflowRejectedCount: 0 });
+    await expect(controller.refreshForSend()).rejects.toThrow('image_draft_restored');
+    expect(controller.getSnapshot().text).toBe('other window text'); expect(f.commands).toHaveLength(0);
+    await controller.refreshForSend(); expect(controller.getSnapshot().text).toBe('other window text');
+  });
+  it('retains the complete ordered candidate set and does not upload a valid subset', async () => {
+    const f = fixture(), controller = f.create(); await controller.sync();
+    await controller.addFiles([file('first.png'), file('bad.png', 'image/bad'), file('last.png')], 'keep');
+    expect(controller.getSnapshot().items.map(item => item.label)).toEqual(['first.png', 'bad.png', 'last.png']);
+    expect(controller.getSnapshot().items[1]?.error).not.toBeNull();
+    expect(f.mutations).toEqual([]); expect(controller.getSnapshot().canSend).toBe(false);
+  });
+  it('keeps excess candidates explicit across reopening until the user discards them', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles(Array.from({ length: 10 }, (_, i) => file(`${i}.png`)), '');
+    expect(controller.getSnapshot().items).toHaveLength(8); expect(controller.getSnapshot().rejectedCandidates).toHaveLength(2); expect(f.mutations).toEqual([]);
+    await controller.close(); const reopened = f.create(); await reopened.sync();
+    expect(reopened.getSnapshot().rejectedCandidates).toHaveLength(2); expect(reopened.getSnapshot().canSend).toBe(false);
+    await reopened.discardRejected(); expect(reopened.getSnapshot().canSend).toBe(true);
+  });
+  it('persists and freezes exact ordered content once, then preserves successor text on late acceptance', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file('a.png'), file('b.png')], ' exact text ');
+    await controller.send(); await controller.send(); expect(f.commands).toHaveLength(1);
+    const command = f.commands[0]!; expect(command.kind).toBe('send_message'); if (command.kind !== 'send_message') throw new Error('wrong command');
+    expect(command.payload.content.map(part => part.type)).toEqual(['text', 'image', 'image']); expect(command.payload.expectedImageCapabilityRevision).toBe('2');
+    await controller.continueEditing(); controller.setText('successor'); await controller.flush();
+    f.query.mockResolvedValue(f.operation(command, 'confirmed'));
+    await controller.checkStatus(); expect(controller.getSnapshot().text).toBe('successor'); expect(controller.getSnapshot().submission).toBeNull();
+  });
+  it('retains unknown dispatch identity and only queries after reopening', async () => {
+    const f = fixture(), controller = f.create(); f.dispatch.mockImplementation(async command => { f.commands.push(command); throw new Error('response lost'); });
+    await controller.addFiles([file()], ''); await controller.send(); const id = f.commands[0]!.operationId;
+    f.query.mockResolvedValue(f.operation(f.commands[0]!, 'confirmed'));
+    await controller.close(); const reopened = f.create(); await reopened.sync();
+    expect(f.dispatch).toHaveBeenCalledTimes(1); expect(f.query).toHaveBeenCalledWith(target.fence, id, expect.any(AbortSignal));
+    expect(reopened.getSnapshot().submission).toBeNull();
+  });
+  it('keeps local originals when Web Locks are unavailable and sends no network mutations', async () => {
+    const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'local');
+    expect(controller.getSnapshot().text).toBe('local'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().canSend).toBe(false); expect(f.mutations).toEqual([]);
+  });
+  it('keeps the original query reachable after native initialization creates another owner', async () => {
+    const f = fixture(), controller = f.create(); f.dispatch.mockImplementation(async command => { f.commands.push(command); throw new Error('lost'); });
+    await controller.addFiles([file()], 'first'); await controller.send();
+    f.query.mockRejectedValue(new Error('HTTP 404'));
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    await controller.sync();
+    expect(controller.getSnapshot().active).toBe(true); expect(controller.getSnapshot().submission?.operationId).toBe(f.commands[0]!.operationId); expect(controller.getSnapshot().canSend).toBe(false);
+    f.query.mockResolvedValue(f.operation(f.commands[0]!, 'confirmed')); await controller.checkStatus();
+    expect(controller.getSnapshot().submission).toBeNull(); expect(f.commands).toHaveLength(1);
+  });
+  it('retains and validates the selected original in memory when saving initially aborts', async () => {
+    const f = fixture(), controller = f.create(); await controller.sync();
+    const save = vi.spyOn(f.store, 'saveDraft').mockRejectedValue(new Error('storage unavailable'));
+    await controller.addFiles([file()], '');
+    expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.asset).not.toBeNull(); expect(controller.getSnapshot().error).not.toBeNull(); expect(f.mutations).toEqual([]);
+    save.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true);
+  });
+  it('queries a lost upload response using its original identity before continuing', async () => {
+    const f = fixture(), controller = f.create(); const prepare = f.resources.prepareUpload;
+    vi.spyOn(f.resources, 'prepareUpload').mockImplementationOnce(async (spec, signal) => { await prepare(spec, signal); throw new Error('response lost'); });
+    await controller.addFiles([file()], ''); const original = [...f.uploads.keys()][0]!;
+    expect(controller.getSnapshot().items[0]?.status).toBe('unknown'); expect(f.mutations).toEqual(['prepare']);
+    await controller.checkStatus(); expect(f.resources.getUpload).toHaveBeenCalledWith(original, expect.any(AbortSignal)); expect(controller.getSnapshot().canSend).toBe(true); expect([...f.uploads.keys()]).toEqual([original]);
+  });
+  it('keeps new selection and text in memory while IndexedDB cannot be opened', async () => {
+    const f = fixture(), controller = f.create(); const open = vi.spyOn(f.store, 'openOwner').mockRejectedValue(new Error('database unavailable'));
+    await controller.addFiles([file()], 'retain me'); expect(controller.getSnapshot().text).toBe('retain me'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.asset).not.toBeNull();
+    open.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true); expect((await f.store.readExisting(identity))?.editable?.text).toBe('retain me');
+  });
+  it('can send a text successor after every image is explicitly removed without Web Locks', async () => {
+    const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'text only'); await controller.remove(controller.getSnapshot().items[0]!.draftImageId); await controller.send();
+    expect(f.commands).toHaveLength(1); expect(f.commands[0]?.kind === 'send_message' && f.commands[0].payload.content).toEqual([{ type: 'text', text: 'text only' }]);
+  });
+  it('does not silently send content saved in another window after this window last displayed it', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+    const f = fixture(), first = f.create(); await first.addFiles([file()], 'first');
+    const second = f.create(); await second.sync(); second.setText('another window'); await second.flush();
+    await first.send(); expect(f.commands).toEqual([]); expect(first.getSnapshot().text).toBe('first'); expect(first.getSnapshot().error).not.toBeNull();
+  });
+  it('retries a lost original prepare explicitly without allocating another upload identity', async () => {
+    const f = fixture(), controller = f.create(), original = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
+    let firstSpec: ImageUploadSpec | null = null;
+    vi.spyOn(f.resources, 'prepareUpload').mockImplementationOnce(async spec => { firstSpec = spec; throw new Error('connection lost'); }).mockImplementation(original);
+    await controller.addFiles([file()], ''); expect(controller.getSnapshot().items[0]?.status).toBe('unknown');
+    await controller.checkStatus(); expect(f.resources.prepareUpload).toHaveBeenCalledTimes(1);
+    await controller.retryUpload(controller.getSnapshot().items[0]!.draftImageId);
+    expect(f.resources.prepareUpload).toHaveBeenCalledTimes(2); expect([...f.uploads.keys()]).toEqual([firstSpec!.uploadId]); expect(controller.getSnapshot().canSend).toBe(true);
+  });
+  it('does not publish an old successor after the native target changed during its transaction', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'old'); await controller.send();
+    const start = f.store.startSuccessor.bind(f.store); let finish!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { finish = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(f.store, 'startSuccessor').mockImplementation(async (...args) => { const result = await start(...args); entered(); await waiting; return result; });
+    const edit = controller.continueEditing(); await started;
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }; f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    await controller.sync(); const newId = controller.getSnapshot().draftId; finish(); await edit;
+    expect(controller.getSnapshot().draftId).toBe(newId); expect(controller.getSnapshot().text).toBe('');
+  });
+  it('keeps unsaved text during a same-owner authorization refresh and hides it when the owner disappears', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'saved'); const asset = controller.getSnapshot().items[0]!.asset;
+    controller.setText('unsaved'); f.setContext({ ...f.context(), authorizationGeneration: '2' }); await controller.sync();
+    expect(controller.getSnapshot().text).toBe('unsaved'); expect(controller.getSnapshot().items[0]!.asset).toBe(asset); await controller.flush();
+    f.setContext(null); await controller.sync(); expect(controller.getSnapshot().active).toBe(false); expect(controller.getSnapshot().text).toBe(''); expect(controller.getSnapshot().items).toEqual([]);
+  });
+  it('refuses a capability changed during the final refresh even when the model identifier is unchanged', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], '');
+    const caps = vi.mocked(f.resources.capabilities).getMockImplementation()!;
+    vi.mocked(f.resources.capabilities).mockImplementation(async signal => { const result = await caps(signal); f.setContext({ ...f.context(), capabilities: { ...capability, revision: '3', send: 'unsupported' } }); return result; });
+    await controller.send(); expect(f.commands).toEqual([]); expect(controller.getSnapshot().canSend).toBe(false);
+  });
+  it('uses the service effective capability revision when the snapshot has the same model profile', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], '');
+    const caps = vi.mocked(f.resources.capabilities).getMockImplementation()!;
+    vi.mocked(f.resources.capabilities).mockImplementation(async signal => ({ ...await caps(signal), capabilities: { ...capability, revision: '3' } }));
+    await controller.send(); const command = f.commands[0]!; expect(command?.kind === 'send_message' && command.payload.expectedImageCapabilityRevision).toBe('3');
+  });
+  it('restores a prepared intent without dispatching until the user explicitly resumes that same intent', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original');
+    vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before claim'));
+    await controller.send(); const saved = await f.store.readExisting(identity), operationId = saved!.submission!.operationId;
+    expect(saved!.submission!.state).toBe('prepared'); expect(f.commands).toEqual([]);
+    await controller.close(); const reopened = f.create(); await reopened.sync(); expect(f.commands).toEqual([]); expect(reopened.getSnapshot().canResumePrepared).toBe(true);
+    await reopened.resumePrepared(); expect(f.commands).toHaveLength(1); expect(f.commands[0]!.operationId).toBe(operationId);
+  });
+  it('explicitly cancels an unclaimed old-native submission while preserving its original editable content', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'old native draft');
+    vi.spyOn(f.store, 'claimDispatch').mockRejectedValueOnce(new Error('page ended before claim')); await controller.send();
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' }; f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    await controller.sync(); expect(controller.getSnapshot().canCancelPrepared).toBe(true); await controller.cancelPrepared();
+    expect(controller.getSnapshot().canCancelPrepared).toBe(false); expect(controller.getSnapshot().submission).toBeNull();
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('old native draft'); expect(f.commands).toEqual([]); expect(controller.getSnapshot().text).toBe('');
+  });
+  it('uses the winning dispatch authority to preserve the original when admission changes before the claim returns', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'keep original');
+    let release!: () => void, entered!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const claim = f.store.claimDispatch.bind(f.store);
+    vi.spyOn(f.store, 'claimDispatch').mockImplementationOnce(async (...args) => { const result = await claim(...args); entered(); await barrier; return result; });
+    const sending = controller.send(); await started;
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    try { await controller.sync(); } finally { release(); await sending; }
+    await controller.checkStatus();
+    expect(f.commands).toHaveLength(0);
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('keep original');
+    expect((await f.store.readExisting({ ...identity, target: nativeTarget }))?.executionBlocked).toBe(false);
+  });
+  it.each([true, false])('settles only a trusted late refusal after native initialization (definitive=%s)', async definitive => {
+    const f = fixture(); let release!: () => void, entered!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    f.query.mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    const controller = f.create({ dispatch: async command => { f.commands.push(command); entered(); await barrier; throw definitive ? new ApiError('server', 409, 'capability_changed') : new Error('response lost'); }, isDefinitiveNotDispatched: imageCommandNotDispatched });
+    await controller.addFiles([file()], 'keep original'); const sending = controller.send(); await started;
+    const nativeTarget = { ...target, expectedNativeSessionId: 'native' };
+    f.setContext({ ...f.context(), identity: { ...identity, target: nativeTarget }, target: nativeTarget, capabilities: { ...capability, expectedNativeSessionId: 'native' } });
+    try { await controller.sync(); } finally { release(); await sending; }
+    await controller.checkStatus(); const original = await f.store.readExisting(identity);
+    expect(f.commands).toHaveLength(1);
+    expect(original?.editable?.text).toBe(definitive ? 'keep original' : undefined);
+    expect((await f.store.readExisting({ ...identity, target: nativeTarget }))?.executionBlocked).toBe(!definitive);
+    expect(controller.getSnapshot().text).not.toBe('keep original');
+  });
+  it('does not turn edits during the freeze transaction into an implicit successor', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original');
+    const freeze = f.store.freeze.bind(f.store); let finish!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { finish = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(f.store, 'freeze').mockImplementation(async (...args) => { const result = await freeze(...args); entered(); await waiting; return result; });
+    const send = controller.send(); await started;
+    expect(controller.getSnapshot().readOnly).toBe(true); controller.setText('implicit successor'); finish(); await send;
+    expect(controller.getSnapshot().text).toBe('original'); expect(controller.getSnapshot().readOnly).toBe(true);
+    await controller.continueEditing(); controller.setText('explicit successor'); await controller.flush(); expect(controller.getSnapshot().text).toBe('explicit successor');
+  });
+  it('imports legacy text before removing its storage key and saving image originals', async () => {
+    const f = fixture(), removed = vi.fn(), controller = f.create({ legacy: () => ({ text: 'legacy text', revision: 'old-uuid', submission: null, onImported: removed }) });
+    await controller.addFiles([file()], 'legacy text');
+    expect(controller.getSnapshot().text).toBe('legacy text'); expect(controller.getSnapshot().canSend).toBe(true); expect(removed).toHaveBeenCalledOnce();
+    expect((await f.store.readExisting(identity))?.owner.legacyImported).toBe(true);
+  });
+  it('retries the original atomic legacy migration after storage failure and retains its unknown barrier', async () => {
+    const f = fixture(), oldId = crypto.randomUUID(), removed = vi.fn();
+    let legacy = { text: 'edited legacy', revision: 'new-revision', submission: { operationId: oldId, revision: 'old-revision' } as { operationId: string; revision: string } | null };
+    const controller = f.create({ legacy: () => ({ ...legacy, onImported: removed }) });
+    controller.subscribe(() => { const view = controller.getSnapshot(); if (view.active) legacy = { text: view.text, revision: view.revision, submission: null }; });
+    vi.spyOn(f.store, 'importLegacy').mockRejectedValueOnce(new Error('database unavailable'));
+    await controller.addFiles([file()], 'edited legacy'); await controller.retrySave();
+    const saved = await f.store.readExisting(identity);
+    expect(saved?.submission?.operationId).toBe(oldId); expect(saved?.executionBlocked).toBe(true); expect(removed).toHaveBeenCalledOnce(); expect(controller.getSnapshot().canSend).toBe(false);
+  });
+  it('keeps unsaved selection in conflict recovery when retrying migration restores an immutable legacy submission', async () => {
+    const f = fixture(), oldId = crypto.randomUUID(); const controller = f.create({ legacy: () => ({ text: 'submitted legacy', revision: 'old', submission: { operationId: oldId, revision: 'old' }, onImported() {} }) });
+    vi.spyOn(f.store, 'importLegacy').mockRejectedValueOnce(new Error('database unavailable'));
+    await controller.addFiles([file()], 'submitted legacy'); await controller.retrySave();
+    expect(controller.getSnapshot().conflict).toBe(true); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().submission?.operationId).toBe(oldId);
+    await controller.resolveConflict('saved'); expect(controller.getSnapshot().frozen).toBe(true); expect(controller.getSnapshot().text).toBe('submitted legacy');
+  });
+});

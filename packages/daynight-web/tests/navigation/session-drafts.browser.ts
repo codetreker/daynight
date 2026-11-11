@@ -1,0 +1,352 @@
+import { expect, test } from '@playwright/test';
+import { boundary, current, exactPng, file, installDraftAPI, openDraft, ready, saved, seedLegacyDraft, sha256 } from './session-drafts-api';
+import { pngImage } from '../helpers/pngImage';
+
+test.afterEach(async ({ context }, info) => {
+  if (info.status === info.expectedStatus) return;
+  for (const [index, page] of context.pages().entries()) {
+    if (page.isClosed()) continue;
+    const state = await page.evaluate(() => JSON.stringify({ url: location.href, draft: window.sessionDraftClient?.client.imageDrafts.getSnapshot() ?? window.sessionDraftHarness?.controller.getSnapshot(), client: window.sessionDraftClient?.client.snapshot(), errors: window.sessionDraftClient?.errors ?? window.sessionDraftHarness?.pageErrors, usage: window.sessionDraftHarness?.usage() }, (key, value: unknown) => key === 'asset' ? (value as { key?: string } | null)?.key ?? null : value instanceof Map ? [...value] : value));
+    await info.attach(`failed-browser-state-${index}`, { body: state, contentType: 'application/json' });
+  }
+});
+
+test('wires the actual TaskSessionClient and SessionView through image upload, preview, restore and send', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context);
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html');
+  await expect(page.getByRole('textbox')).toBeEditable(); await expect(page.getByRole('button', { name: 'Add images' })).toBeEnabled();
+  await page.getByRole('textbox').fill('client-owned original'); await page.locator('input[type=file]').setInputFiles(file('Client.png'));
+  await expect.poll(() => page.evaluate(() => { const { canSend, error, disabledReason } = window.sessionDraftClient.client.imageDrafts.getSnapshot(); return { canSend, error, disabledReason }; })).toEqual({ canSend: true, error: null, disabledReason: null });
+  const first = await page.evaluate(() => { const client = window.sessionDraftClient.client, draft = client.imageDrafts.getSnapshot(); return { draftId: draft.draftId, scope: draft.items[0]?.asset?.scope === client.imageScope(), id: draft.items[0]?.draftImageId }; });
+  expect(first.scope).toBe(true);
+  await page.getByRole('button', { name: 'View image: Client.png', exact: true }).click(); await expect(page.locator('dialog img')).toHaveJSProperty('naturalWidth', 3); await page.keyboard.press('Escape');
+  await page.reload(); await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await expect(page.getByRole('textbox')).toHaveValue('client-owned original');
+  expect(await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().draftId)).toBe(first.draftId);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
+  expect(api.observations.commands[0]!.kind).toBe('send_message'); expect(api.observations.prepares).toHaveLength(1);
+  expect(await page.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+  await info.attach('TaskSessionClient-SessionView-wiring', { body: JSON.stringify({ boundary: `${boundary} This case also uses the real TaskSessionClient, SessionView, createSessionApi and parsed HTTP/WebSocket messages.`, first, observations: api.observations }), contentType: 'application/json' });
+});
+
+test('clears the real client send gate after observing acceptance of a lost image command receipt', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('lost'); api.setQuery('404');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.locator('input[type=file]').setInputFiles(file('First.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
+  const operationId = api.observations.commands[0]!.operationId;
+  await page.reload();
+  await expect.poll(() => api.observations.queries.length).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.operationId)).toBe(operationId);
+  expect(api.observations.commands).toHaveLength(1);
+  api.setQuery('provider_accepted');
+  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
+  expect(await page.evaluate(id => window.sessionDraftClient.client.snapshot().state.operations.get(id)?.state, operationId)).toBe('provider_accepted');
+  api.setDispatch('confirmed'); await page.getByRole('textbox').fill('next message'); await page.locator('input[type=file]').setInputFiles(file('Second.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(2);
+  expect(api.observations.commands[1]!.operationId).not.toBe(operationId);
+  expect(api.observations.queries.every(id => id === operationId)).toBe(true);
+  await info.attach('client-unknown-receipt-gate', { body: JSON.stringify({ boundary: `${boundary} Actual TaskSessionClient dispatch and 404/acceptance observation.`, observations: api.observations }), contentType: 'application/json' });
+});
+
+test('restores a real client draft after definitive capability rejection and sends under a fresh revision', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('capability_changed');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('retained after 409'); await page.locator('input[type=file]').setInputFiles(file('Retained.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => { const draft = window.sessionDraftClient.client.imageDrafts.getSnapshot(); return { submission: draft.submission, canSend: draft.canSend, text: draft.text }; })).toEqual({ submission: null, canSend: true, text: 'retained after 409' });
+  const old = api.observations.commands[0]!.operationId;
+  expect(await page.evaluate(id => window.sessionDraftClient.client.snapshot().state.operations.get(id)?.state, old)).toBe('rejected');
+  api.setDispatch('confirmed'); Object.assign(api.capability, { revision: '3' });
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(2);
+  const retry = api.observations.commands[1]!; expect(retry.operationId).not.toBe(old);
+  if (retry.kind !== 'send_message') throw new Error('Expected the retained image message.');
+  expect(retry.payload.expectedImageCapabilityRevision).toBe('3'); expect(api.observations.prepares).toHaveLength(1); expect(api.observations.queries).toEqual([]);
+  await info.attach('client-capability-refusal-gate', { body: JSON.stringify({ boundary: `${boundary} Actual TaskSessionClient receives a parsed capability_changed HTTP 409.`, observations: api.observations }), contentType: 'application/json' });
+});
+
+test('persists original Blob bytes through refresh and closing the only Session tab', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), original = file('Original.png');
+  await openDraft(page); await page.getByRole('textbox').fill(' durable text ');
+  await page.locator('input[type=file]').setInputFiles(original); await ready(page, 1);
+  const before = await saved(page), initial = await page.evaluate(() => window.sessionDraftHarness.originals());
+  expect(initial).toEqual([{ id: before!.editable!.items[0]!.draftImageId, label: original.name, size: original.buffer.length, mediaType: 'image/png', sha256: sha256(original.buffer) }]);
+  await page.reload(); await ready(page, 1); await expect(page.getByRole('textbox')).toHaveValue(' durable text ');
+  expect(await page.evaluate(() => window.sessionDraftHarness.originals())).toEqual(initial);
+  expect((await saved(page))!.editable!.draftId).toBe(before!.editable!.draftId);
+  await page.close(); const reopened = await context.newPage(); await openDraft(reopened); await ready(reopened, 1);
+  expect(await reopened.evaluate(() => window.sessionDraftHarness.originals())).toEqual(initial);
+  expect(api.observations.prepares).toHaveLength(1); expect(api.observations.commands).toEqual([]);
+  expect(await reopened.evaluate(() => window.sessionDraftHarness.pageErrors)).toEqual([]);
+  await info.attach('durable-blob-evidence', { body: JSON.stringify({ boundary, initial, reopened: await saved(reopened), observations: api.observations }), contentType: 'application/json' });
+});
+
+test('reports a missing native IndexedDB Blob after reload without discarding its sibling', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), retained = file('Retained.png', pngImage(5, 3));
+  await openDraft(page); await page.getByRole('textbox').fill('keep this text');
+  await page.locator('input[type=file]').setInputFiles([file('Missing.png'), retained]); await ready(page, 2);
+  const before = (await saved(page))!, missingId = before.editable!.items[0]!.blobId!;
+  await page.evaluate(id => window.sessionDraftHarness.storage.removeBlob(id), missingId);
+  expect(await page.evaluate(() => window.sessionDraftHarness.storage.counts())).toMatchObject({ drafts: 1, blobs: 1 });
+  await page.reload();
+  await expect.poll(async () => (await current(page)).items.map(item => item.validation)).toEqual(['bytes_missing', 'valid']);
+  await expect(page.getByText('The original image is missing. Remove it and select the file again.')).toBeVisible();
+  await expect(page.getByRole('textbox')).toHaveValue('keep this text'); await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  expect((await saved(page))!.editable!.items.map(item => item.draftImageId)).toEqual(before.editable!.items.map(item => item.draftImageId));
+  expect(api.observations.commands).toEqual([]); expect(api.observations.prepares).toHaveLength(2);
+  await page.getByRole('button', { name: 'Remove image: Missing.png', exact: true }).click(); await ready(page, 1);
+  expect(await page.evaluate(() => window.sessionDraftHarness.originals())).toEqual([{ id: before.editable!.items[1]!.draftImageId, label: retained.name, size: retained.buffer.length, mediaType: 'image/png', sha256: sha256(retained.buffer) }]);
+  await info.attach('native-missing-blob', { body: JSON.stringify({ boundary, before, missingId, recovered: await saved(page), observations: api.observations }), contentType: 'application/json' });
+});
+
+for (const fault of ['abort', 'quota'] as const) test(`preserves committed native IndexedDB data and retries unsaved edits after ${fault}`, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), second = file('Unsaved.png', pngImage(5, 3));
+  await openDraft(page); await page.getByRole('textbox').fill('committed text');
+  await page.locator('input[type=file]').setInputFiles(file('Committed.png')); await ready(page, 1);
+  const before = await saved(page), originals = await page.evaluate(() => window.sessionDraftHarness.originals()), counts = await page.evaluate(() => window.sessionDraftHarness.storage.counts());
+  await page.evaluate(kind => window.sessionDraftHarness.storage.armFault(kind), fault);
+  await page.getByRole('textbox').fill('unsaved local edit'); await page.locator('input[type=file]').setInputFiles(second);
+  await expect.poll(async () => { const view = await current(page); return { error: view.error, images: view.items.filter(item => item.validation === 'valid').length }; }).toEqual({ error: fault === 'quota' ? 'image_draft_quota' : 'image_draft_unavailable', images: 2 });
+  await expect(page.getByRole('alert').filter({ hasText: fault === 'quota' ? 'Local image storage is full.' : 'The draft could not be saved.' })).toBeVisible();
+  await expect(page.getByRole('textbox')).toHaveValue('unsaved local edit'); await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  expect(await saved(page)).toEqual(before); expect(await page.evaluate(() => window.sessionDraftHarness.originals())).toEqual(originals);
+  expect(await page.evaluate(() => window.sessionDraftHarness.storage.counts())).toEqual(counts);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.storage.writes().filter(write => write.aborted).length)).toBeGreaterThan(0);
+  const writes = await page.evaluate(() => window.sessionDraftHarness.storage.writes());
+  expect(writes.every(write => write.aborted && !write.completed && write.requestSucceeded === (fault === 'abort'))).toBe(true);
+  expect(api.observations.prepares).toHaveLength(1); expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.storage.clearFault()); await page.getByRole('button', { name: 'Retry saving', exact: true }).click(); await ready(page, 2);
+  expect((await saved(page))?.editable?.text).toBe('unsaved local edit');
+  const committed = await page.evaluate(() => window.sessionDraftHarness.originals()); expect(committed[1]!.sha256).toBe(sha256(second.buffer));
+  await page.reload(); await ready(page, 2); await expect(page.getByRole('textbox')).toHaveValue('unsaved local edit');
+  expect(await page.evaluate(() => window.sessionDraftHarness.originals())).toEqual(committed);
+  await info.attach(`native-storage-${fault}`, { body: JSON.stringify({ boundary, fault: fault === 'abort' ? 'Native IDBTransaction.abort() after the real draft write request succeeded; completion was not observed.' : 'Injected QuotaExceededError at the native object-store write boundary; no physical disk-quota exhaustion was attempted.', writes, before, after: await saved(page), observations: api.observations }), contentType: 'application/json' });
+});
+
+test('isolates two account owners in the same native database and browser context', async ({ page, context }, info) => {
+  await installDraftAPI(context); await openDraft(page); await page.getByRole('textbox').fill('account A private draft');
+  await page.locator('input[type=file]').setInputFiles(file('Account A.png')); await ready(page, 1);
+  const a = (await saved(page))!, other = '00000072-1111-4111-8111-111111111111';
+  expect(await page.evaluate(actor => window.sessionDraftHarness.storage.read(actor), other)).toBeNull();
+  const peer = await context.newPage(); await peer.goto(`/tests/navigation/session-drafts-fixture.html?actor=${other}`); await peer.bringToFront();
+  await expect(peer.getByRole('textbox')).toBeEditable(); await expect(peer.getByRole('textbox')).toHaveValue('');
+  expect(await saved(peer)).toBeNull(); await expect(peer.getByRole('button', { name: 'View image: Account A.png', exact: true })).toHaveCount(0);
+  await peer.getByRole('textbox').fill('account B private draft'); await peer.locator('input[type=file]').setInputFiles(file('Account B.png', pngImage(5, 3))); await ready(peer, 1);
+  const b = (await saved(peer))!; expect(b.owner.ownerKey).not.toBe(a.owner.ownerKey); expect(b.owner.identity.target.actorUserId).toBe(other);
+  expect(await peer.evaluate(id => window.sessionDraftHarness.storage.readBlob(id), a.editable!.items[0]!.blobId!)).toBeNull();
+  expect(await page.evaluate(actor => window.sessionDraftHarness.storage.read(actor), other)).toEqual(b);
+  await page.bringToFront(); await page.reload(); await ready(page, 1); await expect(page.getByRole('textbox')).toHaveValue('account A private draft');
+  await expect(page.getByRole('button', { name: 'View image: Account B.png', exact: true })).toHaveCount(0);
+  expect((await saved(page))!.owner.ownerKey).toBe(a.owner.ownerKey); await expect(peer.getByRole('textbox')).toHaveValue('account B private draft');
+  await info.attach('native-account-isolation', { body: JSON.stringify({ boundary, accountA: a, accountB: b, refreshedA: await saved(page) }), contentType: 'application/json' });
+});
+
+test('imports a legacy text draft only after the native migration transaction commits', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), legacy = await seedLegacyDraft(page, 'legacy text retained', 'old-draft-revision');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toHaveValue('legacy text retained');
+  expect(await page.evaluate(() => window.sessionDraftClient.storage.read())).toBeNull();
+  await page.evaluate(() => window.sessionDraftClient.storage.armFault('abort')); await page.locator('input[type=file]').setInputFiles(file('Migrated.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().error)).toBe('image_draft_unavailable');
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.storage.writes().filter(write => write.aborted).length)).toBeGreaterThan(0);
+  expect(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)!), legacy.draftKey)).toEqual({ text: 'legacy text retained', revision: 'old-draft-revision', submission: null });
+  expect(await page.evaluate(() => window.sessionDraftClient.storage.counts())).toEqual({ owners: 0, drafts: 0, blobs: 0, uploads: 0, submissions: 0 });
+  const writes = await page.evaluate(() => window.sessionDraftClient.storage.writes()); expect(writes.every(write => write.requestSucceeded && write.aborted && !write.completed)).toBe(true);
+  expect(api.observations.prepares).toEqual([]); expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftClient.storage.clearFault()); await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  const imported = (await page.evaluate(() => window.sessionDraftClient.storage.read()))!;
+  expect(imported.owner.legacyImported).toBe(true); expect(imported.editable?.text).toBe('legacy text retained'); expect(imported.editable?.items).toHaveLength(1);
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.draftKey)).toBeNull();
+  await page.reload(); await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await expect(page.getByRole('textbox')).toHaveValue('legacy text retained');
+  expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.editable?.draftId).toBe(imported.editable?.draftId);
+  expect(await page.evaluate(() => window.sessionDraftClient.storage.counts())).toMatchObject({ owners: 1, drafts: 1, blobs: 1 });
+  await info.attach('native-legacy-migration-commit', { body: JSON.stringify({ boundary, writes, imported, restored: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
+});
+
+test('migrates a legacy unknown operation without replay and retains its successor after late acceptance', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), operationId = '00000081-1111-4111-8111-111111111111'; api.setQuery('404');
+  const legacy = await seedLegacyDraft(page, 'legacy frozen text', 'legacy-frozen-revision', { operationId, revision: 'legacy-frozen-revision' }); api.seedOperation(legacy.operation!);
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toHaveValue('legacy frozen text');
+  await expect.poll(() => api.observations.queries).toContain(operationId);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.snapshot().checking.size)).toBe(0);
+  await expect(page.getByRole('textbox')).toBeEditable();
+  expect(await page.evaluate(() => window.sessionDraftClient.storage.read())).toBeNull();
+  await page.locator('input[type=file]').setInputFiles(file('Not sent.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.operationId)).toBe(operationId);
+  const imported = (await page.evaluate(() => window.sessionDraftClient.storage.read()))!;
+  expect(imported.frozen?.text).toBe('legacy frozen text'); expect(imported.submission).toMatchObject({ operationId, state: 'unknown', command: null, legacy: { revision: 'legacy-frozen-revision', kind: 'send_message' } });
+  expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.draftKey)).toBeNull(); expect(api.observations.commands).toEqual([]); expect(api.observations.prepares).toEqual([]);
+  const queriesBefore = api.observations.queries.length; await page.reload();
+  await expect.poll(() => api.observations.queries.length).toBeGreaterThan(queriesBefore);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().checking)).toBe(false);
+  expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.submission).toMatchObject({ operationId, state: 'unknown', command: null });
+  expect(api.observations.queries.every(id => id === operationId)).toBe(true); expect(api.observations.commands).toEqual([]);
+  await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('legacy successor retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  api.setQuery('provider_accepted'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
+  await expect(page.getByRole('textbox')).toHaveValue('legacy successor retained'); expect(api.observations.commands).toEqual([]);
+  expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.editable?.text).toBe('legacy successor retained');
+  await info.attach('native-legacy-unknown', { body: JSON.stringify({ boundary, imported, settled: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
+});
+
+test('preserves picker, clipboard and drop order while respecting IME and slash commands', async ({ page, context }) => {
+  const api = await installDraftAPI(context); await openDraft(page);
+  await page.locator('input[type=file]').setInputFiles([file('Picker A.png'), file('Picker B.png')]); await ready(page, 2);
+  const encoded = pngImage(3, 2).toString('base64');
+  await page.getByRole('textbox').fill('before after'); await page.getByRole('textbox').evaluate(input => (input as HTMLTextAreaElement).setSelectionRange(7, 7));
+  await page.getByRole('textbox').evaluate((input, bytes) => {
+    const data = new DataTransfer(); data.items.add(new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Clipboard.png', { type: 'image/png' })); data.setData('text/plain', 'pasted ');
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, encoded); await ready(page, 3);
+  await expect(page.getByRole('textbox')).toHaveValue('before pasted after');
+  await page.getByRole('textbox').press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  await expect(page.getByRole('textbox')).toHaveValue('before after');
+  expect((await current(page)).items).toHaveLength(3);
+  await page.locator('form.session-composer').evaluate((form, bytes) => {
+    const data = new DataTransfer(); data.items.add(new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Dropped.png', { type: 'image/png' }));
+    form.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+  }, encoded); await ready(page, 4);
+  expect((await current(page)).items.map(item => item.label)).toEqual(['Picker A.png', 'Picker B.png', 'Clipboard.png', 'Dropped.png']);
+  await page.getByRole('textbox').evaluate((input, bytes) => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    const data = new DataTransfer(); data.items.add(new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'IME.png', { type: 'image/png' }));
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+  }, encoded);
+  await expect(page.getByText('Finish composing text, then paste the images again.')).toBeVisible(); expect((await current(page)).items).toHaveLength(4);
+  await page.getByRole('textbox').fill('/review'); await expect(page.getByRole('listbox')).toBeVisible();
+  const previewTrigger = page.getByRole('button', { name: 'View image: Picker A.png', exact: true });
+  await previewTrigger.click(); await expect(page.locator('dialog img')).toHaveJSProperty('naturalWidth', 3); await expect(page.getByRole('listbox')).toHaveCount(0);
+  await page.keyboard.press('Escape'); await expect(page.locator('dialog')).not.toBeVisible(); await expect(previewTrigger).toBeFocused();
+  await page.getByRole('textbox').focus(); await page.getByRole('textbox').press('Enter');
+  await expect(page.getByText('Images cannot be used with commands. Remove the images before choosing a command.')).toBeVisible();
+  expect(api.observations.commands).toEqual([]); expect(await page.evaluate(() => window.sessionDraftHarness.plainCommands)).toEqual([]);
+  await page.getByRole('textbox').fill('/path'); await page.evaluate(() => window.sessionDraftHarness.controller.flush());
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => api.observations.commands.length).toBe(1);
+  const command = api.observations.commands[0]!; expect(command.kind).toBe('send_message');
+  if (command.kind === 'send_message') expect(command.payload.content.map(part => part.type)).toEqual(['text', 'image', 'image', 'image', 'image']);
+});
+
+for (const width of [390, 320]) test(`keeps local previews usable offline with focus and Escape at ${width}px`, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); await page.setViewportSize({ width, height: 844 }); await openDraft(page);
+  await page.locator('input[type=file]').setInputFiles(file('Long original name with spaces.png', pngImage(480, 320))); await ready(page, 1);
+  await context.setOffline(true);
+  const trigger = page.getByRole('button', { name: 'View image: Long original name with spaces.png', exact: true }); await trigger.click();
+  const dialog = page.locator('dialog.session-image-preview'), stage = dialog.locator('.session-image-preview-stage');
+  await expect(dialog.locator('img')).toHaveJSProperty('naturalWidth', 480);
+  await expect(dialog.getByRole('button', { name: 'Close image preview' })).toBeFocused();
+  expect(await stage.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath(`draft-preview-fit-${width}.png`) });
+  await dialog.getByRole('button', { name: 'Original size' }).click();
+  await expect.poll(() => dialog.locator('img').evaluate(node => node.getBoundingClientRect().width)).toBe(480);
+  expect(await stage.evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  await stage.evaluate(node => { node.scrollLeft = 100; }); await expect.poll(() => stage.evaluate(node => node.scrollLeft)).toBe(100);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await dialog.evaluate(node => { const r = node.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })).toBe(true);
+  await page.screenshot({ path: info.outputPath(`draft-preview-original-${width}.png`) });
+  await page.keyboard.press('Escape'); await expect(dialog).not.toBeVisible(); await expect(trigger).toBeFocused();
+  expect((await current(page)).items).toHaveLength(1); expect(api.observations.commands).toEqual([]);
+});
+
+test('resolves cross-tab CAS conflicts without losing either local text or original bytes', async ({ page, context }, info) => {
+  await installDraftAPI(context); await openDraft(page); await page.locator('input[type=file]').setInputFiles(file()); await ready(page, 1);
+  const peer = await context.newPage(); await openDraft(peer); await ready(peer, 1);
+  await page.evaluate(() => { window.sessionDraftHarness.holdWrites(); window.sessionDraftHarness.controller.setText('first tab'); });
+  await peer.evaluate(() => { window.sessionDraftHarness.holdWrites(); window.sessionDraftHarness.controller.setText('second tab'); });
+  await expect.poll(() => page.evaluate(() => window.sessionDraftHarness.writesArrived())).toBe(1);
+  await expect.poll(() => peer.evaluate(() => window.sessionDraftHarness.writesArrived())).toBe(1);
+  await page.evaluate(() => window.sessionDraftHarness.releaseWrites());
+  await expect.poll(async () => (await saved(page))?.editable?.text).toBe('first tab');
+  await peer.evaluate(() => window.sessionDraftHarness.releaseWrites());
+  await expect.poll(async () => (await current(peer)).conflict).toBe(true);
+  await expect(peer.getByRole('textbox')).toHaveValue('second tab'); expect((await saved(peer))?.editable?.text).toBe('first tab');
+  await peer.getByRole('button', { name: 'Replace with this window’s draft' }).click();
+  await expect.poll(async () => (await saved(peer))?.editable?.text).toBe('second tab');
+  await expect.poll(async () => (await current(peer)).conflict).toBe(false);
+  expect((await peer.evaluate(() => window.sessionDraftHarness.originals()))[0]!.sha256).toBe(sha256(file().buffer));
+  await info.attach('cross-tab-CAS', { body: JSON.stringify({ boundary, saved: await saved(peer), local: await current(peer) }), contentType: 'application/json' });
+});
+
+test('refuses a second tab while the native send lock is held and sends once after release', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); await openDraft(page); await page.locator('input[type=file]').setInputFiles(file()); await ready(page, 1);
+  const peer = await context.newPage(); await openDraft(peer); await ready(peer, 1);
+  await page.evaluate(() => window.sessionDraftHarness.holdLock('send'));
+  const locks = await page.evaluate(() => navigator.locks.query()); expect(locks.held).toHaveLength(1);
+  await peer.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(async () => (await current(peer)).error).toBe('image_another_window_busy'); expect(api.observations.commands).toEqual([]);
+  await page.evaluate(() => window.sessionDraftHarness.releaseLock());
+  await peer.evaluate(() => window.sessionDraftHarness.controller.send());
+  await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(async () => (await saved(peer))?.submission).toBeNull();
+  await info.attach('native-send-lock', { body: JSON.stringify({ boundary, locks, commands: api.observations.commands }), contentType: 'application/json' });
+});
+
+test('reopens a claimed dispatch by querying the original operation and retains unknown after HTTP 404', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('held'); api.setQuery('404');
+  try {
+    await openDraft(page); await page.locator('input[type=file]').setInputFiles(file('Frozen.png')); await ready(page, 1);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => api.observations.commands.length).toBe(1);
+    const before = await saved(page), operationId = api.observations.commands[0]!.operationId;
+    expect(before?.submission?.state).toBe('dispatch_claimed'); expect(before?.submission?.operationId).toBe(operationId);
+    await page.close(); await api.cleanup(); const peer = await context.newPage(); await openDraft(peer);
+    await expect.poll(() => api.observations.queries.length).toBeGreaterThan(0);
+    await expect.poll(async () => (await current(peer)).checking).toBe(false);
+    const recovered = await saved(peer); expect(recovered?.submission?.operationId).toBe(operationId); expect(recovered?.submission?.state).toBe('unknown');
+    expect(api.observations.commands).toHaveLength(1); expect(api.observations.queries.every(id => id === operationId)).toBe(true);
+    await peer.getByRole('button', { name: 'Continue editing', exact: true }).click(); await peer.getByRole('textbox').fill('successor retained'); await peer.evaluate(() => window.sessionDraftHarness.controller.flush());
+    api.setQuery('confirmed'); await peer.getByRole('button', { name: 'Check status', exact: true }).click();
+    await expect.poll(async () => (await saved(peer))?.submission).toBeNull(); await expect(peer.getByRole('textbox')).toHaveValue('successor retained');
+    await info.attach('claimed-dispatch-recovery', { body: JSON.stringify({ boundary, before, recovered, settled: await saved(peer), observations: api.observations }), contentType: 'application/json' });
+  } finally { await api.cleanup(); }
+});
+
+for (const count of [8, 9]) test(`${count} selected originals preserve the full candidate decision`, { tag: '@capacity' }, async ({ page, context }) => {
+  const api = await installDraftAPI(context); await openDraft(page);
+  await page.locator('input[type=file]').setInputFiles(Array.from({ length: count }, (_, index) => file(`${index + 1}.png`)));
+  if (count === 8) { await ready(page, 8); expect(api.observations.prepares).toHaveLength(8); }
+  else {
+    await expect.poll(async () => (await current(page)).items.filter(item => item.validation === 'valid').length).toBe(8);
+    expect((await current(page)).rejectedCandidates).toHaveLength(1); expect(api.observations.prepares).toEqual([]);
+    await page.reload(); await expect.poll(async () => (await current(page)).rejectedCandidates.length).toBe(1);
+    expect((await current(page)).canSend).toBe(false); expect(api.observations.prepares).toEqual([]);
+  }
+});
+
+for (const item of [
+  { title: '10 MiB exactly', sizes: [10 * 1_048_576], eligible: true },
+  { title: '10 MiB plus one byte', sizes: [10 * 1_048_576 + 1], eligible: false },
+  { title: '20 MiB exactly', sizes: [10 * 1_048_576, 10 * 1_048_576], eligible: true },
+  { title: '20 MiB plus one valid original', sizes: [10 * 1_048_576, 10 * 1_048_576, 128], eligible: false },
+]) test(`valid PNG originals enforce ${item.title}`, { tag: '@capacity' }, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); await openDraft(page);
+  const files = item.sizes.map((size, index) => file(`${index}.png`, exactPng(size)));
+  await page.locator('input[type=file]').setInputFiles(files);
+  if (item.eligible) {
+    await ready(page, files.length);
+    expect((await page.evaluate(() => window.sessionDraftHarness.originals())).map(value => value.size)).toEqual(item.sizes);
+    expect(api.observations.completes).toHaveLength(files.length);
+  } else {
+    await expect.poll(async () => { const view = await current(page); return view.items.length === files.length && (view.error !== null || view.items.some(image => image.error !== null) || view.disabledReason === 'image_message_limit'); }).toBe(true);
+    expect((await current(page)).canSend).toBe(false); expect(api.observations.prepares).toEqual([]);
+  }
+  await info.attach('input-byte-boundary', { body: JSON.stringify({ boundary, title: item.title, sizes: item.sizes, view: await current(page), observations: api.observations }), contentType: 'application/json' });
+});
+
+test('keeps a smaller model profile authoritative before any upload', async ({ page, context }) => {
+  const api = await installDraftAPI(context, { maxImageBytes: '1024', maxMessageImageBytes: '1536', maxImagesPerMessage: 2 });
+  await openDraft(page); await page.locator('input[type=file]').setInputFiles([file('small A.png', exactPng(1024)), file('small B.png', exactPng(1024))]);
+  await expect.poll(async () => (await current(page)).items.filter(item => item.validation === 'valid').length).toBe(2);
+  await expect.poll(async () => (await current(page)).saving).toBe(false);
+  expect((await current(page)).disabledReason).toBe('image_message_limit'); expect(api.observations.prepares).toEqual([]);
+  await page.getByRole('button', { name: 'Remove image: small B.png', exact: true }).click(); await ready(page, 1);
+  expect(api.observations.prepares).toHaveLength(1);
+});

@@ -27,6 +27,11 @@ function fixture() {
   vi.stubGlobal('fetch', fetcher);
   return { ...f, other, scope, coordinator, bot, apiFactory: api, start, element, fetcher };
 }
+async function restoredClient(f: ReturnType<typeof fixture>): Promise<TaskSessionClient> {
+  await screen.findByText(`Message ${f.binding.botId}`);
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).not.toHaveAttribute('readonly'));
+  return f.start.mock.contexts[0] as TaskSessionClient;
+}
 
 it('blocks an old URL before creating a client after an unknown DELETE, including restored navigation', async () => {
   const f = fixture(); await f.coordinator.begin(f.bot);
@@ -44,11 +49,10 @@ it('blocks an old URL before creating a client after an unknown DELETE, includin
 it.each([false, true])('closes a live old-URL client and restores drafts after definite rejection (identity pause=%s)', async paused => {
   const f = fixture(), response = Promise.withResolvers<Response>();
   f.fetcher.mockImplementation(async (_url, init) => init?.method === 'DELETE' ? response.promise : botResponse(f.bot));
-  render(f.element()); await screen.findByText(`Message ${f.binding.botId}`);
-  const client = f.start.mock.contexts[0] as TaskSessionClient;
+  render(f.element()); const client = await restoredClient(f);
   act(() => client.setDraft('retained draft'));
   vi.mocked(f.api.command).mockRejectedValue(new Error('receipt unknown'));
-  await act(async () => { await expect(client.send('retained draft')).rejects.toThrow(); });
+  await act(async () => { await expect(client.send('retained draft')).rejects.toThrow('receipt unknown'); });
   const keys = Object.keys(sessionStorage).filter(key => key.includes(f.binding.sessionId));
   expect(keys.some(key => key.includes('session-operations'))).toBe(true);
   let operation!: Promise<void>;
@@ -90,11 +94,10 @@ it('does not replace a known Session identity with a conflicting active observat
 });
 
 it('clears only the revoked independent Session storage and never restores its old URL', async () => {
-  const f = fixture(); render(f.element()); await screen.findByText(`Message ${f.binding.botId}`);
-  const client = f.start.mock.contexts[0] as TaskSessionClient;
+  const f = fixture(); render(f.element()); const client = await restoredClient(f);
   act(() => client.setDraft('delete this draft'));
   vi.mocked(f.api.command).mockRejectedValue(new Error('receipt unknown'));
-  await act(async () => { await expect(client.send('delete this draft')).rejects.toThrow(); });
+  await act(async () => { await expect(client.send('delete this draft')).rejects.toThrow('receipt unknown'); });
   const keys = Object.keys(sessionStorage).filter(key => key.includes(f.binding.sessionId));
   const unrelated = [`daynight:session-draft:${BOT_USER}:test:${f.other.binding.sessionId}:test:other`, `daynight:session-draft:${BOT_USER}:task:other`];
   for (const key of unrelated) sessionStorage.setItem(key, 'keep');
@@ -128,8 +131,7 @@ it('aborts in-flight resources and input acknowledgements without publishing the
   vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, resources: [{ resourceId, status: 'available', name: 'output.txt', mediaType: 'text/plain', byteLength: '4', sha256: 'a'.repeat(64), error: null }] });
   vi.mocked(f.api.resource).mockReturnValue(resource.promise);
   vi.mocked(f.api.command).mockReturnValue(command.promise);
-  render(f.element()); await screen.findByText(`Message ${f.binding.botId}`);
-  const client = f.start.mock.contexts[0] as TaskSessionClient;
+  render(f.element()); const client = await restoredClient(f);
   let loaded!: Promise<unknown>, sent!: Promise<unknown>;
   act(() => {
     client.setDraft('in flight');

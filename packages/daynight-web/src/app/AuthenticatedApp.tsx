@@ -8,25 +8,28 @@ import { CurrentAccountProvider } from './CurrentAccountContext';
 import { WebhookCatalogProvider, WebhookCatalogStatus, useWebhookCatalog } from './WebhookCatalog';
 import { WebhooksPage } from '../features/webhooks/WebhooksPage';
 import { clearWebhookPending } from '../features/webhook-intents/controller';
+import { clearImageDraftScope, imageDraftCleanupFailures, retryImageDraftScopeCleanup, subscribeImageDraftCleanup } from '../features/task-agent-session/drafts/draft-store-cleanup';
 import { clearSessionDrafts } from '../features/task-agent-session/client';
 import { clearBotSessionStorage } from '../features/bots/session-storage';
 import { clearSessionDisplayPreference } from '../features/task-agent-session/useSessionDisplayPreference';
 
 async function clearPrivateSessionState(userId: string): Promise<Error | null> {
   const snapshotsCleared = clearBotDisplaySnapshots(userId);
+  const imageDraftsCleared = clearImageDraftScope({ origin: window.location.origin, actorUserId: userId, sessionId: null, reason: 'account_changed' });
   const webhookCleanupError = clearWebhookPending(window.location.origin, userId);
   clearSessionDrafts(userId);
   clearPendingBotCreation(userId);
   clearPendingBotDeletions(userId);
   for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
-  return await snapshotsCleared ? webhookCleanupError : new Error('Assistant display snapshots could not be cleared.');
+  const [imageCleanupError, snapshotsComplete] = await Promise.all([imageDraftsCleared, snapshotsCleared]);
+  return imageCleanupError ?? (snapshotsComplete ? webhookCleanupError : new Error('Assistant display snapshots could not be cleared.'));
 }
 import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';
 import { TestSessionListPage } from '../features/task-agent-session/TestSessionListPage';
 import { useTestSessionListMessages } from '../features/task-agent-session/test-session-list-messages';
 import { createPortal, flushSync } from "react-dom";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { logout, me } from "../api/auth";
 import type { AuthProvider, CurrentUser, ProjectRole } from "../api/auth-types";
 import { ApiError, invalidateAuthRequests, isAbortError, pauseAuthRequests, subscribeUnauthorized } from "../api/client";
@@ -268,6 +271,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const [logoutFailed, setLogoutFailed] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [privateCleanup, setPrivateCleanup] = useState<ReadonlyMap<string, Error>>(new Map());
+  const imageCleanupIssues = useSyncExternalStore(subscribeImageDraftCleanup, imageDraftCleanupFailures);
   const discardPrivateSession = useCallback((userId: string) => {
     void clearPrivateSessionState(userId).then(error => {
       if (!mounted.current) return;
@@ -280,11 +284,13 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     });
   }, []);
   const retryPrivateCleanup = () => {
+    const imageCleanup = retryImageDraftScopeCleanup();
     for (const userId of privateCleanup.keys()) {
       const webhookError = clearWebhookPending(window.location.origin, userId);
-      void retryBotDisplaySnapshotCleanup(userId).then(cleared => {
+      void Promise.all([retryBotDisplaySnapshotCleanup(userId), imageCleanup]).then(([cleared]) => {
         if (!mounted.current) return;
-        const error = cleared ? webhookError : new Error('Assistant display snapshots could not be cleared.');
+        const imageError = imageDraftCleanupFailures().find(failure => failure.actorUserId === userId)?.error;
+        const error = imageError ?? (cleared ? webhookError : new Error('Assistant display snapshots could not be cleared.'));
         setPrivateCleanup(previous => {
           const next = new Map(previous);
           if (error === null) next.delete(userId); else next.set(userId, error);
@@ -492,7 +498,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     const parameters = new URLSearchParams({ provider, returnPath });
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
-  const cleanupWarning = <>{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{privateCleanup.size > 0 && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理本地恢复记录。" : "Local recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
+  const cleanupWarning = <>{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{(privateCleanup.size > 0 || imageCleanupIssues.length > 0) && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理本地恢复记录。" : "Local recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
   const invalidTarget = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
   const notFound = <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
   const identityLoading = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;

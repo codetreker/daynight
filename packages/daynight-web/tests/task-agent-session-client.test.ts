@@ -1,9 +1,10 @@
 import { ApiError } from '../src/api/client';
-import { sessionBinding } from '../../daynight/src/session/protocol';
+import { sessionBinding, sessionFence } from '../../daynight/src/session/protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
+import { SessionDraftStore } from '../src/features/task-agent-session/drafts/draft-store';
 import type { SessionApi, SessionChannel } from '../src/api/sessions';
 import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/controller-protocol';
 import type { SessionOperation, SessionSnapshot, TimelineEntry } from '../src/api/types';
@@ -22,6 +23,75 @@ function fixture(storage: Storage | null = null, principal = userId, ownerUserId
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
+  it.each(['send', 'command'].flatMap(action => ['read', 'resume'].map(phase => ({ action, phase }))))('rejects a pending $action click when its native owner changes during $phase', async ({ action, phase }) => {
+    const f = fixture(null, userId, userId, { controls: { revision: '1', settings: [], commands: [{ id: 'compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null } });
+    const identity = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: sessionFence(f.s), expectedNativeSessionId: f.s.identity.nativeSessionId }, resolver: { kind: 'task' as const, projectId: f.s.identity.projectId, taskId: f.s.identity.taskId } };
+    const store = new SessionDraftStore();
+    try {
+      const owner = await store.openOwner(identity);
+      const saved = await store.saveDraft(owner.owner, { draftId: owner.editable!.draftId, expectedStoreVersion: owner.editable!.storeVersion, text: 'Original target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+      await ready(f); f.client.setImageDraftAdmission(true, true); await f.client.imageDrafts.sync();
+      expect(f.client.snapshot().draft.text).toBe('Original target text');
+      const next = { ...f.s, sessionRevision: String(BigInt(f.s.sessionRevision) + 1n), identity: { ...f.s.identity, nativeSessionId: 'native-new' } };
+      const nextIdentity = { ...identity, target: { ...identity.target, expectedNativeSessionId: 'native-new' } };
+      const nextOwner = await store.openOwner(nextIdentity);
+      await store.saveDraft(nextOwner.owner, { draftId: nextOwner.editable!.draftId, expectedStoreVersion: nextOwner.editable!.storeVersion, text: 'New target text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });
+      vi.mocked(f.api.command).mockImplementation(async (_id, command) => ({ protocol: command.protocol, ...sessionFence(command), operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: null, error: null }));
+      const held = Promise.withResolvers<typeof saved>();
+      const read = phase === 'read' ? vi.spyOn(SessionDraftStore.prototype, 'readExisting').mockReturnValueOnce(held.promise) : null;
+      const replace = () => f.receive({ protocol: next.protocol, type: 'snapshot', userId, snapshot: next, cursor: 'next' });
+      if (phase === 'resume') {
+        const refresh = f.client.imageDrafts.refreshForSend;
+        vi.spyOn(f.client.imageDrafts, 'refreshForSend').mockImplementationOnce(async () => {
+          await refresh();
+          // A real snapshot arrives after the preparation helper checks, before
+          // the public action resumes from awaiting that helper.
+          queueMicrotask(() => queueMicrotask(replace));
+        });
+      }
+      const sending = (action === 'send' ? f.client.send('Original target text') : f.client.executeCommand('compact', '', '1', 'Original target text')).catch((error: unknown) => error);
+      if (read) {
+        await vi.waitFor(() => expect(read).toHaveBeenCalled()); replace();
+        await f.client.imageDrafts.sync(); expect(f.client.snapshot().draft.text).toBe('New target text'); held.resolve(saved);
+      }
+      await expect(sending).resolves.toMatchObject({ message: 'image_access_unavailable' });
+      await f.client.imageDrafts.sync();
+      expect(f.api.command).not.toHaveBeenCalled();
+      expect((await store.readExisting(nextIdentity))?.editable?.text).toBe('New target text');
+    } finally { f.client.close(); await f.client.imageDrafts.close(); store.close(); }
+  });
+  it.each(['send_message', 'execute_command'] as const)('restores draft operation ownership for %s and applies a later original acceptance to the current gate', async kind => {
+    const storage = window.sessionStorage; storage.clear();
+    const f = fixture(storage);
+    const operation: SessionOperation = { protocol: f.s.protocol, ...sessionBinding(f.s), sessionId: f.s.sessionId, executionGeneration: f.s.executionGeneration, operationId: '00000012-1111-4111-8111-111111111111', kind, state: 'unknown', providerResult: null, error: null };
+    storage.setItem(`daynight:session-operations:${userId}:${f.s.sessionId}:${f.s.claimId}:${f.s.executionGeneration}`, JSON.stringify([{ operation, imageDraft: true }]));
+    const check = vi.spyOn(f.client.imageDrafts, 'checkStatus').mockResolvedValue();
+    await ready(f);
+    expect(f.api.operation).not.toHaveBeenCalled();
+    await f.client.checkOperation(operation.operationId);
+    expect(check).toHaveBeenCalledOnce();
+    vi.mocked(f.api.operation).mockResolvedValue({ ...operation, state: 'provider_accepted', providerResult: 'started' });
+    await f.client.observeImageOperation(f.s, operation.operationId);
+    expect(f.client.snapshot().state.operations.get(operation.operationId)?.state).toBe('provider_accepted');
+    expect(f.api.command).not.toHaveBeenCalled();
+  });
+  it('queries an original image operation without erasing its draft on a missing receipt', async () => {
+    const f = fixture(); await ready(f); f.client.setDraft('preserve unknown');
+    vi.mocked(f.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    await expect(f.client.observeImageOperation(f.s, '00000012-1111-4111-8111-111111111111')).rejects.toThrow();
+    expect(f.client.snapshot().draft.text).toBe('preserve unknown');
+    expect(f.client.snapshot().status).toBe('ready');
+    expect(f.api.command).not.toHaveBeenCalled();
+  });
+  it('reads the original image operation fence independently from a newer generation', async () => {
+    const f = fixture(); await ready(f);
+    const original = { ...f.s, executionGeneration: '2' };
+    const operation: SessionOperation = { protocol: f.s.protocol, ...sessionBinding(original), sessionId: original.sessionId, executionGeneration: original.executionGeneration, operationId: '00000012-1111-4111-8111-111111111111', kind: 'send_message', state: 'provider_accepted', providerResult: null, error: null };
+    vi.mocked(f.api.operation).mockResolvedValue(operation);
+    await expect(f.client.observeImageOperation(original, operation.operationId)).resolves.toEqual(operation);
+    expect(f.client.snapshot().state.operations.has(operation.operationId)).toBe(false);
+    expect(f.api.command).not.toHaveBeenCalled();
+  });
   it('keeps an image moved into retained Markdown and revokes it when its known entry removes the reference', async () => {
     const f = fixture(), resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'saved.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
     const part = { type: 'image' as const, imageId: '00000013-1111-4111-8111-111111111111', resourceId: resource.resourceId, label: resource.name };
@@ -310,11 +380,14 @@ describe('session text draft ownership', () => {
   it('isolates a replaced execution and does not restore its predecessor draft', async () => {
     const storage = window.sessionStorage; storage.clear();
     const f = fixture(storage); await ready(f); f.client.setDraft('old execution');
+    const originalKey = [...Array(storage.length)].map((_, i) => storage.key(i)!).find(key => storage.getItem(key)?.includes('old execution'))!;
+    const originalBytes = storage.getItem(originalKey);
     const replacement = { ...f.s, executionGeneration: '2' };
     f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: replacement, cursor: 'zero' });
     await vi.waitFor(() => expect(f.client.snapshot().state.snapshot?.executionGeneration).toBe('2'));
     expect(f.client.snapshot().draft.text).toBe('');
-    expect([...Array(storage.length)].map((_, i) => storage.getItem(storage.key(i)!)).join('')).not.toContain('old execution');
+    expect(storage.getItem(originalKey)).toBe(originalBytes);
+    expect(f.api.command).not.toHaveBeenCalled();
   });
   it.each([false, true])('reconciles an exact restored send without clearing a later edit (edited=%s)', async (edited) => {
     const storage = window.sessionStorage; storage.clear();

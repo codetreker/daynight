@@ -1,0 +1,20 @@
+.session-draft-attachments { min-width: 0; max-width: 100%; max-height: min(36vh, 300px); overflow: auto; overscroll-behavior: contain; }
+.session-draft-attachments:empty { display: none; }
+.session-draft-items { display: flex; flex-wrap: wrap; gap: .5rem; padding: .25rem 0; }
+.session-draft-item { display: flex; flex-direction: column; width: min(128px, 100%); min-width: 0; gap: .2rem; }
+.session-draft-item .session-image-frame { width: 100%; max-width: 100%; }
+.session-draft-item .session-image-canvas { max-height: 100px; }
+.session-draft-item .session-image-caption { flex-wrap: wrap; }
+.session-draft-item .session-image-actions { flex-wrap: wrap; }
+.session-draft-item progress { max-width: 100%; width: 100%; }
+.session-draft-name, .session-draft-rejected, .session-draft-frozen-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+.session-draft-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+.session-draft-recovery details { width: 100%; }
+.session-draft-attachments .button, .session-add-images { min-height: 44px; min-width: 44px; }
+.session-draft-attachments .session-error { margin: .25rem 0; }
+.session-draft-saving, .session-draft-disabled { display: block; font-size: .85em; }
+.session-composer[data-image-drop=true] .session-composer-surface { outline: 2px solid currentColor; outline-offset: -2px; }
+.session-image-drop-hint { padding: .3rem; }
+.session-add-images { flex-shrink: 0; }
+.session-image-file-input { display: none; }
+@media (prefers-reduced-motion: reduce) { .session-draft-attachments * { transition: none; animation: none; } }

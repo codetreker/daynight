@@ -1,6 +1,6 @@
 # Session 图片浏览器交互设计
 
-本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示和页内预览已经接入现有 Session 消费者。持久草稿、上传及原生图片输入仍由输入链交付；下文对应章节保留其采用的设计，不表示这些输入能力已经开放。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
+本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示、页内预览及持久图片草稿接入现有 Session 消费者。草稿上传与发送始终消费服务的当前图片能力；生产 Provider 图片 send/steer 尚未取得完整资格时保持关闭，浏览器组件或受控传输通过不能开放该资格。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
 
 [公共协议与存储设计](session-image-contracts.md)唯一拥有 wire DTO、严格解析、能力、身份、错误及容量合同；本文只定义浏览器内部状态和预览接口，并消费该合同。[来源采集设计](session-image-sources.md)拥有 AST 与来源 IO，[归档设计](session-image-archives.md)拥有记录 reader。本文不扩展 Herdr、Thread、通用文件、富文本、跨设备草稿、图片编辑或轮播。采用原 textarea 与有序附件区，所有入口沿现有 Session resolver。
 
@@ -16,12 +16,14 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 
 ## 草稿组件与控制流
 
-采用一个 Session owner 的 `ImageDraftController`，由现有 Session client/host 提供已认证身份和生命周期。它不创建第二个 Session client。职责拆为四个模块：
+`TaskSessionClient.imageDrafts` 持有一个 `ImageDraftController`，由现有 Session client/host 提供已认证身份和生命周期。`SessionView` 将当前 pane 的可见性和操作准入交给该 controller，`SessionComposer` 复用原 textarea、命令分类和操作入口。它不创建第二个 Session client。草稿代码位于 `packages/daynight-web/src/features/task-agent-session/drafts/`，职责拆为四个模块：
 
 - `draft-store`：IndexedDB 原始 Blob、文本、版本、冻结提交、清理引用与事务结果；不发网络。
 - `draft-uploads`：消费服务图片存储的 `api/sessions.ts` 与共享 `session/resource-client.ts`，逐图 prepare/chunk/complete/query/release；不构造 SessionCommand。
 - `draft-send`：完整集合 gate、持久冻结、唯一 dispatch 权、operation 查询及同版本结算；通过现有 client 的命令入口发送，不调用 Provider。
 - `ComposerAttachments` 与 draft preview adapter：选择/粘贴/拖拽、逐图错误、移除和预览；复用预览模块的 ImagePreviewController/VerifiedImageLease，不接管预览模态。
+
+本地图片使用 `pageImageStore.createLocalAsset`，明确没有服务 `SessionResource`，与已保存图片共享字节检查、解码和页面预算。草稿仅在首次加入图片时从旧文字路径激活；已有持久 owner 在当前真实身份确认后恢复。移除最后一张图片不会丢失已激活 owner 的文字或原发送屏障。
 
 数据流为：用户添加 → 保留有序本地项 → 有界字节/解码验证 → 原子保存 Blob 和草稿 → 创建上传身份并保存 → 按服务确认偏移上传 → complete 匹配 → 显式 Send → 原子冻结操作和引用 → 一次命令派发 → 原生接受结算。存储、上传与消息是三个结果；一个成功不推导另两个成功。
 
@@ -32,6 +34,8 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 草稿归属 key 是规范 service origin + 真实 actorUserId + resolver owner kind/ID + 完整 SessionFence + expectedNativeSessionId（null 为精确值）。Task resolver 附带 projectId/taskId，独立 Session 使用 sessionId/testExecutionId；Test URL 和 Bot URL 若解析为同一实际独立 Session，应共享草稿 owner，不各建一个竞争草稿。botId 仅作为已验证关联，不进入内容身份。key 使用有版本的结构化数组编码，不能用含原生字符串的冒号拼接产生碰撞。
 
 公共协议 `ImageTarget` 从当前已认证 snapshot 生成，不接受用户可编辑的 target。连接 epoch、historyEpoch、sessionRevision、React mount、全屏及无变化权限复核不改变草稿归属；native/generation/account 的真实变化使旧目标脱离当前发送资格。旧草稿只在其原账户和原 Session 访问权限重新确认后作为旧目标草稿可读，不自动移到新目标。跨 Session 搬运不提供产品入口。
+
+选择、发送及恢复读取均捕获开始时的 owner 和授权代次。异步结果先检查原身份仍有效，再更新当前状态；阻止旧结果发布不足以防止它先污染新 owner 的内存。发送准备返回后，调用方在进入发送路径的同一同步续段再次核对目标、能力与用户已查看的完整内容，身份检查之后不能跨过未校验的异步间隙。
 
 相同实际 Session 新代次或 native 初始化变化时，可提供明确“为当前会话重新准备”的操作，显示当前目标并由用户确认；这会创建新 draftId、imageId/uploadId 并重新校验字节和权限，旧 intent 永不改写。存在原发送 unknown 时此入口禁用，先查原 operation。其他输入先建立 native 身份时，旧 null 上传不能用于该新身份。只有公共协议明确归属于原首次 operation 的 null→native 接受结果能够结算原冻结草稿；不能用“当前已经有 native ID”猜归属。
 
@@ -55,7 +59,7 @@ revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准
 
 正文输入立即更新本地显示，按每次 input 排序提交，合并尚未启动的连续文本写（最长 250ms）；IME 组合期间不改选区，保存原 text 值，compositionend 刷新。添加 Blob、Send、切换 owner、正常导航前 flush 已排队写；不依赖 unload/pagehide 最后一刻异步写保证恢复。尚未完成时是“正在保存”，失败时为“草稿未保存，刷新可能丢失”，提供“重试保存”。默认成功不显示常驻说明；只有所有最新内容提交才能撤销失败提示。
 
-QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均保留当前内存和最后成功版本。禁用含图上传/发送，允许编辑、预览、移除及重试保存；不能声称持久成功或悄悄退成纯文字。独立纯文字且未进入新图片草稿时保留旧文字路径，不因图片模块不可用使原文本能力失效。加载失败不能当空草稿继续覆盖；先保留错误和重试入口。高版本库禁止破坏式降级，versionchange 关闭连接，重新打开迁移后才能继续。
+QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均保留当前内存和最后成功版本。禁用含图上传/发送，允许编辑、预览、移除及重试保存；不能声称持久成功或悄悄退成纯文字。独立纯文字且未进入新图片草稿时保留旧文字路径；浏览器根本不支持 IndexedDB 时仍提供纯文字输入。具有 IndexedDB 的浏览器恢复失败时，不能证明原 owner 没有图片或未知提交，因此阻止该 owner 发送并保留错误和重试入口，不能把读取失败当成空草稿后发送纯文字。高版本库禁止破坏式降级，versionchange 关闭连接，重新打开迁移后才能继续。
 
 恢复先确认账户和 owner 读取资格，再读元数据与按需 Blob；逐项重新检查长度/hash/格式、字节引用和 target，complete 凭证也需 GET 当前状态后才获发送资格。缺 Blob、长度/hash 不符则 `bytes_missing`/`bytes_invalid` 本地状态，显示原顺序/名称并禁发，提供重新选择或移除，不以服务 receipt 冒充已恢复本地图。重新选择创建新的字节版本及上传身份；任何旧请求结果不得发布。网络离线且当前页面身份仍有效时本地预览/编辑可用；新页面还不能确认登录身份时先保持私有内容隐藏，联网确认后恢复，不凭 IDB 自报账户解锁。
 
@@ -65,7 +69,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 ## 跨标签页并发与资源预算
 
-同源 tabs 通过 IndexedDB 事务 CAS 共同拥有事实，BroadcastChannel 只发 ownerKey/storeVersion 失效通知，不传正文、Blob、凭证或授权。通知丢失时 focus/visibility 恢复和每次写前重新读；不依赖广播正确性。两个 tab 基于相同版本编辑，第一份提交成功，另一份保留本地未保存内容并显示“草稿已在另一窗口更新”。提供“使用已保存版本”或“用本窗口内容替换”；后者重新读当前版本后显式 CAS，竞争再发生则继续保留冲突，不静默 last-writer-wins，不自动合并文字或附件。第二项只替换 editable，不能覆盖 frozen/operation。替换前仍需当前有效权限。
+同源 tabs 通过 IndexedDB 事务 CAS 共同拥有事实，BroadcastChannel 只发 ownerKey/storeVersion 失效通知，不传正文、Blob、凭证或授权。通知丢失时 focus/visibility 恢复和每次写前重新读；不依赖广播正确性。尚未激活图片草稿的 tab 在发送文字或执行命令前也复核原 owner 和执行屏障；首次读取仍未完成时禁止发送，新发现持久草稿时先展示并要求用户检查，不能将当前文字直接附在另一 tab 的图片后发出。两个 tab 基于相同版本编辑，第一份提交成功，另一份保留本地未保存内容并显示“草稿已在另一窗口更新”。提供“使用已保存版本”或“用本窗口内容替换”；后者重新读当前版本后显式 CAS，竞争再发生则继续保留冲突，不静默 last-writer-wins，不自动合并文字或附件。第二项只替换 editable，不能覆盖 frozen/operation。替换前仍需当前有效权限。
 
 每个 upload 的网络变更由一个 `navigator.locks` exclusive 锁持有者运行，同 owner 的发送冻结另有锁；它们配合 IDB 持久 intent，不能以锁取代持久事实。锁名仅用 ownerKey 的本地摘要和 uploadId。禁止 steal/超时强抢；冻结 tab 仍持锁时其他 tab显示“另一窗口正在处理”，允许其他本地编辑。锁释放/页面关闭后接手者先查持久状态和原服务身份。Web Locks 不可用时图片网络变更禁用，保留文字与本地草稿，不能用不安全的 localStorage 心跳模拟互斥。[Web Locks 标准](https://www.w3.org/TR/web-locks/#introduction)规定同源 exclusive 访问及生命周期；跨进程服务去重仍由公共协议与服务存储承担。
 
@@ -122,9 +126,9 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 纯图序列只有 ImageInputPart；图文为一个非空白 TextPart 后接有序图片，保留用户原文字值、不插入文件路径。纯文字走公共协议旧 payload 分支。含图 gate 失败不得删除图再试纯文字。下述动作是原子边界，不是跨网络事务：
 
 1. Send 再 flush 文本/候选保存，在 exclusive send 锁内重读 owner、editable revision、最新资格和 operation 状态。IDB 事务验证 CAS，将完整不可变 command（新 operationId/requestId、target、capability revision、expectedTurnId、draftId/revision、有序 parts）与冻结快照和所有引用一并保存，建立 owner 发送屏障。失败则零网络派发。
-2. 单独短事务把 prepared 变为 dispatch_claimed，只有该次成功转换的调用持有一次 dispatch 权。事务结果未知时先读本地事实但不因此重复发送；重载看到 dispatch_claimed 一律查询原 operation。若在转换前可证明 prepared 未被领取，恢复也不自动发送，只提供用户再次确认原冻结提交的入口。
+2. 单独短事务把 prepared 变为 dispatch_claimed，只有该次成功转换的调用持有一次 dispatch 权。事务结果未知时先读本地事实但不因此重复发送；重载看到 dispatch_claimed 一律查询原 operation。若在转换前可证明 prepared 未被领取，恢复也不自动发送，只提供用户再次确认原冻结提交的入口。原 native 目标已变化时，可显式取消仍未领取的待发消息并保留原目标 editable 草稿；取消事务必须再次确认 prepared，不能解除另一窗口已取得的 dispatch claim，也不把旧图片资格移给新目标。
 3. dispatch 权持有者在实际请求前再次核对当前账户/owner/target、能力和是否仍 live。若确定尚未调用请求就发现变化，可持久记录 local_not_dispatched 并解冻；否则只以原 command 调现有 client 一次。client新增接受已冻结 command 的内部派发入口，不调用会重新生成operationId的旧execute(input)；同一身份由冻结事务一路保留。发布后按下一项区分确认拒绝和未知，不自动重新编号或重发。
-4. accepted/offered/dispatching 只观察；provider_accepted/confirmed 才按原 owner+operationId+target+draftId/revision 结算。operation 读取先解析协议/fence/ID/kind，target 从不可变本地 intent 关联，而非假定 operation 回执新增 target 字段。可信的 rejected/failed/expired 未提交终态解冻保留内容。对首次提交的确定性拒绝，只有经认证/表示/严格错误解析、且公共协议服务分支保证 operation 未登记且未派发的响应，才能归为本地 definitive_not_dispatched，保存原拒绝并解除屏障；例如公共协议与服务存储在接纳事务前因 capability_changed、target_changed、message_image_limit 或 image_budget_exceeded拒绝。即使服务没有operation行，也允许用户修复后以新operation显式发送。适配器按已验证的服务分支合同判定，不能简单按所有4xx、任意同名code或错误message推断；operation_conflict、通用401/403/404、代理错误、解析失败、5xx、超时及响应丢失都不属于此证明，只查原身份。合同未提供确定拒绝保证时维持unknown，不自行放宽。公共操作恢复模块拥有确定拒绝分类的唯一语义和服务验证，草稿发送模块消费内部分类，不向wire error私加字段。
+4. accepted/offered/dispatching 只观察；provider_accepted/confirmed 才按原 owner+operationId+target+draftId/revision 结算。operation 读取先解析协议/fence/ID/kind，target 从不可变本地 intent 关联，而非假定 operation 回执新增 target 字段。可信的 rejected/failed/expired 未提交终态解冻保留内容。对首次提交的确定性拒绝，只有经认证/表示/严格错误解析、且公共协议服务分支保证 operation 未登记且未派发的响应，才能归为本地 definitive_not_dispatched，保存原拒绝并解除屏障。当前 `operation-error.ts` 只接受命令接纳端点经认证严格解析的 `409 capability_changed`：服务先返回已存在 operation 的原事实，再在新操作登记前检查该能力 revision。即使服务没有 operation 行，也允许用户修复后以新 operation 显式发送。不能简单按所有 4xx、任意同名 code 或错误 message 推断；operation_conflict、通用 401/403/404、预算拒绝、代理错误、解析失败、5xx、超时及响应丢失都不属于当前分类，只查原身份。扩展分类须先验证对应服务分支保证。公共操作恢复模块拥有确定拒绝分类的唯一语义，草稿发送模块消费内部分类，不向 wire error 私加字段。
 
 服务接纳前先按原 actor/Session/operationId 查询已有操作，再检查会变化的 target、model 和预算。已有操作只返回原事实或 operation_conflict，不能以新的 capability_changed 把原操作伪装为未派发。已登记操作的 rejected/failed/expired 也不天然允许新发送：只有持久证明没有原生调用，或精确原生 profile 证明已经调用但未接受，才能作为可修复拒绝；后者不得计为调用数 0。无法证明未接受的 SDK 异常保持 unknown。接受后的部分附件交付失败保留在原 operation 和消息中并关闭有问题 profile，不能退为普通 rejected 或只显示瞬时提示。
 
