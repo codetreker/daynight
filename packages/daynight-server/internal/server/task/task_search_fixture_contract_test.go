@@ -32,6 +32,7 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	path := taskCollection(testProjectID) + "/search"
 	firstID := "55555555-5555-4555-8555-555555555555"
 	secondID := "66666666-6666-4666-8666-666666666666"
+	parentID := testTaskID
 	cursor := "private-continuation"
 	snippet := "raw **cache** markdown"
 	calls := 0
@@ -46,7 +47,7 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor != nil {
 				t.Fatalf("first input=%+v", input)
 			}
-			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, Type: model.TaskTypeTask, ParentID: &secondID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
+			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, Type: model.TaskTypeTask, ParentID: &parentID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
 		case 2:
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor == nil || *input.Cursor != cursor {
 				t.Fatalf("continuation=%+v", input)
@@ -62,7 +63,7 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	response := projectRequest(h, http.MethodPost, path, `{"query":"cache","limit":1}`)
 	page := decodeResponse[api.TaskSearchPage](t, response, 200)
 	captureSearchFixture(t, "first-page", response.Body.Bytes())
-	if page.ProjectID != testProjectID || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != firstID || page.Items[0].Type != "task" || page.Items[0].ParentID == nil || *page.Items[0].ParentID != secondID || page.NextCursor == nil || *page.NextCursor != cursor || page.Items[0].Context == nil || page.Items[0].Context.TaskID != testTaskID {
+	if page.ProjectID != testProjectID || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != firstID || page.Items[0].Type != "task" || page.Items[0].ParentID == nil || *page.Items[0].ParentID != testTaskID || page.NextCursor == nil || *page.NextCursor != cursor || page.Items[0].Context == nil || page.Items[0].Context.TaskID != testTaskID {
 		t.Fatalf("first=%+v", page)
 	}
 	response = projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": "cache", "limit": 1, "cursor": *page.NextCursor}))
