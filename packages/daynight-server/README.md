@@ -1358,7 +1358,7 @@ tests outside the Task HTTP suite remain part of the module check. Command
 process tests use the startup/shutdown entry. Their mechanism and ownership are
 determined by the test-writing rules.
 
-The complete `internal/service/webhook` suite uses narrow transaction and DAO
+The ordinary `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
 requested writes, and fail on unexpected access. They do not simulate a database
 or interpret recorded writes as committed state. Time-dependent cases provide
@@ -1377,8 +1377,8 @@ Capture source facts and producer invocation belong to their Task, Step, Thread
 and Worker owners. PostgreSQL tests retain the real operation fences, actor
 reads, multi-record rollback, source/capture atomicity, lease and retention locks,
 commit acknowledgement loss and fresh-process readback. The startup/shutdown
-check also runs `TestWebhookRunnerAbruptProcessRecovery` with
-`-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
+check also runs `TestWebhookRunnerAbruptProcessRecovery` in
+`internal/service/webhook` with `-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
 finalize COMMIT acknowledgement followed by an enabled Runner restart. This
 focused process witness runs in the independent lifecycle job;
 production-duration timeout and capacity stress cases remain separate. HTTP and protocol tests
@@ -2007,7 +2007,7 @@ Ordinary discovery excludes stress-tagged files. With an isolated database,
 and refuses a nonempty `CI` environment. Direct command-package stress runs also
 need `startupshutdown` alongside their existing `stress` and, where required,
 `webhooktest` tags.
-The server runtime two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
+The `internal/service/webhook` two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
 `TestWebhookTwoInstanceTakeoverAndFencingStress`) is selected explicitly by the
 stress entry point. It uses a private deterministic capture
 stream and verifies its first-slot admission before testing second-slot recovery

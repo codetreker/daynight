@@ -25,4 +25,4 @@ done
 
 # Composed runner takeover retains real TLS and PostgreSQL under the existing
 # controlled-transport build; ordinary service tests remain database-independent.
-go test -v -tags=stress,webhooktest -run '^TestWebhookTwoInstanceTakeoverAndFencingStress$' -race -count=1 -timeout=3m ./internal/server
+go test -v -tags=stress,webhooktest -run '^TestWebhookTwoInstanceTakeoverAndFencingStress$' -race -count=1 -timeout=3m ./internal/service/webhook

@@ -33,7 +33,11 @@ packages is not itself a saving.
 The Root fixture retains its existing shared names and semantics for ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. The [test-writing rules](../../../../docs/writing_tests.md)
+and protected API proofs. The Webhook Runner process-recovery and takeover
+witnesses live with the Runner and retain real PostgreSQL, TLS, subprocess and
+lease fencing mechanisms under their existing explicit tags. The [takeover
+fixture decision](2026-11-08-webhook-takeover-fixture.md) records its timing
+constraints. The [test-writing rules](../../../../docs/writing_tests.md)
 own the current requirements.
 
 ## Alternatives
