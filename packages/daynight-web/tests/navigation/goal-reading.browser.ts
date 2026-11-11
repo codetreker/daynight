@@ -164,7 +164,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
       const parts = [...element.children].map(child => child.getBoundingClientRect());
       return parts.every((a, i) => parts.slice(i + 1).every(b => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
     })).toBe(true);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await surface.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`goal-${mode}.png`) });
     await row.click();
     const pausedChild = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
