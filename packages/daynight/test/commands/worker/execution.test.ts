@@ -105,7 +105,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
-  const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = {
+  const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = { type: "task", parentId: null,
     projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
