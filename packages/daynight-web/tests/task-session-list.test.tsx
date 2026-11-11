@@ -45,7 +45,7 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false) {
   const result = await scope.applySync(ticket, sync, signal);
   const store = new TaskSessionSummaryStore(scope, projectId); stores.push(store); store.start();
   store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic: performance.now() });
-  const snapshot: GraphSnapshot = { graph: result.project.graph, index: result.project.index, pausedTaskIds: result.project.pausedTaskIds,
+  const snapshot: GraphSnapshot = { graph: result.project.graph, index: result.project.index, summaries: result.project.summaries, pausedTaskIds: result.project.pausedTaskIds,
     workerMachines: result.project.workerMachines, observedAt: sync.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 };
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);

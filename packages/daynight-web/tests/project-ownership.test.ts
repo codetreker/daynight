@@ -1,5 +1,5 @@
 import { parseTaskSync } from '../src/api/task-sync';
-import { taskSyncFromGraph } from './helpers/taskSync';
+import { taskSyncFixture } from './helpers/taskSync';
 import { expect, it } from 'vitest';
 import { parseMembers, parseProjectAccess, parseUser, decodeMembersJson } from '../src/api/auth-parse';
 import { parseTeamRef } from '../src/api/team-parse';
@@ -60,8 +60,7 @@ it('retains raw Unicode Team names and rejects only malformed, NUL or Unicode Wh
 
 
 it('requires task-sync actor access and intrinsic Project to describe the same ownership snapshot', () => {
-  const sync = taskSyncFromGraph({ ...graph, project: intrinsic }, { actorAccess: access, versionForTask: () => 1n });
-  const wireSync = { ...sync, tasks: sync.tasks.map((task) => ({ ...task, version: task.version.toString() })) };
+  const wireSync = taskSyncFixture({ ...graph, project: intrinsic }, { actorAccess: access, versionForTask: () => 1n });
   expect(parseTaskSync(wireSync, projectId, TEST_VIEWER_ID).actorAccess.ownership).toEqual(intrinsic.ownership);
   for (const ownership of [{ ...access.ownership, version: exact + 1n }, { ...access.ownership, teamId: taskId }]) {
     expect(() => parseTaskSync({ ...wireSync, actorAccess: { ...access, ownership, ownerTeam: { ...access.ownerTeam, id: ownership.teamId } } }, projectId, TEST_VIEWER_ID)).toThrow();

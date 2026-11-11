@@ -15,9 +15,17 @@ snapshot as its summaries and epoch. Snapshots cover visible ordinary Tasks;
 deltas include owners whose own or direct prerequisite's update intersects the
 window. Each state carries the owner's exact version, retained blockers and
 readiness. A bulk query reads physical prerequisite facts without loading Task
-bodies. The [sync design](../../../../docs/design/daynight-task-sync.md) owns the
+bodies. The Web cache stores intrinsic summaries separately from owner-versioned
+dependency states. It merges intrinsic versions first, then applies each state
+only when its owner version matches; state-only changes persist and publish.
+The typed resource map includes Goals, while the ordinary graph connects only
+visible endpoints and retains unavailable prerequisite references. Schema 10
+rebuilds incompatible task data while preserving unrelated profile and compatible
+Session history data. The [sync design](../../../../docs/design/daynight-task-sync.md) owns the
 wire contract and the [typed read decision](2026-11-11-typed-task-resource-reads.md)
-owns visibility and retained dependency semantics.
+owns visibility and retained dependency semantics. This refines the Web
+projection described in the [cancellation decision](../feature/2026-11-06-task-cancellation-terminal.md),
+whose terminal-state rules remain in force.
 
 ## Alternatives
 

@@ -1,10 +1,10 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { Project, TaskDetail, TaskSummary } from "../../api/types";
+import type { Project, TaskDependencyState, TaskDetail, TaskSummary } from "../../api/types";
 import type { ProjectPerson } from "../../api/auth-types";
 import type { SessionHistoryItem } from "../../api/terminal-sessions";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 9;
+export const TASK_CACHE_SCHEMA = 10;
 export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
@@ -18,6 +18,7 @@ export type ProjectRecord = {
 export type SummaryRecord = {
   readonly userId: string; readonly projectId: string; readonly taskId: string;
   readonly summary: TaskSummary;
+  readonly dependencyState: TaskDependencyState | null;
 };
 export type TaskIntrinsicDetail = Omit<TaskDetail, "ready" | "blockedBy">;
 export type DetailRecord = {
@@ -82,7 +83,7 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else if (oldVersion < 9) {
+        } else if (oldVersion < 10) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
             if (oldVersion < 5) for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });

@@ -3,6 +3,7 @@ import type { ProjectAccess, ProjectOwnership, ProjectPersonVersion } from "./au
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
 export type TaskStatus = "proposed" | "todo" | "in_progress" | "done" | "cancelled";
+export type TaskType = "task" | "goal";
 
 export type Project = {
   readonly ownership: ProjectOwnership;
@@ -26,6 +27,8 @@ export type ProjectPage = {
 
 export type GraphTask = {
   readonly id: string;
+  readonly type: TaskType;
+  readonly parentId: string | null;
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
   readonly status: TaskStatus;
@@ -92,6 +95,8 @@ export type WritableTaskProperties = TaskProperties;
 
 export type TaskDetail = {
   readonly id: string;
+  readonly type: TaskType;
+  readonly parentId: string | null;
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
@@ -132,6 +137,12 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
 
 export type TaskListSessionState = "working" | "notice" | "warning" | "pending";
 
+export type TaskDependencyState = {
+  readonly taskVersion: bigint;
+  readonly blockedBy: readonly string[];
+  readonly ready: boolean;
+};
+
 export type TaskSync = {
   readonly assigneeVersions: readonly ProjectPersonVersion[];
   readonly actorAccess: ProjectAccess;
@@ -140,6 +151,7 @@ export type TaskSync = {
   readonly project: Project;
   readonly observedAt: string;
   readonly tasks: readonly TaskSummary[];
+  readonly dependencyStates: Readonly<Record<string, TaskDependencyState>>;
   readonly sessions: Readonly<Record<string, TaskListSessionState>>;
 };
 

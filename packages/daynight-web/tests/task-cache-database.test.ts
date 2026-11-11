@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(9);
+  expect(TASK_CACHE_SCHEMA).toBe(10);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,7 +110,7 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(9);
+  expect(TASK_CACHE_SCHEMA).toBe(10);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
@@ -134,7 +134,7 @@ it("adds profiles and rebuilds schema 5 Task data while preserving identity fenc
     epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
   const { ready: _ready, blockedBy: _blockedBy, ...intrinsicDetail } = detail;
   const { projectId: _owner, title, description: _body, ...summaryFields } = intrinsicDetail;
-  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false } };
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false }, dependencyState: null };
   const detailRecord = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: intrinsicDetail, byteSize: 100, lastUsedAt: 1 };
   await old.put("userScopes", { userId, userFence });
   await old.put("projects", manifest); await old.put("summaries", summary); await old.put("details", detailRecord);
@@ -192,7 +192,7 @@ it("discards schema 7 history and rebuilds Task data while preserving profiles",
   const manifest: TaskCacheSchema["projects"]["value"] = { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
     epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
   const { projectId: _owner, title, description: _description, ready: _ready, blockedBy: _blockedBy, ...summaryFields } = detail;
-  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false } };
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false }, dependencyState: null };
   const detailRow = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 10, lastUsedAt: 1 };
   const profileRow = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: null, avatarUrl: null } };
   await old.put("userScopes", { userId, userFence }); await old.put("projects", manifest); await old.put("summaries", summary);
@@ -222,6 +222,25 @@ it("rebuilds schema 8 Task stores for required cancellation time while preservin
   await connection.put("profiles", profile); await connection.put("sessionHistory", history);
   const current = await cache().open();
   expect(await current.getAll("details")).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
+  expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);
+});
+
+it("rebuilds schema 9 project and task stores while preserving identity, profiles and session history", async () => {
+  const old = cache(vi.fn(), 9); const connection = await old.open();
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const detail = detailFixture(projectId, taskId);
+  const profile = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: "Member", avatarUrl: null } };
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null, epoch: userFence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+  await connection.put("summaries", { userId, projectId, taskId, summary: {} } as unknown as TaskCacheSchema["summaries"]["value"]);
+  await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
+  await connection.put("profiles", profile); await connection.put("sessionHistory", history);
+  const current = await cache().open();
+  for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
   expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
   expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
   expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);

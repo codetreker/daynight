@@ -2,7 +2,7 @@ import { useProjectAccessSession } from "./ProjectAccess";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, authRequestsPauseRevision, getTaskSync, isAbortError } from "../../api/client";
 import { pollingInterval } from "../../app/polling";
-import type { TaskGraph, WorkerClaim } from "../../api/types";
+import type { TaskGraph, TaskSummary, WorkerClaim } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
@@ -13,6 +13,7 @@ import { TaskSessionSummaryStore } from "../task-session-summary/store";
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
   readonly index: GraphIndex;
+  readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly pausedTaskIds: ReadonlySet<string>;
   readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
 } & ({
@@ -52,7 +53,7 @@ export const useTaskGraph = (projectId: string) => {
   const publish = useCallback((project: CachedProject) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
+    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, summaries: project.summaries, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
     if (automatic && active.current !== null) return;
@@ -77,11 +78,11 @@ export const useTaskGraph = (projectId: string) => {
         if (project !== null && scope.canPreviewProject(projectId)) {
           const localTime = Date.now();
           const receivedMonotonic = performance.now();
-          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, observedAt: null,
+          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, summaries: project.summaries, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, observedAt: null,
             receivedMonotonic, receivedAt: null, revision: 0, localTime };
           setState((previous) => {
             const current = previous.projectId === projectId && previous.scope === scope;
-            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph && previous.snapshot.workerMachines === project.workerMachines ? previous.snapshot : snapshot,
+            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph && previous.snapshot.summaries === project.summaries && previous.snapshot.workerMachines === project.workerMachines ? previous.snapshot : snapshot,
               status: "ready", refreshing: current && previous.refreshing, error: current ? previous.error : null };
           });
         }
