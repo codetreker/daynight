@@ -255,6 +255,8 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 请求脏草稿准入；同 Task 页签/附件保持注册。已编号历史恢复、身份退休和未编号条目的
 保留限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 
+账号页通过 `useAccountHistory` 消费绑定 userId 和 pageKey 的轻量页签选择。受控条目以 replace 初始化，用户切换以 push 写入，重复选择不写入；遍历只应用已准入选择。隐藏的账号 owner 不读写其他路由的状态，原生未编号条目保留当前选择。坏载荷显示错误并保留既有 owner；prompt 和凭据组件不以历史条目标识重新挂载。`BrowserNavigation` 的条目标识及载荷使相同 URL 的不同访问也发布新快照；写入和遍历继续使用原草稿准入。选择只含页签，不含业务数据。具体取舍见[账号浏览历史决策](../../.agents/notes/implemented/feature/2026-11-11-account-reading-history.md)。
+
 弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
 按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，
 也不重新申请弹窗滚动锁；应用滚动容器在切换布局前后按合法范围恢复原位置。
