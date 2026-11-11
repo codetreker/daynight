@@ -45,9 +45,21 @@ describe("owner OAuth grant API", () => {
   });
   it("holds a write behind identity checks and cancels it on account replacement", async () => {
     const fetcher = install(response({ changed: true })); pauseAuthRequests();
-    const pending = revokeOwnerGrant(grant.id, user, signal(), vi.fn());
+    const dispatched = vi.fn();
+    const pending = revokeOwnerGrant(grant.id, user, signal(), vi.fn(), dispatched);
     const cancelled = expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(fetcher).not.toHaveBeenCalled(); invalidateAuthRequests(); await cancelled;
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled(); invalidateAuthRequests(); await cancelled;
+    expect(fetcher).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled();
+  });
+  it("reports dispatch only when the request passes the gate, before fetch", async () => {
+    const order: string[] = [];
+    const resume = pauseAuthRequests();
+    const fetcher = vi.fn().mockImplementation(() => { order.push("fetch"); return Promise.resolve(response({ changed: true })); });
+    vi.stubGlobal("fetch", fetcher);
+    const pending = revokeOwnerGrant(grant.id, user, signal(), vi.fn(), () => { order.push("dispatch"); });
+    expect(order).toEqual([]);
+    resume();
+    await expect(pending).resolves.toBe(true);
+    expect(order).toEqual(["dispatch", "fetch"]);
   });
 });
