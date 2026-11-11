@@ -131,11 +131,14 @@ describe("worker runtime configuration reporting", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       const pathname = new URL(String(url)).pathname, headers = new Headers(options!.headers);
       const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
-      const desired = mode ? { ...target, value: { ...target.value, agentControlMode: "web" } } : target;
+      // Stable tool support keeps this fixture's renegotiation specific to control mode.
+      const tools = headers.get("Daynight-Worker-Tool-Paths") === "1";
+      const desired = { ...target, value: { ...target.value, ...(mode ? { agentControlMode: "web" } : {}), ...(tools ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
         "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
         ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
         ...(mode ? { "Daynight-Worker-Control-Mode": "1" } : {}),
+        ...(tools ? { "Daynight-Worker-Tool-Paths": "1" } : {}),
       } });
       if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
       if (pathname.endsWith("/configuration")) {
