@@ -28,6 +28,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/daynight-server ./
 
 FROM node:24-bookworm-slim
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 daynight && useradd --uid 10001 --gid daynight --no-create-home daynight \
     && mkdir -p /var/lib/daynight/storage /var/lib/daynight/logs \
     && chmod 0700 /var/lib/daynight/logs \

@@ -505,7 +505,9 @@ origin 不改变绑定策略。项目 ID 只标识资源，不能代替身份或
 [本地 Compose 部署](../../deployment/localhost/README.md)将 PostgreSQL、Go 服务与
 TCP 网关组合启动，Go 服务同时提供内嵌任务看板和 JSON API。生产 Dockerfile 以
 仓库根目录为 context，在 Node 24/pnpm 11.28.6 阶段构建并发布真实 UI，在 Go
-1.27.2 阶段内嵌资源，最终仅复制二进制至非 root Alpine 运行镜像。专属 ignore
+1.27.2 阶段内嵌资源。最终运行镜像基于 Node 24 Bookworm slim，以非 root 用户运行
+Go 二进制，并包含 sharp 图片验证 helper 和 Debian 系统 CA 证书；Go 出站 HTTPS
+使用系统信任库验证证书。专属 ignore
 纳入锁文件、workspace manifests、`patches/` 声明补丁和实际源码，排除宿主
 依赖、临时文件及生成资源。网关拥有网络命名空间，Go 服务加入该命名空间并继续监听
 `127.0.0.1:8787`；网关监听容器端口 `80`，仅发布到宿主机 `127.0.0.1`。
