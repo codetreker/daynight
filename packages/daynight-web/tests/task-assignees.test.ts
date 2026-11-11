@@ -26,7 +26,7 @@ const apply = async (cache: TaskCacheScope, epoch?: string, assigneeVersions = m
   await cache.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { query: epoch === undefined && ticket.epoch !== null ? { epoch: ticket.epoch } : {}, ...(epoch === undefined ? {} : { epoch }), assigneeVersions, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
 };
 const harness = async () => {
-  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(cache); await apply(cache);
+  const cache = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { void cache.invalidateScope(); } }); scopes.push(cache); await apply(cache);
   const owner = new TaskAssignees(cache); owners.push(owner);
   const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => new Promise<Response>((finish) => requests.push({ url: new URL(url, location.origin), signal: options.signal!, finish })));
   vi.stubGlobal("fetch", fetcher);
@@ -180,7 +180,7 @@ it.each([null, "40000000-0000-4000-8000-000000000001"])("does not trust a denial
   if (principal === null) {
     await vi.waitFor(() => expect(owner.snapshot(projectId).error).not.toBeNull());
     expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
-  } else await vi.waitFor(() => expect(cache.isInvalidated).toBe(true));
+  } else { await vi.waitFor(() => expect(cache.isInvalidated).toBe(true)); await cache.invalidateScope(); }
   expect(owner.snapshot(projectId).people.size).toBe(0);
 });
 
