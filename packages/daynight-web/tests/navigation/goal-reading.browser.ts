@@ -132,6 +132,14 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   } };
 }
 
+async function retainGoalAttachmentPath(page: Page, goalPage: Locator) {
+  await goalPage.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await goalPage.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt$`));
+  await goalPage.getByRole('tab', { name: 'Tasks', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
+}
+
 for (const width of [1440, 390, 320]) test(`Task parent Goal is a read-only overview link at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
   const fixture = await install(page);
@@ -202,10 +210,12 @@ test('Task parent Goal link preserves native modified clicks and protects unsave
   expect(writes).toEqual([]);
 });
 
-test('nested Task dialog shows its parent Goal link before dependencies', async ({ page }) => {
+for (const attachmentBacked of [false, true]) test(`nested Task follows its parent Goal with attachment path ${attachmentBacked}`, async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
-  await page.locator('.goal-detail-surface').locator(`[data-goal-task-id="${singleId}"]`).click();
+  const goalPage = page.locator('.goal-detail-surface');
+  if (attachmentBacked) await retainGoalAttachmentPath(page, goalPage);
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
   const task = page.getByRole('dialog', { name: 'Standalone task' });
   const aside = task.locator('.task-detail-aside');
   await expect(aside.locator(':scope > section').first()).toHaveAttribute('aria-label', 'Current Goal');
@@ -222,6 +232,7 @@ test('nested Task dialog shows its parent Goal link before dependencies', async 
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Keep editing' }).click();
   await expect(task).toBeVisible();
+  if (attachmentBacked) await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
   await link.click();
   await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(task).toHaveCount(0);
@@ -941,12 +952,13 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
 });
 
-test('a moved external Goal child follows its latest parent and protects both drafts', async ({ page }) => {
+for (const attachmentBacked of [false, true]) test(`a moved external Goal child follows its latest parent and protects both drafts with attachment path ${attachmentBacked}`, async ({ page }) => {
   const fixture = await install(page); fixture.addCrossGoal();
   const writes: string[] = [];
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const goalPage = page.locator('.goal-detail-surface.task-detail-page');
+  if (attachmentBacked) await retainGoalAttachmentPath(page, goalPage);
   await goalPage.getByRole('button', { name: 'View dependencies' }).click();
   await page.locator('.task-chain-dialog').getByRole('button', { name: 'Other task, Details' }).click();
   const external = page.locator('.goal-detail-surface.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Other goal' }) });
@@ -972,6 +984,7 @@ test('a moved external Goal child follows its latest parent and protects both dr
   await expect(child).toBeVisible();
   await expect(taskDraft).toHaveValue('Child Task draft');
   await expect(goalDraft).toHaveValue('External Goal draft');
+  if (attachmentBacked) await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
   await link.click();
   await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(child).toHaveCount(0);

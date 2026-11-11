@@ -5,7 +5,7 @@ import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused } from '../../api/client';
-import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
+import { navigate, parseRoute, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
 import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRequestTaskDraftAction, useRetireTaskDraft } from './TaskDraftNavigation';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
@@ -106,7 +106,9 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const requestClose = () => { if (onClose !== undefined) { if (parentGoalId === undefined) browserNavigation().requestAction(onClose); else requestTaskAction(onClose); } };
   const followGoalLink: import('react').MouseEventHandler<HTMLAnchorElement> = (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (onNavigateParent !== undefined && event.currentTarget.pathname === window.location.pathname) {
+    const current = parseRoute(window.location.pathname, window.location.search);
+    const target = parseRoute(event.currentTarget.pathname, event.currentTarget.search);
+    if (onNavigateParent !== undefined && (current.kind === 'task' || current.kind === 'attachment') && target.kind === 'task' && current.projectId === target.projectId && current.taskId === target.taskId) {
       const href = event.currentTarget.href;
       event.preventDefault(); onNavigateParent(href);
     } else followProjectLink(event);
