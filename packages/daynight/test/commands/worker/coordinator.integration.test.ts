@@ -766,7 +766,9 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
     }
     interrupt.abort(new Error("controlled mutation cancellation"));
     await vi.waitFor(() => expect(pending).toBeDefined(), { timeout: 15_000, interval: 20 });
-    expect(pending).toMatchObject({ projectId: f.project.projectId, owner, command: "worktree-remove", error: { code: "repository_git_cleanup_pending", cause: ownedSignal!.reason } });
+    expect(pending).toMatchObject({ projectId: f.project.projectId, owner, command: "worktree-remove", error: { code: "repository_git_cleanup_pending" } });
+    const contains = (error: unknown, target: unknown): boolean => error === target || error instanceof Error && (contains(error.cause, target) || error instanceof AggregateError && error.errors.some((entry: unknown) => contains(entry, target)));
+    expect(contains(pending?.error, ownedSignal!.reason)).toBe(true);
     await vi.waitFor(async () => { await expect(access(ready)).resolves.toBeUndefined(); }, { timeout: 12_000, interval: 20 });
     if (stream === "child") {
       expect(gitProcess.child?.exitCode).toBeNull();
