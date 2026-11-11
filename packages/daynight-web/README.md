@@ -746,9 +746,12 @@ edit changes task time or graph geometry.
 Project Settings offers owner Team administrators a deletion preview and exact
 name confirmation. The preview identifies the Project, its observed counts and
 active Worker claims; those observations are not DELETE conditions. Names with
-control characters use reversible JSON escaping. A confirmed receipt withdraws
-the original cache generation and preserves a success notice across navigation.
-Cache cleanup and navigation can be retried independently. A dispatched request
+control characters use reversible JSON escaping. A confirmed receipt is retained
+independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
+locally without cleanup, automatic reads or navigation. On admission, cleanup
+uses the original cache generation. Cleanup, navigation and dialog closure
+are skipped when the submitted dialog, input or route has since changed. Cache cleanup and navigation can be retried
+independently. A dispatched request
 with an unknown outcome is never replayed, and a later 404 does not prove that
 the deletion succeeded. Settings saves, ownership transfers and deletion share
 a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
