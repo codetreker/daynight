@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { CleanupRequest } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -253,41 +253,218 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
 });
 
+const osWriterScript = (moduleUrl: string, launchId: string, failCapture = false): string => {
+  const descendant = `
+    const { captureProcessProof } = await import(${JSON.stringify(moduleUrl)});
+    try {
+      ${failCapture ? 'throw new Error("Injected process proof failure");' : ''}
+      const proof = await captureProcessProof(process.pid);
+      const orphan = () => process.exit(2);
+      const activate = value => {
+        if (value !== "activate") return;
+        process.removeListener("disconnect", orphan); process.removeListener("message", activate);
+        process.send({ kind: "activated" });
+      };
+      process.on("disconnect", orphan); process.on("message", activate);
+      if (!process.connected) process.exit(2);
+      process.send({ kind: "ready", proof });
+      setInterval(() => {}, 1000);
+    } catch (error) { process.exitCode = 1; process.send({ kind: "failure", message: String(error) }, () => process.disconnect()); }
+  `;
+  return `
+    import { spawn } from "node:child_process";
+    const { captureControllerProcessProof } = await import(${JSON.stringify(moduleUrl)});
+    const proof = await captureControllerProcessProof(${JSON.stringify(launchId)});
+    const descendant = spawn(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
+    let failure = null;
+    descendant.on("error", error => { throw error; });
+    descendant.on("message", message => {
+      if (message.kind === "failure") failure = message.message;
+      if (message.kind === "ready") process.send({ kind: "ready", proof, native: message.proof, descendantPid: descendant.pid });
+      if (message.kind === "activated") { process.removeListener("message", parentMessage); process.removeListener("disconnect", abort); process.send({ kind: "activated" }); }
+    });
+    descendant.once("exit", (code, signal) => { if (failure !== null) process.send({ kind: "capture-failed", message: failure, descendantPid: descendant.pid, code, signal }); });
+    const abort = () => {
+      const finish = () => { if (!process.connected) process.exit(0); else process.send({ kind: "aborted", descendantPid: descendant.pid }, () => process.exit(0)); };
+      if (descendant.exitCode !== null || descendant.signalCode !== null) finish();
+      else { descendant.once("exit", finish); descendant.kill("SIGKILL"); }
+    };
+    const parentMessage = value => {
+      if (value === "abort") abort();
+      if (value === "activate") descendant.send("activate");
+    };
+    process.on("message", parentMessage); process.on("disconnect", abort);
+    setInterval(() => {}, 1000);
+  `;
+};
+
+const forceOsWriterFixture = async (child: ChildProcess, native: processProof.ProcessProof | undefined): Promise<void> => {
+  if (process.platform !== "win32" && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+    try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+  } else {
+    if (native !== undefined && await processProof.inspectProcessProof(native) === "running") process.kill(native.pid, "SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+};
+
+it("joins the original descendant when process proof acquisition fails", async () => {
+  const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, randomUUID(), true)], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  children.push(child);
+  const exited = once(child, "exit"); void exited.catch(() => {});
+  let stderr = ""; child.stderr!.setEncoding("utf8"); child.stderr!.on("data", chunk => { stderr += chunk; });
+  try {
+    const [result] = await Promise.race([
+      once(child, "message", { signal: AbortSignal.timeout(45_000) }),
+      exited.then(([code, signal]) => { throw new Error(`Fixture exited before descendant join (code=${code}, signal=${signal}): ${stderr}`); }),
+    ]) as [{ kind: string; message: string; descendantPid: number; code: number }];
+    expect(result).toMatchObject({ kind: "capture-failed", code: 1, message: expect.stringContaining("Injected process proof failure") });
+    expect(result.descendantPid).toBeGreaterThan(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const joined = once(child, "message", { signal: AbortSignal.timeout(15_000) });
+      child.send("abort");
+      expect((await joined)[0]).toMatchObject({ kind: "aborted" });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([exited, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Fixture leader did not exit after descendant join.")), 15_000); })]); }
+      finally { if (timer !== undefined) clearTimeout(timer); }
+    }
+  }
+}, 90_000);
+
+it.each(["lost activation receipt", "leader crash before activation"] as const)("reaps the descendant after %s", async scenario => {
+  const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", osWriterScript(moduleUrl, randomUUID())], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  children.push(child);
+  const exited = once(child, "exit"); void exited.catch(() => {});
+  const joinLeader = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([exited, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Fixture leader did not exit.")), 15_000); })]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  let native: processProof.ProcessProof | undefined;
+  let activationSubmitted = false;
+  try {
+    const [receipt] = await Promise.race([
+      once(child, "message", { signal: AbortSignal.timeout(45_000) }),
+      exited.then(() => { throw new Error("Fixture exited before its proof."); }),
+    ]) as [{ kind: string; native: processProof.ProcessProof }];
+    expect(receipt.kind).toBe("ready"); native = receipt.native;
+    if (scenario === "lost activation receipt") {
+      const acknowledgement = once(child, "message", { signal: AbortSignal.timeout(15_000) });
+      activationSubmitted = true;
+      child.send("activate");
+      // The fixture observes that activation happened, while exercising cleanup as if the caller lost the receipt.
+      expect((await acknowledgement)[0]).toEqual({ kind: "activated" });
+      await forceOsWriterFixture(child, native);
+    } else {
+      child.kill("SIGKILL");
+    }
+    await joinLeader();
+    await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      if (!activationSubmitted) {
+        const joined = once(child, "message", { signal: AbortSignal.timeout(15_000) });
+        child.send("abort"); await joined;
+      } else await forceOsWriterFixture(child, native);
+      await joinLeader();
+    }
+    if (native !== undefined) {
+      if (await processProof.inspectProcessProof(native) === "running") process.kill(native.pid, "SIGKILL");
+      await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+    }
+  }
+}, 90_000);
+
 it("observes the original OS writer stop before terminal archive joins", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   vi.restoreAllMocks();
   const moduleUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/process-proof.js")).href;
-  const script = `const { captureControllerProcessProof } = await import(${JSON.stringify(moduleUrl)}); const proof = await captureControllerProcessProof(${JSON.stringify(source.ticket.launchId)}); process.send(proof); setInterval(() => {}, 1000);`;
+  const script = osWriterScript(moduleUrl, source.ticket.launchId);
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
   children.push(child);
+  const childExit = once(child, "exit"); void childExit.catch(() => {});
   let stderr = ""; child.stderr!.setEncoding("utf8"); child.stderr!.on("data", chunk => { stderr += chunk; });
-  const [proof] = await Promise.race([
-    once(child, "message", { signal: AbortSignal.timeout(45_000) }),
-    once(child, "exit").then(([code, signal]) => { throw new Error(`Controller fixture exited before proof (code=${code}, signal=${signal}): ${stderr}`); }),
-  ]) as [processProof.ProcessProof];
-  const task = f.store.updateWebExecution(source.task, { controllerProcess: proof }, 6);
-  const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
-  await mkdir(path.dirname(journalPath), { recursive: true });
-  const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
-  journal.patchSnapshot({ controllerProcess: proof, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
-  let release!: () => void, entered!: () => void;
-  const barrier = new Promise<void>(resolve => { release = resolve; });
-  const archiveEntered = new Promise<void>(resolve => { entered = resolve; });
-  const notice = vi.fn();
-  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request: vi.fn<typeof requestController>().mockRejectedValue(new Error("Original IPC endpoint is unavailable.")), archive: async () => { entered(); await barrier; } });
-  const operation = createOperation({ limits: { totalMs: 120_000 } });
-  let cleanup: Promise<unknown> | undefined;
+  const bounded = async <T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${label} did not finish in ${milliseconds} ms.`)), milliseconds); })]); }
+    finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  let proof: processProof.ProcessProof | undefined, native: processProof.ProcessProof | undefined;
+  let descendantPid: number | undefined, cleanup: Promise<unknown> | undefined, stage = "capture-proof", activationSubmitted = false;
+  let release = () => {};
+  const operation = createOperation({ limits: { totalMs: 90_000 } });
   try {
+    const [receipt] = await bounded(Promise.race([
+      once(child, "message"),
+      childExit.then(([code, signal]) => { throw new Error(`Controller fixture exited before proof (code=${code}, signal=${signal}): ${stderr}`); }),
+    ]), 45_000, "Controller fixture proof") as [{ kind: "ready"; proof: processProof.ProcessProof; native: processProof.ProcessProof; descendantPid: number }];
+    expect(receipt.kind).toBe("ready");
+    proof = receipt.proof; descendantPid = receipt.descendantPid; native = receipt.native;
+    expect(native.parentPid).toBe(proof.pid);
+    const task = f.store.updateWebExecution(source.task, { controllerProcess: proof, nativeProcesses: [native] }, 6);
+    const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+    await mkdir(path.dirname(journalPath), { recursive: true });
+    const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
+    journal.patchSnapshot({ controllerProcess: proof, nativeProcesses: [native], lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null }); journal.close();
+    let entered!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const archiveEntered = new Promise<void>(resolve => { entered = resolve; });
+    const notice = vi.fn();
+    const request = vi.fn<typeof requestController>().mockRejectedValue(new Error("Original IPC endpoint is unavailable."));
+    // Preserve the real OS stop and Job operations while bounding this fixture's wait.
+    const stop = processProof.stopControllerProcesses;
+    vi.spyOn(processProof, "stopControllerProcesses").mockImplementation((owner, descendants, deadline) => stop(owner, descendants, Math.min(deadline, Date.now() + 30_000)));
+    const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", buildPrompt: () => "managed", emit: () => {}, now: Date.now, request, archive: async () => { entered(); await barrier; } });
+    stage = "observe-running";
     expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "running" });
+    expect(await processProof.inspectProcessProof(native)).toBe("running");
+    if (process.platform === "win32") {
+      const { inspectControllerJob } = await import("../../../src/commands/controller/windows-job.js");
+      expect(proof.jobObjectName).toBeDefined();
+      expect(await inspectControllerJob(proof.jobObjectName!)).toEqual(expect.arrayContaining([proof.pid, native.pid]));
+    }
+    const activation = once(child, "message");
+    activationSubmitted = true;
+    child.send("activate");
+    expect((await bounded(activation, 15_000, "Fixture activation"))[0]).toEqual({ kind: "activated" });
+    stage = "terminal-stop";
     cleanup = backend.cleanup(task, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: { attempt: { owner: task, attemptId: "attempt" }, onExecutionStopped: notice } });
-    await Promise.race([archiveEntered, cleanup.then(() => { throw new Error("Cleanup completed before the archive barrier."); })]);
+    await bounded(Promise.race([archiveEntered, cleanup.then(() => { throw new Error("Cleanup completed before the archive barrier."); })]), 75_000, "Original stop and archive entry");
+    stage = "archive-pending";
     expect(notice).toHaveBeenCalledOnce();
     expect(notice).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({ kind: "stopped", execution: expect.objectContaining({ backend: "web" }) }) }));
     expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "stopped", execution: { backend: "web" } });
-    expect(await processProof.confirmControllerProcessesStopped(proof, [])).toBe(true);
+    expect(await processProof.inspectProcessProof(native)).toBe("stopped");
+    expect(await processProof.confirmControllerProcessesStopped(proof, [native])).toBe(true);
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  } finally { release(); operation.dispose(); await cleanup; }
-}, 120_000);
+  } catch (error) {
+    console.error(JSON.stringify({ fixture: "web-stop-os-writer", stage, platform: process.platform, pid: proof?.pid ?? child.pid, descendantPid, jobObjectName: proof?.jobObjectName ?? null, exitCode: child.exitCode, signalCode: child.signalCode, stderr: stderr.slice(0, 2048) }));
+    throw error;
+  } finally {
+    release(); operation.dispose();
+    try { if (cleanup !== undefined) await bounded(cleanup, 60_000, "Cleanup join"); }
+    finally {
+      if (!activationSubmitted && child.exitCode === null && child.signalCode === null) {
+        const aborted = once(child, "message");
+        child.send("abort");
+        expect((await bounded(aborted, 15_000, "Fixture abort and descendant join"))[0]).toMatchObject({ kind: "aborted" });
+      } else await forceOsWriterFixture(child, native);
+      await bounded(childExit, 15_000, "Controller fixture exit");
+      if (native !== undefined) {
+        const deadline = Date.now() + 15_000;
+        for (;;) {
+          const state = await processProof.inspectProcessProof(native);
+          if (state === "stopped") break;
+          if (state === "replaced") throw new Error("The descendant identity was replaced before fixture cleanup.");
+          if (Date.now() >= deadline) throw new Error("Descendant fixture exit did not finish in 15000 ms.");
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
+    }
+  }
+}, 240_000);
 
 it.skipIf(process.platform === "win32")("uses the actual OS process group and controller journal to stop a live original writer", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);

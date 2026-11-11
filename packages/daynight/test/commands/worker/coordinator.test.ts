@@ -2337,18 +2337,23 @@ it("keeps stopped capacity on a read failure but reserves it again for conflicti
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive: async () => { entered.resolve(); await finish.promise; }, request: stopped.request });
   let observation: "valid" | "io" | "conflict" = "valid";
+  const ioError = new Error("Temporary read failure");
+  const conflictError = new ExecutionSourceConflictError("Journal identifies a different run");
   const observeExecutionStop: typeof backend.observeExecutionStop = async (target, operation) => {
     if (observation === "valid") return backend.observeExecutionStop(target, operation);
-    return { kind: "unknown", target, error: observation === "io" ? new Error("Temporary read failure") : new ExecutionSourceConflictError("Journal identifies a different run"), observedAt: 1000 };
+    return { kind: "unknown", target, error: observation === "io" ? ioError : conflictError, observedAt: 1000 };
   };
   const monitor = createMonitoringObserver({ now: f.options.now });
   const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: { ...backend, observeExecutionStop }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick(); await entered.promise;
-    observation = "io"; await coordinator.tick();
+    observation = "io";
+    await eventually(async () => { await coordinator.tick(); expect(f.events).toContainEqual(expect.objectContaining({ kind: "stop-unknown", error: ioError })); });
     expect(monitor.capture("1").reservations).toContainEqual(expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }), occupied: false }));
-    observation = "conflict"; f.candidates.push(next); await coordinator.tick();
+    observation = "conflict";
+    await eventually(async () => { await coordinator.tick(); expect(f.events).toContainEqual(expect.objectContaining({ kind: "stop-unknown", error: conflictError })); });
     expect(monitor.capture("2").reservations).toContainEqual(expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }), occupied: true }));
+    f.candidates.push(next); await coordinator.tick();
     expect(f.remote.claim).not.toHaveBeenCalled();
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(f.worktrees.has(owner.claimId)).toBe(true);
