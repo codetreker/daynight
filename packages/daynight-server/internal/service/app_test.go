@@ -96,6 +96,52 @@ func appTestConfig(t *testing.T) config.Config {
 	}
 }
 
+func TestOpenAppRejectsInvalidConfigurationBeforeOpeningResources(t *testing.T) {
+	t.Run("credentials", func(t *testing.T) {
+		c := appTestConfig(t)
+		c.Database.URL = "invalid-database-configuration"
+		c.UniAuth.AppID, c.UniAuth.AppSecret = "private:invalid-app-id", "credential-not-for-diagnostics"
+		app, err := OpenApp(context.Background(), c)
+		var failure *configvalue.ConfigurationError
+		if app != nil || !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+			t.Fatalf("invalid credentials reached composition or lost diagnosis: %v", err)
+		}
+		cause := errors.Unwrap(failure)
+		if cause == nil || !strings.Contains(cause.Error(), "App ID") {
+			t.Fatalf("SDK credential validation cause was lost: %v", err)
+		}
+		for _, message := range []string{err.Error(), cause.Error()} {
+			if strings.Contains(message, c.UniAuth.AppID) || strings.Contains(message, c.UniAuth.AppSecret) {
+				t.Fatal("configuration diagnostics exposed credential values")
+			}
+		}
+		if _, err := os.Stat(c.Storage.Root); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("invalid credentials touched storage: %v", err)
+		}
+	})
+	for _, path := range []string{
+		"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests",
+		"/api/v1/webhook-event-types", "/api/v1/webhook-event-types/callback", "/api/v1/me/webhooks", "/api/v1/teams/x/webhooks",
+		"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback",
+		"/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback",
+		"/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback",
+	} {
+		t.Run(path, func(t *testing.T) {
+			c := appTestConfig(t)
+			c.Database.URL = "invalid-database-configuration"
+			c.UniAuth.CallbackURL = c.Server.PublicOrigin + path
+			app, err := OpenApp(context.Background(), c)
+			var failure *configvalue.ConfigurationError
+			if app != nil || !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" || failure.Rule != "must not overlap an application API, page, asset, or health route" {
+				t.Fatalf("conflicting callback reached composition or lost diagnosis: %v", err)
+			}
+			if _, err := os.Stat(c.Storage.Root); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("conflicting callback touched storage: %v", err)
+			}
+		})
+	}
+}
+
 func TestAppCloseRetainsResourcesUntilOperationFinishes(t *testing.T) {
 	c := appTestConfig(t)
 	app, _, err := openTestApp(t, context.Background(), c, nil)

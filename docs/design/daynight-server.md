@@ -524,12 +524,11 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 ## 验证设计
 
 [测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
-core 实际执行业务规则，使用合成领域输入及所需 DAO、scope 和 transaction mock。
-service 实际执行自身装配、编排、事务协调与共享资源生命周期，mock 直接调用的 core
-及其他下层业务操作，并控制自身所需的 DAO、scope、transaction 和外部资源。server
-HTTP 适配单元测试 mock handler 直接调用的 service 或 core 用例，保留实际路由、协议
-认证、编解码与请求生命周期。仅 mock DAO 并继续执行下层业务，不能隔离 server 或
-service 的职责；不连接 PostgreSQL 也不足以证明直接操作边界。
+core 实际执行业务规则，使用合成领域输入及所需受控 DAO、scope 和 transaction。
+service 实际执行自身装配、编排、事务协调与共享资源生命周期；server 保留实际路由、
+协议认证、编解码与请求生命周期。按行为及准备、执行、清理成本选择范围，保留廉价
+确定的真实协作；昂贵、不可控或需要精确结果、错误及时间顺序时控制所需窄能力。真实
+SQL、传输和资源生命周期证明仍使用实际机制。
 
 Mock 明确检查 principal、ID、输入、context、事务绑定能力、方法、调用次数及所需
 顺序，独立提供操作结果、完成结果和错误。service 的实际事务 callback 仍执行，

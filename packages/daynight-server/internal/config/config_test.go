@@ -14,6 +14,10 @@ func TestMCPOriginsConfigurationAndValidationOrder(t *testing.T) {
 	if err != nil || len(c.MCP.Origins.AllowedOrigins) != 2 || c.MCP.Origins.AllowedOrigins[0] != "https://client.example" || c.MCP.Origins.AllowedOrigins[1] != "http://localhost:9000" {
 		t.Fatalf("MCP allowed origins: %v, %v", c.MCP.Origins.AllowedOrigins, err)
 	}
+	c, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": "https://client.example, https://second.example:8443"}))
+	if err != nil || len(c.MCP.Origins.AllowedOrigins) != 2 || c.MCP.Origins.AllowedOrigins[1] != "https://second.example:8443" {
+		t.Fatalf("allowed origins: %#v %v", c.MCP.Origins.AllowedOrigins, err)
+	}
 	for _, invalid := range []string{"https://client.example/path", "https://client.example?", "null", "https://client.example,", "https://user@client.example", "https://CLIENT.example", "https://client.example#fragment"} {
 		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": invalid}))
 		var failure *configvalue.ConfigurationError
