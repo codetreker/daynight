@@ -28,7 +28,7 @@ function DirectRecords({ active = true, onSessions }: { active?: boolean; onSess
   return <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} direct>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
 }
 function setup(taskEpoch = epoch, onSessions?: (sessions: TaskDetailSessions) => void) {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': taskEpoch }) })));
   const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(async () => ({ status: { payload: { state: 'pending' } }, archive: null })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
@@ -419,6 +419,7 @@ it('does not publish records after a peer silently replaces the user fence', asy
   await act(async () => finish({ items: [item], nextCursor: null }));
   await waitFor(() => expect(scope.isInvalidated || scope.signal.aborted).toBe(true));
   expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  await scope.invalidateScope();
 });
 
 it('does not broadcast a stale denial after the cache generation changes', async () => {
