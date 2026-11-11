@@ -1,7 +1,6 @@
-package server
+package task_test
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -18,7 +17,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	row := f.target
 	row.AssignedTo, row.Title = nil, "Unrestricted default"
-	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false)
+	created := platformHTTPWrite(f, nil, platformHTTPValues(row), row, false, store.TransactionCommitted)
 	response := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), `{"title":"Unrestricted default","status":"todo"}`)
 	task := decodeResponse[api.Task](t, response, http.StatusCreated)
 	platformHTTPCheck(t, task, platformHTTPAPI(*created))
@@ -37,7 +36,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), `{"version":1,"requiredPlatform":"linux","requiredPlatform":null}`), http.StatusBadRequest, "invalid_input")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
-	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false)
+	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false, store.TransactionCommitted)
 	platformHTTPCheck(t, updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": nil}), task)
 	for _, value := range []any{nil, "windows", "linux", "macos"} {
 		wanted := f.target
@@ -46,7 +45,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 			platform := model.TaskPlatform(value.(string))
 			wanted.RequiredPlatform = &platform
 		}
-		result := platformHTTPWrite(f, nil, platformHTTPValues(wanted), wanted, false)
+		result := platformHTTPWrite(f, nil, platformHTTPValues(wanted), wanted, false, store.TransactionCommitted)
 		got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Explicit platform", "requiredPlatform": value, "status": "todo"})), http.StatusCreated)
 		platformHTTPCheck(t, got, platformHTTPAPI(*result))
 		if value == nil && got.RequiredPlatform != nil || value != nil && (got.RequiredPlatform == nil || *got.RequiredPlatform != value) {
@@ -59,7 +58,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next = platformHTTPResult(row, next)
 	values := platformHTTPValues(row)
 	values.RequiredPlatform, values.AllowAgents = &windows, true
-	platformHTTPWrite(f, &row, values, next, false)
+	platformHTTPWrite(f, &row, values, next, false, store.TransactionCommitted)
 	task = updateHTTPTask(t, f.handler, platformHTTPAPI(row), map[string]any{"requiredPlatform": "windows", "allowAgents": true})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -71,7 +70,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next = platformHTTPResult(row, next)
 	values = platformHTTPValues(row)
 	values.Description = "Omitted requirement"
-	platformHTTPWrite(f, &row, values, next, false)
+	platformHTTPWrite(f, &row, values, next, false, store.TransactionCommitted)
 	task = updateHTTPTask(t, f.handler, task, map[string]any{"description": "Omitted requirement"})
 	platformHTTPCheck(t, task, platformHTTPAPI(next))
 	row = next
@@ -83,11 +82,11 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	if task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" {
 		t.Fatal("manual start discarded requirement")
 	}
-	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false)
+	platformHTTPWrite(f, &row, platformHTTPValues(row), row, false, store.TransactionCommitted)
 	platformHTTPCheck(t, updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": "windows"}), task)
-	platformHTTPRefusal(f, row)
+	platformHTTPRefusal(f, row, store.TransactionCommitted)
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version - 1, "requiredPlatform": "windows"})), http.StatusConflict, "version_conflict")
-	platformHTTPRefusal(f, row)
+	platformHTTPRefusal(f, row, store.TransactionCommitted)
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "requiredPlatform": nil, "description": "Must not save"})), http.StatusConflict, "invalid_transition")
 	f.expectRead(row)
 	platformHTTPCheck(t, readHTTPTask(t, f.handler, task), task)
@@ -112,7 +111,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	next = platformHTTPResult(row, next)
 	values = platformHTTPValues(row)
 	values.RequiredPlatform = nil
-	platformHTTPWrite(f, &row, values, next, false)
+	platformHTTPWrite(f, &row, values, next, false, store.TransactionCommitted)
 	cleared := updateHTTPTask(t, f.handler, task, map[string]any{"requiredPlatform": nil})
 	platformHTTPCheck(t, cleared, platformHTTPAPI(next))
 	if cleared.RequiredPlatform != nil || !cleared.AllowAgents || !reflect.DeepEqual(cleared.StartedAt, task.StartedAt) || !reflect.DeepEqual(cleared.CompletedAt, task.CompletedAt) {
@@ -212,6 +211,3 @@ func TestTaskHTTPStatusPreservesRequiredPlatformForEveryPair(t *testing.T) {
 		}
 	}
 }
-
-func platformHTTPPointer[T any](value T) *T { return &value }
-func platformHTTPID(number int) string      { return fmt.Sprintf("ab000000-0000-4000-8000-%012d", number) }

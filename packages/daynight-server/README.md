@@ -1321,17 +1321,21 @@ must fail immediately. Selections designed without a database must execute
 without `DAYNIGHT_TEST_DATABASE_URL`; real database mechanisms use an isolated
 PostgreSQL instance.
 
-The regular `internal/server/task` suite uses direct Task, Step and Thread
-service mocks plus Search and Sync operations. It exercises production routing,
-HTTP parsing, credential middleware, DTO conversion, error mapping and the
-server-owned encoder or response writer. Configured mock calls are required;
+The regular `internal/server/task` suite exercises production routing, HTTP
+parsing, credential middleware, DTO conversion, error mapping and the server-owned
+encoder or response writer. Task reads, writes, observations and sync also run
+with real Task components over narrowly controlled snapshot and project-write
+capabilities. Other scenarios use direct Task, Step, Thread, Search or Sync
+operation mocks where precise results are needed. Configured calls are required;
 extra or unconfigured calls fail. Project/Task facts and principals are synthetic
 inputs, without an in-memory business state machine or full-application startup.
 The package's `!stress` TestMain clears `DAYNIGHT_TEST_DATABASE_URL` and
 `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before every regular suite execution, including
 the complete module coverage check. The other package binaries still receive
 their required infrastructure; an accidental Task HTTP fixture dependency fails
-rather than borrowing it. The separate stress suite excludes this TestMain.
+rather than borrowing it. The separate stress suite excludes this TestMain. Its Task assignee sample uses
+the real application and isolated PostgreSQL to observe HTTP timing, the actual
+production queries and their plans.
 `RequestAuthentication` supplies the real Bearer, cookie and Origin policy with a
 controlled credential operation; account and login routes retain the complete
 `Authentication` adapter. From this module, run:

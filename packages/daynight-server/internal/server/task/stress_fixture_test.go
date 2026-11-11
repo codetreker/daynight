@@ -45,6 +45,17 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 	if err != nil {
 		t.Fatal(err)
 	}
+	application, ok := handler.(interface{ Shutdown(context.Context) error })
+	if !ok {
+		t.Fatal("stress application does not support shutdown")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	instance.Config.Handler = httpx.RequestLogging(logger, handler)
 	instance.Start()
 	browser := testauth.Browser(t)

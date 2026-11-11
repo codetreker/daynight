@@ -30,11 +30,15 @@ including tags, errors and cleanup. Matched cost comparisons include the Root
 and receiving packages and their preparation and cleanup; moving time between
 packages is not itself a saving.
 
-The Root fixture retains its existing shared names and semantics for ordinary
+The Root fixture retains its shared names and semantics for remaining ordinary
 and tagged consumers. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
-and protected API proofs. The [test-writing rules](../../../../docs/writing_tests.md)
-own the current requirements.
+and protected API proofs. Task HTTP reads, writes and sync run with their real
+Task components and narrowly controlled snapshot and project-write capabilities;
+Task deletion retains a Root cross-route tombstone proof. The Task assignee
+stress sample retains the real application, SQL capture and query plans at the
+Task adapter. The [test-writing rules](../../../../docs/writing_tests.md) own the
+current requirements.
 
 ## Alternatives
 

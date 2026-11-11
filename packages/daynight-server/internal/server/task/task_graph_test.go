@@ -328,3 +328,43 @@ func TestTaskHTTPTodoReadContractWithoutGenericStatusWrites(t *testing.T) {
 		t.Fatalf("ready graph=%+v", graph)
 	}
 }
+
+func TestTaskHTTPAssignmentGraphProjections(t *testing.T) {
+	f := newTaskHTTPFixture(t)
+	unassigned := f.target
+	unassigned.Title, unassigned.AssignedTo = "Unassigned prerequisite", nil
+	unassigned, _ = assignmentHTTPCreate(f, unassigned, jsonBody(t, map[string]any{"status": "todo", "title": unassigned.Title}), nil)
+	assigned := f.target
+	assigned.Title = "Assigned successor"
+	assigned.DependsOn, assigned.BlockedBy = []string{unassigned.ID}, []string{unassigned.ID}
+	assigned.Ready = false
+	assigned, _ = assignmentHTTPCreate(f, assigned, jsonBody(t, map[string]any{"status": "todo", "title": assigned.Title, "assignedTo": f.principal.UserID, "dependsOn": []string{unassigned.ID}}), []model.Task{unassigned})
+	rows := []model.Task{unassigned, assigned}
+	check := func(expected map[string]*string) {
+		f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: rows}})
+		response := projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), "")
+		decodeResponse[api.TaskPage](t, response, http.StatusOK)
+		assertHTTPAssignmentResources(t, response.Body.Bytes(), "items", expected)
+		f.expectGraph(unassigned.ID, []model.GraphTask{assignmentHTTPGraphRow(rows[0]), assignmentHTTPGraphRow(rows[1])})
+		response = projectRequest(f.handler, http.MethodGet, graphPath(f.project.ID, unassigned.ID), "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("Graph: %d %s", response.Code, response.Body)
+		}
+		assertHTTPAssignmentResources(t, response.Body.Bytes(), "tasks", expected)
+		for _, row := range rows {
+			f.expectRead(row)
+			response = projectRequest(f.handler, http.MethodGet, taskPath(assignmentHTTPAPI(t, row)), "")
+			decodeResponse[api.Task](t, response, http.StatusOK)
+			assertHTTPAssignmentResources(t, response.Body.Bytes(), "", map[string]*string{row.ID: expected[row.ID]})
+		}
+	}
+	check(map[string]*string{unassigned.ID: nil, assigned.ID: &f.principal.UserID})
+	after := platformHTTPResult(unassigned, unassigned)
+	after.AssignedTo = &f.principal.UserID
+	unassigned = assignmentHTTPUpdate(f, unassigned, after, map[string]any{"assignedTo": f.principal.UserID}, nil, true)
+	after = platformHTTPResult(assigned, assigned)
+	after.AssignedTo = nil
+	assigned = assignmentHTTPUpdate(f, assigned, after, map[string]any{"assignedTo": nil}, []model.Task{unassigned}, true)
+	rows = []model.Task{unassigned, assigned}
+	check(map[string]*string{unassigned.ID: &f.principal.UserID, assigned.ID: nil})
+}

@@ -1,6 +1,6 @@
 //go:build stress
 
-package server
+package task_test
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -99,8 +100,8 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	database := &postgres.Store{Pool: pool}
-	handler := projectDatabaseTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
+	handler := projectTestHandler(t, database, io.Discard)
+	project := decodeResponse[api.Project](t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Task project", RepoURL: "https://github.com/example/tasks", ExpectedUserID: handler.principal.UserID})), http.StatusCreated)
 	ids := []string{handler.principal.UserID}
 	for len(ids) < 100 {
 		ids = append(ids, uuid.NewString())
@@ -184,10 +185,11 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 			"queryPlan": json.RawMessage(plan), "indexes": indexes,
 		})
 	}
-	repository, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	root, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
+	repository := strings.TrimSpace(string(root))
 	source := func(arguments ...string) string {
 		t.Helper()
 		command := exec.Command("git", arguments...)
