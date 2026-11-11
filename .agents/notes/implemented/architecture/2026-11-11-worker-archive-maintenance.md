@@ -13,7 +13,9 @@ before its finalizer has finished.
 
 The Web runtime owns one cancellable historical archive maintenance task. Each
 normal round requests at most one attempt without awaiting it; repeated requests
-while it is running are coalesced. The existing per-execution rotation, retry and
+while it is running are coalesced. [Cleanup priority](../bug-fix/2026-11-11-worker-archive-priority.md)
+gates both the request and actual attempt start without cancelling running work.
+The existing per-execution rotation, retry and
 source protection remain in the attempt. Completion does not wake the scheduler.
 Shutdown cancels and joins the maintenance task before publishing the stopped
 state and closing stores. Scan failures have a Worker-scoped archive owner;

@@ -314,7 +314,7 @@ outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
 Account profile, credentials and user prompt tabs participate in browser Back and
 Forward. Their history state contains only an account-bound tab selection; the
-existing credential and prompt owners retain their drafts and operation results.
+existing credential and prompt owners retain their drafts and operation results. Worker monitoring and configuration tabs also participate in Back and Forward, scoped to the current user and Worker; the configuration owner retains its draft and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -2077,10 +2077,13 @@ preventing an old login failure from surviving a successful return.
 
 Standalone relationship navigation, tab changes, file selection and successful
 upload selection synchronize the address and add history only for a new state.
-Back/Forward apply the address state without adding an entry; copying or reloading
-restores the task, tab and file. Modal relationship/tab/file changes stay local
-and do not write the project URL or history. A same-task tab/file route change
-keeps the shared surface and attachment controller mounted, retaining directory
+Back/Forward apply the address state without adding an entry. Goal graphs, child
+Task dialogs and external Goal dialogs on a standalone resource page also restore
+their reading selections with Back/Forward without changing the root URL.
+Closing a layer replaces the current selection after draft admission. Project-page
+dialogs keep local navigation. Copying or reloading restores the root task, tab
+and file; nested selections do not carry resource data or drafts. A same-task
+tab/file route change keeps the shared surface and attachment controller mounted, retaining directory
 disclosure, sidebar scroll and upload drafts. Task and authenticated-identity
 changes preserve the existing cancellation and state-isolation rules.
 

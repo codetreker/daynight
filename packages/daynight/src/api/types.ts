@@ -1,3 +1,4 @@
+import type { ToolPathTelemetry } from "./worker-tool-paths.js";
 import type { TaskStatus } from "../task/status.js";
 export type { TaskStatus } from "../task/status.js";
 
@@ -263,6 +264,7 @@ export type WorkerRuntimeConfiguration = {
   readonly projects: readonly { readonly projectId: string; readonly native: WorkerRuntimeNative | null }[];
 };
 export type WorkerTelemetry = {
+  readonly toolPaths?: ToolPathTelemetry;
   readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;

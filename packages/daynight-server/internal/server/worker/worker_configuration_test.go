@@ -65,6 +65,7 @@ func configurationHTTPLegacyValue(t *testing.T, value model.WorkerConfiguration)
 		t.Fatal(err)
 	}
 	delete(result, "agentControlMode")
+	delete(result, "toolPaths")
 	return result
 }
 

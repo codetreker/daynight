@@ -67,7 +67,7 @@ const fixture = async (warm = false, configured = true) => {
   if (warm) { store = openWorkerStore(paths.databaseFile); stores.add(store); }
   return { homeDirectory, version: "0.41.0", workingDirectory: homeDirectory, packageDirectory: path.resolve("package"), paths, source, document, repository, store };
 };
-const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
+const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), archiveYield: () => false, updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
 const reporter = () => ({ trigger: vi.fn(), publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
 const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof runWorker>[0]> = {}) => {
   const cancellation = new AbortController(); cancellations.add(cancellation);
@@ -79,7 +79,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     let current = options;
     return {
-      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
         if (!current.readyProjectIds?.includes(uuid(1))) return;
         try { check(current); } finally { cancellation.abort(); }
@@ -127,7 +127,7 @@ describe("worker cloud-first startup", () => {
     remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(revision), observation: null }));
     mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
     const stopProject = vi.fn(async (_projectId: string, _signal: AbortSignal) => {}), tick = vi.fn(async () => {});
-    mocks.coordinator.mockImplementation(() => ({ stopProject, tick, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
+    mocks.coordinator.mockImplementation(() => ({ stopProject, tick, archiveYield: () => false, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
     for (let pass = 0; pass < 2; pass++) {
       reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
       const { cancellation, running } = start(f);
@@ -220,7 +220,7 @@ describe("worker cloud-first startup", () => {
       let current = options;
       let rounds = 0;
       return {
-        updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+        archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
         tick: vi.fn(async () => {
           try {
           if (rounds++ === 0) {
@@ -282,7 +282,7 @@ describe("worker cloud-first startup", () => {
     mocks.reporter.mockReturnValue(reported);
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
       let rounds = 0;
-      return { updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => {
+      return { archiveYield: () => false, updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => {
         if (rounds++ === 0) firstAvailable = true;
         else if (rounds === 2) { options.onInventory!({ observedAt: "2026-11-04T00:00:00Z", claims: [] }); firstAvailable = false; blockSecond = true; }
       }) };
@@ -308,7 +308,7 @@ describe("worker cloud-first startup", () => {
     remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => ({ id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote }));
     const reported = reporter(), invalidateProject = vi.fn();
     mocks.reporter.mockReturnValue(reported);
-    mocks.coordinator.mockImplementation(() => ({ updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => { entered = true; }) }));
+    mocks.coordinator.mockImplementation(() => ({ archiveYield: () => false, updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => { entered = true; }) }));
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
       await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
@@ -455,6 +455,35 @@ describe("worker cloud-first startup", () => {
     expect(mocks.reporter).toHaveBeenCalledOnce();
     expect(mocks.coordinator).not.toHaveBeenCalled();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it("rediscovers tool support after a mode-capable server upgrades without restarting the Worker", async () => {
+    const f = await fixture(false, false), base = desired([]);
+    const initial: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "web" } };
+    const upgraded: WorkerCloudDesired = { ...initial, value: { ...initial.value, toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValueOnce(resource(initial)).mockResolvedValue(resource(upgraded));
+    let channel: ReporterOptions["configuration"];
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
+    const { cancellation, running } = start(f);
+    const operation = createOperation();
+    try {
+      await vi.waitFor(() => expect(channel).toBeDefined());
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledOnce();
+      await channel!.accept(channel!.capture(), { desired: initial, observationRevision: "0", observationAccepted: false });
+
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledTimes(2);
+      expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
+      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).desired).toEqual(upgraded);
+      expect(channel!.capture().toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+
+      await channel!.accept(channel!.capture(), { desired: upgraded, observationRevision: "0", observationAccepted: false });
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledTimes(2);
+      expect(remote.reportConfiguration).not.toHaveBeenCalled();
+    } finally { operation.dispose(); cancellation.abort(); await running; }
   });
 
   it("ignores stale managed YAML when the cloud target already exists", async () => {
@@ -692,7 +721,7 @@ describe("worker cloud-first startup", () => {
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
       let current = options;
       return {
-        updateConfiguration: vi.fn(value => { current = { ...options, ...value }; }),
+        archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...options, ...value }; }),
         tick: vi.fn(async () => {
           if (!current.readyProjectIds?.includes(uuid(1))) return;
           expect(current.globalConfiguration).toBeNull(); expect(current.repositories).toEqual([]);

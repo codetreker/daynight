@@ -115,7 +115,7 @@ beforeEach(async () => {
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), archiveYield: () => false, updateConfiguration: update, shutdown }));
 });
 afterEach(async () => {
   for (const { signal } of runs) signal.abort();
@@ -137,11 +137,14 @@ describe("worker runtime configuration reporting", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       const pathname = new URL(String(url)).pathname, headers = new Headers(options!.headers);
       const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
-      const desired = mode ? { ...target, value: { ...target.value, agentControlMode: "web" } } : target;
+      // Stable tool support keeps this fixture's renegotiation specific to control mode.
+      const tools = headers.get("Daynight-Worker-Tool-Paths") === "1";
+      const desired = { ...target, value: { ...target.value, ...(mode ? { agentControlMode: "web" } : {}), ...(tools ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
         "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
         ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
         ...(mode ? { "Daynight-Worker-Control-Mode": "1" } : {}),
+        ...(tools ? { "Daynight-Worker-Tool-Paths": "1" } : {}),
       } });
       if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
       if (pathname.endsWith("/configuration")) {
@@ -490,7 +493,7 @@ describe("worker runtime configuration reporting", () => {
       await nativeTimer.setTimeout(0, undefined, options);
       if (mocks.coordinator.mock.calls.length !== 0) { now += milliseconds; appliedDelays.push(milliseconds); }
     });
-    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
     await start(f);
     expect(attempts.slice(0, 3).map(attempt => attempt.label)).toEqual(["broken", "second", "third"]);
     const retryTimes = attempts.filter(attempt => attempt.label === "broken").map(attempt => attempt.at);
@@ -553,7 +556,7 @@ describe("worker runtime configuration reporting", () => {
     const stopProject = vi.fn(async () => { await stopping.promise; throw new Error("private stop output"); });
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({
       tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }),
-      updateConfiguration: update, stopProject, shutdown,
+      archiveYield: () => false, updateConfiguration: update, stopProject, shutdown,
     }));
     const running = start(f);
     await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(1)] })));
@@ -627,7 +630,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, value: { ...target.value, pollIntervalMs: longInterval } };
     prepare.mockImplementation(() => prepared.promise);
     const tick = vi.fn(async () => {});
-    mocks.coordinator.mockImplementation(() => ({ tick, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick, archiveYield: () => false, updateConfiguration: update, shutdown }));
     const waitingSignal = (): AbortSignal | undefined => mocks.delay.mock.calls.filter(([milliseconds]) => milliseconds === longInterval).at(-1)?.[2]?.signal;
     const running = start(f);
     await eventually(() => expect(prepare).toHaveBeenCalledOnce());
@@ -775,12 +778,79 @@ describe("worker runtime configuration reporting", () => {
 });
 
 
+it("defers archive backfill after each coordinator tick and resumes without repeated deferral logs", async () => {
+  const f = await fixture();
+  let round = 0;
+  const reads: number[] = [], archived: number[] = [], deferredRounds: number[] = [];
+  const yielding = [true, true, false, true, true, false];
+  const completed = [11, 12].map(id => ({
+    projectId: uuid(1), taskId: uuid(id + 10), claimId: uuid(id + 20), serverOrigin: "https://daynight.example",
+    webExecution: { executionId: uuid(id), launchId: uuid(id), sessionId: uuid(id), executionGeneration: "1", launchSubmission: "submitted" },
+  }));
+  mocks.completed.mockImplementation(() => { reads.push(round); return completed; });
+  mocks.ticket.mockImplementation(async (_home, launchId) => {
+    const task = completed.find(task => task.webExecution.launchId === launchId)!;
+    return { serverOrigin: task.serverOrigin, claimId: task.claimId, ...task.webExecution };
+  });
+  mocks.archive.mockImplementation(async () => { archived.push(round); return { state: "ready" }; });
+  mocks.emit.mockImplementation(event => { if (event.kind === "session-archive-deferred") deferredRounds.push(round); });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => { round++; }, archiveYield: () => yielding[round - 1], updateConfiguration: update, shutdown,
+  }));
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_milliseconds, _value, options) => {
+    if (round >= yielding.length) f.signal.abort();
+    await timers.setTimeout(0, undefined, options);
+  });
+  await start(f);
+  expect(reads).toEqual([3, 6]);
+  expect(archived).toEqual([3, 6]);
+  expect(deferredRounds).toEqual([1, 4]);
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "reconciliation-error")).toEqual([]);
+});
+
+it("rechecks archive deferral before starting a scheduled maintenance round", async () => {
+  const f = await fixture();
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  const decisionChanged = deferred<void>();
+  let yielding = false, changeQueued = false;
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const gate = deferred<void>(); polls.push({ gate, signal });
+    await Promise.race([gate.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => {}, updateConfiguration: update, shutdown,
+    archiveYield: () => {
+      if (!changeQueued) {
+        changeQueued = true;
+        queueMicrotask(() => { yielding = true; decisionChanged.resolve(); });
+      }
+      return yielding;
+    },
+  }));
+  const running = start(f);
+  await decisionChanged.promise;
+  await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  expect(mocks.completed).not.toHaveBeenCalled();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
+  yielding = false;
+  polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
+  await eventually(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort(); await running;
+});
+
 it("continues polling during one historical upload and joins its finalizer before stopping", async () => {
   const f = await fixture();
   const entered = deferred<void>(), cancelled = deferred<void>(), releaseFinalizer = deferred<void>();
   const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
   const order: string[] = [];
-  let ticks = 0;
+  let ticks = 0, yielding = false;
   let options!: WorkerCoordinatorOptions;
   let storeClose!: ReturnType<typeof vi.spyOn>;
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
@@ -803,11 +873,12 @@ it("continues polling during one historical upload and joins its finalizer befor
   mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
     options = value;
     storeClose = vi.spyOn(options.store, "close");
-    return { tick: async () => { ticks++; }, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
+    return { tick: async () => { ticks++; }, archiveYield: () => yielding, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
   });
   mocks.webClose.mockImplementation(() => { order.push("web-store-closed"); });
   const running = start(f);
   await entered.promise;
+  yielding = true;
   for (let i = 0; i < 2; i++) {
     await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
     const poll = polls.findLast(poll => !poll.signal.aborted)!;
@@ -819,6 +890,8 @@ it("continues polling during one historical upload and joins its finalizer befor
   expect(ticks).toBeGreaterThanOrEqual(3);
   expect(mocks.archive).toHaveBeenCalledOnce();
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(order).not.toContain("upload-aborted");
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
   f.signal.abort();
   await cancelled.promise;
   await eventually(() => expect(order).toContain("coordinator-stopped"));
@@ -845,7 +918,7 @@ it("reports an inventory failure against worker archive maintenance and recovers
   });
   mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
     options = value;
-    return { tick: async () => {}, updateConfiguration: update, shutdown };
+    return { tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   const running = start(f);
   await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure })));
@@ -867,7 +940,7 @@ it("retains a non-cancellation failure from the upload finalizer during shutdown
     await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     throw failure;
   });
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
   const running = start(f), rejected = expect(running).rejects.toBe(failure);
   await entered.promise;
   f.signal.abort(); await rejected;
@@ -882,7 +955,7 @@ it("reports historical Web archive failures against the original frozen checkout
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", repositoryPath: originalRoot, resources: { worktree: { repositoryPath: originalRoot, worktreePath: originalWorktree } }, webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
   mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
   mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
   const running = start(f);
   try {
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
@@ -914,7 +987,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
-    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   if (outcome === "cancelled") {
@@ -945,7 +1018,7 @@ it("retains backfill blocker and probe deadline across runtime restart without c
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
   let stop = f.signal, rounds = 0;
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
   await start(f);
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
   const readState = () => {
@@ -1014,7 +1087,7 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     store = options.store;
     if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
-    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   const read = openWorkerStore(f.paths.databaseFile);
@@ -1055,7 +1128,7 @@ it("runs the next round on a stop wake while historical and current cleanup rema
   });
   mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
     options = value;
-    return { tick: async () => { ticks++; if (ticks === 1) void cleanup.promise; }, updateConfiguration: update, shutdown: async () => { await cleanup.promise; return true; } };
+    return { tick: async () => { ticks++; if (ticks === 1) void cleanup.promise; }, archiveYield: () => false, updateConfiguration: update, shutdown: async () => { await cleanup.promise; return true; } };
   });
   const running = start(f);
   await entered.promise;
@@ -1079,11 +1152,10 @@ it("admits another task through the real coordinator after a stop wake with both
   await mkdir(repo, { recursive: true }); await mkdir(f.paths.workerDirectory, { recursive: true });
   const seed = openWorkerStore(f.paths.databaseFile);
   seed.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: repo });
-  seed.activateTask(seed.registerPending({ ...owner, agent: "codex" }));
   seed.close();
-  const resources = new Map<string, any>([[owner.claimId, { owner, workspaceId: oldBinding.workspaceId, panes: [{ binding: oldBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(23) }, stateChangeSeq: 1, completionSeq: 1 }] }]]);
-  const worktrees = new Map<string, any>([[owner.claimId, { owner, binding }]]);
-  const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false;
+  const resources = new Map<string, any>();
+  const worktrees = new Map<string, any>();
+  const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false, originalEnded = false;
   const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
   const candidates = [task(owner.taskId), task(uuid(30))];
   const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
@@ -1106,15 +1178,18 @@ it("admits another task through the real coordinator after a stop wake with both
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
   mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
   mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => { archiveEntered.resolve(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted(); });
-  const polls: AbortSignal[] = [];
+  const polls: { signal: AbortSignal; release: () => void; settled: boolean }[] = [];
   mocks.delay.mockImplementation(async (ms: number, value: unknown, options?: { signal?: AbortSignal }) => {
     if (ms !== 60_000) return timers.setTimeout(ms === 1_000 ? 1 : ms, value, options);
-    const signal = options!.signal!; polls.push(signal);
-    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted();
+    const signal = options!.signal!; let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const poll = { signal, release, settled: false }; polls.push(poll);
+    try { await Promise.race([gate, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]); signal.throwIfAborted(); }
+    finally { poll.settled = true; }
   });
   const remote = mocks.remote();
   Object.assign(remote, { ownInventory: async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: projects.map(project => project.projectId), unavailableProjectIds: [] }),
-    candidates: async function* () { for (const candidate of candidates) if (![...grants.values()].some(value => value.id === candidate.id)) yield candidate; },
+    candidates: async function* () { if (originalEnded) for (const candidate of candidates) if (![...grants.values()].some(value => value.id === candidate.id)) yield candidate; },
     claim: async (candidate: any, descriptor: any) => { const granted = { ...candidate, status: "in_progress", ready: false, version: 2n, properties: { worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(6), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } } }; grants.set(descriptor.claimId, granted); return granted; },
     readTask: async (_project: string, id: string) => [...grants.values()].find(value => value.id === id),
     update: async (current: any, patch: any) => { const next = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker, ...patch } } }; grants.set(next.properties.worker.claimId, next); return next; },
@@ -1129,9 +1204,16 @@ it("admits another task through the real coordinator after a stop wake with both
   };
   const running = start(f);
   try {
-    await Promise.all([bounded("historical archive", archiveEntered.promise), bounded("original stop", stopEntered.promise), bounded("prompt receipt", promptsReceived.promise)]);
+    await bounded("historical archive", archiveEntered.promise);
+    await eventually(() => expect(polls.some(poll => !poll.settled && !poll.signal.aborted)).toBe(true));
+    const initialPoll = polls.findLast(poll => !poll.settled && !poll.signal.aborted)!;
+    actualOptions.store.activateTask(actualOptions.store.registerPending({ ...owner, agent: "codex" }));
+    resources.set(owner.claimId, { owner, workspaceId: oldBinding.workspaceId, panes: [{ binding: oldBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(23) }, stateChangeSeq: 1, completionSeq: 1 }] });
+    worktrees.set(owner.claimId, { owner, binding }); originalEnded = true;
+    initialPoll.release();
+    await Promise.all([bounded("original stop", stopEntered.promise), bounded("prompt receipt", promptsReceived.promise)]);
     await eventually(() => expect(actualOptions.promptSource?.current(owner.projectId)).not.toBeNull());
-    await eventually(() => expect(polls.some(signal => !signal.aborted)).toBe(true));
+    await eventually(() => expect(polls.some(poll => poll !== initialPoll && !poll.settled && !poll.signal.aborted)).toBe(true));
     stopRelease.resolve();
     await bounded("original worktree removal", removeEntered.promise);
     await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture("1"), grants: [...grants.values()].map(value => value.id) })); });

@@ -4,6 +4,7 @@ import { ApiError, attachmentPreviewRoot, authRequestsPaused } from '../../api/c
 import { browserNavigation } from '../../app/navigation';
 import { isTopOverlay, OverlayOwnerContext } from '../../app/overlay';
 import type { TaskDetailNavigation } from '../../app/router';
+import type { GoalChildren } from '../../app/page-history';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphSnapshot } from '../projects/useTaskGraph';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
@@ -53,6 +54,8 @@ export type GoalDetailSurfaceProps = {
   readonly renderNested?: (owner: RefObject<HTMLElement | null>) => ReactNode;
   readonly initialWitness?: string;
   readonly closeChain?: RefObject<(() => void) | null>;
+  readonly goalChildren?: GoalChildren;
+  readonly onGoalChildrenChange?: (next: GoalChildren, options?: { readonly replace?: boolean }) => void;
   readonly detailError?: unknown;
   readonly detailRefreshing?: boolean;
   readonly resourceUnavailable?: boolean;
@@ -62,7 +65,7 @@ export type GoalDetailSurfaceProps = {
 type Tab = 'overview' | 'attachments' | 'discussion';
 const normalize = (navigation: TaskDetailNavigation): TaskDetailNavigation & { readonly tab: Tab } => ({ ...navigation, tab: navigation.tab === 'attachments' || navigation.tab === 'discussion' ? navigation.tab : 'overview' });
 
-const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot, presentation, fullscreen, navigation, onNavigate, onSelectTask, onNavigateExternalTask, onClose, onRestoreFocus, onRefreshGraph, graphError, attachmentApi, attachmentUrls, renderNested, initialWitness, closeChain, detailError, detailRefreshing = false, resourceUnavailable = false, onRetryDetail }: GoalDetailSurfaceProps) => {
+const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot, presentation, fullscreen, navigation, onNavigate, onSelectTask, onNavigateExternalTask, onClose, onRestoreFocus, onRefreshGraph, graphError, attachmentApi, attachmentUrls, renderNested, initialWitness, closeChain, goalChildren, onGoalChildrenChange, detailError, detailRefreshing = false, resourceUnavailable = false, onRetryDetail }: GoalDetailSurfaceProps) => {
   const { locale, messages, format } = useI18n();
   const zh = locale === 'zh-CN';
   const modal = presentation === 'dialog';
@@ -89,10 +92,16 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   const selection = normalize(navigation ?? local);
   const setSelection = (next: TaskDetailNavigation) => { setLocal(next); onNavigate?.(next); };
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [openChain, setOpenChain] = useState<string | null>(null);
+  const [localChain, setLocalChain] = useState<string | null>(null);
+  const openChain = goalChildren === undefined ? localChain : goalChildren.graphRootId;
+  const setOpenChain = (next: string | null, replace = false) => {
+    if (goalChildren === undefined) setLocalChain(next);
+    else onGoalChildrenChange?.({ ...goalChildren, graphRootId: next }, { replace });
+  };
   const [chainRoot, setChainRoot] = useState<HTMLElement | null>(null);
   const nestedOwner = useMemo<RefObject<HTMLElement | null>>(() => chainRoot === null ? root : { current: chainRoot }, [chainRoot]);
-  if (closeChain !== undefined) closeChain.current = () => setOpenChain(null);
+  // The host commits the entire transition when delegating across Goals.
+  if (closeChain !== undefined) closeChain.current = () => { if (goalChildren === undefined) setLocalChain(null); };
   const chainOpener = useRef<HTMLElement | null>(null);
   const threadDetails = useRef(false);
   const changeFullscreen = useDetailFullscreen(root, toggle, fullscreen);
@@ -112,6 +121,9 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   const base = { kind: 'root' } as const;
   const previewRoot = attachmentUrls?.previewRoot ?? attachmentPreviewRoot(projectId, taskId);
   const scope = snapshot === null ? null : projectTaskScope(snapshot.index, taskId);
+  const admittedChain = useRef<string | null>(null);
+  if (openChain === null) admittedChain.current = null;
+  else if (admittedChain.current !== openChain) admittedChain.current = goalChildren === undefined || scope?.chains.some(chain => chain.representativeId === openChain) ? openChain : null;
   const pendingWitness = useRef<string | null>(null);
   const seenWitness = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
@@ -120,7 +132,8 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
     pendingWitness.current = initialWitness;
     const chain = scope.chains.find((candidate) => candidate.memberIds.includes(initialWitness));
     if (chain !== undefined) setExpanded(current => new Set([...current, chain.representativeId]));
-    if (selection.tab !== 'overview') setSelection({ ...selection, tab: 'overview' });
+    // Controlled navigation may be a restored history entry, not a new witness visit.
+    if (navigation === undefined && selection.tab !== 'overview') setSelection({ ...selection, tab: 'overview' });
   }, [initialWitness, snapshot]);
   useLayoutEffect(() => {
     const id = pendingWitness.current;
@@ -133,7 +146,7 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   });
   const openTask = (id: string, trigger: HTMLElement) => {
     if (snapshot?.index.nodes.get(id)?.parentId === taskId || onNavigateExternalTask === undefined) onSelectTask(id, trigger);
-    else browserNavigation().requestAction(() => { setOpenChain(null); onNavigateExternalTask(id, trigger); });
+    else browserNavigation().requestAction(() => { if (goalChildren === undefined) setLocalChain(null); onNavigateExternalTask(id, trigger); });
   };
   const tabs: readonly Tab[] = ['overview', 'attachments', 'discussion'];
   const labels: Record<Tab, string> = { overview: zh ? 'Task' : 'Tasks', attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title };
@@ -174,7 +187,7 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
     <DraftNavigationConfirmation owner={nestedOwner} fallbackFocus={heading} taskTitle={detail.title} />
     {!scopeLost && edit !== null && editOpen && <TaskConfirmation owner={root} fallbackFocus={heading} title={zh ? '编辑 Goal' : 'Edit Goal'} question={zh ? '修改名称和目标描述' : 'Edit the name and description'} explanation="" taskTitle="" cancelLabel={zh ? '取消' : 'Cancel'} closeLabel={zh ? '关闭编辑' : 'Close editor'} confirmLabel={zh ? '保存' : 'Save'} confirmDisabled={!task.canEditGoal || edit.title.trim() === '' || edit.version !== detail.version || editSubmitted} onCancel={() => { setEditOpen(false); if (!editUnsettled) { setEdit(null); setEditSubmitted(false); } }} onConfirm={() => { if (!task.canEditGoal || authRequestsPaused() || edit.version !== detail.version || edit.title.trim() === '') return; setEditSubmitted(true); task.editGoal(edit.title, edit.description, edit.version); }} content={<div className="goal-edit-form"><label>{zh ? '名称' : 'Name'}<input value={edit.title} required disabled={editSubmitted} onChange={(event) => setEdit({ ...edit, title: event.currentTarget.value })} /></label><label>{zh ? '目标描述' : 'Description'}<textarea rows={6} value={edit.description} disabled={editSubmitted} onChange={(event) => setEdit({ ...edit, description: event.currentTarget.value })} /></label>{edit.version !== detail.version && <div role="alert"><p>{zh ? 'Goal 已更改。核对当前内容后可用最新版本保存草稿。' : 'The Goal changed. Review its current content before saving this draft against the latest version.'}</p><button className="button" type="button" onClick={() => setEdit({ ...edit, version: detail.version })}>{zh ? '使用最新版本' : 'Use latest version'}</button></div>}{task.mutation.operation?.action === 'editGoal' && (task.mutation.phase === 'unknown' || task.mutation.reconciliationError !== null) && <div role="alert"><p>{zh ? '保存结果尚未确认，请核对当前状态；不会自动重新提交。' : 'The save outcome is unknown. Check the current state; the request will not be replayed.'}</p><button className="button" type="button" disabled={task.mutation.reconciling} onClick={task.reconcile}>{zh ? '核对状态' : 'Check state'}</button></div>}{task.mutation.operation?.action === 'editGoal' && task.mutation.error != null && (task.mutation.error instanceof ApiError ? <GoalMutationError error={task.mutation.error} action="editGoal" outcomeUnknown={outcomeUnknown} /> : <p role="alert">{task.mutation.phase === 'unknown' || task.mutation.reconciledFrom === 'unknown' ? (zh ? '原保存结果尚未确认。' : 'The original save outcome remains unknown.') : (zh ? '保存失败' : 'Save failed')}</p>)}</div>} />}
     {!scopeLost && confirmation !== null && <TaskConfirmation owner={root} fallbackFocus={heading} title={confirmation.kind === 'delete' ? (zh ? '删除这个 Goal？' : 'Delete this Goal?') : confirmation.status === 'done' ? (zh ? '完成这个 Goal？' : 'Complete this Goal?') : (zh ? '取消这个 Goal？' : 'Cancel this Goal?')} question={confirmation.kind === 'delete' ? (zh ? 'Goal 及其下的所有 Task 将不可见，Task 的 Parent 保留。正在执行的任务将在后续 Worker 观察中开始停止。' : 'The Goal and its tasks will become unavailable. Their Parent remains. Running tasks will begin stopping on a later Worker observation.') : (zh ? 'Task 的状态将保留；新的自动领取会跳过此 Goal，已领取的任务继续执行。' : 'Task statuses remain unchanged. New automatic claims skip this Goal; claimed tasks continue.')} explanation="" taskTitle={confirmation.detail.title} cancelLabel={zh ? '返回' : 'Back'} closeLabel={zh ? '关闭确认' : 'Close confirmation'} confirmLabel={confirmation.kind === 'delete' ? (zh ? '删除 Goal' : 'Delete Goal') : (zh ? '确认' : 'Confirm')} destructive={confirmation.kind === 'delete'} confirmDisabled={taskReviewKey(detail) !== taskReviewKey(confirmation.detail) || (confirmation.kind === 'delete' ? !task.canDelete : !task.canSetStatus)} onCancel={() => setConfirmation(null)} onConfirm={() => { if (authRequestsPaused() || taskReviewKey(detail) !== taskReviewKey(confirmation.detail)) return; if (confirmation.kind === 'delete') { if (!task.canDelete) return; task.deleteTask(confirmation.detail.version, false); } else { if (!task.canSetStatus) return; task.setStatus(confirmation.status, confirmation.detail.version); } setConfirmation(null); }} />}
-    {!scopeLost && openChain !== null && snapshot !== null && snapshot.index.components.has(openChain) && <TaskChainDialog projectId={projectId} index={snapshot.index} summaries={snapshot.summaries} rootId={openChain} onOpenTask={openTask} onNavigateExternalTask={openTask} onClose={() => setOpenChain(null)} onRootChange={setChainRoot} onRestoreFocus={() => { if (root.current !== null && !isTopOverlay(root.current)) return; const opener = chainOpener.current; if (opener?.isConnected && !opener.closest('[inert], [hidden]')) opener.focus({ preventScroll: true }); else heading.current?.focus({ preventScroll: true }); }} />}
+    {!scopeLost && openChain !== null && admittedChain.current === openChain && snapshot !== null && snapshot.index.components.has(openChain) && <TaskChainDialog projectId={projectId} index={snapshot.index} summaries={snapshot.summaries} rootId={openChain} onOpenTask={openTask} onNavigateExternalTask={openTask} onClose={() => setOpenChain(null, true)} onRootChange={setChainRoot} onRestoreFocus={() => { if (root.current !== null && !isTopOverlay(root.current)) return; const opener = chainOpener.current; if (opener?.isConnected && !opener.closest('[inert], [hidden]')) opener.focus({ preventScroll: true }); else heading.current?.focus({ preventScroll: true }); }} />}
     {!scopeLost && <OverlayOwnerContext value={nestedOwner}>{renderNested?.(nestedOwner)}</OverlayOwnerContext>}
   </OverlayOwnerContext>;
   return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && root.current !== null && isTopOverlay(root.current) && !threadDetails.current) requestClose(); }}>{content}</div> : content;

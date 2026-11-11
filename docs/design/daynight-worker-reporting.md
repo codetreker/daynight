@@ -98,6 +98,12 @@ telemetry 为显式组合创建一个 Codex probe owner，经 Bot host 的 `coll
 
 owner 在等待前登记后续调用，join 前一链后检查取消和原始清理责任。匹配链的清理失败保留原错误并立即使普通 Codex 缓存失效；因此即使原 child 在下一轮前可靠关闭，也不能复用失败前成功。普通版本在 owner 内读取缓存，未确认的共享错误映射为本轮不可用并保留原对象。仅原命令可靠确认后才移除共享阻塞，普通失败缓存再按既有恢复规则失效并实际重采。历史清理类别、独立聚合错误、无确认句柄及终止失败的判断继续由原 runner 查询负责；其它 collector 或 Provider 的成功不能提供确认。等待不增加命令、监听或五秒预算，取消后不能启动排队探测。[组合清理决策](../../.agents/notes/implemented/bug-fix/2026-11-04-codex-reporting-probe-ownership.md)记录匹配范围与缓存取舍。
 
+## 工具观察接缝
+
+collector 通过可选快照输入接收工具管理器的 ToolPathTelemetry，不在普通心跳内解析路径、哈希文件或执行另一份探测。actual、candidate 和 activeSelections 共用该管理器的事实；接入时 Codex/Copilot 的旧 versions 来自指定上下文的同一 actual。Herdr 的旧 versions 继续只读已归属运行实例，不能把新准入 CLI 版本当作已运行 daemon 版本。默认未接入时省略扩展，旧 versions 继续原严格形状，不能把 bare 版本文本补成已验证路径。工具报告合同由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
+
+API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩展；能力绑定 origin 和 principal，旧服务按原报告结构发送。工具投影先按 selectionKey 固定排序和完整组裁减，再执行 256 KiB 子预算及原 1 MiB 请求预算。不足时明确 report_budget_exceeded 和集合不完整，不截断路径、不删除普通心跳的必需字段。prepareWorkerReport 返回本地预算结果，ApiClient 的可选预算回调在实际请求准备时接收同一结果，回调失败不能改变报告提交或结果。连完整目标降级也无法容纳时省略可选工具观察，保留稳定错误码和 omitted 标志。无能力、未检查、目标错误和运行集合未知是不同事实；工具错误不得携带完整命令、环境或私有 cause。
+
 ## 失败与可观察性
 
 reporter 按字段或 report 子系统保存故障签名和重复次数；故障变化时输出 worker_report_failed，恢复时输出 worker_report_recovered。诊断重新构造错误类别与 cause 结构，不传递原错误消息或命令输出。该状态只去重，不承担重试或恢复职责。

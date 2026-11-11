@@ -759,3 +759,37 @@ it("uses the stopped original when cleanup finishes after the resource snapshot"
     expect(wake).toHaveBeenCalledTimes(notifications);
   } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
 });
+
+it("does not yield archive maintenance for a stopped reservation left in a stale snapshot", async () => {
+  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  const coordinator = createWorkerCoordinator({ ...f.options, monitoring });
+  await coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear(); f.candidates.splice(0);
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observerEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
+    removeEntered.resolve(); await finishRemoval.promise; operation.check(); await remove(project, owner, operation);
+  });
+  const observe = f.tasks.observeExecutionStop.getMockImplementation()!;
+  let holdObservation = false;
+  f.tasks.observeExecutionStop.mockImplementation(async target => {
+    const result = await observe(target);
+    if (holdObservation) { observerEntered.resolve(); await finishObservation.promise; }
+    return result;
+  });
+  try {
+    await coordinator.tick(); await removeEntered.promise;
+    expect(coordinator.archiveYield()).toBe(true);
+    holdObservation = true;
+    const nextRound = coordinator.tick();
+    await observerEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
+    finishObservation.resolve(); await nextRound;
+    expect(monitoring.capture("1").reservations).toContainEqual(expect.objectContaining({ occupied: false, scope: expect.objectContaining({ claimId: original.claimId }) }));
+    expect(coordinator.archiveYield()).toBe(false);
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
+});

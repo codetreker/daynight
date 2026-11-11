@@ -21,7 +21,8 @@ Web observes existing Controller and recorded provider process proofs, including
 a journal reread after the Controller stops. Native Herdr uses its committed stop
 proof; legacy Herdr retains the original binding and stop result in the current
 Worker. The runtime coalesces changes with a revision wake so a notice during a
-round is not lost. The [Worker design](../../../../docs/design/daynight-worker.md)
+round is not lost. [Archive priority](../bug-fix/2026-11-11-worker-archive-priority.md)
+continues to preserve the original file and archive responsibilities. The [Worker design](../../../../docs/design/daynight-worker.md)
 owns the operational contract.
 
 ## Alternatives

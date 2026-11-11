@@ -30,6 +30,11 @@ export class MonitoringRecoveryEvidence extends Error {
   constructor(readonly reasonCode: "native_identity_missing" | "recovery_limit" | "recovery_blocked") { super("Worker recovery is blocked."); }
 }
 
+// Construct only after an archive request confirms resource_busy and a short retry is scheduled.
+export class MonitoringArchiveBusyEvidence extends Error {
+  constructor(cause: unknown) { super("Archive busy, short retry.", { cause }); }
+}
+
 /** Construct a fixed summary only from a fact established by the caller's operation boundary. */
 export const diagnostic = (code: DiagnosticCode): StructuredCause => ({ type: "operation", code, cause: messages[code], causeTruncated: false });
 
@@ -59,6 +64,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
     return diagnostic("unknown");
   }
   if (error instanceof ArchiveRepairRequiredError) return diagnostic("recovery-blocked");
+  if (error instanceof MonitoringArchiveBusyEvidence) return diagnostic("rate-limited");
   if (error instanceof MonitoringRecoveryEvidence) {
     switch (error.reasonCode) {
       case "native_identity_missing": return diagnostic("native-identity-missing");

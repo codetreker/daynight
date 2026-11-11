@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"math"
 	"strconv"
 	"strings"
@@ -107,7 +108,7 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 		if aware {
 			document["agentControlMode"] = nil
 		}
-		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), aware)
+		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: aware})
 		if err != nil || value.PreserveAgentControlMode == aware {
 			t.Fatalf("valid shape aware=%v: %+v %v", aware, value, err)
 		}
@@ -116,7 +117,7 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 		} else {
 			document["agentControlMode"] = "web"
 		}
-		if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), aware); err == nil {
+		if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: aware}); err == nil {
 			t.Fatalf("mismatched value shape accepted: %v", aware)
 		}
 	}
@@ -125,7 +126,7 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 		`{"bootstrap":null,"observation":null,"controlModeBootstrap":1}`,
 		`{"bootstrap":null,"observation":null,"controlModeBootstrap":"unknown"}`,
 	} {
-		if _, err := ParseWorkerConfigurationExchangeProtocol([]byte(raw), true); err == nil {
+		if _, err := ParseWorkerConfigurationExchangeProtocol([]byte(raw), workerprotocol.Capabilities{ControlMode: true}); err == nil {
 			t.Fatalf("invalid candidate accepted: %s", raw)
 		}
 	}
@@ -133,7 +134,7 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 		document := configurationInputDocument()
 		document["agentControlMode"] = mode
 		exchange := map[string]any{"bootstrap": document, "observation": nil, "controlModeBootstrap": mode}
-		value, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, exchange), true)
+		value, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, exchange), workerprotocol.Capabilities{ControlMode: true})
 		if mode == nil {
 			if err == nil {
 				t.Fatal("null fresh mode accepted")
@@ -146,20 +147,20 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 		item := configurationInputItem("agentControlMode", applied)
 		document := configurationInputExchange(item)
 		document["controlModeBootstrap"] = nil
-		_, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), true)
+		_, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true})
 		valid := applied == "web" || applied == "herdr"
 		if (err == nil) != valid {
 			t.Fatalf("observation %v: %v", applied, err)
 		}
 		delete(document, "controlModeBootstrap")
-		if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), false); err == nil {
+		if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: false}); err == nil {
 			t.Fatal("legacy mode observation accepted")
 		}
 	}
 	document := configurationInputDocument()
 	document["agentControlMode"] = "web"
 	document["projects"] = []any{map[string]any{"projectId": configurationInputProjectA, "nativeOverrides": map[string]any{"agentControlMode": "herdr"}}}
-	if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), true); err == nil {
+	if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err == nil {
 		t.Fatal("project mode override accepted")
 	}
 }
@@ -218,11 +219,11 @@ func TestControlModeMergeChecksFinalEncodedBudget(t *testing.T) {
 
 func TestControlModeObservationBudgetPreservesLegacyProjection(t *testing.T) {
 	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems-1, "0"), "controlModeBootstrap": nil}
-	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), true); err != nil {
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
 		t.Fatalf("legacy collection rejected: %v", err)
 	}
 	document["observation"] = configurationCapacityObservationDocument(MaxObservationItems, "0")
-	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), true); err == nil {
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err == nil {
 		t.Fatal("1026 non-mode entries would exceed legacy projection")
 	}
 	observation := document["observation"].(map[string]any)
@@ -230,11 +231,11 @@ func TestControlModeObservationBudgetPreservesLegacyProjection(t *testing.T) {
 	modeItem := configurationInputItem("agentControlMode", "web")
 	modeItem["targetRevision"] = "1"
 	items[len(items)-1] = modeItem
-	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), true); err != nil {
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
 		t.Fatalf("1025 old entries plus mode rejected: %v", err)
 	}
 	delete(document, "controlModeBootstrap")
-	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), false); err == nil {
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: false}); err == nil {
 		t.Fatal("legacy exchange accepted mode item")
 	}
 }

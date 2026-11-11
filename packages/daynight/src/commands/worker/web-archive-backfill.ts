@@ -121,12 +121,15 @@ export const createWebArchiveMaintenance = (options: {
   let shutdownFailed = false;
   let failureId: string | undefined;
   return {
-    request(): void {
+    request(shouldYield: () => boolean): void {
       if (closed || signal.aborted || pending !== undefined) return;
       // Reserve the slot before invoking any backfill code, including synchronous re-entry.
-      const attempt = Promise.resolve().then(() => backfillArchives(signal)).then(() => {
+      const attempt = Promise.resolve().then(async () => {
+        // Cleanup can become pending after the polling round requested maintenance.
+        if (signal.aborted || shouldYield()) return;
+        await backfillArchives(signal);
         if (failureId !== undefined) { try { monitoring?.recover(failureId); } catch { /* Monitoring cannot change archival. */ } failureId = undefined; }
-      }, error => {
+      }).catch(error => {
         if (isWorkerCancellation(error, signal)) return;
         if (signal.aborted) { shutdownFailed = true; shutdownFailure = error; }
         failureId ??= randomUUID();

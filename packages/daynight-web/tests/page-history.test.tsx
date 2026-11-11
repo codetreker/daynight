@@ -1,14 +1,115 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, readAccountHistory } from '../src/app/page-history';
-import { useAccountHistory } from '../src/app/use-page-history';
+import { accountHistory, emptyResourceReading, readAccountHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type ResourcePageReading } from '../src/app/page-history';
+import { useAccountHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
 const arrival = (state: unknown, path = '/account') => act(() => {
   history.replaceState(state, '', path);
   dispatchEvent(new PopStateEvent('popstate', { state }));
+});
+
+describe('standalone resource reading history', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const path = `/projects/${project}/tasks/${root}`;
+  const selection: ResourcePageReading = {
+    goalChildren: { graphRootId: child, task: { id: child, navigation: { tab: 'attachments', path: 'docs/notes.md' } } },
+    externalGoal: { id: root, witness: child, navigation: { tab: 'overview', path: null }, goalChildren: null },
+  };
+
+  it('validates the matching resource selection and isolates identities and page keys', () => {
+    const state = resourceHistory(user, project, root, selection);
+    expect(readResourceHistory(undefined, user, project, root)).toBeNull();
+    expect(readResourceHistory(state, user, project, root)).toEqual(selection);
+    expect(readResourceHistory(state, other, project, root)).toBeNull();
+    expect(readResourceHistory(state, user, project, child)).toBeNull();
+    expect(readResourceHistory(accountHistory(user, 'tokens'), user, project, root)).toBeNull();
+    for (const bad of [
+      { ...state, selection: { ...selection, draft: 'secret' } },
+      { ...state, selection: { ...selection, goalChildren: { ...selection.goalChildren, graphRootId: 'bad' } } },
+      { ...state, selection: { ...selection, goalChildren: { graphRootId: null, task: { id: child, navigation: { tab: 'bad', path: null } } } } },
+      { ...state, selection: { ...selection, goalChildren: { graphRootId: null, task: { id: child, navigation: { tab: 'attachments', path: '../secret' } } } } },
+      { ...state, selection: { ...selection, externalGoal: { ...selection.externalGoal, witness: 'bad' } } },
+    ]) expect(() => readResourceHistory(bad, user, project, root)).toThrow('Invalid resource navigation state.');
+  });
+
+  it('initializes URL entries before pushing nested selections and restores the source', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const { result } = renderHook(() => useResourceHistory(user, project, root, true));
+    expect(navigation.snapshot().view).toEqual(resourceHistory(user, project, root, emptyResourceReading()));
+    act(() => navigation.navigate(`${path}?tab=discussion`));
+    const source = history.state;
+    expect(navigation.snapshot().view).toEqual(resourceHistory(user, project, root, emptyResourceReading()));
+    const length = history.length;
+    act(() => result.current.select(selection));
+    expect(history.length).toBe(length + 1);
+    const nested = history.state;
+    act(() => result.current.select(selection));
+    expect(history.length).toBe(length + 1);
+    arrival(source, `${path}?tab=discussion`);
+    expect(result.current.selection).toEqual(emptyResourceReading());
+    arrival(nested, `${path}?tab=discussion`);
+    expect(result.current.selection).toEqual(selection);
+  });
+
+  it('isolates retained native selections and refuses malformed matching payloads', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const { result, rerender } = renderHook(({ identity }) => useResourceHistory(identity, project, root, true), { initialProps: { identity: user } });
+    act(() => result.current.select(selection));
+    act(() => { history.pushState({ foreign: true }, '', `${path}#native`); dispatchEvent(new PopStateEvent('popstate')); });
+    expect(result.current.selection).toEqual(selection);
+    expect(navigation.snapshot().entryId).toBeNull();
+    rerender({ identity: other });
+    expect(result.current.selection).toEqual(emptyResourceReading());
+    expect(history.state).toEqual({ foreign: true });
+    act(() => navigation.navigate(path));
+    const state = { ...history.state, __daynightNavigation: { ...history.state.__daynightNavigation, view: { ...resourceHistory(other, project, root, emptyResourceReading()), selection: { goalChildren: 'bad', externalGoal: null } } } };
+    arrival(state, path);
+    expect(result.current.error).toBe(true);
+    act(() => result.current.select(selection));
+    expect(history.state).toEqual(state);
+  });
+
+  it('retains nested readers on same-resource URL changes but resets on a new visit', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const { result } = renderHook(() => useResourceHistory(user, project, root, true));
+    act(() => result.current.select(selection));
+    act(() => navigation.navigate(`${path}?tab=discussion`));
+    expect(result.current.selection).toEqual(selection);
+    expect(navigation.snapshot().view).toEqual(resourceHistory(user, project, root, selection));
+    act(() => navigation.navigate('/projects'));
+    act(() => navigation.navigate(path));
+    expect(result.current.selection).toEqual(emptyResourceReading());
+    expect(navigation.snapshot().view).toEqual(resourceHistory(user, project, root, emptyResourceReading()));
+  });
+
+  it('does not requalify old entries after project access is retired', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useResourceHistory(user, project, root, true, scope));
+      act(() => result.current.select(selection));
+      const old = history.state;
+      act(() => result.current.select({ ...selection, externalGoal: null }));
+      act(() => scope.suspendProject(project));
+      expect(result.current.selection).toEqual(emptyResourceReading());
+      act(() => result.current.select(selection));
+      expect(result.current.selection).toEqual(selection);
+      arrival(old, path);
+      expect(result.current.selection).toEqual(emptyResourceReading());
+      expect(navigation.snapshot().view).toEqual(resourceHistory(user, project, root, emptyResourceReading()));
+      unmount();
+    } finally { scope.dispose(); }
+  });
 });
 
 beforeEach(() => { history.replaceState(null, '', '/account'); });
@@ -99,5 +200,54 @@ describe('account reading history', () => {
     act(() => result.current.select('prompt'));
     expect(navigation.snapshot().view).toEqual(state.__daynightNavigation.view);
     expect(history.state).toEqual(state);
+  });
+});
+
+
+describe('Worker reading history', () => {
+  const worker = '00000000-0000-4000-8000-000000000011';
+  const otherWorker = '00000000-0000-4000-8000-000000000012';
+  const path = `/workers/${worker}`;
+  it('validates the current Worker selection and isolates identity and resource', () => {
+    expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
+    expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
+    expect(readWorkerHistory(workerHistory(user, otherWorker, 'configuration'), user, worker)).toBeNull();
+    for (const selection of [{ workerId: otherWorker, section: 'overview' }, { workerId: worker, section: 'bad' }, { workerId: worker, section: 'overview', draft: 'secret' }]) {
+      expect(() => readWorkerHistory({ ...workerHistory(user, worker, 'overview'), selection }, user, worker)).toThrow();
+    }
+  });
+  it('initializes, traverses and deduplicates while inactive owners cannot overwrite another page', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation(), length = history.length;
+    const { result, rerender } = renderHook(({ identity, active }) => useWorkerHistory(identity, worker, active), { initialProps: { identity: user, active: true } });
+    expect(navigation.snapshot().view).toEqual(workerHistory(user, worker, 'overview'));
+    const overview = history.state;
+    act(() => result.current.select('configuration'));
+    const configuration = history.state;
+    expect(result.current.section).toBe('configuration');
+    act(() => result.current.select('configuration'));
+    expect(history.length).toBe(length + 1);
+    arrival(overview, path); expect(result.current.section).toBe('overview');
+    arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    rerender({ identity: user, active: false });
+    act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
+    act(() => result.current.select('overview'));
+    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'tokens'));
+    rerender({ identity: other, active: true });
+    act(() => navigation.navigate(path, false, workerHistory(user, worker, 'configuration')));
+    expect(result.current.section).toBe('overview');
+    expect(navigation.snapshot().view).toEqual(workerHistory(other, worker, 'overview'));
+  });
+  it('retains a native selection without writing and exposes invalid current state', () => {
+    history.replaceState(null, '', path);
+    const navigation = browserNavigation();
+    const { result } = renderHook(() => useWorkerHistory(user, worker, true));
+    act(() => result.current.select('configuration'));
+    const state = history.state;
+    act(() => { history.pushState({ foreign: true }, '', `${path}#native`); dispatchEvent(new PopStateEvent('popstate')); });
+    expect(result.current.section).toBe('configuration'); expect(history.state).toEqual({ foreign: true });
+    const bad = { ...state, __daynightNavigation: { ...state.__daynightNavigation, view: { ...workerHistory(user, worker, 'configuration'), selection: { workerId: worker, section: 'invalid' } } } };
+    arrival(bad, path); expect(result.current.error).toBe(true);
+    act(() => result.current.select('overview')); expect(navigation.snapshot().view).toEqual(bad.__daynightNavigation.view);
   });
 });

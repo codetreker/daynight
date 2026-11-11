@@ -35,7 +35,7 @@ export const fixture = async (t: TestContext, mode = 'normal', input = payload, 
   const root = await mkdtemp(join(temporary, 'go-cov-test-'));
   const directory = join(root, 'scripts');
   await mkdir(directory);
-  for (const name of ['command-timeout.mts', 'go-cov-capture.mts', 'go-test-output.mts']) {
+  for (const name of ['command-timeout.mts', 'command-process-group.mts', 'go-cov-capture.mts', 'go-test-output.mts']) {
     if (await exists(join(scripts, name))) await copyFile(join(scripts, name), join(directory, name));
   }
   await writeFile(join(root, 'input'), input);

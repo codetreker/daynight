@@ -42,6 +42,10 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离资源继续保留文件责任；独立归档队列继续发布 ledger、冻结并上传归档，读回 ready/unavailable receipt 后才清理原 worktree。失败保留源和工作区并维持同 task 路径屏障，不用本机 done 认定归档或工作区已删除。采样、预算与处置规则由 [Herdr 录制设计](herdr-recording.md)拥有。
 
+## 归属清单存储组件
+
+`worktrees/manifest.ts` 提供独立的同步清单存储，路径为 Git common 目录下的 `daynight/worktrees/<worktreeId>.json`。记录仅接受版本 1 的六个字段，按 worktreeId、完整 claim 和目录名分别拒绝冲突。发布先持久化两级命名空间，再 flush 文件并发布；重试已可见的相同记录时重新完成文件和目录屏障。读取不逐文件 flush，退休只在 expected 字段匹配后移除元数据。该组件尚未接入 Worker 运行路径，也不激活格式标记或迁移旧资源；现有 Git lock、物理身份与目录规则继续生效。平台目录同步能力的限制与现有持久文件原语相同。
+
 ## 配置与目录
 
 共享配置根（`DN_CONFIG_DIR`，缺省 `~/.daynight`）中的 config.yml 根字段 workerId 是首次生成并原子保存的稳定 UUID。创建复用配置锁，持锁后重读，只拥有根字段 workerId；共享保存入口核对全部非归属解码值，根循环 alias 等导致未知或其他字段变化时拒绝并保留原文件。合法身份只读复用，非法值明确拒绝。根选择同时覆盖 Worker、Controller 与 Review 状态，真实 HOME 和 Provider 原生目录保持原有归属。stateDirectory 等未知 YAML 字段不能改变状态根，唯一覆盖入口是绝对路径 DN_CONFIG_DIR。
@@ -65,7 +69,7 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
 
 ### 本地配置与首次候选
 
-本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影完整首次候选。独立模式候选读取本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。toolPaths 仅完成本地解析，不进入现有云端候选或运行配置消费。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
+本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影完整首次候选。独立模式候选读取本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。toolPaths 进入同一原始 YAML 产生的完整候选和独立 toolPathsBootstrap；API 只有认证配置读取确认工具能力后才发送扩展，旧服务仍使用本地选择。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
@@ -95,7 +99,7 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 `platform/tool-path-choice.ts` 拥有 `Tool`、`ToolContext`、`ToolPathChoice`、完整 `ToolPaths` 和纯字符串校验。`parseLocalToolPaths` 将 YAML 省略/null 投影为 auto，并拒绝三工具之外的键；`validateToolPath` 按本机 path API 检查绝对路径、合法 Unicode、控制字符和 4096 UTF-8 字节上限，返回未经修改的输入。Windows 额外要求盘符或完整 UNC share，避免 `\tools\codex.exe` 这类路径隐式依赖当前盘符。
 
-`commands/worker/config.ts` 与 `configuration-source.ts` 共用这个解析器，两种本地配置结果都包含三项 choice；缺文件的默认读取仍不创建配置文件。语法检查不读取程序文件、不启动子进程，也不把路径规范化成另一入口，保留符号链接和词法路径供工具解析器核验。`parseWorkerCloudBootstrap` 继续只投影现有云端字段，不向未协商的协议注入 toolPaths；本地 choice 没有云端“未采纳”状态。
+`commands/worker/config.ts` 与 `configuration-source.ts` 共用这个解析器，两种本地配置结果都包含三项 choice；缺文件的默认读取仍不创建配置文件。语法检查不读取程序文件、不启动子进程，也不把路径规范化成另一入口，保留符号链接和词法路径供工具解析器核验。`parseWorkerCloudBootstrap` 提供完整三项 choice，由 API 按已协商能力投影；本地 choice 没有云端“未采纳”状态，独立候选在云端已有目标时仍可填未采纳项。
 
 `platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation)`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 与 Herdr 使用 PATH，Copilot 的 Web 上下文使用随包 native，Herdr 上下文使用 PATH；显式选择不回退其它安装。
 
@@ -115,17 +119,23 @@ shim 的 target 从已登记模板的 prefix 和同一份有界字节快照提�
 
 资源键在 Windows 归一化检索键后排除 PATH/PATHEXT；POSIX 保持环境名大小写语义，普通 native 变量 `Path` 不能被当作 `PATH` 排除。
 
-当前 Worker 调度、Task/Bot 冻结记录、Herdr 实例和探测入口尚未消费该选择。因此配置解析只证明本地目标合法，不生成工具版本或应用成功事实；运行接线和云端协商必须分别建立真实消费及兼容保证。选择解析与运行调度的分离理由见[工具路径决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-tool-path-resolution.md)。
+当前 Worker 调度、Task/Bot 冻结记录、Herdr 实例和探测入口尚未消费该选择。因此配置解析只证明本地目标合法，不生成工具版本或应用成功事实；云端协商只建立目标交换与兼容保证，运行接线必须另行提供真实消费证据。选择解析与运行调度的分离理由见[工具路径决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-tool-path-resolution.md)。
 
 ### 云端接收与本机提交
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=3，以受限权限保存并校验 service origin/userId/workerId，保存最近目标、逐项成功值、状态、当前错误、待确认失败及观测 CAS。版本 1、2 缓存在严格解析当前结构前显式迁移；保留未采纳模式、未确认失败和移除责任，旧 native 资格必须重新验证。版本 1 的平台优先字段迁移仍执行：目标补入 preferPlatformSpecificTasks:false，并为已初始化目标增加同名 pending/null 应用项；移除、重试、失败身份及观测版本全部保留，原子持久化成功后才继续运行。当前版本缺少必需字段仍是格式错误。每次启动保留 native 成功历史供观察，全局 native 与各 projectNative 优先验证云端当前目标。已采纳云端模式时，项目目标验证等待全局有效模式取得本进程证明且与目标模式一致；同模式的全局 native 目标失败后，项目仍独立验证各自目标。新目标尚在验证时，不发布未在本运行时验证的历史元组，避免恢复任务抢先使用旧 model/args。仅当当前目标验证失败，才按历史组合记录的模式重新验证历史成功值；版本 1、2 的旧缓存未记录模式，改用本机兼容模式重新验证，不将其视为已证明的历史模式。全局模式切换失败且历史全局组合已取得本进程证明后，项目可以验证与该有效模式匹配的历史元组。此项目 job 不验证尚未生效模式的项目目标，复用原应用提交、错误与退避 owner；历史恢复只建立当前进程证明，保留失败目标的非 applied 状态。无历史、模式不匹配或历史验证失败时保持 unavailable。当前运行时已经验证的成功值在后续目标应用期间继续可用。目标成功、历史恢复与失败结果提交均重新核对目标版本，取消或被替代的结果不能授予执行资格。单一提交队列拥有 receive、应用完成和 acknowledge 的合并。队列执行到头部时，从最新发布状态计算转换，重新校验目标版本和失败确认身份，再 replaceFileAtomically；成功后发布同一个不可变引用。原子 rename 只保证文件完整性，不能防止旧快照覆盖较新目标。损坏、身份不符和持久化失败沿原错误传播，不发布伪成功。
+configuration.json 使用 schemaVersion=4，以受限权限保存并校验 service origin/userId/workerId，保存最近目标、逐项成功值、状态、当前错误、待确认失败及观测 CAS。版本 1、2、3 缓存在严格解析当前结构前显式迁移；版本 3 的 nativeModes、未确认失败和移除责任完整保留，旧 native 资格必须重新验证，新增工具证据从未验证开始。版本 1 的平台优先字段迁移仍执行：目标补入 preferPlatformSpecificTasks:false，并为已初始化目标增加同名 pending/null 应用项；移除、重试、失败身份及观测版本全部保留，原子持久化成功后才继续运行。当前版本缺少必需字段仍是格式错误。每次启动保留 native 成功历史供观察，全局 native 与各 projectNative 优先验证云端当前目标。已采纳云端模式时，项目目标验证等待全局有效模式取得本进程证明且与目标模式一致；同模式的全局 native 目标失败后，项目仍独立验证各自目标。新目标尚在验证时，不发布未在本运行时验证的历史元组，避免恢复任务抢先使用旧 model/args。仅当当前目标验证失败，才按历史组合记录的模式重新验证历史成功值；版本 1、2 的旧缓存未记录模式，改用本机兼容模式重新验证，不将其视为已证明的历史模式。全局模式切换失败且历史全局组合已取得本进程证明后，项目可以验证与该有效模式匹配的历史元组。此项目 job 不验证尚未生效模式的项目目标，复用原应用提交、错误与退避 owner；历史恢复只建立当前进程证明，保留失败目标的非 applied 状态。无历史、模式不匹配或历史验证失败时保持 unavailable。当前运行时已经验证的成功值在后续目标应用期间继续可用，但相关工具选择变化必须重验，不能将旧安装的成功绑定给新目标。目标成功、历史恢复与失败结果提交均重新核对目标版本，取消或被替代的结果不能授予执行资格。单一提交队列拥有 receive、应用完成和 acknowledge 的合并。队列执行到头部时，从最新发布状态计算转换，重新校验目标版本和失败确认身份，再 replaceFileAtomically；成功后发布同一个不可变引用。原子 rename 只保证文件完整性，不能防止旧快照覆盖较新目标。损坏、身份不符和持久化失败沿原错误传播，不发布伪成功。
 
-native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用显式接收目标 mode，在该模式下校验 native 及本地 model/effort，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、mode 与完整全局 native 组合，以及独立项目项。mode/native 的验证结果经单一提交 owner 一次保存后发布；任何验证或持久化失败均保留旧有效组合。项目 native 验证记录绑定 {mode,native}，模式切换撤销旧资格并取消旧模式的项目 native 校验 job，随后独立重验项目。提交先计算模式撤销与本次已接纳验证结果形成的下一份进程内证明；当前选中的 native 应用项若仍为 applied 但缺少匹配有效模式和已应用值的证明，先归为 pending，保留历史值与未确认失败。应用状态原子保存成功后才一起发布缓存与证明，因此直接接收目标和报告确认回执都不会把尚待重验的重选项目报告为成功。未选中的历史项仍由原移除确认流程保留与收敛。提交再次核对目标 revision、mode 和 native，陈旧结果不能授予新 claim 资格。仓库准备与移除事实不因单独模式变化丢弃。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。旧结果在队列内再次检查是否适用。已经开始的项目移除保留原版本工作，直到适配结果确认，后续重新选中不能抹掉它。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
+native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用显式接收目标 mode，在该模式下校验 native 及本地 model/effort，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、mode 与完整全局 native 组合，以及独立项目项。mode/native 的验证结果经单一提交 owner 一次保存后发布；任何验证或持久化失败均保留旧有效组合。项目 native 验证记录绑定 {mode,native} 及接入工具管理器后提供的相关选择和 selectionKey，模式切换撤销旧资格并取消旧模式的项目 native 校验 job，随后独立重验项目。提交先计算模式撤销与本次已接纳验证结果形成的下一份进程内证明；当前选中的 native 应用项若仍为 applied 但缺少匹配有效模式和已应用值的证明，先归为 pending，保留历史值与未确认失败。应用状态原子保存成功后才一起发布缓存与证明，因此直接接收目标和报告确认回执都不会把尚待重验的重选项目报告为成功。未选中的历史项仍由原移除确认流程保留与收敛。提交再次核对目标 revision、mode 和 native，陈旧结果不能授予新 claim 资格。仓库准备与移除事实不因单独模式变化丢弃。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。旧结果在队列内再次检查是否适用。已经开始的项目移除保留原版本工作，直到适配结果确认，后续重新选中不能抹掉它。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
 
 reporter 在发送前捕获不可变配置快照，通过独立报告扩展交换目标与观测；确认绑定该份快照。旧合同回执或明确的 400 invalid_input 使下一轮报告前先 GET 重新协商能力，再依据读取结果构造报告；不直接重放旧请求。被接纳后只清除其中相同身份的待报告失败，飞行期间的新失败保留；当前错误已经恢复时仍可报告 lastFailure。CAS 拒绝更新比较版本但不确认失败。错误只含闭合 code/category/phase 与时刻，原生命令、参数、输出和凭据不进入配置诊断。心跳不等待应用 job，退出时取消并 join 配置应用与报告，由 runtime 统一持有生命周期。
+
+### 工具目标与验证接缝
+
+配置快照的 toolTargets 使用运行管理器同一 `{source,revision,choices}` 输入。未启用云端工具能力时给完整本地选择；已协商云端值仍有未采纳 null 时返回 null，待逐项导入完成后才发布完整 cloud 目标。不能把本地 fallback 标成该云端 revision 的事实。显式 auto 始终保持 auto。
+
+配置管理器接收 readToolSelectionKeys(native,mode)，由运行管理器提供真实选择键；refreshToolSelections() 让变化进入原串行提交 owner。Codex/Copilot native 依赖自身工具，Herdr 模式额外依赖 Herdr；无关工具变化不撤销该 native 证明。接入回调后，缺失或非法键不能取得资格，迟到应用结果必须仍匹配捕获的目标选择和键。工具变化不丢旧成功历史、失败或仓库准备，也不创建第二份工具应用账本。未接回调的既有运行入口保持原 native 校验，但不产生 toolPaths 实际观察。
 
 ### 实际配置消费
 
@@ -291,7 +301,7 @@ Shutdown 在停止进程前识别已停止或失败的耗尽执行并保存暂�
 
 pauseReason=null 且 retryAuthorized=true 表示这次恢复已绑定当前 generation、仍在等待就绪。后续 tick 或重启只能观察并完成这一代，不能再次创建 generation。初始化保持 activity=initializing，Coordinator 继续发布 waiting；completeRecoveryRetry 仅在 ready/working 观察的原生身份及 generation 匹配后清除标记并恢复正常阶段。失败、停止或无法确认的结果重新持久暂停并清除标记。初始 assignment 沿用原操作回执，不因 retry 重发，也不为缺失原生身份创建替代会话。该恢复门禁与 task.properties.paused 的 Herdr 周期 ping 门禁互不替代。选择及代价见[持久恢复暂停决策](../../.agents/notes/archived/bug-fix/2026-11-04-web-recovery-pause.md)。
 
-Web 普通终止清理只在执行库保存 cleanup 的 kind、startedAt、deadline 和原生操作身份。每次从原 Controller journal 读取同一 cleanup operation 的回执，结合 OS 进程实例观察决定等待或停止，不在 Worker 库复制提交结果或资源完成状态。确认 Controller 和原生进程停止后封存并上传 Session 文件归档，服务端确认 ready 后才删除 Git worktree。归档失败保留源和收尾责任，只重试上传；每轮有界补传旧 completed 执行并对失败退避，已删除的 cwd 不妨碍从原 execution 目录补归档。Task 软删除后，仍具有效 PAT 和项目成员资格的原 Session owner 通过专用归档收尾接口取得 ready 回执；身份失效或上传失败继续保留源和责任，不将访问拒绝当作归档成功。执行容量由原执行停止观察独立决定。文件格式、完整性与只读读取由 [Task Session 设计](task-session-protocol.md#完成后的文件归档)定义。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
+Web 普通终止清理只在执行库保存 cleanup 的 kind、startedAt、deadline 和原生操作身份。每次从原 Controller journal 读取同一 cleanup operation 的回执，结合 OS 进程实例观察决定等待或停止，不在 Worker 库复制提交结果或资源完成状态。确认 Controller 和原生进程停止后封存并上传 Session 文件归档，服务端确认 ready 后才删除 Git worktree。归档失败保留源和收尾责任，只重试上传。历史补归档由可取消且在退出时等待结束的独立维护任务拥有，普通轮询只请求一次尝试，不等待上传；维护运行期间重复请求合并，完成本身不唤醒调度。每次尝试最多处理一个旧 completed 执行；只要 ending 中仍有收尾责任、存在 archive 阶段的清理重试，或最近容量计算已占满 maxConcurrent，就跳过本轮补归档，为释放执行名额的清理让路。轮询检查后，后台尝试实际开始前再读取同一门禁，避免两者之间状态变化仍启动新归档。成功领取新 claim 后也刷新容量快照，避免刚占满名额仍启动补归档。进入让路状态时输出一次 session-archive-deferred，持续让路不重复输出；条件解除后恢复补归档，已经开始的补归档不被中断。已删除的 cwd 不妨碍从原 execution 目录补归档。Task 软删除后，仍具有效 PAT 和项目成员资格的原 Session owner 通过专用归档收尾接口取得 ready 回执；身份失效或上传失败继续保留源和责任，不将访问拒绝当作归档成功。执行容量由原执行停止观察独立决定。文件格式、完整性与只读读取由 [Task Session 设计](task-session-protocol.md#完成后的文件归档)定义。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
 
 ## Herdr 与原生会话
 
@@ -372,15 +382,17 @@ Legacy Herdr 的一次有界清理调用先观察原执行，对仍存活的 age
 
 具备完整 owner 的终态清理首次保存 cleanup_schedules 后才能通知或删除已归属资源；记录只保存责任、首个期限与重试策略。只有 claim 身份的空预留检查使用已保留索引及进程内调度，不捏造 worktreeId。Web 首次初始化 cleanup 时使用调度表已保存的 deadline；两库提交之间中断后仍沿用该期限，已过期时只给零剩余预算。已有 Web cleanup 保留自身原 deadline。Web 用原 cleanupOperationId 从 Controller journal 查询原生操作状态，调度表的 lastError 只描述调度故障，不复制或覆盖原生回执。失败、取消与重启不延长原期限；重启由持久调度恢复 ending，再核对实际资源，不能为已结束任务启动原生业务执行。远端cancelled是业务终态，本地pending/active/done仍只描述执行和清理，不新增本地状态；取消沿用已release归属的清理责任。Legacy Herdr 本机行已 done、调度责任尚未删除时，即使当前配置全部使用 Web，仍按原责任初始化私有 Herdr 控制后端；清理 job 查询资源前以及 shutdown 核验前均确保后端可达。普通巡查的 Herdr 依赖只来自当前配置与尚未进入 ending 的执行；仅用于清理的后端初始化和读取留在该 claim 的 job 内，遵守 nextAttemptAt，失败不能在全局巡查中再次初始化或阻塞无关 Web 执行。shutdown 则合并执行与清理责任，初始化后实际读取全部 Herdr workspace，不能将后端不可用当作空资源。该初始化不启动业务 Agent，实际观察完成前仍保留责任与容量。只有实际清理成功才清除调度责任，不能用到期或 done 行替代资源观察。调度读写异常由 job 错误边界捕获，聚合原清理错误与 SQLite 错误，并以进程内失败次数和 nextAttemptAt 保持有界退避；它不把未确认持久化当作成功，也不让 job 的未处理 rejection 阻止 shutdown 证明停止。既有持久责任保留；跨重启只能恢复最后一次已确认的持久状态。
 
-临时或未分类的清理失败按 claim 记录失败次数和 nextAttemptAt，失败间隔为 min(1000 × 2^(failures−1), 60000) 毫秒。launchCleanups 只启动到期且没有运行 job 的责任，不为退避创建 sleep 或占用全局执行锁。不同 claim 分别判断资格，同 task 仍使用串行操作；失败项不会阻止其他到期清理，且不使用 execution recoveryLimit。终态清理期间独立观察精确原执行；确认停止后释放执行槽，未知或仍运行继续计占，同 task 旧 claim 屏障保持。失败原因解除后，正常对账在下次到期时从实际资源继续，直至所有文件和归档责任完成。
+归档请求错误保留 HTTP status 与服务端 error.code。只有明确的 429 resource_busy 且调用点允许幂等重放时，在同一轮 60 秒预算内最多额外重试 8 次，每次重新使用 15 秒请求上限；无有效 Retry-After 时随机等待 500–5000 毫秒，有有效秒数或 HTTP 日期时遵守该等待时间，整轮期限始终优先。取消等待会停止重试，忙等待耗尽整轮预算仍保留 status/code。当前状态读取、固定 source-tail batch、仅含原身份的 prepare、固定 fileId/offset/hash 的分块、原 bundle 的 seal 与固定 manifest 提交均可重放；未来新增 reset 等操作须重新核对，不能自动继承重试。其他 429、非 429 与未知网络结果不触发此重放；未知提交仍走原有状态对账。服务端名额、立即返回 resource_busy 和文件身份校验规则保持不变。
+
+清理在 archive 阶段因 429 resource_busy 失败时，按 claim 保存 nextAttemptAt=now+5000–7000 毫秒，保留已有 failures 而不累加；日志说明 archive busy, short retry，监控使用既有 rate-limited 分类、archive 阶段与 scheduled 的下次时间。其他临时或未分类的清理失败按 claim 记录失败次数和 nextAttemptAt，失败间隔为 min(1000 × 2^(failures−1), 60000) 毫秒。launchCleanups 只启动到期且没有运行 job 的责任，不为退避创建 sleep 或占用全局执行锁。不同 claim 分别判断资格，同 task 仍使用串行操作；失败项不会阻止其他到期清理，且不使用 execution recoveryLimit。终态清理期间独立观察精确原执行；确认停止后释放执行槽，未知或仍运行继续计占，同 task 旧 claim 屏障保持。失败原因解除后，正常对账在下次到期时从实际资源继续，直至所有文件和归档责任完成。
 
 Web 归档完整性由类型化 `ArchiveRepairRequiredError` 区分 `archive_incomplete` 与不可通过全量重同步解除的 `projection_gap`。上传入口在打开 pending 内容前进行原停止身份与 schema 的只读探测；完整归档中再次校验。现有仅需 full relay resynchronization 的受限例外及旧 schema 迁移不变。
 
-cleanup_schedules 的 nullable archiveRepairCode 保存待修复原因，nextAttemptAt 表示下次条件探测，间隔为 15 分钟。到期 job 通过 Web backend 注入的 probeArchive 只读检查原 execution/generation，不扫描正文、blob 或启动 Provider；仍阻塞或读取失败时保留归档责任，不增加完整归档失败计数；执行容量由独立停止观察决定。探测明确返回 complete 时，先在原调度行持久清除 archiveRepairCode，再更新内存分类并重入完整 cleanup；原 owner、deadline、失败次数和清理责任保持。随后普通上传失败恢复 1–60 秒退避，完整归档再次发现不完整则重新进入 15 分钟等待。清除分类写入失败时保留原分类，不执行本轮完整清理；不能用探测成功删除 schedule、释放 ending 或报告恢复。持久化失败保留进程内退避并报告未确认；重启只恢复已确认持久状态。
+cleanup_schedules 的 nullable archiveRepairCode 保存待修复原因，nextAttemptAt 表示下次条件探测，间隔为 15 分钟。到期 job 通过 Web backend 注入的 probeArchive 只读检查原 execution/generation，不扫描正文、blob 或启动 Provider；仍阻塞或读取失败时保留归档责任，不增加完整归档失败计数；执行容量由独立停止观察决定。探测明确返回 complete 时，先在原调度行持久清除 archiveRepairCode，再更新内存分类并重入完整 cleanup；原 owner、deadline、失败次数和清理责任保持。随后普通上传失败恢复前述按错误分类的短重试或 1–60 秒退避，完整归档再次发现不完整则重新进入 15 分钟等待。清除分类写入失败时保留原分类，不执行本轮完整清理；不能用探测成功删除 schedule、释放 ending 或报告恢复。持久化失败保留进程内退避并报告未确认；重启只恢复已确认持久状态。
 
 首次与后续探测均保留 receipt 优先对账：发现原 generation 的 receipt 时进入原上传入口核验远端摘要、长度和旧 receipt 迁移映射，即使本地仍有不完整标记，也不能永久阻止这条核对路径。receipt 与旧 schema 兼容路径只返回 attempt，不能证明完整性条件已修复，也不清除原等待分类。历史 archive backfill 同样使用前置探测和低频策略，通过独立 archive_backfill_schedules 表保存 serverOrigin、execution/generation、launch 和 claim 身份及下次探测时间。该表不创建工作树清理责任，已完成执行的历史补归档不会因此重新触发目录删除；身份冲突不得覆盖或删除原记录。backfill 只有明确 complete 时才先删除持久修复调度、再清除内存分类，随后普通上传失败按 60 秒重试；删除失败继续保留旧分类和低频等待。该分类变更不标记归档完成，也不释放 cleanup 责任。普通上传失败的等待活动恢复 retry-backoff。监控复用 recovery-blocked 原因，等待活动与下次检查时间；只有真正归档及清理完成才报告恢复。自动补齐缺失历史或接受带缺口归档需要另行的数据保留设计，本机制不清除完整性标记、丢弃 outbox 或伪造 ACK。
 
-每次实际失败保留原错误及 cause，并记录 observation、agent-stop、backend-close、archive 或 worktree-removal 阶段与下一次重试时间。backend-close 表示 Agent 已停止但 IPC endpoint 等后端资源关闭未确认；归档和目录删除阶段同样明确 Agent 已停止。达到容量上限且存在失败清理时，按阻塞 claim 集合变化输出 cleanup-capacity-blocked；提示对应阶段、错误及恢复原因后自动重试，普通 tick 不反复输出同一集合。具体间隔、错误和恢复责任由[清理重试决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-cleanup-retry.md)解释。
+每次实际失败保留原错误及 cause，并记录 observation、agent-stop、backend-close、archive 或 worktree-removal 阶段与下一次重试时间。backend-close 表示 Agent 已停止但 IPC endpoint 等后端资源关闭未确认；归档和目录删除阶段同样明确 Agent 已停止。达到容量上限且存在失败清理时，按阻塞 claim 集合变化输出 cleanup-capacity-blocked；提示对应阶段、错误及恢复原因后自动重试，普通 tick 不反复输出同一集合。归档让路与忙重试的取舍见[归档优先级决策](../../.agents/notes/implemented/bug-fix/2026-11-11-worker-archive-priority.md)。其他间隔、错误和恢复责任由[清理重试决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-cleanup-retry.md)解释。
 
 已确认归属结束的清理责任可以在后续服务轮询失败时继续。已知目标的收尾先观察对应执行并推进停止，删除时只核对该目标 Git 注册和目录。其他 worktree 或其他仓库的注册问题分别报告；退出无需 Git 发现成功即可停止已知 Agent。
 
@@ -432,7 +444,7 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 ## 验证边界
 
-本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。现有云端 bootstrap 的输出检查保证本地字段不会突破严格协议。
+本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。云端 bootstrap 和 API 协商测试保证旧服务不接收工具扩展，明确 auto 不会重新读取本地旧路径。
 
 配置验证使用受控时间、延后 I/O 与真实缓存读写，覆盖 cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
 

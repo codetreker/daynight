@@ -244,7 +244,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题及文字右侧的复制图标按钮、全屏按钮、“…”菜单与关闭入口；菜单位于关闭按钮左侧，收纳任务删除和按当前任务/页签/附件生成的新标签真实链接，独立页只保留菜单中的删除。菜单关闭后聚焦“…”再打开删除确认，取消确认恢复该入口。任务删除在共享详情主体中明确确认“解除全部传入依赖并删除”，说明可能改变 ready；确认按执行时全部引用这一类别授权，不冻结显示数量，捕获 removeDepends=true 后由会话传给 API。操作所有权、已删除终态和缓存移除由[软删除设计](daynight-task-deletion.md)拥有。正文头部的公共状态行依次放置状态菜单、平台切换和 ready/blocked 提示，右侧保留自动执行控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
 `TaskDetailPanels`按概览、附件、讨论、可选Session组合内容，各面板保持挂载并以hidden/inert隔离隐藏控件；页签使用可访问关联、roving tabindex、方向键与Home/End自动激活。Discussion独立接收active并按可见性控制读取，其临时状态、连续位置与详情子层由[Thread Web设计](task-thread-web.md)拥有。
 project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有两种容器共用的
-详情读取、内容和现有操作；弹窗中的任务/页签/附件导航仍为本地状态。标题栏与附件
+详情读取、内容和现有操作；项目页弹窗使用本地导航，独立资源页的子层由其阅读历史控制。标题栏与附件
 预览的新标签入口都进入独立完整详情，前者保留全部导航状态，后者定位当前文件。
 `AuthenticatedApp` 对基础任务路径和附件路径组合 `TaskDetailPage`，后者拥有自己的
 项目图快照并展示同一主体，不挂载工作空间侧栏或弹窗外壳。任务/页签/文件 URL、
@@ -256,7 +256,7 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 请求脏草稿准入；同 Task 页签/附件保持注册。已编号历史恢复、身份退休和未编号条目的
 保留限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 
-账号页通过 `useAccountHistory` 消费绑定 userId 和 pageKey 的轻量页签选择。受控条目以 replace 初始化，用户切换以 push 写入，重复选择不写入；遍历只应用已准入选择。隐藏的账号 owner 不读写其他路由的状态，原生未编号条目保留当前选择。坏载荷显示错误并保留既有 owner；prompt 和凭据组件不以历史条目标识重新挂载。`BrowserNavigation` 的条目标识及载荷使相同 URL 的不同访问也发布新快照；写入和遍历继续使用原草稿准入。选择只含页签，不含业务数据。具体取舍见[账号浏览历史决策](../../.agents/notes/implemented/feature/2026-11-11-account-reading-history.md)。
+账号页通过 `useAccountHistory` 消费绑定 userId 和 pageKey 的轻量页签选择。受控条目以 replace 初始化，用户切换以 push 写入，重复选择不写入；遍历只应用已准入选择。隐藏的账号 owner 不读写其他路由的状态，原生未编号条目保留当前选择。坏载荷显示错误并保留既有 owner；prompt 和凭据组件不以历史条目标识重新挂载。`BrowserNavigation` 的条目标识及载荷使相同 URL 的不同访问也发布新快照；写入和遍历继续使用原草稿准入。Worker 详情通过 `useWorkerHistory` 使用同一入口，载荷绑定 userId、pageKey 和 Worker ID，只恢复运行监控或配置页签。配置首次打开后保持挂载；隐藏内容为 inert，取消离开后在历史恢复完成时以 replace 返回配置。隐藏的 Worker owner 不读写其他页面的选择，坏载荷隐藏内容但保留原 owner。选择只含页签，不含业务数据。具体取舍见[账号浏览历史决策](../../.agents/notes/implemented/feature/2026-11-11-account-reading-history.md)。
 
 弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
 按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，

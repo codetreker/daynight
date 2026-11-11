@@ -13,7 +13,7 @@ import { controllerJournalFormat } from "../../../src/commands/controller/journa
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 const roots: string[] = [], readers: Database.Database[] = [];
 const pending = (file: string, sessionId: string) => { const db = new Database(file, { readonly: true }); readers.push(db); return openPendingContent(file, sessionId, db); };
-afterEach(async () => { vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -25,6 +25,135 @@ const fixture = async () => {
   return { home, ticket, journalPath, entry, sourceThrough };
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+test("retries confirmed archive busy responses with the same request until the upload completes", async () => {
+  const f = await fixture(), bodies: string[] = [];
+  const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
+  const attempts = new Map<string, { body: unknown; count: number }>();
+  const request: typeof fetch = async (input, init) => {
+    const key = `${init?.method} ${input}`, previous = attempts.get(key);
+    const body = typeof init?.body === "string" ? init.body : init?.body ? Buffer.from(init.body as Uint8Array) : undefined;
+    if (!previous) {
+      attempts.set(key, { body, count: 1 });
+      return Response.json({ error: { code: "resource_busy", message: "Archive slot occupied." } }, { status: 429, headers: { "Retry-After": "0" } });
+    }
+    expect(body).toEqual(previous.body);
+    previous.count++;
+    return receiver.request(input, init);
+  };
+  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).state).toBe("ready");
+  expect(bodies).toHaveLength(1);
+  expect([...attempts.keys()]).toEqual(expect.arrayContaining([
+    expect.stringContaining("POST "), expect.stringContaining("/source-tail"), expect.stringContaining("/prepare"),
+    expect.stringContaining("/seal"), expect.stringContaining("PUT "), expect.stringContaining("/content"),
+  ]));
+  expect([...attempts.values()].every(value => value.count >= 2)).toBe(true);
+});
+
+test.each([[429, "resource_busy", 9], [429, "rate_limited", 1], [503, "resource_busy", 1], [403, "forbidden", 1]] as const)(
+  "bounds archive retries and preserves HTTP %s / %s", async (status, code, count) => {
+    const f = await fixture();
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code } }, { status, headers: { "Retry-After": "0" } }));
+    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ status, code });
+    expect(request).toHaveBeenCalledTimes(count);
+  },
+);
+
+const archiveClock = () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  // Node's native AbortSignal clock is separate from the controllable JS timer clock.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("Deadline exceeded.", "TimeoutError")), ms);
+    return controller.signal;
+  });
+};
+
+test.each([
+  { retryAfter: null, random: 0, expectedMs: 500 },
+  { retryAfter: "invalid", random: 0.99999, expectedMs: 5000 },
+  { retryAfter: "7", random: 0, expectedMs: 7000 },
+  { retryAfter: "Thu, 01 Jan 2026 00:00:09 GMT", random: 0, expectedMs: 9000 },
+])("archive busy waits for Retry-After or bounded jitter: $retryAfter / $expectedMs", async ({ retryAfter, random, expectedMs }) => {
+  const f = await fixture();
+  archiveClock();
+  vi.spyOn(Math, "random").mockReturnValue(random);
+  const receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
+  let first = true;
+  const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (!first) return receiver.request(input, init);
+    first = false;
+    return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: retryAfter === null ? {} : { "Retry-After": retryAfter } });
+  });
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  await vi.advanceTimersByTimeAsync(expectedMs - 1);
+  expect(request).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  expect((await result).state).toBe("ready");
+  expect(request.mock.calls.length).toBeGreaterThan(1);
+});
+
+test("archive busy keeps its error identity when the shared 60 second budget expires", async () => {
+  const f = await fixture();
+  archiveClock();
+  const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "120" } }));
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+  await vi.advanceTimersByTimeAsync(59_999);
+  expect(request).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  await failed;
+  expect(request).toHaveBeenCalledOnce();
+});
+
+test("cancelling an archive busy wait prevents another request", async () => {
+  const f = await fixture(), controller = new AbortController();
+  archiveClock();
+  const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "5" } }));
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request, signal: controller.signal });
+  const reason = new Error("Worker stopping.");
+  const failed = expect(result).rejects.toBe(reason);
+  await vi.advanceTimersByTimeAsync(100);
+  controller.abort(reason);
+  await failed;
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(request).toHaveBeenCalledOnce();
+});
+
+test.each(["history", "content"])("exhausted %s busy retries retain the original error without a reconciliation request", async stage => {
+  const f = await fixture(), receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
+  let busyAttempts = 0;
+  const request: typeof fetch = async (input, init) => {
+    if (init?.method === "PUT" && (stage === "history" ? String(input).includes("/prepare/history/") : String(input).endsWith("/content"))) {
+      busyAttempts++;
+      return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "0" } });
+    }
+    if (busyAttempts === 9) throw new Error("An explicit busy response has no unknown result to reconcile.");
+    return receiver.request(input, init);
+  };
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+  expect(busyAttempts).toBe(9);
+});
+
+test("archive requests share the same round deadline across upload stages", async () => {
+  const f = await fixture(), receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
+  archiveClock();
+  const refused = new Set<string>();
+  const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (!refused.has(url) && (url.endsWith("/archive") || url.endsWith("/source-tail"))) {
+      refused.add(url);
+      return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "40" } });
+    }
+    return receiver.request(input, init);
+  });
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
+  await vi.advanceTimersByTimeAsync(60_000);
+  await failed;
+  expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
+});
+
 test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before reading pending content and preserves source bytes", async code => {
   const f = await fixture(), db = new Database(f.journalPath);
   db.prepare("UPDATE execution SET archive_incomplete=?,projection_gap=?").run(code === "archive_incomplete" ? 1 : 0, code === "projection_gap" ? "Native history was lost." : null);

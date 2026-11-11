@@ -1,6 +1,14 @@
 export type ArchiveRepairCode = "archive_incomplete" | "projection_gap";
 export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | { kind: "attempt" } | { kind: "complete" };
 
+export class ArchiveRequestError extends Error {
+  constructor(readonly status: number, readonly code: string | undefined) {
+    super(`Session archive request failed (${status}).`);
+    this.name = "ArchiveRequestError";
+  }
+  get busy(): boolean { return this.status === 429 && this.code === "resource_busy"; }
+}
+
 export class ArchiveRepairRequiredError extends Error {
   constructor(readonly code: ArchiveRepairCode) {
     super(code === "archive_incomplete" ? "Pending archive has an unresolved projection gap: original history is incomplete." : "Pending archive has an unresolved projection gap: its source requires repair.");
