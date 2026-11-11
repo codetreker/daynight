@@ -39,7 +39,10 @@ and receiving packages and their preparation and cleanup; moving time between
 packages is not itself a saving.
 
 The Root fixture retains its existing shared names and semantics for ordinary
-and tagged consumers. Configuration rules and WebUI protocol matrices belong
+and tagged consumers. Root Runtime lifecycle, metrics listener and transport
+tests are grouped by their tested responsibility; application shutdown ordering
+belongs with server assembly. The tests retain real socket, metrics, relay and
+file mechanisms while controlling unrelated DAO facts. Configuration rules and WebUI protocol matrices belong
 with their implementations, while Root retains real assembly, route coexistence
 and protected API proofs. UniAuth identity, browser binding and result transport
 scenarios live with the Authentication adapter, using real Identity components,

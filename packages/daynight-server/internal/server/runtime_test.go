@@ -1,8 +1,6 @@
 package server
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -28,9 +25,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/logging"
-	"github.com/prometheus/client_golang/prometheus"
+	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
+	"github.com/google/uuid"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func testConfig(t *testing.T) configpkg.Config {
@@ -507,29 +506,6 @@ func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runti
 		}
 	})
 	return runtime, resources
-}
-
-func TestTransportStartupFailures(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	_, err = Start(context.Background(), listener.Addr().String(), time.Second, time.Second, testLogger(), http.NotFoundHandler(), nil, nil, nil, nil)
-	var failure *httpx.RuntimeError
-	if !errors.As(err, &failure) || failure.Phase != "listen" || errors.Unwrap(err) == nil {
-		t.Fatalf("listener failure lost cause: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = Start(ctx, "127.0.0.1:0", time.Second, time.Second, testLogger(), http.NotFoundHandler(), nil, nil, nil, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("startup cancellation lost: %v", err)
-	}
-	_, err = Start(context.Background(), "127.0.0.1:0", time.Second, time.Second, testLogger(), nil, nil, nil, nil, nil)
-	if !errors.As(err, &failure) || failure.Phase != "composition" {
-		t.Fatalf("missing handler accepted: %v", err)
-	}
 }
 
 func TestCloseRetriesTimedOutHTTPDrainWithoutClosingApp(t *testing.T) {
@@ -1062,285 +1038,247 @@ func TestConcurrentCloseWaiterDeadlineDoesNotChangeOwner(t *testing.T) {
 	}
 }
 
-// blockedCompletionWriter controls the request completion record after the
-// hijacked handler returns; lifecycle records remain writable.
-type blockedCompletionWriter struct {
-	entered chan struct{}
-	release chan struct{}
+type shutdownTestAuthenticator struct{}
+
+func (shutdownTestAuthenticator) Authenticate(_ context.Context, kind model.CredentialKind, _ string) (model.Principal, error) {
+	return model.Principal{Kind: kind, UserID: "test-user", CredentialID: "test-credential"}, nil
 }
 
-func (w *blockedCompletionWriter) Write(value []byte) (int, error) {
-	if strings.Contains(string(value), `"request_id":"hijack-completion"`) {
-		close(w.entered)
-		<-w.release
+func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T) {
+	config := testConfig(t)
+	config.Server.ShutdownTimeout = 80 * time.Millisecond
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWork)
+	fixture := sessionHTTPSetup(t)
+	controller, _ := fixture.controller(t, uuid.NewString())
+	routes := fixture.application.relay
+	engine := fixture.application.engine
+	endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return len(value), nil
+	schema := map[string]any{"type": "object"}
+	if err := endpoint.RegisterTool(&sdk.Tool{Name: "wait", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
+		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
+			close(entered)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return mcphttp.ToolResult{}, ctx.Err()
+		}); err != nil {
+		t.Fatal(err)
+	}
+	application := &sessionApplication{Handler: endpoint, relay: routes, engine: engine, mcp: endpoint}
+	runtime, deps := startRuntimeTest(t, config, func(*runtimeTestResources) http.Handler { return application })
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, engine.CancelWork, engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDone := make(chan error, 1)
+	go func() { runtimeDone <- runtime.Run(ctx) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		request, err := http.NewRequest(http.MethodPost, "http://"+runtime.Address(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait","arguments":{}}}`))
+		if err != nil {
+			return
+		}
+		request.Header.Set("Authorization", "Bearer test")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		releaseWork()
+		cancel()
+		select {
+		case <-clientDone:
+		case <-time.After(5 * time.Second):
+			t.Error("MCP client did not stop")
+		}
+	})
+	await(t, entered)
+	started := time.Now()
+	cancel()
+	await(t, canceled)
+	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected bounded shutdown deadline, got %v", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("runtime waited beyond the shared shutdown budget")
+	}
+	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
+	defer stopProbe()
+	if err := deps.Store.Ready(probe); err != nil {
+		t.Fatalf("application dependency closed while MCP work remained active: %v", err)
+	}
+	if _, err := deps.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
+		t.Fatalf("files closed while MCP work remained active: %v", err)
+	}
+	if routes.ActiveConnections() != 1 {
+		t.Fatal("relay stopped its controller before the active MCP handler exited")
+	}
+	operation, err := engine.BeginOperation()
+	if err != nil {
+		t.Fatalf("session engine stopped before the active MCP handler exited: %v", err)
+	}
+	operation.Close()
+
+	releaseWork()
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
+	}
+	await(t, clientDone)
+	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRead()
+	if _, _, err := controller.Read(read); err == nil {
+		t.Fatal("relay retained controller connection after shutdown")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		closing := routes.ActiveConnections() == 0
+		op, operationErr := engine.BeginOperation()
+		if operationErr == nil {
+			op.Close()
+		}
+		engineClosed := operationErr != nil
+		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		databaseClosed := errors.Is(deps.Store.Ready(probe), os.ErrClosed)
+		object, openErr := deps.Files.Open(probe, "runtime", "shutdown.txt")
+		if openErr == nil {
+			_ = object.Body.Close()
+		}
+		cancel()
+		filesClosed := errors.Is(openErr, os.ErrClosed)
+		if closing && engineClosed && databaseClosed && filesClosed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resources not released after MCP and relay stop: relay=%v engine=%v databaseClosed=%v filesClosed=%v", closing, engineClosed, databaseClosed, filesClosed)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
-func TestRuntimeWaitsForHijackedRequestCompletionLog(t *testing.T) {
-	for _, deadline := range []bool{false, true} {
-		name := "graceful"
-		if deadline {
-			name = "deadline"
+func TestForcedShutdownJoinsSnapshotCancellationWithIdleMCP(t *testing.T) {
+	config := testConfig(t)
+	config.Server.ShutdownTimeout = 30 * time.Millisecond
+	entered := make(chan struct{})
+	queryDone := make(chan error, 1)
+	var application *sessionApplication
+	runtime, dependencies := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		t.Run(name, func(t *testing.T) {
-			writer := &blockedCompletionWriter{entered: make(chan struct{}), release: make(chan struct{})}
-			var releaseOnce sync.Once
-			root := t.TempDir()
-			output, err := logging.Open(root, writer, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			logger := slog.New(slog.NewJSONHandler(output, nil))
-			hijacked := make(chan error, 1)
-			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				connection, buffer, err := http.NewResponseController(w).Hijack()
-				if err != nil {
-					hijacked <- err
-					return
+		engine := sessioncore.NewEngine(deps.Files)
+		sessions := sessionservice.New(deps.Store, engine)
+		relay := sessionhttp.NewRoutes(sessions, nil, testLogger())
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", endpoint)
+		mux.Handle("/wait", runtimeWaitOperation(t, deps.Store, entered, queryDone))
+		application = &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}
+		return application
+	})
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, application.engine.CancelWork, application.engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + runtime.Address() + "/wait")
+		if err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() { cancel(); await(t, clientDone) })
+	await(t, entered)
+	cancel()
+	if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected forced shutdown deadline, got %v", err)
+	}
+	if err := await(t, queryDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("snapshot operation did not observe cancellation: %v", err)
+	}
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
+	}
+	if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("cleanup retained the application dependency: %v", err)
+	}
+	await(t, clientDone)
+}
+
+func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
+	drain := &Runtime{drained: make(chan struct{})}
+	called := false
+	handler := drain.admit(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	drain.stopAdmission()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable || called {
+		t.Fatalf("shutdown admitted a new handler: status=%d called=%v", response.Code, called)
+	}
+	drain.stopAdmission()
+}
+
+func TestSessionRuntimeShutsRelayBeforeDependencies(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			called := false
+			sentinel := errors.New("relay drain failed")
+			runtime, dependencies := startRuntimeTest(t, testConfig(t), func(*runtimeTestResources) http.Handler { return http.NotFoundHandler() })
+			runtime.shutdownHandler = func(ctx context.Context) error {
+				called = true
+				if err := dependencies.Store.Ready(ctx); err != nil {
+					t.Errorf("database closed before relay: %v", err)
 				}
-				_, err = buffer.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
-				if err == nil {
-					err = buffer.Flush()
+				if _, err := dependencies.Files.Put(ctx, uuid.NewString(), "shutdown.txt", strings.NewReader("relay still owns resources")); err != nil {
+					t.Errorf("files closed before relay: %v", err)
 				}
-				hijacked <- errors.Join(err, connection.Close())
-			})
-			shutdownStarted := make(chan struct{})
-			appClosed := make(chan struct{})
-			budget := 5 * time.Second
-			if deadline {
-				budget = 100 * time.Millisecond
-			}
-			runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, budget, logger, handler,
-				func(context.Context) error { close(shutdownStarted); return nil }, nil, nil,
-				func(context.Context) error { close(appClosed); return nil })
-			if err != nil {
-				_ = output.Close()
-				t.Fatal(err)
+				if fail {
+					return sentinel
+				}
+				return nil
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			done := make(chan error, 1)
-			finished := make(chan struct{})
-			go func() { done <- runtime.Run(ctx); close(finished) }()
-			t.Cleanup(func() {
-				releaseOnce.Do(func() { close(writer.release) })
-				cancel()
-				select {
-				case <-finished:
-				case <-time.After(5 * time.Second):
-					t.Error("runtime did not stop during cleanup")
-					return
-				}
-				if !runtime.TransportDrained() {
-					cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = runtime.Close(cleanup)
-					done()
-				}
-				if !runtime.TransportDrained() {
-					t.Error("transport did not drain during cleanup; retaining log lock")
-					return
-				}
-				if err := output.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			connection, err := net.DialTimeout("tcp", runtime.Address(), time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer connection.Close()
-			_, err = io.WriteString(connection, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Request-ID: hijack-completion\r\n\r\n")
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := http.ReadResponse(bufio.NewReader(connection), nil)
-			if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
-				t.Fatalf("hijack handshake: %v %v", response, err)
-			}
-			if err := await(t, hijacked); err != nil {
-				t.Fatal(err)
-			}
-			await(t, writer.entered)
 			cancel()
-			await(t, shutdownStarted)
-			if code := runRuntimeLogLockProbe(t, root); code != 3 {
-				t.Fatalf("another process acquired lock during completion logging: exit=%d", code)
+			err := runtime.Run(ctx)
+			if !called {
+				t.Fatal("relay shutdown hook not called")
 			}
-			if deadline {
-				if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("blocked completion should exhaust shutdown budget: %v", err)
+			if fail {
+				if !errors.Is(err, sentinel) {
+					t.Fatalf("shutdown error lost: %v", err)
 				}
-				if runtime.TransportDrained() {
-					t.Fatal("transport reported drained while completion logging remained blocked")
+				if err := dependencies.Store.Ready(context.Background()); err != nil {
+					t.Fatalf("failed relay released database: %v", err)
 				}
-			} else {
-				select {
-				case err := <-done:
-					t.Fatalf("runtime returned before completion logging: %v", err)
-				case <-time.After(100 * time.Millisecond):
+				fail = false
+				if err := runtime.Close(context.Background()); !errors.Is(err, sentinel) {
+					t.Fatalf("retry lost prior relay failure: %v", err)
 				}
-			}
-			select {
-			case <-appClosed:
-				t.Fatal("application closed before completion logging")
-			default:
-			}
-			releaseOnce.Do(func() { close(writer.release) })
-			if deadline {
-				cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-				err := runtime.Close(cleanup)
-				done()
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("shutdown retry lost original deadline: %v", err)
-				}
-			} else if err := await(t, done); err != nil {
-				t.Fatalf("graceful shutdown: %v", err)
-			}
-			await(t, appClosed)
-			if !runtime.TransportDrained() {
-				t.Fatal("completed transport was not marked drained")
-			}
-			if err := output.Close(); err != nil {
+			} else if err != nil {
 				t.Fatal(err)
 			}
-			if code := runRuntimeLogLockProbe(t, root); code != 0 {
-				t.Fatalf("another process could not acquire released lock: exit=%d", code)
+			if err := dependencies.Store.Ready(context.Background()); !errors.Is(err, os.ErrClosed) {
+				t.Fatal("completed shutdown retained database")
 			}
 		})
 	}
-}
-
-func TestRuntimeRetainsRejectedRequestLogAcrossCloseRetry(t *testing.T) {
-	writer := &blockedCompletionWriter{entered: make(chan struct{}), release: make(chan struct{})}
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(writer.release) }) })
-	logger := slog.New(slog.NewJSONHandler(writer, nil))
-	appClosed := make(chan struct{})
-	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, 50*time.Millisecond, logger, http.NotFoundHandler(), nil, nil, nil,
-		func(context.Context) error { close(appClosed); return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.stopAdmission()
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.Header.Set("X-Request-ID", "hijack-completion")
-	requestDone := make(chan struct{})
-	go func() {
-		runtime.http.Handler.ServeHTTP(response, request)
-		close(requestDone)
-	}()
-	await(t, writer.entered)
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if err := runtime.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("blocked rejected request did not exhaust shutdown: %v", err)
-	}
-	if runtime.TransportDrained() {
-		t.Fatal("transport marked drained while rejected request logging was blocked")
-	}
-	// Shutdown has returned and sealed admission. A late dispatched handler
-	// cannot re-enter the logger after its owner observes the drain.
-	late := httptest.NewRecorder()
-	runtime.http.Handler.ServeHTTP(late, request)
-	if late.Code != http.StatusServiceUnavailable {
-		t.Fatalf("sealed admission returned %d", late.Code)
-	}
-	select {
-	case <-appClosed:
-		t.Fatal("application closed while rejected request logging was blocked")
-	default:
-	}
-	retried := make(chan error, 1)
-	go func() { retried <- runtime.Close(context.Background()) }()
-	select {
-	case err := <-retried:
-		t.Fatalf("close retry finished before rejected logging: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	releaseOnce.Do(func() { close(writer.release) })
-	await(t, requestDone)
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("shutdown rejection returned %d", response.Code)
-	}
-	if err := await(t, retried); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("retry lost the original deadline: %v", err)
-	}
-	await(t, appClosed)
-	if !runtime.TransportDrained() {
-		t.Fatal("finished rejection was not drained")
-	}
-}
-
-func TestRuntimeMetricsRejectionRetainsLogging(t *testing.T) {
-	var output bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&output, nil))
-	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, time.Second, logger, http.NotFoundHandler(), nil, nil, nil, nil,
-		MetricsEndpoint{Address: "127.0.0.1:0", Registry: prometheus.NewRegistry()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := runtime.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	}()
-	runtime.metrics.stopAdmission()
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	request.Header.Set("X-Request-ID", "metrics-rejection")
-	runtime.metrics.http.Handler.ServeHTTP(response, request)
-	var event struct {
-		Component string `json:"component"`
-		Phase     string `json:"phase"`
-		RequestID string `json:"request_id"`
-	}
-	if response.Code != http.StatusServiceUnavailable || json.Unmarshal(output.Bytes(), &event) != nil || event.Component != "metrics" || event.Phase != "scrape" || event.RequestID != "metrics-rejection" {
-		t.Fatalf("metrics rejection lost diagnostic: status=%d log=%s", response.Code, output.String())
-	}
-}
-
-// The probe obtains the production lock from a separate process rather than
-// relying on an in-process approximation of flock semantics.
-func TestRuntimeLogLockProbe(t *testing.T) {
-	root := os.Getenv("DAYNIGHT_TEST_RUNTIME_LOG_LOCK_ROOT")
-	if root == "" {
-		return
-	}
-	output, err := logging.Open(root, io.Discard, nil)
-	if err != nil {
-		var detail *logging.Error
-		if errors.As(err, &detail) && detail.Phase == "lock" && detail.Cause == "busy" {
-			os.Exit(3)
-		}
-		os.Exit(2)
-	}
-	if output.Close() != nil {
-		os.Exit(2)
-	}
-	os.Exit(0)
-}
-
-func runRuntimeLogLockProbe(t *testing.T, root string) int {
-	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeLogLockProbe$")
-	command.Env = append(os.Environ(), "DAYNIGHT_TEST_RUNTIME_LOG_LOCK_ROOT="+root)
-	if err := command.Run(); err != nil {
-		if ctx.Err() != nil {
-			t.Fatal("lock probe did not exit")
-		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return exit.ExitCode()
-		}
-		t.Fatal(err)
-	}
-	return 0
 }
