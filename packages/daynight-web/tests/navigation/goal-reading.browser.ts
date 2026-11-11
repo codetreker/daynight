@@ -163,7 +163,7 @@ for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editi
     await expect(editor).not.toContainText('secret SQL detail');
   } else {
     await expect(title).toBeEnabled();
-    await expect(editor).toContainText('Unable to connect');
+    await expect(editor).toContainText('The operation outcome is unknown');
   }
   await expect(title).toHaveValue('Unsaved goal');
   await expect(description).toHaveValue('Keep this draft');
