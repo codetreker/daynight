@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test, vi } from "vitest";
@@ -49,6 +49,10 @@ test.skipIf(process.platform !== "win32")("queries and terminates the real guard
     lease.closeAfterCommit(receipt); lease = undefined;
     await wakeWindowsJobGuardian(ticket.launchId);
     await vi.waitFor(async () => expect(await inspectProcessProof(source.guardian)).toBe("stopped"), { timeout: 15_000, interval: 25 });
+  } catch (error) {
+    try { console.error("Guardian fixture diagnostic:", (await readFile(path.join(home, `guardian-${ticket.launchId}.log`), "utf8")).slice(-8192)); }
+    catch (logError) { console.error("Guardian fixture log could not be read:", logError); }
+    throw error;
   } finally {
     const source = readWindowsJobSource(journalPath, ticket);
     if (lease) {

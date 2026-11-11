@@ -2,7 +2,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import type { CleanupRequest } from "../../../src/commands/worker/execution-stop.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -15,6 +15,7 @@ import * as launchTickets from "../../../src/commands/controller/launch-ticket.j
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
 import { previousWebTicket, webExecutionRef } from "../../../src/commands/worker/backends/web-stop.js";
+import * as webStop from "../../../src/commands/worker/backends/web-stop.js";
 import { createExecutionCapacity } from "../../../src/commands/worker/execution-capacity.js";
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
@@ -31,9 +32,14 @@ const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebB
 const mockPosixControllerStop = () => vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
   confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
   stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
-  commit: () => lifecycle.recordStoppedControllerGeneration(journalPath, ticket),
+  commit: async hooks => { hooks?.onVerified(); return lifecycle.recordStoppedControllerGeneration(journalPath, ticket); },
   close: async () => {},
 }));
+
+const mockRecoveryStop = () => {
+  mockPosixControllerStop();
+  vi.spyOn(webStop, "previousWebTicket").mockImplementation(home => launchTickets.readLaunchTicket(home, randomUUID()));
+};
 
 it("recovers the exact previous Windows ticket from its persisted controller proof", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
@@ -68,6 +74,7 @@ it.each(["identity conflict", "ordinary read failure"] as const)("handles a Wind
 
 it("retains a single retry across starting, store reopen, and later native failure below the ordinary budget", async () => {
   const f = await recoveryFixture(5);
+  mockRecoveryStop();
   f.store.pauseRecovery(f.task, "Execution failure threshold reached.", 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
   f.request.mockImplementationOnce(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", activity: "initializing", nativeStopped: false, stoppedAt: null, error: null } }));
@@ -84,6 +91,7 @@ it("retains a single retry across starting, store reopen, and later native failu
 
 it("retries the same unsubmitted generation after launch preparation fails and the Worker store reopens", async () => {
   const f = await recoveryFixture();
+  mockRecoveryStop();
   f.store.beginRecovery(f.task, 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
   f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
@@ -107,6 +115,7 @@ it("retries the same unsubmitted generation after launch preparation fails and t
 
 it("keeps an allocated native retry through a transient worktree failure and store reopen without consuming another attempt", async () => {
   const f = await recoveryFixture();
+  mockRecoveryStop();
   f.store.beginRecovery(f.task, 8);
   vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Worktree temporarily unavailable."));
   await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Worktree temporarily");
@@ -124,6 +133,7 @@ it("keeps an allocated native retry through a transient worktree failure and sto
 
 it("continues a consumed unsubmitted retry after a Worker reopen without consuming another allowance", async () => {
   const f = await recoveryFixture();
+  mockRecoveryStop();
   f.store.beginRecovery(f.task, 8);
   f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
   await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
@@ -362,6 +372,12 @@ const releaseFixtureGuardian = async (context: { ticket: ControllerLaunchTicket;
   await vi.waitFor(async () => expect(await processProof.inspectProcessProof(source.guardian)).not.toBe("running"), { timeout: 15_000, interval: 25 });
 };
 
+const guardianDiagnostic = async (context: { ticket: ControllerLaunchTicket; journalPath: string } | undefined): Promise<string> => {
+  if (!context) return "Guardian was not started on this platform.";
+  try { return (await readFile(path.join(path.dirname(context.journalPath), `guardian-${context.ticket.launchId}.log`), "utf8")).slice(-8192); }
+  catch (error) { return `Guardian log could not be read: ${String(error)}`; }
+};
+
 const forceOsWriterFixture = async (child: ChildProcess, native: processProof.ProcessProof | undefined): Promise<void> => {
   if (process.platform !== "win32" && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
     try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
@@ -385,7 +401,8 @@ it("joins the original descendant when process proof acquisition fails", async (
     ]) as [{ kind: string; message: string; descendantPid: number; code: number }];
     expect(result).toMatchObject({ kind: "capture-failed", code: 1, message: expect.stringContaining("Injected process proof failure") });
     expect(result.descendantPid).toBeGreaterThan(0);
-  } finally {
+  } catch (error) { console.error("Guardian fixture diagnostic:", await guardianDiagnostic(context)); throw error; }
+  finally {
     try {
     if (child.exitCode === null && child.signalCode === null) {
       const joined = once(child, "message", { signal: AbortSignal.timeout(15_000) });
@@ -430,7 +447,8 @@ it.each(["lost activation receipt", "leader crash before activation"] as const)(
     }
     await joinLeader();
     await vi.waitFor(async () => expect(await processProof.inspectProcessProof(native!)).toBe("stopped"), { timeout: 15_000, interval: 25 });
-  } finally {
+  } catch (error) { console.error("Guardian fixture diagnostic:", await guardianDiagnostic(context)); throw error; }
+  finally {
     try {
     if (child.exitCode === null && child.signalCode === null) {
       if (!activationSubmitted) {
@@ -517,7 +535,7 @@ it("observes the original OS writer stop before terminal archive joins", async (
     else expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toMatchObject({ sealed: true, empty: true, controllerStopped: true, nativeProcessesStopped: true });
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } catch (error) {
-    console.error(JSON.stringify({ fixture: "web-stop-os-writer", stage, platform: process.platform, pid: proof?.pid ?? child.pid, descendantPid, jobObjectName: proof?.jobObjectName ?? null, exitCode: child.exitCode, signalCode: child.signalCode, stderr: stderr.slice(0, 2048) }));
+    console.error(JSON.stringify({ fixture: "web-stop-os-writer", stage, platform: process.platform, pid: proof?.pid ?? child.pid, descendantPid, jobObjectName: proof?.jobObjectName ?? null, exitCode: child.exitCode, signalCode: child.signalCode, stderr: stderr.slice(0, 2048), guardian: await guardianDiagnostic(context) }));
     throw error;
   } finally {
     release(); operation.dispose();
@@ -599,7 +617,8 @@ it.skipIf(process.platform !== "win32")("retains the original Job across Worker 
     const operation = createOperation({ limits: { totalMs: 30_000 } });
     try { expect(await backend.observeExecutionStop(task, operation)).toMatchObject({ kind: "unknown" }); }
     finally { operation.dispose(); }
-  } finally {
+  } catch (error) { console.error("Guardian fixture diagnostic:", await guardianDiagnostic(context)); throw error; }
+  finally {
     try {
       await forceOsWriterFixture(child, native);
       if (child.exitCode === null && child.signalCode === null) await Promise.race([exited, new Promise<never>((_resolve, reject) => { const timer = setTimeout(() => reject(new Error("Controller fixture did not exit.")), 15_000); timer.unref(); })]);
@@ -654,7 +673,8 @@ it.skipIf(process.platform !== "win32")("commits the original stop after the gua
     expect((await workerExit)[0]).toBe(0);
     expect(await processProof.inspectProcessProof(native)).toBe("stopped");
     expect(lifecycle.readWindowsJobReceipt(journalPath, source.ticket)).toMatchObject({ source: original, sealed: true, empty: true, controllerStopped: true, nativeProcessesStopped: true });
-  } finally {
+  } catch (error) { console.error("Guardian fixture diagnostic:", await guardianDiagnostic(context)); throw error; }
+  finally {
     if (worker && worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
     try { await forceOsWriterFixture(child, native); }
     finally { await releaseFixtureGuardian(context); }

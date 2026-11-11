@@ -4,13 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../../src/api/operation.js";
 import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lease.js";
-import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
 
 const roots: string[] = [];
 const scopes: BotCliProbe[] = [];
 const operations: ReturnType<typeof createOperation>[] = [];
+const ownedJobs = new Map<string, { lease: nativeJob.WindowsBotJobLease; beforeClose: (readonly number[])[] }>();
 const fixture = async (tail = "console.log('help-result');", signal?: AbortSignal, requestMs = 5_000) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
   await mkdir(scratch, { recursive: true });
@@ -22,9 +22,21 @@ const fixture = async (tail = "console.log('help-result');", signal?: AbortSigna
   const scope = await createBotCliProbe({ environment: process.env, cwd: root }, operation); scopes.push(scope);
   return { root, file, pidFile, scope, operation };
 };
-const checkStopped = async (scope: BotCliProbe) => {
+const captureDescendants = async (pidFile: string) => {
+  const pids = (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
+  expect(pids.every(pid => Number.isSafeInteger(pid) && pid > 0)).toBe(true);
+  return Promise.all(pids.map(pid => processProof.captureProcessProof(pid)));
+};
+const checkStopped = async (scope: BotCliProbe, descendants: readonly processProof.ProcessProof[] = []) => {
   expect(scope.ownership.process).not.toBeNull();
-  expect(await processProof.confirmControllerProcessesStopped(scope.ownership.process!, [])).toBe(true);
+  if (process.platform === "win32") {
+    const owned = ownedJobs.get(scope.ownership.jobObjectName!);
+    expect(owned?.beforeClose.at(-1)).toEqual([]);
+    await vi.waitFor(async () => {
+      expect(await processProof.inspectProcessProof(scope.ownership.process!)).toBe("stopped");
+      for (const proof of descendants) expect(await processProof.inspectProcessProof(proof)).toBe("stopped");
+    }, { timeout: 15_000, interval: 25 });
+  } else expect(await processProof.confirmControllerProcessesStopped(scope.ownership.process!, descendants)).toBe(true);
 };
 // These diagnostics cover only fixed, test-owned OS probes. Their commands and
 // output contain fixture process metadata, never CLI credentials or target output.
@@ -50,13 +62,12 @@ beforeEach(() => {
     try { return await stop(...args); }
     catch (error) { diagnostic("stop-process-scope", error); throw error; }
   });
-  const inspectJob = windowsJob.inspectControllerJob;
-  vi.spyOn(windowsJob, "inspectControllerJob").mockImplementation(async (...args) => {
-    try {
-      const pids = await inspectJob(...args);
-      console.error(JSON.stringify({ fixture: "bot-cli-probe", stage: "inspect-job", job: args[0], stop: args[1] === true, pids }));
-      return pids;
-    } catch (error) { diagnostic("inspect-job", error); throw error; }
+  const create = nativeJob.createWindowsBotJobLease;
+  vi.spyOn(nativeJob, "createWindowsBotJobLease").mockImplementation(async (...args) => {
+    const lease = await create(...args), beforeClose: (readonly number[])[] = [], close = lease.close.bind(lease);
+    vi.spyOn(lease, "close").mockImplementation(() => { const members = lease.inspect(); close(); beforeClose.push(members); });
+    ownedJobs.set(lease.name, { lease, beforeClose });
+    return lease;
   });
 });
 afterEach(async () => {
@@ -67,6 +78,7 @@ afterEach(async () => {
     catch (error) { diagnostic("fixture-cleanup", error); failures.push(error); }
   }
   for (const operation of operations.splice(0)) operation.dispose();
+  ownedJobs.clear();
   // Retain failed owners and their directories for the next cleanup attempt;
   // removing an open Windows cwd only hides the original failure with EBUSY.
   if (failures.length !== 0) throw new AggregateError(failures, "Bot probe fixtures retain unconfirmed process ownership.");
@@ -77,14 +89,15 @@ describe("owned Bot CLI capability probes", () => {
   it("keeps one gated leader across commands and stops detached-stdio descendants after success", async () => {
     const f = await fixture(); const originalPid = f.scope.ownership.pid;
     expect(f.scope.ownership.targetStarted).toBe(false);
-    if (process.platform === "win32") expect(await windowsJob.inspectControllerJob(f.scope.ownership.jobObjectName!)).toContain(originalPid);
+    if (process.platform === "win32") expect(ownedJobs.get(f.scope.ownership.jobObjectName!)!.lease.inspect()).toContain(originalPid);
     expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
     expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
     expect(f.scope.ownership.pid).toBe(originalPid);
     expect((await readFile(f.pidFile, "utf8")).trim().split("\n")).toHaveLength(2);
+    const descendants = await captureDescendants(f.pidFile);
     if (process.platform === "win32") expect(f.scope.ownership.jobObjectName).toMatch(/^Local\\Daynight-/);
     await f.scope.close(); await f.scope.close();
-    await checkStopped(f.scope);
+    await checkStopped(f.scope, descendants);
     await expect(f.scope.run(process.execPath, [f.file])).rejects.toThrow(/closed/);
   }, 120_000);
 
@@ -92,21 +105,24 @@ describe("owned Bot CLI capability probes", () => {
     const f = await fixture("process.exitCode = 1;");
     await expect(f.scope.run(process.execPath, [f.file])).rejects.toThrow(/command failed/);
     expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
-    await f.scope.close(); await checkStopped(f.scope);
+    const descendants = await captureDescendants(f.pidFile);
+    await f.scope.close(); await checkStopped(f.scope, descendants);
   }, 120_000);
 
   it("reports an output limit distinctly and still stops every owned descendant", async () => {
     const f = await fixture("process.stdout.write('x'.repeat(65537));");
     await expect(f.scope.run(process.execPath, [f.file])).rejects.toMatchObject({ code: "limit_exceeded" });
     expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
-    await f.scope.close(); await checkStopped(f.scope);
+    const descendants = await captureDescendants(f.pidFile);
+    await f.scope.close(); await checkStopped(f.scope, descendants);
   }, 120_000);
 
   it("stops the complete scope after a command deadline", async () => {
     const f = await fixture("setInterval(() => {}, 1000);", undefined, 5_000);
     await expect(f.scope.run(process.execPath, [f.file])).rejects.toThrow(/deadline/);
     expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
-    await f.scope.close(); await checkStopped(f.scope);
+    const descendants = await captureDescendants(f.pidFile);
+    await f.scope.close(); await checkStopped(f.scope, descendants);
   }, 120_000);
 
   it("joins the complete scope after cancellation while a descendant is running", async () => {
@@ -119,18 +135,16 @@ describe("owned Bot CLI capability probes", () => {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
+    const descendants = await captureDescendants(f.pidFile);
     controller.abort();
     await expect(result).rejects.toThrow(/cancel/);
-    await f.scope.close(); await checkStopped(f.scope);
+    await f.scope.close(); await checkStopped(f.scope, descendants);
   }, 120_000);
 
   it("retains typed process ownership and a working retry after unconfirmed cleanup", async () => {
-    let lease: nativeJob.WindowsBotJobLease | undefined;
-    if (process.platform === "win32") {
-      const create = nativeJob.createWindowsBotJobLease;
-      vi.spyOn(nativeJob, "createWindowsBotJobLease").mockImplementation(async (...args) => { lease = await create(...args); return lease; });
-    }
     const f = await fixture(); await f.scope.run(process.execPath, [f.file]);
+    const descendants = await captureDescendants(f.pidFile);
+    const lease = ownedJobs.get(f.scope.ownership.jobObjectName ?? "")?.lease;
     if (lease !== undefined) vi.spyOn(lease, "terminate").mockImplementationOnce(() => { throw new nativeJob.WindowsBotJobError("fixture-stop", 5); });
     else vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(new Error("private-process-error"));
     let failure: BotCliProbeCleanupError | undefined;
@@ -140,8 +154,7 @@ describe("owned Bot CLI capability probes", () => {
     expect(failure?.cause).toBeUndefined();
     expect(String(failure)).not.toContain("private-process-error");
     if (lease !== undefined) expect(lease.inspect()).toContain(f.scope.ownership.pid);
-    await failure!.retryCleanup(); await checkStopped(f.scope);
-    if (lease !== undefined) expect(lease.inspect()).toEqual([]);
+    await failure!.retryCleanup(); await checkStopped(f.scope, descendants);
   }, 120_000);
 
   it("never launches the target when process ownership cannot be captured", async () => {
