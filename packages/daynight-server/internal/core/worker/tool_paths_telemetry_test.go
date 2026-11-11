@@ -303,6 +303,77 @@ func TestToolPathsCloudTargetsUseLockedRevision(t *testing.T) {
 	requireFault(t, ValidateToolPathTargets(t.Context(), dao, principal, "worker", v), "invalid_input")
 }
 
+func TestToolPathsTargetsReadDesiredOnlyForCloudObservations(t *testing.T) {
+	for name, value := range map[string]*model.ToolPathTelemetry{
+		"omitted": nil,
+		"empty":   {SchemaVersion: 1, ObservedAt: toolTelemetryFixture().ObservedAt, Entries: []model.ToolPathObservation{}},
+		"local":   toolTelemetryFixture(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dao := &configurationDAO{readErr: errors.New("unexpected desired read")}
+			if err := ValidateToolPathTargets(t.Context(), dao, model.Principal{UserID: "user"}, "worker", value); err != nil {
+				t.Fatalf("observation without cloud targets requires desired configuration: %v", err)
+			}
+			if len(dao.scopes) != 0 || len(dao.accesses) != 0 || dao.desiredWrites != 0 || dao.observationWrites != 0 {
+				t.Fatalf("observation without cloud targets accessed configuration: %+v", dao)
+			}
+		})
+	}
+
+	t.Run("mixed local and cloud", func(t *testing.T) {
+		value := toolTelemetryFixture()
+		local := value.Entries[0]
+		local.Tool = "copilot"
+		value.Entries[0].ConfigurationSource = "cloud"
+		value.Entries[0].TargetRevision = workerValidationValue("7")
+		value.Entries = append([]model.ToolPathObservation{local}, value.Entries...)
+		dao := configuredDAO("7")
+		dao.current.Desired.Value.ToolPaths.Codex = &value.Entries[1].Target
+		dao.current.Desired.Value.ToolPaths.Copilot = &model.ToolPathChoice{Kind: "auto"}
+		if err := ValidateToolPathTargets(t.Context(), dao, model.Principal{UserID: "user"}, "worker", value); err != nil {
+			t.Fatalf("local observation was compared with cloud choice: %v", err)
+		}
+		if !reflect.DeepEqual(dao.scopes, [][2]string{{"user", "worker"}}) || len(dao.accesses) != 0 || dao.desiredWrites != 0 || dao.observationWrites != 0 {
+			t.Fatalf("mixed observations must use one owner-scoped read without writes: %+v", dao)
+		}
+	})
+}
+
+func TestToolPathsCloudTargetsRequireUsableRevisionsAndCurrentChoice(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		desiredRevision  string
+		targetRevision   *string
+		unadopted        bool
+		wantInvalidInput bool
+	}{
+		{"invalid desired revision", "01", workerValidationValue("1"), false, true},
+		{"missing target revision", "7", nil, false, true},
+		{"invalid target revision", "7", workerValidationValue("07"), false, true},
+		{"current unadopted choice", "7", workerValidationValue("7"), true, true},
+		{"historical unadopted choice", "7", workerValidationValue("6"), true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := toolTelemetryFixture()
+			value.Entries[0].ConfigurationSource = "cloud"
+			value.Entries[0].TargetRevision = test.targetRevision
+			dao := configuredDAO(test.desiredRevision)
+			if !test.unadopted {
+				dao.current.Desired.Value.ToolPaths.Codex = &value.Entries[0].Target
+			}
+			err := ValidateToolPathTargets(t.Context(), dao, model.Principal{UserID: "user"}, "worker", value)
+			if test.wantInvalidInput {
+				requireFault(t, err, "invalid_input")
+			} else if err != nil {
+				t.Fatalf("historical target requires a current adopted choice: %v", err)
+			}
+			if !reflect.DeepEqual(dao.scopes, [][2]string{{"user", "worker"}}) || len(dao.accesses) != 0 || dao.desiredWrites != 0 || dao.observationWrites != 0 {
+				t.Fatalf("target validation must only read the owner-scoped desired configuration: %+v", dao)
+			}
+		})
+	}
+}
+
 func TestToolPathsRejectNoncanonicalTime(t *testing.T) {
 	raw, err := json.Marshal(toolTelemetryFixture())
 	if err != nil {
