@@ -19,6 +19,21 @@ import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
 
+it("reattaches a sidecar-bound legacy ticket after an orchestration interruption without allocating a launch", async () => {
+  const f = await orchestrationFixture();
+  const { toolLaunch: _launch, toolObservation: _observation, ...configuration } = f.source.ticket.configuration;
+  const legacyTicket = { ...f.source.ticket, configuration };
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(legacyTicket);
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "Temporary branch deviation." }, 20_000);
+  f.source.stopped.mockResolvedValue(false);
+  const result = await f.backend.advance(f.task, new AbortController().signal);
+  expect(result.webExecution?.launchId).toBe(f.task.webExecution?.launchId);
+  expect(result.configuration?.toolLaunch).toEqual(f.task.configuration?.toolLaunch);
+  expect(f.store.getOrchestrationBlocker(result)).toBeNull();
+  expect(f.launcher.prepare).not.toHaveBeenCalled();
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
 it("waits for new Web prompts and retries only after a rejected revision changes", async () => {
   const f = await fixture();
   const input = f.store.getTask(f.identity)!;

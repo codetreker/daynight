@@ -30,6 +30,8 @@ export class HerdrCommandCleanupError extends AggregateError {
 // Only the original runner can acknowledge its child and output streams. Legacy
 // cleanup errors, including other cleanup owners, have no such acknowledgement.
 const cleanupConfirmations = new WeakMap<HerdrCommandCleanupError, () => boolean>();
+/** Register only the original owner's close proof; exit or a PID lookup is insufficient. */
+export const registerHerdrCommandCleanupConfirmation = (error: HerdrCommandCleanupError, confirmed: () => boolean): void => { cleanupConfirmations.set(error, confirmed); };
 
 export const hasHerdrCommandCleanupFailure = (error: unknown): boolean => error instanceof Error && (
   error instanceof HerdrCommandCleanupError || hasHerdrCommandCleanupFailure(error.cause) ||

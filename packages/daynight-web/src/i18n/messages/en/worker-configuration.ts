@@ -1,7 +1,7 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
-  overview: 'Runtime monitoring', configuration: 'Configuration', sections: 'Worker sections',
+  overview: 'Runtime monitoring', configuration: 'Configuration', prompt: 'Prompts', sections: 'Worker sections',
   leaveQuestion: 'Leave this Worker configuration and discard unsaved changes?',
   leaveExplanation: 'Unsaved edits will be lost. Changes already submitted to the service are not undone.',
   loading: 'Loading configuration', unavailable: 'Worker configuration is unavailable',

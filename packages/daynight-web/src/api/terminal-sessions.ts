@@ -1,10 +1,11 @@
+import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { decodeSessionV2Archive } from '../../../daynight/src/session/v2/archive';
 import { assertTerminalBinding, parseSessionV2Message, parseSessionV2Owner, parseTerminalBinding } from '../../../daynight/src/session/v2/protocol';
 import { SESSION_V2_PROTOCOL, SESSION_PROTOCOL_HEADER, SESSION_V2_LIMITS, bool, byteLength, choice, decodeStrictSessionJson, exact, hash, hashSessionBytes, list, literal, nullable, seq, text, unique, uuid } from '../../../daynight/src/session/v2/values';
 import type { SessionV2Archive, SessionV2Envelope, SessionV2Message, SessionV2Owner, SessionV2Payloads, TerminalBinding } from '../../../daynight/src/session/v2/types';
 import type { SessionArchiveStatus } from '../../../daynight/src/session/archive';
 import { assertSessionFence } from '../../../daynight/src/session/protocol';
-import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { createSessionApi, type LoadedSessionArchive, type SessionApi } from './sessions';
 
 export type SessionHistoryItem = {
@@ -72,12 +73,18 @@ export function parseSessionHistory(value: unknown): { items: SessionHistoryItem
   return { items, nextCursor: nullable(o.nextCursor, v => text(v, 1024)) };
 }
 async function boundedBytes(response: Response, signal: AbortSignal, max: number): Promise<Uint8Array> {
+  signal = responseSignal(response, signal);
+  signal.throwIfAborted();
   if (!response.body) return invalid();
   const length = response.headers.get('Content-Length');
-  if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(max))) { await response.body.cancel(); invalid(); }
+  if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(max))) { await awaitAbortable(response.body.cancel().catch(() => undefined), signal); signal.throwIfAborted(); invalid(); }
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
-  try { for (;;) { const r = await reader.read(); signal.throwIfAborted(); if (r.done) break; size += r.value.byteLength; if (size > max) invalid(); chunks.push(r.value); } }
-  finally { await reader.cancel(); reader.releaseLock(); }
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try { signal.throwIfAborted(); for (;;) { const r = await reader.read(); signal.throwIfAborted(); if (r.done) break; size += r.value.byteLength; if (size > max) invalid(); chunks.push(r.value); } }
+  catch (error) { signal.throwIfAborted(); throw error; }
+  finally { signal.removeEventListener('abort', cancel); if (!cancelled) void reader.cancel().catch(() => undefined); reader.releaseLock(); }
   const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; } return bytes;
 }
 export function createTerminalSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void, serverOrigin = window.location.origin): TerminalSessionApi {
@@ -108,11 +115,18 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
       assertResponsePrincipal(response, userId, onPrincipalMismatch);
       if (!response.ok) return json(response, signal, () => invalid());
       if (response.status !== 200 || !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get('Content-Type') ?? '')) invalid();
-      const bytes = await boundedBytes(response, signal, SESSION_V2_LIMITS.archiveMaxBytes);
-      if (String(bytes.length) !== status.payload.byteLength || await hashSessionBytes(bytes) !== status.payload.sha256) invalid();
-      const archive = await decodeSessionV2Archive(bytes); fence({ ...terminalEnvelope(archive) }, item);
-      if (archive.owner.projectId !== projectId || archive.owner.taskId !== taskId || archive.owner.serverOrigin !== serverOrigin || archive.finalizationId !== status.payload.finalizationId || archive.completeness !== status.payload.completeness) invalid();
-      signal.throwIfAborted(); return { status, archive };
+      const lifetime = responseSignal(response, signal);
+      try {
+        const bytes = await boundedBytes(response, lifetime, SESSION_V2_LIMITS.archiveMaxBytes);
+        const digest = await hashSessionBytes(bytes);
+        lifetime.throwIfAborted();
+        if (String(bytes.length) !== status.payload.byteLength || digest !== status.payload.sha256) invalid();
+        const archive = await decodeSessionV2Archive(bytes);
+        lifetime.throwIfAborted();
+        fence({ ...terminalEnvelope(archive) }, item);
+        if (archive.owner.projectId !== projectId || archive.owner.taskId !== taskId || archive.owner.serverOrigin !== serverOrigin || archive.finalizationId !== status.payload.finalizationId || archive.completeness !== status.payload.completeness) invalid();
+        return { status, archive };
+      } catch (error) { lifetime.throwIfAborted(); throw error; }
     },
     nativeArchive: async (item, signal) => {
       if (item.agentControlMode !== 'web') invalid();

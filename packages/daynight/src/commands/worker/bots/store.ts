@@ -6,6 +6,11 @@ import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, typ
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import { workerStoreFormat } from "../store-format.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
+import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { parseFrozenToolObservation } from "../tool-observation.js";
+import type { FrozenToolObservation } from "../types.js";
+import type { BotExecution } from "./execution-store.js";
 import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type Bot, type BotOwner, type BotRecord, type BotLaunchIntent, type BotRoleConfiguration } from "./types.js";
 
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
@@ -39,6 +44,14 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       for (const file of [intent.ticketPath, intent.journalPath, intent.credentialFile]) if (typeof file !== "string" || !path.isAbsolute(file) || /[\0\r\n]/.test(file)) throw new Error("Stored Bot private path is invalid.");
       if (!Number.isSafeInteger(intent.recoveryLimit) || intent.recoveryLimit < 0) throw new Error("Stored Bot recovery limit is invalid.");
       if (intent.roleConfiguration !== null) parseBotRole(intent.roleConfiguration);
+      if (intent.toolLaunch !== undefined) {
+        if (intent.registration.provider === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
+        intent.toolLaunch = parseResolvedToolLaunch(intent.toolLaunch, { tool: intent.registration.provider, context: "web" });
+      }
+      if (intent.toolObservation !== undefined) {
+        if (intent.toolLaunch === undefined) throw new Error("Frozen Bot tool observation requires its original recipe.");
+        intent.toolObservation = parseFrozenToolObservation(intent.toolObservation);
+      }
     }
     if (record.cleanup !== undefined) {
       const cleanup = record.cleanup, deletion = record.observed.deletion;
@@ -145,7 +158,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }) });
     }),
     /** Persist the first registration identity before any register, ticket write or spawn. */
-    prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number }): BotLaunchIntent => atomic(() => {
+    prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation }): BotLaunchIntent => atomic(() => {
       const record = required(owner, botId);
       if (record.observed.deletion !== null) throw new Error("A deleting Bot cannot prepare a launch.");
       if (record.intent !== null) return record.intent;
@@ -157,7 +170,24 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       record.intent = { botVersion: record.observed.version,
         registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId: randomUUID(), controllerInstanceId, provider: record.definition.resolvedConfiguration.provider, initialInput: "none" },
         launchId, executionId, controllerInstanceId, initialOperationId: randomUUID(), sessionId: null, executionGeneration: "1", nativeSessionId: null,
-        ticketPath: controllerTicketPath(input.homeDirectory, launchId), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration };
+        ticketPath: controllerTicketPath(input.homeDirectory, launchId), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration,
+        ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }) };
+      return put(record).intent!;
+    }),
+    /** The caller holds the execution serializer and proves the journal has no writer. */
+    freezeToolLaunch: (input: BotRecord, launch: ResolvedToolLaunch, observation?: FrozenToolObservation): BotLaunchIntent => atomic(() => {
+      const record = required(input.owner, input.botId), intent = record.intent;
+      if (record.observed.deletion !== null || intent === null || input.intent === null || !same(input.intent, intent)) throw new Error("Bot tool freeze requires the original active launch intent.");
+      if (intent.registration.provider === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
+      const selected = parseResolvedToolLaunch(launch, { tool: intent.registration.provider, context: "web" });
+      if (intent.toolLaunch !== undefined) {
+        if (!same(intent.toolLaunch, selected)) throw new Error("The original Bot tool selection is already frozen.");
+        return intent;
+      }
+      const row = db.prepare(`SELECT record FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) as { record: string } | undefined;
+      const execution = row === undefined ? null : JSON.parse(row.record) as BotExecution;
+      if (intent.executionGeneration !== "1" || intent.nativeSessionId !== null || execution !== null && (execution.launchId !== intent.launchId || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null || execution.recoveryCount !== 0 || execution.restartAfterShutdown || execution.previous !== null || execution.retainedLaunchIds.length !== 0)) throw new ToolSelectionError(intent.registration.provider, "web", "launch", "legacy_tool_identity_missing");
+      record.intent = { ...intent, toolLaunch: selected, ...(observation === undefined ? {} : { toolObservation: parseFrozenToolObservation(observation) }) };
       return put(record).intent!;
     }),
     /** First preparation owns the role; neither retries nor template upgrades replace it. */

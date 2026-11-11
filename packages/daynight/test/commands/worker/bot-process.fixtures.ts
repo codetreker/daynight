@@ -9,6 +9,7 @@ import type { BotConfiguration, BotDefinition, BotRecord } from "../../../src/co
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 export const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const cleanups: (()=>void)[] = [];
 export const cleanupBotProcesses = () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
@@ -29,6 +30,6 @@ export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configur
   const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
   const observe=vi.fn(async(t:ControllerLaunchTicket)=>snapshot(t));
   const api={register,grant,readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
-  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,dependencies:{prepareEnvironment,launch,observe,...extra}});
+  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,selectToolLaunch:async agent=>frozenToolLaunch(agent),dependencies:{prepareEnvironment,launch,observe,...extra}});
   return {home,owner,store,executions,current,register,grant,prepareEnvironment,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
 };

@@ -24,7 +24,7 @@ async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);
 }
-async function install(page: Page) {
+async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   let details = all;
   let currentGraph = graph;
   let epoch = taskSyncEpoch(projectId);
@@ -38,7 +38,7 @@ async function install(page: Page) {
   let failedGoalReads = 0;
   let rejectGoalWrites = false;
   let releaseEdit: (() => void) | null = null;
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
@@ -92,7 +92,10 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addActiveChain: () => {
+  return { setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+    details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
+    currentGraph = graphFixture(details);
+  }, addActiveChain: () => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
@@ -104,6 +107,9 @@ async function install(page: Page) {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false }),
       detailFixture(projectId, otherTask2Id, { parentId: otherGoalId, title: 'Other second task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
+    currentGraph = graphFixture(details);
+  }, moveOtherTaskToGoal: () => {
+    details = details.map(item => item.id === otherTaskId ? { ...item, parentId: goalId, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
     currentGraph = graphFixture(details);
   }, moveOtherTask: () => {
     details = details.map(item => item.id === otherTaskId ? { ...item, parentId: null, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
@@ -125,6 +131,225 @@ async function install(page: Page) {
     currentGraph = graphFixture(details);
   } };
 }
+
+async function retainGoalAttachmentPath(page: Page, goalPage: Locator) {
+  await goalPage.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await goalPage.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt$`));
+  await goalPage.getByRole('tab', { name: 'Tasks', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
+}
+
+for (const width of [1440, 390, 320]) test(`Task parent Goal is a read-only overview link at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const fixture = await install(page);
+  const longTitle = 'LongGoal标题'.repeat(30);
+  fixture.setGoalTitle(longTitle);
+  const writes: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  await page.goto(`/projects/${projectId}/tasks/${firstId}`);
+  const task = page.locator('.task-detail-page');
+  const aside = task.locator('.task-detail-aside');
+  const section = aside.getByRole('region', { name: 'Current Goal' });
+  const link = section.getByRole('link');
+  await expect(link).toHaveText(`${Array.from(longTitle).slice(0, 160).join('')}…`);
+  await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
+  await expect(aside.locator(':scope > section').first()).toHaveAttribute('aria-label', 'Current Goal');
+  await expect(task.getByRole('combobox', { name: 'Current Goal' })).toHaveCount(0);
+  await expect(task.getByRole('button', { name: 'Save Goal membership' })).toHaveCount(0);
+  const geometry = async () => task.evaluate(element => {
+    const main = element.querySelector('.task-detail-main')!.getBoundingClientRect();
+    const aside = element.querySelector('.task-detail-aside')!.getBoundingClientRect();
+    return { mainBottom: main.bottom, mainRight: main.right, asideTop: aside.top, asideLeft: aside.left, scrollWidth: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth };
+  });
+  const before = await geometry();
+  expect(before.scrollWidth).toBeLessThanOrEqual(before.viewport);
+  if (width <= 600) expect(before.asideTop).toBeGreaterThanOrEqual(before.mainBottom);
+  else expect(before.asideLeft).toBeGreaterThanOrEqual(before.mainRight);
+  await task.getByRole('button', { name: 'Enter fullscreen' }).click();
+  await expect(link).toBeVisible();
+  const fullscreen = await geometry();
+  expect(fullscreen.scrollWidth).toBeLessThanOrEqual(fullscreen.viewport);
+  await task.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await expect(section).toHaveCount(0);
+  await task.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await link.focus();
+  await expect(link).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText(longTitle);
+  expect(writes).toEqual([]);
+});
+
+test('Task parent Goal link preserves native modified clicks and protects unsaved drafts', async ({ page, context }) => {
+  await install(page);
+  const writes: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  await page.goto(`/projects/${projectId}/tasks/${firstId}`);
+  const task = page.locator('.task-detail-page');
+  const link = task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
+  const popupPromise = context.waitForEvent('page');
+  await link.click({ modifiers: ['Control'] });
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await popup.close();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${firstId}$`));
+  await task.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await task.getByRole('button', { name: 'Add step', exact: true }).click();
+  await task.locator('.step-add-form').getByRole('textbox', { name: 'Title' }).fill('Unsaved draft');
+  await task.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await link.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${firstId}$`));
+  await link.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  expect(writes).toEqual([]);
+});
+
+for (const attachmentBacked of [false, true]) test(`nested Task follows its parent Goal with attachment path ${attachmentBacked}`, async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  if (attachmentBacked) await retainGoalAttachmentPath(page, goalPage);
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  const task = page.getByRole('dialog', { name: 'Standalone task' });
+  const aside = task.locator('.task-detail-aside');
+  await expect(aside.locator(':scope > section').first()).toHaveAttribute('aria-label', 'Current Goal');
+  await expect(aside.getByRole('link', { name: 'Goal reading' })).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
+  await task.getByRole('button', { name: 'Enter fullscreen' }).click();
+  const link = aside.getByRole('link', { name: 'Goal reading' });
+  await expect(link).toBeVisible();
+  await task.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await task.getByRole('button', { name: 'Add step', exact: true }).click();
+  await task.locator('.step-add-form').getByRole('textbox', { name: 'Title' }).fill('Nested draft');
+  await task.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await link.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(task).toBeVisible();
+  if (attachmentBacked) await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
+  await link.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(task).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+});
+
+test('Task opened from its Goal dependency graph follows the parent link', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  const graphDialog = page.locator('.task-chain-dialog');
+  await graphDialog.getByRole('button', { name: 'First task, Details' }).click();
+  const task = page.getByRole('dialog', { name: 'First task', exact: true });
+  await task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' }).click();
+  await expect(task).toHaveCount(0);
+  await expect(graphDialog).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+});
+
+test('Task parent link returns a Goal URL with a different query to overview', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=overview`);
+  const goalPage = page.locator('.goal-detail-surface');
+  await goalPage.locator(`[data-goal-task-id="${singleId}"]`).click();
+  const task = page.getByRole('dialog', { name: 'Standalone task' });
+  await task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' }).click();
+  await expect(task).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect(goalPage.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal pause presentation and navigation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.addPausedTask();
+  const zh = locale === 'zh-CN';
+  const badgeLabel = zh ? '已暂停' : 'Paused';
+  const viewDependencies = zh ? '查看依赖关系' : 'View dependencies';
+  const closeGraph = zh ? '关闭依赖图' : 'Close dependency graph';
+  const fullscreen = zh ? '进入全屏' : 'Enter fullscreen';
+  const exitFullscreen = zh ? '退出全屏' : 'Exit fullscreen';
+
+  async function checkGoal(mode: 'dialog' | 'page') {
+    const surface = page.locator('.goal-detail-surface');
+    await expect(surface).toBeVisible();
+    const disclosure = surface.locator('.goal-detail-disclosure');
+    await disclosure.click();
+    const row = surface.locator(`[data-goal-task-id="${secondId}"]`);
+    await row.scrollIntoViewIfNeeded();
+    const badge = row.locator('.task-paused-badge');
+    await expect(badge).toHaveText(badgeLabel);
+    await expect(badge).toBeVisible();
+    await expect(row.locator('.goal-detail-task-title')).toContainText('A very long paused task title');
+    const status = row.locator('span').last();
+    await expect(status).toHaveText(zh ? '待处理' : 'To do');
+    await expect(status).toBeVisible();
+    expect(await row.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return element.scrollWidth <= element.clientWidth && [...element.children].every(child => {
+        const rect = child.getBoundingClientRect();
+        return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+      });
+    })).toBe(true);
+    expect(await row.evaluate(element => {
+      const parts = [...element.children].map(child => child.getBoundingClientRect());
+      return parts.every((a, i) => parts.slice(i + 1).every(b => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));
+    })).toBe(true);
+    expect(await surface.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`goal-${mode}.png`) });
+    await row.click();
+    const pausedChild = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+    await expect(pausedChild.locator('.task-detail-title')).toContainText('A very long paused task title');
+    await page.keyboard.press('Escape');
+    await expect(pausedChild).toHaveCount(0);
+    await expect(row).toBeFocused();
+    await surface.getByRole('button', { name: fullscreen }).click();
+    await expect(badge).toBeVisible();
+    await surface.getByRole('button', { name: exitFullscreen }).click();
+    const graphOpener = surface.getByRole('button', { name: viewDependencies });
+    await graphOpener.click();
+    const graphDialog = page.locator('.task-chain-dialog');
+    await expect(graphDialog.locator('.task-pause-count')).toHaveText(zh ? '1 已暂停' : '1 paused');
+    const graphBadge = graphDialog.locator('.task-node-paused .task-paused-badge');
+    await expect(graphBadge).toHaveText(badgeLabel);
+    await expect(graphBadge).toHaveClass(/compact/);
+    await expect(graphBadge).toBeVisible();
+    expect(await graphBadge.evaluate(element => {
+      const badge = element.getBoundingClientRect(), node = element.closest('.task-node')!.getBoundingClientRect();
+      return badge.width > 0 && badge.height > 0 && badge.left >= node.left - 1 && badge.right <= node.right + 1 && badge.top >= node.top - 1 && badge.bottom <= node.bottom + 1;
+    })).toBe(true);
+    await graphDialog.getByRole('button', { name: zh ? '适应画布' : 'Fit to canvas' }).click();
+    await expect.poll(() => graphBadge.evaluate(element => {
+      const badge = element.getBoundingClientRect(), canvas = element.closest('.task-graph-canvas')!.getBoundingClientRect();
+      return badge.left >= canvas.left && badge.right <= canvas.right && badge.top >= canvas.top && badge.bottom <= canvas.bottom;
+    })).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`graph-${mode}.png`) });
+    await graphDialog.getByRole('button', { name: zh ? 'First task，详情' : 'First task, Details' }).click();
+    const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+    await expect(child).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(child).toHaveCount(0);
+    await graphDialog.getByRole('button', { name: closeGraph }).click();
+    await expect(graphDialog).toHaveCount(0);
+    await expect(graphOpener).toBeFocused();
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+  }
+
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  await checkGoal('dialog');
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await checkGoal('page');
+});
 
 test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page }) => {
   const fixture = await install(page); fixture.rejectWrites();
@@ -725,6 +950,49 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await page.goForward(); await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+for (const attachmentBacked of [false, true]) test(`a moved external Goal child follows its latest parent and protects both drafts with attachment path ${attachmentBacked}`, async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal();
+  const writes: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface.task-detail-page');
+  if (attachmentBacked) await retainGoalAttachmentPath(page, goalPage);
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  await page.locator('.task-chain-dialog').getByRole('button', { name: 'Other task, Details' }).click();
+  const external = page.locator('.goal-detail-surface.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Other goal' }) });
+  await external.getByRole('tab', { name: 'Discussion' }).click();
+  const goalDraft = external.locator('.thread-composer textarea');
+  await goalDraft.fill('External Goal draft');
+  await external.getByRole('tab', { name: 'Tasks' }).click();
+  await external.locator(`[data-goal-task-id="${otherTaskId}"]`).click();
+  const child = page.getByRole('dialog', { name: 'Other task', exact: true });
+  await child.getByRole('tab', { name: 'Steps' }).click();
+  await child.getByRole('button', { name: 'Add step', exact: true }).click();
+  const taskDraft = child.locator('.step-add-form input');
+  await taskDraft.fill('Child Task draft');
+  await child.getByRole('tab', { name: 'Overview' }).click();
+  fixture.moveOtherTaskToGoal();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const link = child.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
+  await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
+  await link.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(child).toBeVisible();
+  await expect(taskDraft).toHaveValue('Child Task draft');
+  await expect(goalDraft).toHaveValue('External Goal draft');
+  if (attachmentBacked) await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt\\?tab=overview$`));
+  await link.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0);
+  await expect(external).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface.task-detail-page .task-detail-title')).toHaveText('Goal reading');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect.poll(() => goalPage.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  expect(writes).toEqual([]);
 });
 
 test('history retains an external Goal draft when its old witness moves', async ({ page }) => {

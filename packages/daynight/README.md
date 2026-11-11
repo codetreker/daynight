@@ -2213,9 +2213,11 @@ worker:
     herdr: /opt/homebrew/bin/herdr
 ```
 
-These choices are currently parsed locally. Worker Task/Bot launches, existing
-probes and cloud configuration do not consume them yet; saving this mapping does
-not establish that a tool path is applied. Explicit paths must be absolute on
+Cloud configuration exchanges these choices when the server negotiates tool-path
+support. Web Codex/Copilot Task and Bot launches, version/host checks and model
+discovery consume one verified selection; saving a target does not establish that
+it is applied. Explicit Herdr targets are rejected until its instance mapping
+supports them; all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute on
 the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
 characters. Windows paths need a drive or complete UNC share. Values retain all
 spaces and punctuation: the parser does not trim, normalize, expand `~` or
@@ -2246,6 +2248,26 @@ manifest location; a candidate from another installation is rejected. Before
 launch, verification repeats this static selection from the frozen entry as well
 as checking recorded files, so installing a higher-priority package invalidates
 the selection even when the previous vendor binary remains unchanged.
+
+New Web executions freeze the complete tool recipe and its observed version before
+submission. Target or PATH changes affect future executions. Recovery verifies the
+original files and reports `tool_identity_changed` when a dependency is missing or
+changed; it never substitutes another installation. Restore the original matching
+installation to recover that recipe. Input, stop and archive operations on an
+existing live process retain its original process identity. Old submitted records
+without a frozen identity report `legacy_tool_identity_missing`; they cannot start
+a replacement. Never-submitted legacy tickets can acquire a private, immutable
+selection sidecar bound to the original ticket, without replaying initial input.
+
+The supported Web Copilot image-authority profile freezes its source SEA, Worker
+Node, preload closure and a complete private extracted distribution. Its public
+paths distinguish the selected source, actual JS entry and Node interpreter.
+Unknown builds keep the ordinary runtime. A known profile's preparation failure
+is an error rather than a silent fallback. Published distributions remain under
+`worker/tool-runtimes` with Worker state after normal shutdown. Their 2 GiB storage
+budget includes a durable 512 MiB reservation for each unresolved extraction;
+capacity exhaustion refuses new materialization and retains old execution data.
+Provider shutdown does not delete these durable dependencies.
 
 Resolution starts no process and does not validate the tool's version or protocol. The
 [Worker design](../../docs/design/daynight-worker.md#本地工具路径选择) describes

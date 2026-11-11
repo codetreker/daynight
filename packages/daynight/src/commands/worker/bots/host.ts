@@ -3,6 +3,11 @@ import type { CodexProbeOwner } from "../codex-probe-owner.js";
 import type { WorkerEvent } from "../execution.js";
 import { workerSqliteMigrationEvent } from "../diagnostics.js";
 import type { WorkerPaths } from "../paths.js";
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { botToolActivity } from "../tool-activity.js";
+import type { ActiveToolSelection } from "../tool-selection.js";
+import type { createWorkerToolInspector } from "../native-selection.js";
+import type { FrozenToolObservation } from "../types.js";
 import type { ExecutionConfiguration } from "../types.js";
 import { createBotDeletion } from "./delete.js";
 import { openBotExecutionStore } from "./execution-store.js";
@@ -16,6 +21,11 @@ import type { BotOwner } from "./types.js";
 
 /** The Worker lock protects both stores until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
+  selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
+  toolLaunchForHost?: (agent: "codex" | "copilot") => ResolvedToolLaunch | undefined;
+  toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
+  toolRuntimeRoot?: string;
+  toolInspector?: ReturnType<typeof createWorkerToolInspector>;
   homeDirectory: string; packageDirectory: string; workingDirectory: string; paths: WorkerPaths;
   owner: BotOwner; serverToken: string; configuration(): ExecutionConfiguration | null;
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
@@ -43,6 +53,9 @@ export const createWorkerBotHost = (options: {
       return current;
     };
     const collector = createAssistantHostCollector({ workingDirectory: options.workingDirectory, configuration,
+      ...(options.toolRuntimeRoot === undefined ? {} : { toolRuntimeRoot: options.toolRuntimeRoot }),
+      ...(options.toolInspector === undefined ? {} : { toolInspector: options.toolInspector }),
+      ...(options.toolLaunchForHost === undefined ? {} : { selectToolLaunch: async provider => provider === "claude" ? undefined : options.toolLaunchForHost!(provider) }),
       environment: { ...process.env, DN_CONFIG_DIR: options.paths.stateDirectory } });
     let closed = false;
     return {
@@ -55,10 +68,19 @@ export const createWorkerBotHost = (options: {
         // A probe which crossed a configuration transition cannot advertise stale defaults.
         return JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
       },
-      close: (): void => {
+      activeToolSelections: (): ActiveToolSelection[] => store.list(options.owner).flatMap(record => {
+        const intent = record.intent, tool = record.definition?.resolvedConfiguration.provider;
+        if (intent === null || tool !== "codex" && tool !== "copilot") return [];
+        const execution = executions!.get(record);
+        const activity = botToolActivity(record, execution); if (activity === "inactive") return [];
+        const unknown = activity === "unconfirmed";
+        return [{ tool, context: "web", launch: intent.toolLaunch ?? null, version: intent.toolObservation?.version ?? null, checkedAt: intent.toolObservation?.checkedAt ?? null, executionCount: unknown ? null : 1, instanceCount: 0, unconfirmedCount: unknown ? 1 : 0 }];
+      }),
+      close: async (): Promise<void> => {
         if (closed) return;
         closed = true;
         const failures: unknown[] = [];
+        try { await collector.close(); } catch (error) { failures.push(error); }
         try { executions!.close(); } catch (error) { failures.push(error); }
         try { store.close(); } catch (error) { failures.push(error); }
         if (failures.length) throw new AggregateError(failures, "Bot stores could not close.");

@@ -28,7 +28,8 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 projects, member and invitation management, CLI device authorization, and personal access tokens. The
 `AuthenticatedApp` implements their browser components and API client. Production
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
-shows the public introduction, `/setup` selects the zero-API guide, and other pages
+shows the public introduction, `/setup` selects the zero-API guide, `/auth/complete`
+confirms and publishes an account before replacing the return target, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
 the project index. Team settings share one page shell: `/teams/{teamId}/settings`
 opens General, and `/teams/{teamId}/members` opens Members & invitations. Business
@@ -314,7 +315,10 @@ outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
 Account profile, credentials and user prompt tabs participate in browser Back and
 Forward. Their history state contains only an account-bound tab selection; the
-existing credential and prompt owners retain their drafts and operation results. Worker monitoring and configuration tabs also participate in Back and Forward, scoped to the current user and Worker; the configuration owner retains its draft and operation state.
+existing credential and prompt owners retain their drafts and operation results.
+Worker monitoring, configuration and prompts tabs also participate in Back and
+Forward, scoped to the current user and Worker; both editing owners retain their
+drafts and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -497,9 +501,13 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` combines Runtime monitoring and Configuration
-tabs: runtime observations retain that window, while cloud configuration is an
-independent, retained resource. Both routes support direct access, reloads and
+last 72 hours. `/workers/{workerId}` presents Runtime monitoring, Configuration
+and Prompts as peer tabs, defaulting to Runtime monitoring. Arrow keys wrap
+between tabs and Home and End select the first and last; tab and panel
+accessibility associations and hidden-panel isolation remain intact. Runtime
+observations retain that window, while cloud configuration and the Worker prompt
+are independent resources. Configuration includes tool paths; Prompts contains
+the Worker prompt editor. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
@@ -627,10 +635,16 @@ cannot create the first target.
 `api/worker-configuration.ts` strictly decodes the account-owned resource.
 `features/workers/configuration/model.ts` and `useWorkerConfiguration.ts` keep
 latest resource, draft baseline, raw input and submitted snapshot separate.
-Opening Configuration mounts its state; switching tabs preserves the mounted
-editor and draft while pausing configuration reads. The active, visible,
-identity-admitted tab performs its own five-second single-flight refresh without
-using the runtime observation clock.
+Opening either editing tab mounts the page-level editing coordinator. Switching
+tabs preserves the mounted editors and drafts while pausing reads for the hidden
+resource. The active, visible, identity-admitted configuration tab performs its
+own five-second single-flight refresh without using the runtime observation
+clock. Prompt reads and writes do not depend on configuration initialization,
+validation or Worker online status, and failures in either resource do not block
+the other. One navigation guard covers both drafts: cancelling a leave returns to
+the dirty tab, or the last edited tab when both are dirty, and restores focus.
+The page owner stays retained while either resource has a pending or uncertain
+write or a configuration receipt awaits publication, without aborting or replaying an already dispatched prompt PUT.
 
 Background identity checks retain the editor, dialogs, local input and unapplied
 Project selection while private requests and new saves remain gated. In-flight
@@ -746,9 +760,16 @@ edit changes task time or graph geometry.
 Project Settings offers owner Team administrators a deletion preview and exact
 name confirmation. The preview identifies the Project, its observed counts and
 active Worker claims; those observations are not DELETE conditions. Names with
-control characters use reversible JSON escaping. A confirmed receipt withdraws
-the original cache generation and preserves a success notice across navigation.
-Cache cleanup and navigation can be retried independently. A dispatched request
+control characters use reversible JSON escaping. A confirmed receipt is retained
+independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
+locally without cleanup, automatic reads or navigation. On admission, cleanup
+uses the original cache generation. Withdrawal is not started, and navigation
+and dialog closure are skipped, when the submitted dialog, input or route has
+since changed. If persistent cleanup fails after withdrawal, retry targets the
+matching user, Project, user fence and denied generation without broadcasting
+withdrawal again or resending DELETE. The denial may use a different ticket;
+a stale ticket cannot clear a newer generation. Cleanup and navigation
+can be retried independently. A dispatched request
 with an unknown outcome is never replayed, and a later 404 does not prove that
 the deletion succeeded. Settings saves, ownership transfers and deletion share
 a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
@@ -2338,6 +2359,14 @@ serially with bounded stages and uploads coverage evidence. The browser job runs
 the assistant suite below without depending on the quality job or its artifacts. The module browser
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
+
+The independent login completion page validates a single local return target,
+retains its query and fragment, and waits for server-confirmed identity and local
+account publication before replacing the document. Identity and publication retries
+are separate; a superseded account requires an explicit reload. The server callback
+still returns directly to its original target until its completion route is enabled.
+The identity-cache browser fixture exercises the completion entry and native
+cross-page storage and BroadcastChannel signals with controlled API responses.
 
 The controlled `AccountChangeBanner` presents a localized polite status and a
 caller-supplied refresh action in the active header. Inactive instances keep an empty live region without presenting or announcing a notice.

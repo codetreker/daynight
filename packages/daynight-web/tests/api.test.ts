@@ -329,15 +329,20 @@ describe("API requests", () => {
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).sync.project.settings.version).toBe(version);
   });
-  it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
+  it("uses relative URLs, a cancellable signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
-    const abortSignal = signal();
-    await expect(listProjects({ limit: 50, cursor: "opaque+/= &?" }, abortSignal)).resolves.toEqual({ items: [project], nextCursor: "next" });
+    const controller = new AbortController();
+    await expect(listProjects({ limit: 50, cursor: "opaque+/= &?" }, controller.signal)).resolves.toEqual({ items: [project], nextCursor: "next" });
+    const networkSignal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal;
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/v1/projects?limit=50&cursor=opaque%2B%2F%3D+%26%3F", {
-      signal: abortSignal, headers: { Accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error",
+      signal: networkSignal, headers: { Accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error",
     });
-    await listProjects({}, abortSignal);
+    expect(networkSignal.aborted).toBe(false);
+    await listProjects({}, controller.signal);
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/projects");
+    const reason = new Error("cancel");
+    controller.abort(reason);
+    expect(networkSignal.reason).toBe(reason);
   });
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {

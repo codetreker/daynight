@@ -26,7 +26,15 @@ requires an authoritative read without silently rebasing a draft onto another
 settings version. Settings saves settle local pending independently of presentation
 admission. The original owner retains cancellable publication and distinguishes
 confirmed receipts, known refusals and unconfirmed dispatches; the submitted draft
-revision prevents an old receipt from clearing a newer edit. Confirmed revocation and real failures retain their existing handling. The
+revision prevents an old receipt from clearing a newer edit. Project membership
+operations record actual dispatch and trusted receipts separately from publication.
+Their local pending state ends without waiting for presentation admission; the
+panel owns cancellable publication and checks the original dialog and navigation
+context before destructive effects. A confirmed loss of the actor's Project
+access withdraws shared admission and starts access revalidation after scope
+admission even when the member page is inactive; presentation still waits for
+the owning page.
+Confirmed revocation and real failures retain their existing handling. The
 [transfer decision](../feature/2026-11-05-web-project-transfer.md) owns the
 receipt and unknown-result semantics.
 
@@ -51,7 +59,9 @@ alive until the original page can present it, without keeping the local save bus
 must release independently. Confirmed Project revocation withdraws private
 content and invalidates reads without cancelling a dispatched save; its result
 waits for renewed access. Identity invalidation still retires the old scope,
-and failed checks remain visible. The server
+and failed checks remain visible. A cancelled membership preparation does not
+dispatch; an unconfirmed dispatched write remains unknown, and a confirmed
+receipt is not reclassified if later publication fails. The server
 continues to enforce authorization and exact version preconditions.
 
 The dispatched-save navigation regression uses the real `AuthenticatedApp`

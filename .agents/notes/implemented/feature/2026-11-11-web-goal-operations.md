@@ -16,7 +16,9 @@ status and deletion. Task membership changes use the child Task's version and
 the same session. Goal and Task creation use the typed API and preserve explicit
 Parent and owner choices. Confirmations describe the different effects of ending
 and deleting a Goal. The [Goal requirements](../../../../docs/spec/daynight-goals.md)
-own the user-visible contract.
+own the user-visible contract. The original Task detail membership editor was
+later replaced by the [read-only Goal link](../simplification/2026-11-12-task-detail-goal-link.md);
+Goal creation and adding existing Tasks retain their membership operations.
 
 ## Alternatives
 

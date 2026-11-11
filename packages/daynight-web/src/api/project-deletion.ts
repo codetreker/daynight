@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, json, request, requestId } from "./client";
+import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from "./client";
 import { parseServerError } from "./parse";
 import { parseTeamRef } from "./team-parse";
 import type { TeamRef } from "./auth-types";
@@ -57,10 +57,13 @@ const parsePreview = (value: unknown, projectId: string): ProjectDeletionPreview
 export class ProjectDeletionRefusal extends ApiError {}
 export const isConfirmedProjectDeletionRefusal = (error: unknown): error is ProjectDeletionRefusal => error instanceof ProjectDeletionRefusal;
 
-const refusal = async (response: Response, correlationId: string): Promise<ProjectDeletionRefusal | null> => {
+const refusal = async (response: Response, correlationId: string, signal: AbortSignal): Promise<ProjectDeletionRefusal | null> => {
+  signal = responseSignal(response, signal);
   try {
+    signal.throwIfAborted();
     if (!/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("Content-Type") ?? "")) return null;
     const body: unknown = await response.clone().json();
+    signal.throwIfAborted();
     const parsed = parseServerError(body);
     if (parsed.requestId !== correlationId || response.headers.get("X-Request-ID") !== correlationId) return null;
     const known = response.status === 400 && parsed.code === "invalid_input" ||
@@ -70,7 +73,7 @@ const refusal = async (response: Response, correlationId: string): Promise<Proje
       response.status === 409 && parsed.code === "active_worker_claims";
     const notCommitted = response.status === 500 && parsed.code === "internal_error" && parsed.writeOutcome === "not_committed";
     return known || notCommitted ? new ProjectDeletionRefusal("server", response.status, parsed.code, parsed.requestId, undefined, undefined, undefined, parsed.writeOutcome) : null;
-  } catch { return null; }
+  } catch { signal.throwIfAborted(); return null; }
 };
 
 export const previewProjectDeletion = async (
@@ -99,8 +102,8 @@ export const deleteProject = async (
   const response = await request(`/api/v1/projects/${project}`, signal, { method: "DELETE", headers: { Accept: "application/json", "X-Request-ID": correlationId } }, onDispatch);
   assertResponsePrincipal(response, user, onMismatch);
   if (!response.ok) {
-    const confirmed = await refusal(response, correlationId);
-    signal.throwIfAborted();
+    const confirmed = await refusal(response, correlationId, signal);
+    responseSignal(response, signal).throwIfAborted();
     if (confirmed !== null) throw confirmed;
     return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   }

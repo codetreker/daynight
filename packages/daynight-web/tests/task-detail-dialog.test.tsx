@@ -13,6 +13,7 @@ import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/ta
 import { ProjectDraftHost } from '../src/features/task-detail/TaskDraftNavigation';
 import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { browserNavigation } from '../src/app/navigation';
+import { taskDetailUrl } from '../src/app/router';
 import { useBrowserLocation } from '../src/app/browser-location';
 import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
 import { dialogFocusables } from '../src/features/task-detail/focus';
@@ -46,7 +47,7 @@ const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ 
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
-const node = (task: TaskDetail): GraphTask => ({ type: 'task', parentId: null, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
+const node = (task: TaskDetail): GraphTask => ({ type: task.type, parentId: task.parentId, assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
   status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
 });
@@ -105,6 +106,53 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('shows the actual parent as a read-only overview link and updates its summary', async () => {
+    const child = detail(1, { parentId: id(2) });
+    const goal = detail(2, { type: 'goal', title: 'A'.repeat(161), ready: true });
+    const current = snapshot([child, goal]);
+    const fetcher = vi.fn().mockResolvedValue(response(child));
+    vi.stubGlobal('fetch', fetcher);
+    const options = props({ snapshot: current });
+    const view = await open(options, 'en');
+    const aside = await screen.findByRole('complementary', { name: 'Task relationships and metadata' });
+    const section = within(aside).getByRole('region', { name: 'Current Goal' });
+    expect(aside.firstElementChild).toBe(section);
+    const link = within(section).getByRole('link', { name: `${'A'.repeat(160)}…` });
+    expect(link).toHaveAttribute('href', taskDetailUrl(projectId, goal.id, { tab: 'overview', path: null }));
+    expect(screen.queryByRole('combobox', { name: 'Current Goal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save Goal membership' })).toBeNull();
+    const renamed = snapshot([child, { ...goal, title: 'Renamed Goal', version: 2n, updatedAt: '2026-10-20T09:00:01Z' }], 2);
+    await view.rerender(<TaskDetailDialog {...options} snapshot={renamed} />);
+    expect(within(section).getByRole('link', { name: 'Renamed Goal' })).toHaveAttribute('href', link.getAttribute('href'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));
+    expect(screen.queryByRole('region', { name: 'Current Goal' })).toBeNull();
+    expect(fetcher.mock.calls.every(([, options]) => options?.method === undefined || options.method === 'GET')).toBe(true);
+  });
+
+  it('uses the parent ID when a Goal summary is absent or not a Goal, and shows a plain empty state', async () => {
+    const child = detail(1, { parentId: id(2) });
+    const other = detail(2, { title: 'Not a Goal' });
+    const current = snapshot([child, other]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(child)));
+    const options = props({ snapshot: current, observation: { kind: 'direct' } });
+    await world.sync([child, other]);
+    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    const section = await screen.findByRole('region', { name: 'Current Goal' });
+    expect(within(section).getByRole('link', { name: other.id })).toHaveAttribute('href', taskDetailUrl(projectId, other.id, { tab: 'overview', path: null }));
+    view.rerender(<TaskDetailDialog {...options} snapshot={null} graphError={new Error('graph unavailable')} />);
+    expect(within(section).getByRole('link', { name: other.id })).toBeVisible();
+  });
+
+  it('renders an unassigned Task without a Goal link or editing control', async () => {
+    const child = detail();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(child)));
+    await open(props({ snapshot: snapshot([child]) }), 'en');
+    const section = await screen.findByRole('region', { name: 'Current Goal' });
+    expect(within(section).getByText('No Goal')).toBeVisible();
+    expect(within(section).queryByRole('link')).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Current Goal' })).toBeNull();
+  });
+
   it('waits for a summary receipt when restoring a Task before the graph and keeps its reader through a missing snapshot', async () => {
     const reviewed = detail();
     await world.sync([reviewed]);
@@ -660,8 +708,15 @@ describe('task detail dialog', () => {
     await open();
     await screen.findByRole('heading', { name: '任务 1' });
     const overview = screen.getByRole('tabpanel', { name: '概览' });
-    expect(overview).toContainElement(screen.getByRole('region', { name: '关联 PR' }));
-    expect(overview).toContainElement(screen.getByRole('complementary', { name: '任务关系与元数据' }));
+    const pullRequests = screen.getAllByRole('region', { name: '关联 PR' });
+    const aside = screen.getByRole('complementary', { name: '任务关系与元数据' });
+    const main = overview.querySelector('.task-detail-main')!;
+    const dependencies = within(aside).getByRole('region', { name: '前置依赖' });
+    expect(pullRequests).toHaveLength(1);
+    expect(main).not.toContainElement(pullRequests[0]!);
+    expect(overview).toContainElement(aside);
+    expect(aside).toContainElement(pullRequests[0]!);
+    expect(pullRequests[0]!.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('region', { name: '附件' })).toBeNull();
     const attachments = document.querySelector('[data-task-id]')!;
     expect(attachments).toHaveAttribute('data-project-id', projectId);
@@ -758,8 +813,6 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('combobox', { name: '执行平台' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('combobox', { name: '所属 Goal' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
     await user.tab();

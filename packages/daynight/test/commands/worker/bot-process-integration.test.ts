@@ -1,3 +1,5 @@
+import { createOperation } from "../../../src/api/operation.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import Database from "better-sqlite3";
 import { createServer } from "node:http";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
@@ -7,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -121,7 +123,7 @@ test("joins the final process observation before rejecting its expired window", 
   expect(active).toBe(0);
 });
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -139,7 +141,7 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;
   const wrapper = path.join(packageDirectory, "provider.mjs"), wrapperURL = pathToFileURL(wrapper).href;
-  await writeFile(wrapper, `import { openCodexProvider as open } from ${JSON.stringify(providerURL)};\nexport const openCodexProvider = options => open({ ...options, executable: ${JSON.stringify(nativeFixture)} });\n`);
+  await writeFile(wrapper, `import { openCodexProvider as open } from ${JSON.stringify(providerURL)};\nexport const openCodexProvider = options => open({ ...options, ...(options.toolLaunch ? {} : { executable: ${JSON.stringify(nativeFixture)} }) });\n`);
   await writeFile(path.join(packageDirectory, "package.json"), JSON.stringify({ type: "module" }));
   await writeFile(path.join(packageDirectory, "dist/main.js"), `
 import { registerHooks } from 'node:module';
@@ -202,13 +204,48 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       throw error;
     }
   };
-  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, stopProcesses } });
+  const toolReceipts = path.join(home, "tool-processes.jsonl"), toolEntries = { A: nativeFixture, B: path.join(home, "codex-B.mjs") };
+  type ToolReceipt = { tool: "A" | "B"; pid: number; execPath: string; argv: string[]; cwd: string };
+  const receipts = async (): Promise<ToolReceipt[]> => existsSync(toolReceipts) ? (await readFile(toolReceipts, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as ToolReceipt) : [];
+  const probeEnvironment = { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "probe-native"), CODEX_TEST_REQUEST_LOG: requestLog };
+  let tools: ReturnType<typeof import("../../../src/commands/worker/tool-selection-runtime.js").createWorkerToolSelectionRuntime> | undefined;
+  if (options.managedTools) {
+    for (const [tool, entry] of Object.entries(toolEntries)) {
+      const version = tool === "A" ? "1.10.1" : "1.20.2", model = `model-${tool}`;
+      const header = `#!/usr/bin/env node
+import { appendFileSync as recordTool } from 'node:fs';
+recordTool(${JSON.stringify(toolReceipts)}, JSON.stringify({tool:${JSON.stringify(tool)},pid:process.pid,execPath:process.execPath,argv:process.argv,cwd:process.cwd()})+'\\n');
+if (process.argv.includes('--version')) { console.log(${JSON.stringify(`codex-cli ${version}`)}); process.exit(0); }
+if (process.argv.includes('--help')) { console.log('app-server --stdio'); process.exit(0); }
+process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displayName: `Model ${tool}`, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }], defaultReasoningEffort: "low" }]))};
+`;
+      await writeFile(entry, header + nativeSource.replace("JSON.stringify(m)+'\\n'", `JSON.stringify({...m,fixtureTool:${JSON.stringify(tool)}})+'\\n'`));
+      await chmod(entry, 0o755);
+      const bin = path.join(home, `path-${tool}`); await mkdir(bin);
+      if (process.platform === "win32") await writeFile(path.join(bin, "codex.cmd"), `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`);
+      else await symlink(entry, path.join(bin, "codex"));
+    }
+    // Load compiled production modules so owned model probes execute their actual sibling entry points.
+    const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
+    tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd, environment: probeEnvironment,
+      localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
+  }
+  const selectToolLaunch = vi.fn(async (_agent: "codex" | "copilot", signal: AbortSignal) => {
+    if (tools !== undefined) return tools.selectToolLaunch("codex", signal);
+    const operation = createOperation({ limits: { totalMs: 20_000 } });
+    try { return await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: nativeFixture }, environment: process.env, cwd }, operation); }
+    finally { operation.dispose(); }
+  });
+  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, selectToolLaunch,
+    ...(tools === undefined ? {} : { toolObservationFor: tools.toolObservationFor }), dependencies: { prepareEnvironment, stopProcesses } });
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
   let browserConnections = 0, deleted = false;
+  const controllers = new Set<WebSocket>();
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
     if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-relay-grant") { socket.close(1008); return; }
+    controllers.add(socket); socket.once("close", () => controllers.delete(socket));
     socket.on("message", raw => {
       if (deleted) { socket.close(1008); return; }
       try {
@@ -218,6 +255,8 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         else if (message.type === "reconcile") socket.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
         else if (message.type === "events") socket.send(JSON.stringify({ ...fence, type: "events_ack", sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events.at(-1)!.sourceSeq, lastEventSeq: message.events.at(-1)!.sourceSeq }));
         else if (message.type === "sync_state") socket.send(JSON.stringify({ ...fence, type: "sync_ack" }));
+        else if (message.type === "operation_begin") socket.send(JSON.stringify({ ...fence, type: "operation_authorized", operationId: message.operationId }));
+        else if (message.type === "operation_receipt") socket.send(JSON.stringify({ ...fence, type: "receipt_ack", operation: message.operation }));
       } catch (error) { relayErrors.push(error); socket.close(1008); }
     });
   });
@@ -286,6 +325,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       for (const socket of relay.clients) socket.terminate();
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
       if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
+      await tools?.close();
       executions.close(); store.close();
       if (stopped) {
         if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
@@ -293,9 +333,18 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       }
     }
   });
-  const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
+  const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown>; fixtureTool?: "A" | "B" });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  const send = async (text: string): Promise<string> => {
+    const intent = current().intent!, operationId = randomUUID();
+    await vi.waitFor(() => expect(frames.some(frame => frame.type === "sync_state" && frame.executionGeneration === intent.executionGeneration && frame.testExecutionId === intent.executionId)).toBe(true), { timeout: 10_000 });
+    const fence = { protocol: SESSION_PROTOCOL, sessionId: intent.sessionId!, testExecutionId: intent.executionId, executionGeneration: intent.executionGeneration };
+    for (const socket of controllers) socket.send(JSON.stringify({ ...fence, connectionEpoch: "1", type: "operation_offer", operationSeq: "1", command: { ...fence,
+      requestId: randomUUID(), operationId, kind: "send_message", payload: { content: [{ type: "text", text }], expectedTurnId: null } } }));
+    await vi.waitFor(() => expect(readControllerOperation(intent.journalPath, operationId)?.state).toBe("confirmed"), { timeout: 10_000 });
+    return operationId;
+  };
+  return { home, cwd, packageDirectory, prepareEnvironment, selectToolLaunch, tools, toolEntries, receipts, probeEnvironment, send, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -313,6 +362,97 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
   await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
+
+test("keeps A/B version, host, models and native Bot launches on their selected recipes across restart and removal", async () => {
+  const f = await fixture({ managedTools: true }), signal = AbortSignal.timeout(150_000), runtime = f.tools!;
+  const dist = path.resolve(import.meta.dirname, "../../../dist");
+  const hostModule = await import(pathToFileURL(path.join(dist, "commands/worker/bots/host-capabilities.js")).href) as typeof import("../../../src/commands/worker/bots/host-capabilities.js");
+  const modelModule = await import(pathToFileURL(path.join(dist, "commands/worker/read-only/models.js")).href) as typeof import("../../../src/commands/worker/read-only/models.js");
+  const host = hostModule.createAssistantHostCollector({ workingDirectory: f.cwd, environment: f.probeEnvironment,
+    configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 },
+    resolveExecutable: () => path.join(f.home, "missing-unrelated-provider"),
+    selectToolLaunch: async provider => provider === "codex" ? runtime.manager.currentSelection("codex", "web") : undefined,
+    toolInspector: runtime.hostInspector, toolRuntimeRoot: runtime.toolRuntimeRoot });
+  const models = modelModule.createWorkerModelDiscovery({ defaultCwd: f.cwd, environment: f.probeEnvironment,
+    prepare: async (provider, operation) => { expect(provider).toBe("codex"); await runtime.manager.prepare("codex", "web", operation); },
+    configuration: () => ({ native: { agent: "codex", model: null, args: [] }, report: { agent: "codex", model: { value: null, source: "native" }, reasoningEffort: { value: null, source: "native" } },
+      toolSelections: [runtime.manager.currentSelection("codex", "web")?.selectionKey] }),
+    verifier: { discover: async (input, operation) => {
+      const toolLaunch = await runtime.manager.selectForNewExecution("codex", "web", operation);
+      return runtime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: runtime.toolRuntimeRoot }, operation);
+    } } });
+  cleanups.push(async () => { models.close(); await host.close(); });
+  const inspect = async (tool: "A" | "B", version: string) => {
+    const operation = createOperation({ signal, limits: { totalMs: 30_000 } });
+    try {
+      await runtime.manager.prepare("codex", "web", operation);
+      const launch = runtime.manager.currentSelection("codex", "web")!;
+      expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "codex" && entry.context === "web"))
+        .toMatchObject({ state: "applied", actual: { selectionKey: launch.selectionKey, entryPath: f.toolEntries[tool], version } });
+      const beforeHost = await f.receipts();
+      expect((await host.collect(operation)).assistantHost.providers.find(entry => entry.provider === "codex")).toMatchObject({ available: true, reason: null });
+      expect(await f.receipts()).toEqual(beforeHost);
+      expect(await models.discover({ provider: "codex" }, signal)).toMatchObject({ models: [{ id: `model-${tool}` }], defaults: { model: { value: `model-${tool}`, source: "native" } }, selectionError: null });
+      return launch;
+    } finally { operation.dispose(); }
+  };
+  const a = await inspect("A", "1.10.1");
+  expect((await f.requests()).some(request => request.method === "thread/start" || request.method === "thread/resume" || request.method === "turn/start")).toBe(false);
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!, originalDefinition = f.getBot();
+  expect(original).toMatchObject({ toolLaunch: a, toolObservation: { version: "1.10.1" } });
+  expect((await f.process.readTicket(f.current())).configuration).toMatchObject({ toolLaunch: a, toolObservation: original.toolObservation });
+  const operationId = await f.send("first user input");
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toMatchObject([{ fixtureTool: "A", params: { input: [{ type: "text", text: "first user input" }] } }]);
+  await f.create().shutdown(f.current(), signal);
+
+  vi.stubEnv("PATH", path.join(f.home, "path-B") + path.delimiter + (process.env.PATH ?? ""));
+  runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  const b = await inspect("B", "1.20.2");
+  expect(b.selectionKey).not.toBe(a.selectionKey);
+  const nextDefinition: BotDefinition = { ...originalDefinition, id: randomUUID(), version: "1", creationOrder: "2", sessionId: null, testExecutionId: null, roleConfiguration: null, startupResult: { state: "pending", code: null } };
+  f.setBot(nextDefinition); f.store.observe(f.owner, nextDefinition, Date.now());
+  await launchAndObserveReady(f, signal);
+  expect(f.current().intent).toMatchObject({ toolLaunch: b, toolObservation: { version: "1.20.2" } });
+  expect((await f.process.readTicket(f.current())).configuration.toolLaunch).toEqual(b);
+  expect(f.current().intent!.sessionId).not.toBe(original.sessionId);
+  expect((await f.requests()).filter(request => request.method === "thread/start").map(request => request.fixtureTool)).toEqual(["A", "B"]);
+  await f.create().shutdown(f.current(), signal);
+
+  f.setBot(originalDefinition);
+  await f.create().advance(f.current(), signal);
+  await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId }), { timeout: 20_000, interval: 100 });
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, toolLaunch: a, toolObservation: original.toolObservation });
+  expect((await f.process.readTicket(f.current())).configuration.toolLaunch).toEqual(a);
+  expect((await f.requests()).filter(request => request.method === "thread/resume")).toMatchObject([{ fixtureTool: "A", params: { threadId: f.nativeId } }]);
+  expect(readControllerOperation(original.journalPath, operationId)).toMatchObject({ state: "confirmed" });
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toHaveLength(1);
+  await f.create().shutdown(f.current(), signal);
+
+  const beforeRemoval = await f.receipts();
+  await rm(f.toolEntries.A);
+  await f.create().advance(f.current(), signal).catch(() => {});
+  await vi.waitFor(() => expect(f.journal()).toMatchObject({ error: expect.stringMatching(/tool_identity_changed|not_found/), nativeProcesses: [] }), { timeout: 20_000, interval: 100 });
+  const refused = f.journal()!;
+  await waitForProcessesStopped(refused.controllerProcess!, refused.nativeProcesses, 10_000);
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, toolLaunch: a });
+  expect(await f.receipts()).toEqual(beforeRemoval);
+  expect((await f.requests()).filter(request => request.method === "turn/start")).toHaveLength(1);
+  expect(f.register).toHaveBeenCalledTimes(2);
+  expect(f.selectToolLaunch).toHaveBeenCalledTimes(2);
+  const node = await realpath(process.execPath);
+  for (const receipt of beforeRemoval) {
+    expect(await realpath(receipt.execPath)).toBe(node);
+    expect(receipt.argv.slice(0, 2)).toEqual([receipt.execPath, f.toolEntries[receipt.tool]]);
+    expect(receipt.argv.slice(2)).toEqual(expect.arrayContaining(receipt.argv.includes("--version") ? ["--version"] : receipt.argv.includes("--help") ? ["--help"] : ["app-server", "--stdio"]));
+  }
+  for (const tool of ["A", "B"] as const) {
+    expect(beforeRemoval.some(receipt => receipt.tool === tool && receipt.argv.includes("--version"))).toBe(true);
+    expect(beforeRemoval.some(receipt => receipt.tool === tool && receipt.argv.includes("--help"))).toBe(true);
+    expect((await f.requests()).some(request => request.fixtureTool === tool && request.method === "model/list")).toBe(true);
+  }
+  expect(f.relayErrors).toEqual([]);
+}, 180_000);
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
   const f = await fixture(), signal = AbortSignal.timeout(60_000);
@@ -527,7 +667,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   });
   const paths = { ...resolveWorkerPaths(f.home), databaseFile: path.join(f.home, "worker.sqlite") };
   const makeHost = () => createWorkerBotHost({ homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd, paths, owner: f.owner,
-    serverToken: parentToken, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
+    serverToken: parentToken, selectToolLaunch: f.selectToolLaunch, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
     recoveryLimit: () => 3, pollIntervalMs: () => 50, emit: event => { if (event.kind === "bot-unavailable") errors.push(event.message); } });
   let host = makeHost(), cancellation = new AbortController(), running = host.run(cancellation.signal);
   void running.catch(error => errors.push(String(error)));

@@ -16,10 +16,12 @@ admitted selection; an active controlled entry is initialized by replacement,
 and a changed selection is pushed through the existing draft admission gate.
 Same-URL entries publish distinct snapshots. The account page retains its
 credential and prompt owners independently of the entry identity. Worker detail
-uses the same mechanism with a Worker-bound selection; its configuration owner
-remains mounted after opening and cancellation restores that tab only after the
-original history position is admitted. Invalid
-recognized state is exposed rather than interpreted as another target. Project
+uses the same mechanism with a Worker-bound selection; its editing owners remain
+mounted after opening and cancellation restores the appropriate dirty tab only
+after the original history position is admitted. The
+[peer-tab decision](../architecture/2026-11-12-worker-detail-prompt-tab.md)
+extends that selection to the Worker prompt. Invalid recognized state is exposed
+rather than interpreted as another target. Project
 uses the same entry model for section, view, graph and nested resource selections;
 its existing preference writes occur only after user-initiated changes are admitted.
 

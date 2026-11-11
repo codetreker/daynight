@@ -285,3 +285,26 @@ describe("assistant host cleanup recovery", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it("uses the shared frozen inspector for Worker tools and leaves its borrowed cleanup owner with the Worker", async () => {
+  const launches = new Map(["codex", "copilot"].map(tool => [tool, { tool, context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch]));
+  const check = vi.fn(async (_launch: import("../../../src/platform/tool-executables.js").ResolvedToolLaunch) => ({ version: "1.0.105", checkedAt: new Date().toISOString() })), close = vi.fn(async () => {});
+  const inspector = { check, close, reconcile: vi.fn(async () => {}), assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
+  const runCommand = vi.fn(output), operation = createOperation();
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration, environment: {}, resolveExecutable: provider => provider, runCommand,
+    selectToolLaunch: async provider => launches.get(provider), toolInspector: inspector });
+  try {
+    const sample = await collector.collect(operation);
+    expect(sample.assistantHost.providers.every(provider => provider.available)).toBe(true);
+    expect(check.mock.calls.map(([launch]) => launch)).toEqual([launches.get("codex"), launches.get("copilot")]);
+    expect(runCommand.mock.calls.every(([command]) => command.file === "claude")).toBe(true);
+  } finally { await collector.close(); operation.dispose(); }
+  expect(close).not.toHaveBeenCalled();
+});
+
+it("does not fall back to another executable when a configured Worker selection is unavailable", async () => {
+  const runCommand = vi.fn(output);
+  const sample = await collect({ selectToolLaunch: async () => undefined, runCommand });
+  expect(sample.assistantHost.providers.filter(provider => provider.provider !== "claude").every(provider => !provider.available)).toBe(true);
+  expect(runCommand.mock.calls.every(([command]) => command.file === "claude")).toBe(true);
+});

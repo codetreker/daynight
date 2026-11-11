@@ -26,7 +26,7 @@ let sessionStore: TaskSessionSummaryStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
 afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ProjectTaskWorkspace pausedTaskCount={0} sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
   goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;

@@ -159,9 +159,9 @@ const cursor = (value: unknown): string => {
   const result = controlledText(value);
   return result.length <= 4096 ? result : malformed();
 };
-async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T): Promise<T> {
+async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T, onDispatch?: () => void): Promise<T> {
   const expected = requestId(admission.userId);
-  const response = await request(url, signal, { headers: { Accept: 'application/json' } });
+  const response = await request(url, signal, { headers: { Accept: 'application/json' } }, onDispatch);
   assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
   return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); });
 }
@@ -181,9 +181,9 @@ export async function listBots(query: { readonly limit?: number; readonly cursor
     return { items, nextCursor: data.nextCursor === null ? null : cursor(data.nextCursor) };
   });
 }
-export async function getBot(botId: string, signal: AbortSignal, admission: WorkerReadAdmission): Promise<Bot> {
+export async function getBot(botId: string, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<Bot> {
   const target = requestId(botId);
-  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target));
+  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target), onDispatch);
 }
 export async function getBotDefaults(workerId: string | null, signal: AbortSignal, admission: WorkerReadAdmission, choices?: Omit<BotOverrides, 'workerId'>): Promise<BotDefaults> {
   const target = workerId === null ? null : requestId(workerId);
@@ -199,14 +199,14 @@ export async function getBotDefaults(workerId: string | null, signal: AbortSigna
 export class BotCreationUnknown extends Error {
   constructor(readonly id: string, cause: unknown) { super('The Bot creation outcome is unknown.', { cause }); this.name = 'BotCreationUnknown'; }
 }
-export async function createBot(input: CreateBotInput, signal: AbortSignal, admission: WorkerReadAdmission): Promise<BotDefinition> {
+export async function createBot(input: CreateBotInput, signal: AbortSignal, admission: WorkerReadAdmission & { readonly onDispatch?: () => void }): Promise<BotDefinition> {
   const expected = requestId(admission.userId), target = requestId(input.id);
   let body: string;
   try { body = JSON.stringify({ id: target, name: botName(input.name), ...(input.overrides === undefined ? {} : { overrides: overrides(input.overrides) }) }); }
   catch { throw new ApiError('protocol'); }
   let dispatched = false;
   try {
-    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; });
+    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
     return await json(response, signal, value => {
       if (response.status !== 200) throw new ApiError('protocol', response.status);
@@ -229,14 +229,14 @@ export class BotDeletionUnknown extends Error {
 }
 
 /** Submit one exact deletion request; callers observe the Bot before deciding whether to retry it. */
-export async function deleteBot(botId: string, input: DeleteBotInput, signal: AbortSignal, admission: WorkerReadAdmission): Promise<DeletedBot> {
+export async function deleteBot(botId: string, input: DeleteBotInput, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<DeletedBot> {
   const expected = requestId(admission.userId), target = requestId(botId);
   let original: DeleteBotInput;
   try { original = Object.freeze({ ifVersion: decimal(input.ifVersion), deletionId: requestId(input.deletionId) }); }
   catch { throw new ApiError('protocol'); }
   let dispatched = false;
   try {
-    const response = await request(`/api/v1/me/bots/${target}`, signal, { method: 'DELETE', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(original) }, () => { dispatched = true; });
+    const response = await request(`/api/v1/me/bots/${target}`, signal, { method: 'DELETE', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(original) }, () => { dispatched = true; onDispatch?.(); });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
     return await json(response, signal, value => {
       if (response.status !== 200) throw new ApiError('protocol', response.status);

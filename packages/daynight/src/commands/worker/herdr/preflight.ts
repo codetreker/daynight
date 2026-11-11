@@ -1,3 +1,4 @@
+import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import path from "node:path";
 import { open, realpath } from "node:fs/promises";
 import { gte } from "semver";
@@ -13,7 +14,7 @@ import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../
 type NativeAgent = "codex" | "copilot" | "claude";
 export type HerdrNativeStart = {
   context: { cwd: string };
-  configuration: { agent: NativeAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true };
+  configuration: { agent: NativeAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch };
   resumeSessionId?: string;
 };
 export type HerdrNativePreflight = {
@@ -157,6 +158,13 @@ export const createNativePrerequisiteChecks = (options: {
   const platform = options.platform === undefined ? process.platform : options.platform;
   const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
   const agent = input.configuration.agent;
+  const launch = input.configuration.toolLaunch;
+  if (launch && (launch.tool !== agent || launch.context !== "herdr")) throw new Error("Native prerequisite tool differs from its Herdr request.");
+  const invoke = async (args: readonly string[], directory: string, operation: Operation) => {
+    if (launch) await verifyToolLaunch(launch, operation);
+    const command = launch ? toolCommand(launch, args) : { file: agent, args };
+    return runCommand({ ...command, environment, cwd: directory }, operation);
+  };
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new Error("The native agent must be codex, claude or copilot.");
   const environment = { ...options.environment, ...nativeAgentPermissionEnvironment(agent) };
   const cwd = absolute(input.context.cwd, "Native working directory");
@@ -176,7 +184,7 @@ export const createNativePrerequisiteChecks = (options: {
     kind: "version", label: `${agent} executable`,
     remedy: `Install or update the ${agent} CLI and make it available on PATH.`,
     verify: async (operation) => {
-      const version = await probeNativeAgentVersion({ agent, environment, cwd, runCommand }, operation);
+      const version = await probeNativeAgentVersion({ agent, environment, cwd, runCommand, ...(launch ? { toolLaunch: launch } : {}) }, operation);
       // Earlier releases expose the bypass flag while still showing an interactive startup hook review.
       // https://github.com/openai/codex/commit/5fb5e47767ac4910f7c208481c23bf4d2fe5cf62
       if (agent === "codex" && !gte(version, "0.135.0")) throw new Error("Codex 0.135.0 or newer is required to bypass startup hook trust review.");
@@ -192,7 +200,7 @@ export const createNativePrerequisiteChecks = (options: {
     remedy: `Update ${agent} to a version supporting all worker permission flags${agent === "codex" ? " and --no-daemon" : ""}.`,
     verify: async (operation) => {
       const required = agent === "codex" ? ["--no-daemon", ...nativeAgentPermissionArguments(agent)] : nativeAgentPermissionArguments(agent);
-      const help = (await runCommand({ file: agent, args: [...required, "--help"], environment, cwd }, operation)).stdout;
+      const help = (await invoke([...required, "--help"], cwd, operation)).stdout;
       for (const flag of required.filter((value) => value !== "--no-sandbox")) {
         if (!help.includes(flag)) throw new Error(`This ${agent} executable lacks ${flag}; a worker requires unattended full access and isolated native execution.`);
       }
@@ -206,7 +214,7 @@ export const createNativePrerequisiteChecks = (options: {
       const config = codexConfigurationArguments(input.configuration.args);
       const canonicalCwd = path.normalize(await realpath(cwd));
       let features: string;
-      try { features = (await runCommand({ file: agent, args: [...config.arguments, ...codexProjectTrustArguments(canonicalCwd), "features", "list"], environment, cwd: canonicalCwd }, operation)).stdout; }
+      try { features = (await invoke([...config.arguments, ...codexProjectTrustArguments(canonicalCwd), "features", "list"], canonicalCwd, operation)).stdout; }
       catch (cause) {
         if (!hasNativePrerequisiteCleanupFailure(cause)) operation.check();
         // Codex 0.164 rejects profile selection for this read-only command; checking its unrelated default configuration would be incorrect.
@@ -238,7 +246,7 @@ export const createNativePrerequisiteChecks = (options: {
         }
         if (!configured) throw new Error("Claude SessionStart does not invoke the official Herdr hook in this working directory.");
       } else {
-        const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment, cwd }, operation)).stdout, "Copilot effective hooks configuration");
+        const effective = json((await invoke(["config", "hooks"], cwd, operation)).stdout, "Copilot effective hooks configuration");
         if (!configuredHook(effective, expected, agent, platform)) throw new Error("Copilot SessionStart does not invoke the installed official Herdr hook; configure it explicitly.");
       }
       return "The inspected SessionStart configuration invokes the official Herdr hook.";
@@ -300,7 +308,7 @@ export const createHerdrPreflight = (options: {
         if (integrationState(refreshed, agent) !== "current") throw new Error(`The official ${agent} Herdr integration is not current after installation; inspect herdr integration status.`);
       }
       for (const check of checks) await check.verify(operation);
-      if (input.configuration.validateNativeSelection && input.resumeSessionId === undefined) await selection.verify({ native: input.configuration, cwd: input.context.cwd, environment }, operation);
+      if (input.configuration.validateNativeSelection && input.resumeSessionId === undefined) await selection.verify({ native: input.configuration, cwd: input.context.cwd, environment, mode: "herdr", ...(input.configuration.toolLaunch ? { toolLaunch: input.configuration.toolLaunch } : {}) }, operation);
       operation.check();
       return { agent, version, nativeHome: root, integrationConfigured: true };
     },

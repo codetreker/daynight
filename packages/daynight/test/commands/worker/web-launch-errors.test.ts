@@ -1,3 +1,4 @@
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -19,7 +20,7 @@ const fixture = async () => {
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const store = openWebExecutionStore(createMemoryDatabase(), { onMigration: () => {} }); stores.push(store);
   const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
-  let task = store.register({ ...project, project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+  let task = store.register({ ...project, project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
   task = store.bindWorktree(task, { repositoryPath: home, commonDirectory: home, worktreePath: home, branch: "task" }, 2); task = store.initializeWebExecution(task, 3);
   task = store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "original" }, 4);
   const e = task.webExecution!, directory = controllerExecutionDirectory(home, e.executionId); await mkdir(directory, { recursive: true });

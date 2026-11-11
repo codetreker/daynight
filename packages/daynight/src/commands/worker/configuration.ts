@@ -44,6 +44,10 @@ export type WorkerConfigurationManagerOptions = {
   readonly localToolPaths?: ToolPaths;
   /** Runtime-owned, verified selections for this mode; omitted keys remain unverified. */
   readonly readToolSelectionKeys?: (native: WorkerCloudNative, mode: AgentControlMode) => WorkerNativeToolSelectionKeys;
+  /** Prepare current targets before constructing the native validation proof. */
+  readonly prepareToolSelection?: (native: WorkerCloudNative, mode: AgentControlMode, targets: WorkerConfigurationToolTargets, signal: AbortSignal) => Promise<void>;
+  /** Herdr selection belongs to its separate runtime integration. */
+  readonly allowLegacyHerdrAuto?: boolean;
   readonly applyNative: (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode) => Promise<void>;
   readonly onChange?: (snapshot: WorkerConfigurationSnapshot) => void;
   readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
@@ -56,7 +60,7 @@ export type WorkerConfigurationManagerOptions = {
 type StoredItem = { readonly value: WorkerCloudItem; readonly attempts: number; readonly failureId: number | null; readonly started: boolean };
 type NativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
 type Cache = { readonly schemaVersion: 4; readonly nativeModes: Readonly<Record<string, AgentControlMode>>; readonly identity: WorkerConfigurationIdentity; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly nextFailureId: number; readonly items: readonly StoredItem[] };
-type Job = { readonly revision: string; readonly controller: AbortController; readonly promise: Promise<void>; readonly proof: NativeProof | null };
+type Job = { readonly revision: string; readonly controller: AbortController; readonly promise: Promise<void>; proof: NativeProof | null; preparing: boolean };
 const supportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
 const capabilities = (value: WorkerCloudValue | undefined) => ({ controlMode: value !== undefined && Object.hasOwn(value, "agentControlMode"), toolPaths: value !== undefined && Object.hasOwn(value, "toolPaths") });
 const parseDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits, capabilities(value.value));
@@ -240,7 +244,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     return { mode, native, tools: nativeTools(native, mode).map(tool => ({ tool, choice: choices?.[tool] ?? null, selectionKey: keys?.[tool] ?? null })) };
   };
   // Legacy native validation establishes no tool-selection authority.
-  const canValidateNative = (proof: NativeProof): boolean => options.readToolSelectionKeys === undefined || proof.tools.every(tool => tool.choice !== null && tool.selectionKey !== null && /^[a-f0-9]{64}$/.test(tool.selectionKey));
+  const canValidateNative = (proof: NativeProof): boolean => options.readToolSelectionKeys === undefined || options.allowLegacyHerdrAuto === true && proof.mode === "herdr" && proof.tools.every(tool => tool.choice?.kind === "auto") || proof.tools.every(tool => tool.choice !== null && tool.selectionKey !== null && /^[a-f0-9]{64}$/.test(tool.selectionKey));
   const matchesProof = (current: Cache, value: WorkerCloudItem["appliedValue"] | undefined, mode: AgentControlMode | undefined, proof: NativeProof | undefined): boolean =>
     mode !== undefined && typeof value === "object" && value !== null && equal(proofFor(current, value, mode), proof);
   const intendedMode = (current: Cache): AgentControlMode => current.desired?.value.agentControlMode ?? localMode;
@@ -317,7 +321,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         cache = freeze(next);
       }
       if (changedMode) for (const [key, job] of jobs) if (key.startsWith("projectNative:")) job.controller.abort(new Error("Worker control mode changed."));
-      for (const job of jobs.values()) if (job.proof !== null && !equal(job.proof.tools, proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));
+      for (const job of jobs.values()) if (job.proof !== null && !equal(job.preparing ? job.proof.tools.map(({ tool, choice }) => ({ tool, choice })) : job.proof.tools, job.preparing ? proofFor(cache, job.proof.native, job.proof.mode).tools.map(({ tool, choice }) => ({ tool, choice })) : proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));
       validatedNative = nextValidatedNative;
       if (confirm) synchronized = true;
       published = snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor);
@@ -379,7 +383,16 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (key.kind === "native" || key.kind === "projectNative") {
         // A failed global mode transition permits only history in the proven effective mode.
         if (modeFailure !== null) throw new WorkerConfigurationApplicationError(modeFailure);
+        const targets = toolTargets(cache, localTools);
+        if (options.prepareToolSelection !== undefined) {
+          if (targets === null) throw new Error("Worker tool targets are unavailable.");
+          await options.prepareToolSelection(intended as WorkerCloudNative, mode, targets, controller.signal);
+          controller.signal.throwIfAborted();
+          if (findItem(cache, key)?.value.targetRevision !== revision || !equal(targets, toolTargets(cache, localTools))) throw new Error("Worker tool targets changed during preparation.");
+        }
         const proof = proofFor(cache, intended as WorkerCloudNative, mode);
+        const job = jobs.get(keyOf(key));
+        if (job !== undefined) { job.proof = proof; job.preparing = false; }
         if (!canValidateNative(proof)) throw new Error("Worker tool selection has not been verified.");
         await options.applyNative(intended as WorkerCloudNative, controller.signal, mode);
         validated = proof;
@@ -455,7 +468,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       const controller = new AbortController();
       const proof = item.value.key.kind === "native" || item.value.key.kind === "projectNative" ? proofFor(cache, target(cache, item.value.key) as WorkerCloudNative, intendedMode(cache)) : null;
       const promise = run(item, controller).catch(fail).finally(() => { jobs.delete(key); kick(); });
-      jobs.set(key, { revision: item.value.targetRevision, controller, promise, proof });
+      jobs.set(key, { revision: item.value.targetRevision, controller, promise, proof, preparing: options.prepareToolSelection !== undefined });
     }
     const deadlines = cache.items.filter(item => item.value.state === "error" && item.value.nextAttemptAt !== null).map(item => Date.parse(item.value.nextAttemptAt!)).filter(deadline => deadline > now());
     if (deadlines.length !== 0) { timer = setTimeout(kick, Math.min(...deadlines) - now()); timer.unref(); }
@@ -469,7 +482,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   options.signal.addEventListener("abort", halt, { once: true });
   if (options.signal.aborted) halt();
   return {
-    current: (): WorkerConfigurationSnapshot => published,
+    current: (): WorkerConfigurationSnapshot => snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor),
     receive: async (desired: WorkerCloudDesired | null, observationRevision?: string): Promise<void> => {
       const parsed = desired === null ? null : parseDesired(desired, false), revision = observationRevision === undefined ? undefined : parseWorkerCloudRevision(observationRevision, true);
       await commit(current => {

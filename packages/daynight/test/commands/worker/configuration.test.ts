@@ -112,6 +112,46 @@ describe("Worker cloud configuration application", () => {
     expect(manager.current().effective.native?.agent).toBe("codex");
   });
 
+  it("prepares missing tool keys before validation without cancelling its own proof", async () => {
+    const entered = deferred(), release = deferred(), applied: string[] = [];
+    let key: string | undefined;
+    const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => key === undefined ? {} : { codex: key },
+      prepareToolSelection: async () => { entered.resolve(); await release.promise; key = "a".repeat(64); },
+      applyNative: async () => { applied.push(key!); },
+    });
+    await manager.receive(desired("1", "original", false)); await entered.promise;
+    await manager.refreshToolSelections(); release.resolve(); await manager.settle();
+    expect(applied).toEqual(["a".repeat(64)]); expect(manager.current().effective.native?.model).toBe("original");
+    key = undefined;
+    expect(manager.current().effective.native).toBeNull();
+  });
+
+  it("discards preparation after a newer target and validates only that target's recipe", async () => {
+    const entered = deferred(), release = deferred(); let key: string | undefined;
+    const applied: string[] = [];
+    const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => key === undefined ? {} : { codex: key },
+      prepareToolSelection: async (_native, _mode, targets) => {
+        if (targets.revision === "1") { entered.resolve(); await release.promise; key = "a".repeat(64); }
+        else key = "b".repeat(64);
+      }, applyNative: async () => { applied.push(key!); },
+    });
+    const original = desired("1", "original", false), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+    await manager.receive({ ...original, value: { ...original.value, toolPaths: tools } }); await entered.promise;
+    await manager.receive({ ...original, revision: "2", value: { ...original.value, toolPaths: { ...tools, codex: { kind: "path", path: "/new/codex" } } } });
+    release.resolve(); await manager.settle(); expect(applied).toEqual(["b".repeat(64)]);
+    expect(manager.current().effective.native?.model).toBe("original");
+  });
+
+  it("allows legacy Herdr only for automatic related tools without manufacturing selection keys", async () => {
+    const applyNative = vi.fn(async () => {});
+    const { manager } = await fixture({ localControlMode: "herdr", allowLegacyHerdrAuto: true, readToolSelectionKeys: () => ({}), applyNative });
+    const original = desired("1", "original", false);
+    await manager.receive(original); await manager.settle(); expect(applyNative).toHaveBeenCalledTimes(1);
+    expect(manager.current().effective.native?.agent).toBe("codex");
+    await manager.receive({ ...original, revision: "2", value: { ...original.value, toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "path", path: "/explicit/herdr" } } } });
+    await manager.settle(); expect(applyNative).toHaveBeenCalledTimes(1); expect(manager.current().effective.native).toBeNull();
+  });
+
   it("keeps native validation unavailable when the runtime has no tool selection proof", async () => {
     const { manager } = await fixture({ localControlMode: "web", readToolSelectionKeys: () => ({}) });
     await manager.receive(desired("1", "original", false)); await manager.settle();

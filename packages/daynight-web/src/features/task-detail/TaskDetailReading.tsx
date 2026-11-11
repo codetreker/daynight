@@ -53,7 +53,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, st
   const previewRoot = urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot;
   const base = { kind: 'root' } as const;
 
-  const renderMarkdown = (text: string): ReactNode => <MarkdownContent className="task-description" text={text} resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, previewRoot)} onLinkClick={(value, event) => {
+  const renderMarkdown = (text: string): ReactNode => <MarkdownContent className="task-description" remotePaused={attachments.paused} text={text} resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, previewRoot)} onLinkClick={(value, event) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.currentTarget.hasAttribute('download') || event.currentTarget.target !== '' || /[?#]/.test(value)) return;
       const resolved = resolveAttachmentReference(value, base);
       if (resolved.kind === 'native') return;
