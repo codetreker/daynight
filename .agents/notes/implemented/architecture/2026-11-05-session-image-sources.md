@@ -118,6 +118,18 @@ reaches the caller. A repeated release reconciles an active slot whose durable
 record already says released; it must not return a slot while joining or release
 persistence remains unconfirmed.
 
+Local cleanup has a durable obligation separate from the service receipt and
+source phase. Before reserving source storage, the coordinator records the
+original capture and attempt to release. Only confirmed release clears that
+obligation; its last error remains separate from the source failure and its
+original retry delay. Recovery retries local cleanup even after service settlement
+or while the original service
+outcome is unknown, without reopening the source. A new attempt cannot replace
+the previous cleanup identity or start a writer until that obligation is resolved.
+Receipt-driven attempt changes persist the new identity, its retry wait state,
+and the removal of the previous source error together, before timeline projection.
+Older started records acquire the same conservative cleanup obligation on recovery.
+
 `media.adoptCaptureResource(captureId, attemptId, resource)` requires a durable
 committed receipt matching the original request, occurrence and complete resource,
 and checks every validated metadata field. It takes a shared IO slot and admits
@@ -196,6 +208,12 @@ coordinator owns that association and must validate even a cached result.
 fall below its floor after release is durable. Keeping the slot in that case
 turns a recoverable storage error into permanent capacity loss. Returning the
 slot after proven cleanup preserves the error without retaining dead work.
+
+**Use service settlement as proof of local cleanup.** A failed service capture
+can be terminal while directory synchronization or release persistence is still
+failing locally. Skipping that record loses the only cleanup retry, and replacing
+its attempt loses the reservation identity. A separate durable obligation keeps
+cleanup recoverable without repeating source IO or revising the service result.
 
 ## Consequences
 

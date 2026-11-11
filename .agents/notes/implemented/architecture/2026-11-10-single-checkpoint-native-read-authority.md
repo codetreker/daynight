@@ -147,6 +147,12 @@ outcomes retain their original capture identity. Local and external retry
 routing invokes this coordinator admission check before returning cached staged
 metadata, so an interrupted admission cannot be presented as transfer-ready.
 
+Source cleanup does not consume another native checkpoint. Its durable obligation
+retains the original capture and attempt independently of service settlement and
+source admission. Recovery completes that local release before replacing the
+attempt or starting another source writer; a cleanup error cannot silently erase
+the source failure or authorize a later commit of a failed copy.
+
 ## Alternatives
 
 **Require a global native epoch or pre-change notification for every read.** This

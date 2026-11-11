@@ -188,6 +188,8 @@ source intent 先持久原 occurrence、destination、context、captureId/attemp
 
 `reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。writer 与 stage 已停止、来源释放已持久确认后，即使刷新空间预算失败也须归还内存槽，预算错误仍交给调用方；重复释放须核对并回收已标记 released 的残留活动槽。join 或释放持久化尚未确认时不能提前归还。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。
 
+本地清理使用独立持久 `sourceCleanup`，保存原 `captureId`、`attemptId`、`pending` 和清理错误，不以服务 receipt 或 source `phase=settled` 代替释放确认。该义务在 reserve 之前保存，覆盖 reservation 已落盘但文件打开失败、尚未返回 lease 的窗口；只有原身份的 release 确认完成后才能持久清除 pending，最后清理错误与来源错误分别保留。后续 tick 先协调待清理义务，再继续服务结果恢复，因此 settled、copying、unknown 或服务查询失败均不能遗弃本地释放。查询或显式 retry 转入新 attempt 前须完成旧义务，不能覆盖旧清理身份，也不能重新读取旧源。回执引起 attempt 切换时，新身份、等待精确 retry 的状态及旧来源错误的清除一并持久化，然后再投影时间线，避免投影中断留下新身份与旧失败状态的混合记录。旧记录缺少该字段但已 started 时，按其原 request 保守补建清理义务。服务失败结算结果未知仍只查询原 capture；若确认仍为 reserved，只能继续结算原失败，不能因已有 staged 字节而改为提交失败的副本。
+
 final 来源判定通过、helper 完成复制和校验、公共 decoder 成功且 Daynight scope 仍有效后，coordinator 才持久 `sourceAdmission`，绑定原 capture/source record、attempt、实际 policy revision、来源证明摘要和完整 `ValidatedImage`。原始路径遍历证明不持久化。中断后只有 stage 文件而没有匹配 admission，不能提交，也不重新读源；必须协调原 capture 的失败或未知结果。本地与外部 `retry_capture` 先进入来源 coordinator 检查 admission，再决定能否复用 staged metadata，不能由通用 `captureStatus()` 缓存快路提前报告重试成功，使未准入的原 attempt 进入 copying。
 
 `readCapture(input, acquirePolicy, deliver)` 只传输 admission 所对应的不可变副本，逐次核对原 attempt、完整验证元数据和当前 Daynight scope，在同步 policy lease 内读取并调用 `deliver`，验证到发送之间不跨 Promise continuation。后来的原生源限制不重新授权、改写或删除已经合法取得的副本；Daynight 访问权限撤销仍立即拒绝新交付。新 attempt 或重新取源必须重新走原生准入。
