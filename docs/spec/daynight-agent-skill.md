@@ -14,11 +14,18 @@
 
 ## AS1. 发布产物与路由
 
-产品只发布一个公开 `using-daynight` skill，包含英文短入口 `SKILL.md` 与唯一的
-`references/manual.md`。手册保留 YAML metadata 和最终换行，提供产品概念、能力导航、
-操作前提、结果和失败说明；具体参数以 CLI `--help` 为准。Codex、Copilot CLI 和
-Claude Code 使用相同内容。`daynight --skill` 与安装后的手册使用同一来源且输出字节一致。
-安装后的资料不依赖源码仓库、仓库流程或包外文件。
+产品只发布一个公开 `using-daynight` skill，包含英文短入口 `SKILL.md` 与可独立读取的
+主题引用文件。入口按操作目的直接导航连接与项目、任务、Steps、资料、写入安全、Session
+读取、Session 消息、Webhook 和 Worker 操作；仅加载当前目的所需资料。每项写操作还须
+读取通用写入安全与对应资源的专有前提、结果和恢复规则。具体参数以 CLI `--help` 为准。
+Codex、Copilot CLI 和 Claude Code 使用相同内容。安装后的资料不依赖源码仓库、仓库流程
+或包外文件，主题之间的链接和章节引用在 bundle 内有效。
+
+主题文件是产品说明的唯一可编辑来源，不维护手写汇总副本。构建按确定顺序从同一组主题
+生成完整英文离线手册，保留 YAML metadata 和最终换行，将跨主题链接转换为汇总内容内的
+有效锚点。`daynight --skill` 输出该构建产物的原始字节；使用者无需安装 skill 或读取
+独立主题文件即可获得完整内容。缺少主题、无效 UTF-8、空白内容或无法解析的内部引用
+必须使构建失败，不得发布残缺手册。
 
 公共入口不要求固定 Goal、创建、执行、评审或交付流程。本仓库的开发任务按
 [development-workflow](../../.agents/skills/development-workflow/SKILL.md) 的实际请求读取流程；
@@ -298,7 +305,9 @@ Claude Code personal 优先于 project，选择 Project 不修改 User。目录�
 
 ## AS8. 覆盖、旧名称迁移与失败
 
-安装在任何目标替换前验证精确 `references/manual.md` 为普通文件、有效 UTF-8 且非空白；损坏来源不得修改已有目标。每次安装完整替换选定 `using-daynight` 叶节点，成功目标全部路径和字节与当前 bundle
+安装在任何目标替换前验证固定清单中的全部主题为普通文件、有效 UTF-8 且非空白，并核验
+主题标题结构和内部文件、章节引用；损坏来源不得修改已有目标。每次安装完整替换选定
+`using-daynight` 叶节点，成功目标全部路径和字节与当前 bundle
 相同；移除本地修改和旧文件，不合并、不备份。目标自身为符号链接时只替换链接，
 保留原指向对象；父级根目录链接沿用，共享物理根去重写入并保留逐 Agent 结果。
 
@@ -321,7 +330,7 @@ Claude Code personal 优先于 project，选择 Project 不修改 User。目录�
 
 | 编号 | 必须观察到的结果 |
 |---|---|
-| AS.V1 | 实际 npm pack 产物安装短入口和完整手册，移动包源后资料仍可读取；CLI 两个 alias 与源和 bundle 手册字节一致。 |
+| AS.V1 | 实际 npm pack 产物安装短入口和全部独立主题，移动包源后资料仍可读取；CLI 两个 alias 输出同一份由主题生成的完整离线手册，与包内产物字节一致。主题顺序、内容和转换后的内部锚点完整，缺少或损坏主题在发布任何资源或替换安装目标前失败。 |
 | AS.V2 | 隔离 PATH 覆盖零、单、多 Agent；只显示可用选项，launcher 执行 sentinel 始终不存在；多选初始为空、scope 默认 User。 |
 | AS.V3 | 帮助与参数错误无检测和写入；无终端明确拒绝；交互取消、首次写入前取消与 stage 取消保持相应文件约束。 |
 | AS.V4 | 真正 PTY/ConPTY 覆盖三个 Agent × 两个 scope、根/子目录/linked worktree；无 origin/配置可安装，非 Git/bare Project 失败。 |

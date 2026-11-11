@@ -244,14 +244,15 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English CLI usage manual from the
-current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
-Set-status, Move and Delete, and Webhook management. Other capabilities are discovered
-through `daynight --help`, with exact options in each subcommand's help. The
-output preserves the manual's original bytes, including YAML
-frontmatter and the final newline. The document has no package-relative
-references to read separately.
+`--skill` prints the complete standalone English CLI usage manual from the
+current package. The build generates it from the same topic sources installed
+with `using-daynight`, in a fixed order with topic and section links converted
+to internal anchors. It covers connection and Projects, Tasks, Steps, materials,
+write safety, Session reads and messages, Webhooks and Worker operations. Exact
+arguments remain in each subcommand's help. The output preserves the generated
+artifact's bytes, including YAML frontmatter and the final newline. The document
+has no package-relative references to read separately and requires no installed
+skill or individual topic files.
 
 The option must be the sole argument. Extra arguments or another option exit
 with status 2 and empty stdout before the manual is read. A missing file, read
@@ -260,15 +261,22 @@ validation complete before output; an output failure can leave partial stdout.
 The command requires no login, Git repository, configuration, launcher or
 interactive terminal, and creates no files.
 
-The `using-daynight` skill installs the same product manual for an Agent. Repository
-workflow and Worker execution constraints remain separate from this manual.
+The topic files are the only edited product-manual source; there is no separately
+maintained aggregate. Repository workflow and Worker execution constraints remain
+separate from this manual.
 
 ## Agent skill installation
 
-The public skill contains a short navigation entry and the complete manual, also
-available offline with `daynight --skill`. The Worker supplies its execution
-constraints and original assignment in its prompt; each repository's rules and
-actual authorization govern delivery.
+The public skill contains a short navigation entry and independently readable
+topic files. The entry directs an Agent to the files needed for its requested
+operation; writes also require the common write-safety rules and the target
+resource's conditions and recovery rules. `daynight --skill` exposes the complete
+generated manual offline. Installation validates every required topic and its
+internal file and section links before replacing a target. Whole-directory
+replacement removes obsolete references as well as local edits.
+
+The Worker supplies its execution constraints and original assignment in its
+prompt; each repository's rules and actual authorization govern delivery.
 
 Install the skill through an interactive terminal:
 
@@ -1281,7 +1289,7 @@ User signal cancellation exits 130. JSON retains the
 original body or explicit content reference; text retains readable line breaks
 while escaping terminal controls. Session reads do not execute message content,
 start Agents, change claims or grant sending permission. The bundled
-[Session inspection guide](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+[Session inspection guide](src/commands/skill/skills/using-daynight/references/session-reads.md)
 describes the Agent workflow and equivalent MCP read tools.
 
 ### Task Session messages and recovery
@@ -1338,7 +1346,7 @@ identity in bounded output. Provider acceptance and confirmation do not mean the
 Agent completed the requested work. Local receipt-save or output failure does
 not undo service acceptance or authorize another POST.
 
-The [Session intervention reference](src/commands/skill/skills/using-daynight/references/manual.md#sessions)
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-messages.md)
 describes authorized use, unknown recovery and the corresponding MCP tools.
 
 ## Task properties

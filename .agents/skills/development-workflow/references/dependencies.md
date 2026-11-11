@@ -1,6 +1,6 @@
 # Dependency strategy
 
-Use the [manual](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#state-and-dependencies) for relationship semantics and CLI replacement.
+Use the [manual](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#dependencies) for relationship semantics and CLI replacement.
 
 ## Dependency reduction
 

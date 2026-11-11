@@ -1,21 +1,34 @@
 ---
 name: using-daynight
-description: Use the Daynight CLI product manual to understand its capabilities, commands, conditions, and outcomes.
+description: Operate Daynight projects, tasks, dependencies, Steps, materials, Sessions, Webhooks and Workers through the CLI. Use when a request requires Daynight or explicitly invokes this skill.
 ---
 
 # Using Daynight
 
-Daynight organizes Projects, Tasks, dependencies, materials, discussions and
-execution observations. Read the [manual](references/manual.md) for product
-operations. Use `daynight --help` and each subcommand's `--help` for the installed
-version's exact syntax; `daynight --skill` prints the complete manual offline.
+Daynight organizes work and exposes its execution observations. Use `daynight`
+or `dn`; consult the installed command's `--help` for exact arguments and options.
+`daynight --skill` prints the complete product manual offline.
 
-| Purpose | Manual section |
+Read only the references needed for the current operation. Confirm connection
+and Project identity when first using a service or repository. Every write also
+requires [write safety](references/write-safety.md) and the resource-specific
+conditions in its topic; reading instructions does not authorize an operation.
+
+| Purpose | Read |
 | --- | --- |
-| Concepts and connection | [Concepts](references/manual.md#concepts), [Setup](references/manual.md#setup) |
-| Teams, Projects and Tasks | [Teams and Projects](references/manual.md#teams-and-projects), [Tasks and Queries](references/manual.md#tasks-and-queries) |
-| State and relationships | [State and Dependencies](references/manual.md#state-and-dependencies), [Steps](references/manual.md#steps), [Properties](references/manual.md#properties) |
-| Discussion and files | [Threads](references/manual.md#threads), [Materials and Files](references/manual.md#materials-and-files) |
-| Write results and safety | [Writes and Outcomes](references/manual.md#writes-and-outcomes) |
-| Execution observations and operations | [Sessions](references/manual.md#sessions), [Worker Operations](references/manual.md#worker-operations) |
-| Webhooks and permissions | [Webhooks](references/manual.md#webhooks), [Operation Boundaries](references/manual.md#operation-boundaries) |
+| Connect, select a Project, or manage Teams, Projects and invitations | [Setup and projects](references/setup-and-projects.md) |
+| Create, query or change Tasks, status, properties and dependencies | [Tasks](references/tasks.md) |
+| Read or maintain ordered Task Steps | [Steps](references/steps.md) |
+| Read or write descriptions, attachments and discussion Threads | [Materials](references/materials.md) |
+| Bind decisions to versions or interpret write outcomes | [Write safety](references/write-safety.md) |
+| Locate Sessions, observe activity or read history | [Session reads](references/session-reads.md) |
+| Send an authorized message or recover its original result | [Session messages](references/session-messages.md) |
+| Configure Webhooks or inspect deliveries and operation receipts | [Webhooks](references/webhooks.md) |
+| Manage Workers, pause execution or complete an assigned claim | [Worker operations](references/worker-operations.md) |
+
+For example, a Task query needs Tasks; an attachment upload needs Materials and
+Write safety; a Session send needs Session messages and Write safety, plus Session
+reads when the target or execution identity has not yet been established.
+
+These references explain product operations. Apply the target repository's
+workflow and the current authorization when deciding what work to perform.

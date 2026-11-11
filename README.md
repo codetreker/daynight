@@ -116,10 +116,11 @@ Read project and task usage from the installed package:
 daynight --skill
 ```
 
-This prints one standalone project/task reference for coding agents, including
-version-safe writes, dependencies, properties and attachments. Use
-`daynight --help` for other capabilities. Reading requires no login, configuration
-or interactive terminal.
+This prints the complete standalone product manual, generated from the same
+topic sources installed for coding agents. It covers project and task operations,
+Steps, materials, write safety, Sessions, Webhooks and Worker operations. Reading
+requires no login, configuration, installed skill or interactive terminal. Use
+each command's `--help` for exact arguments.
 
 For agent integration, install a supported coding agent, then run:
 
@@ -131,7 +132,8 @@ Select the detected agents and User or Project scope, then follow the installer'
 reload instructions. For example, ask your agent: “Use using-daynight to register
 a task for this project: improve the installation instructions.” The
 [skill guide](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-explains Daynight product operations.
+routes the Agent directly to the topic files needed for the requested product
+operation, including shared write-safety rules for mutations.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,

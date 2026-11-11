@@ -62,7 +62,7 @@ and verification remain the implementer's work within the defined solution.
 ## Choose the operating system
 
 Set `requiredPlatform` from the environment genuinely needed to implement or
-verify the task, using the existing [task metadata](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#tasks-and-queries):
+verify the task, using the existing [task metadata](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries):
 
 | Value | Selection rule |
 |---|---|
@@ -92,7 +92,7 @@ through preparation, registration, review and handoff without a redundant
 confirmation between those operations.
 
 Register or update within the confirmed scope using the creation workflow and
-[write safety](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes).
+[write safety](../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md).
 Create a new task for a confirmed internal change with `task create --status todo`
 so it can enter the existing handoff workflow. Registration-only requests retain
 the selected creation status, proposed by default; discussion-only scope does not
