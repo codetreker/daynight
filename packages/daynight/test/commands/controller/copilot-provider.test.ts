@@ -49,7 +49,7 @@ function setup() {
     plan: { readSqlTodos: vi.fn(async () => ({ rows: [] as { id?: string; title?: string; description?: string; status?: string }[] })) }, interruptMainTurn: vi.fn(async () => ({ interrupted: true })), permissions: { configure: vi.fn(async () => ({ success: true })), handlePendingPermissionRequest: vi.fn(async () => ({ success: true })) },
   } };
   const capture = async (config: typeof captured) => { captured = config; native.sessionId = config.sessionId; return native; };
-  const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => ({})) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
+  const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => { if (child.exitCode === null && child.signalCode === null) { child.exitCode = 0; child.emit("exit", 0, null); child.emit("close", 0, null); } return {}; }) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
   sdk.construct.mockReturnValue(client);
   const entries: ProviderEntry[] = [], states: ProviderState[] = [], observed: string[] = [], spawned: unknown[] = [];
   const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
@@ -258,7 +258,7 @@ test("Copilot still stops its owned runtime when image draining fails", async ()
   const provider = await openCopilotProvider({ ...fixture.options, onNativeReadPolicy: policy => policies.push(policy), drainNativeReadPolicy: async () => { throw error; } });
   await expect(provider.close()).rejects.toBe(error);
   expect(fixture.native.disconnect).toHaveBeenCalledOnce();
-  expect(fixture.child.signalCode).toBe("SIGTERM");
+  expect(fixture.child.exitCode).toBe(0); expect(fixture.child.kill).not.toHaveBeenCalled();
   expect(policies).toEqual([null]);
   expect(fixture.states.at(-1)?.activity).toBe("stopped");
 });
@@ -369,7 +369,7 @@ test("Copilot owns a token-authenticated local runtime, preserves private profil
   expect(fixture.config()).toMatchObject({ streaming: true, skillDirectories: ["/native/project/skills"] });
   expect(fixture.client.rpc.skills.getDiscoveryPaths).toHaveBeenCalledWith({ projectPaths: [process.cwd()] });
   expect(fixture.config().model).toBeUndefined(); expect(fixture.config().reasoningEffort).toBeUndefined();
-  await provider.close(); expect(fixture.child.kill).toHaveBeenCalled(); expect(fixture.states.at(-1)?.activity).toBe("stopped");
+  await provider.close(); expect(fixture.child.exitCode).toBe(0); expect(fixture.child.kill).not.toHaveBeenCalled(); expect(fixture.states.at(-1)?.activity).toBe("stopped");
 });
 
 test("Copilot reports native skill discovery failures while keeping the session usable", async () => {
@@ -480,25 +480,26 @@ test("Copilot joins its owned runtime after media cleanup fails and retries the 
   const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValueOnce(failure).mockResolvedValue(undefined);
   try {
     await expect(provider.close()).rejects.toBe(failure);
-    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalledOnce();
-    expect(fixture.child.signalCode).toBe("SIGTERM"); expect(fixture.states.at(-1)?.activity).toBe("stopped");
+    expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).not.toHaveBeenCalled();
+    expect(fixture.child.exitCode).toBe(0); expect(fixture.states.at(-1)?.activity).toBe("stopped");
     await expect(provider.close()).resolves.toBeUndefined(); expect(closeImages).toHaveBeenCalledTimes(2);
-    expect(fixture.child.kill).toHaveBeenCalledOnce();
+    expect(fixture.child.kill).not.toHaveBeenCalled();
   } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
 });
 
 test("Copilot preserves media and runtime shutdown errors without reporting an unjoined runtime as stopped", async () => {
   const provider = await openCopilotProvider(fixture.options), mediaFailure = new Error("Fixture media removal failed"), runtimeFailure = new Error("Fixture process termination failed");
   const closeImages = vi.spyOn(CopilotImages.prototype, "close").mockRejectedValue(mediaFailure);
+  vi.useFakeTimers(); fixture.client.rpc.runtime.shutdown.mockImplementation(async () => ({}));
   fixture.child.kill.mockImplementation(() => { throw runtimeFailure; });
   fixture.emit(event("permission.requested", { requestId: "cleanup-permission", permissionRequest: { kind: "shell", fullCommandText: "echo fixture" } }));
   try {
-    const error = await provider.close().catch(error => error);
+    const closing = provider.close().catch(error => error); await vi.advanceTimersByTimeAsync(1500); const error = await closing;
     expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual(expect.arrayContaining([mediaFailure, runtimeFailure]));
     expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce(); expect(fixture.child.kill).toHaveBeenCalled();
     expect(fixture.states.some(state => state.activity === "stopped")).toBe(false);
     expect(fixture.states.at(-1)).toMatchObject({ activity: "unknown", capabilities: { send: false, steer: false, cancel: false, respond: false } });
-  } finally { closeImages.mockRestore(); await provider.close().catch(() => {}); }
+  } finally { fixture.child.exitCode = 0; fixture.child.emit("exit", 0, null); closeImages.mockRestore(); await provider.close().catch(() => {}); }
 });
 
 test("Copilot late ACK confirms only the timed-out invocation in its still-owned runtime", async () => {
