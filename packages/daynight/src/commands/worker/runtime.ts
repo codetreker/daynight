@@ -867,7 +867,13 @@ export const runWorker = async (options: {
       await runningCoordinator.stopProject(projectId, applicationSignal);
       prepared.delete(projectId);
     } });
-    let attachmentShown = false, started = false;
+    let attachmentShown = false, started = false, archiveDeferred = false;
+    const archiveShouldYield = (): boolean => {
+      const yielding = coordinator?.archiveYield() ?? true;
+      if (yielding && !archiveDeferred) emit({ kind: "session-archive-deferred", message: "Completed session archive backfill is deferred while cleanup is pending or worker capacity is full." });
+      archiveDeferred = yielding;
+      return yielding;
+    };
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
       try {
@@ -882,7 +888,7 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
-              web!.archiveMaintenance.request();
+              if (!archiveShouldYield()) web!.archiveMaintenance.request(archiveShouldYield);
             }
           }
         } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });

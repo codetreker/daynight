@@ -109,7 +109,7 @@ beforeEach(async () => {
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), archiveYield: () => false, updateConfiguration: update, shutdown }));
 });
 afterEach(async () => {
   for (const { signal } of runs) signal.abort();
@@ -487,7 +487,7 @@ describe("worker runtime configuration reporting", () => {
       await nativeTimer.setTimeout(0, undefined, options);
       if (mocks.coordinator.mock.calls.length !== 0) { now += milliseconds; appliedDelays.push(milliseconds); }
     });
-    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick: async () => { rounds++; if (appliedDelays.length === 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
     await start(f);
     expect(attempts.slice(0, 3).map(attempt => attempt.label)).toEqual(["broken", "second", "third"]);
     const retryTimes = attempts.filter(attempt => attempt.label === "broken").map(attempt => attempt.at);
@@ -550,7 +550,7 @@ describe("worker runtime configuration reporting", () => {
     const stopProject = vi.fn(async () => { await stopping.promise; throw new Error("private stop output"); });
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({
       tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }),
-      updateConfiguration: update, stopProject, shutdown,
+      archiveYield: () => false, updateConfiguration: update, stopProject, shutdown,
     }));
     const running = start(f);
     await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(1)] })));
@@ -624,7 +624,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, value: { ...target.value, pollIntervalMs: longInterval } };
     prepare.mockImplementation(() => prepared.promise);
     const tick = vi.fn(async () => {});
-    mocks.coordinator.mockImplementation(() => ({ tick, updateConfiguration: update, shutdown }));
+    mocks.coordinator.mockImplementation(() => ({ tick, archiveYield: () => false, updateConfiguration: update, shutdown }));
     const waitingSignal = (): AbortSignal | undefined => mocks.delay.mock.calls.filter(([milliseconds]) => milliseconds === longInterval).at(-1)?.[2]?.signal;
     const running = start(f);
     await eventually(() => expect(prepare).toHaveBeenCalledOnce());
@@ -772,12 +772,79 @@ describe("worker runtime configuration reporting", () => {
 });
 
 
+it("defers archive backfill after each coordinator tick and resumes without repeated deferral logs", async () => {
+  const f = await fixture();
+  let round = 0;
+  const reads: number[] = [], archived: number[] = [], deferredRounds: number[] = [];
+  const yielding = [true, true, false, true, true, false];
+  const completed = [11, 12].map(id => ({
+    projectId: uuid(1), taskId: uuid(id + 10), claimId: uuid(id + 20), serverOrigin: "https://daynight.example",
+    webExecution: { executionId: uuid(id), launchId: uuid(id), sessionId: uuid(id), executionGeneration: "1", launchSubmission: "submitted" },
+  }));
+  mocks.completed.mockImplementation(() => { reads.push(round); return completed; });
+  mocks.ticket.mockImplementation(async (_home, launchId) => {
+    const task = completed.find(task => task.webExecution.launchId === launchId)!;
+    return { serverOrigin: task.serverOrigin, claimId: task.claimId, ...task.webExecution };
+  });
+  mocks.archive.mockImplementation(async () => { archived.push(round); return { state: "ready" }; });
+  mocks.emit.mockImplementation(event => { if (event.kind === "session-archive-deferred") deferredRounds.push(round); });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => { round++; }, archiveYield: () => yielding[round - 1], updateConfiguration: update, shutdown,
+  }));
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  mocks.delay.mockImplementation(async (_milliseconds, _value, options) => {
+    if (round >= yielding.length) f.signal.abort();
+    await timers.setTimeout(0, undefined, options);
+  });
+  await start(f);
+  expect(reads).toEqual([3, 6]);
+  expect(archived).toEqual([3, 6]);
+  expect(deferredRounds).toEqual([1, 4]);
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "reconciliation-error")).toEqual([]);
+});
+
+it("rechecks archive deferral before starting a scheduled maintenance round", async () => {
+  const f = await fixture();
+  const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
+  const decisionChanged = deferred<void>();
+  let yielding = false, changeQueued = false;
+  mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  mocks.delay.mockImplementation(async (_ms, _value, { signal }: { signal: AbortSignal }) => {
+    const gate = deferred<void>(); polls.push({ gate, signal });
+    await Promise.race([gate.promise, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]);
+    signal.throwIfAborted();
+  });
+  mocks.coordinator.mockImplementation(() => ({
+    tick: async () => {}, updateConfiguration: update, shutdown,
+    archiveYield: () => {
+      if (!changeQueued) {
+        changeQueued = true;
+        queueMicrotask(() => { yielding = true; decisionChanged.resolve(); });
+      }
+      return yielding;
+    },
+  }));
+  const running = start(f);
+  await decisionChanged.promise;
+  await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  expect(mocks.completed).not.toHaveBeenCalled();
+  expect(mocks.archive).not.toHaveBeenCalled();
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
+  yielding = false;
+  polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
+  await eventually(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1));
+  expect(mocks.archive).toHaveBeenCalledOnce();
+  f.signal.abort(); await running;
+});
+
 it("continues polling during one historical upload and joins its finalizer before stopping", async () => {
   const f = await fixture();
   const entered = deferred<void>(), cancelled = deferred<void>(), releaseFinalizer = deferred<void>();
   const polls: { gate: ReturnType<typeof deferred<void>>; signal: AbortSignal }[] = [];
   const order: string[] = [];
-  let ticks = 0;
+  let ticks = 0, yielding = false;
   let options!: WorkerCoordinatorOptions;
   let storeClose!: ReturnType<typeof vi.spyOn>;
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
@@ -800,11 +867,12 @@ it("continues polling during one historical upload and joins its finalizer befor
   mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
     options = value;
     storeClose = vi.spyOn(options.store, "close");
-    return { tick: async () => { ticks++; }, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
+    return { tick: async () => { ticks++; }, archiveYield: () => yielding, updateConfiguration: update, shutdown: async () => { order.push("coordinator-stopped"); return true; } };
   });
   mocks.webClose.mockImplementation(() => { order.push("web-store-closed"); });
   const running = start(f);
   await entered.promise;
+  yielding = true;
   for (let i = 0; i < 2; i++) {
     await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
     const poll = polls.findLast(poll => !poll.signal.aborted)!;
@@ -816,6 +884,8 @@ it("continues polling during one historical upload and joins its finalizer befor
   expect(ticks).toBeGreaterThanOrEqual(3);
   expect(mocks.archive).toHaveBeenCalledOnce();
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
+  expect(order).not.toContain("upload-aborted");
+  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
   f.signal.abort();
   await cancelled.promise;
   await eventually(() => expect(order).toContain("coordinator-stopped"));
@@ -842,7 +912,7 @@ it("reports an inventory failure against worker archive maintenance and recovers
   });
   mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => {
     options = value;
-    return { tick: async () => {}, updateConfiguration: update, shutdown };
+    return { tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   const running = start(f);
   await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure })));
@@ -864,7 +934,7 @@ it("retains a non-cancellation failure from the upload finalizer during shutdown
     await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     throw failure;
   });
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
   const running = start(f), rejected = expect(running).rejects.toBe(failure);
   await entered.promise;
   f.signal.abort(); await rejected;
@@ -879,7 +949,7 @@ it("reports historical Web archive failures against the original frozen checkout
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", repositoryPath: originalRoot, resources: { worktree: { repositoryPath: originalRoot, worktreePath: originalWorktree } }, webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
   mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
   mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
   const running = start(f);
   try {
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
@@ -911,7 +981,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
-    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   if (outcome === "cancelled") {
@@ -942,7 +1012,7 @@ it("retains backfill blocker and probe deadline across runtime restart without c
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
   let stop = f.signal, rounds = 0;
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, updateConfiguration: update, shutdown }));
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
   await start(f);
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
   const readState = () => {
@@ -1011,7 +1081,7 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     store = options.store;
     if (outcome === "clear-failed") vi.spyOn(store, "deleteArchiveBackfillSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
-    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, updateConfiguration: update, shutdown };
+    return { tick: async () => { if (++rounds > 4) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   const read = openWorkerStore(f.paths.databaseFile);

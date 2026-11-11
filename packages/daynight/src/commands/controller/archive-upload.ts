@@ -1,4 +1,4 @@
-import { ArchiveRepairRequiredError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
+import { ArchiveRepairRequiredError, ArchiveRequestError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -60,6 +60,14 @@ type ArchiveIntent = {
   resources: { resourceId: string; fileId: string }[];
 };
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<void> => {
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
+    const abort = (): void => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+};
 
 export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
@@ -68,14 +76,32 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const base = ticket.testExecutionId !== undefined ? `/api/v1/test-sessions/${ticket.sessionId}` : `/api/v1/projects/${ticket.projectId}/tasks/${ticket.taskId}/sessions/${ticket.sessionId}`;
   const request = options.request ?? fetch;
   const roundSignal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
-  const call = async (method: string, suffix: string, body?: string | Uint8Array, extra: Record<string,string> = {}, sourceSignal?: AbortSignal): Promise<unknown> => {
-    roundSignal.throwIfAborted();
-    const signal = AbortSignal.any([roundSignal, AbortSignal.timeout(15_000), ...(sourceSignal ? [sourceSignal] : [])]);
-    const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
-    if (!response.ok) throw Object.assign(new Error(`Session archive request failed (${response.status}).`), { status: response.status });
-    return response.json();
+  const call = async (method: string, suffix: string, replayable: boolean, body?: string | Uint8Array, extra: Record<string,string> = {}, sourceSignal?: AbortSignal): Promise<unknown> => {
+    const operationSignal = sourceSignal ? AbortSignal.any([roundSignal, sourceSignal]) : roundSignal;
+    for (let retries = 0; ; retries++) {
+      operationSignal.throwIfAborted();
+      const signal = AbortSignal.any([operationSignal, AbortSignal.timeout(15_000)]);
+      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
+      if (response.ok) return response.json();
+      const payload: unknown = await response.json().catch(() => undefined);
+      const detail = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined;
+      const code = detail && typeof detail === "object" && "code" in detail && typeof detail.code === "string" ? detail.code : undefined;
+      const error = new ArchiveRequestError(response.status, code);
+      if (!replayable || !error.busy || retries >= 8) throw error;
+      const retryAfter = response.headers.get("Retry-After");
+      const requestedDelay = retryAfter === null ? NaN : /^\d+$/.test(retryAfter) ? Math.min(Number(retryAfter) * 1000, 60_000) : /^[A-Za-z]/.test(retryAfter) ? Date.parse(retryAfter) - Date.now() : NaN;
+      const waitMs = Number.isFinite(requestedDelay) ? Math.max(0, requestedDelay) : 500 + Math.floor(Math.random() * 4501);
+      try {
+        // The round deadline also bounds Retry-After; never overflow Node's timer range.
+        await waitForArchiveRetry(Math.min(waitMs, 60_000), operationSignal);
+        operationSignal.throwIfAborted();
+      } catch (cause) {
+        if (roundSignal.aborted && !options.signal?.aborted) throw error;
+        throw cause;
+      }
+    }
   };
-  const status = async (): Promise<SessionArchiveStatus> => parseSessionArchiveStatus((await call("GET", "") as { archive: unknown }).archive);
+  const status = async (): Promise<SessionArchiveStatus> => parseSessionArchiveStatus((await call("GET", "", true) as { archive: unknown }).archive);
   let original: Database.Database;
   try { original = new Database(journalPath, { readonly: true, fileMustExist: true }); }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: journalPath, phase: "archive-open" }, { cause, connectionClosed: true }); }
@@ -157,10 +183,12 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   }
   if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
   if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
-    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+    // The durable batch identity and bytes survive retries, including reconciliation after response loss.
+    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
   }
   assertFrozen();
-  const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", JSON.stringify(identity)));
+  // Only identity-preserving preparation is replayable; reset requests need their own policy.
+  const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", true, JSON.stringify(identity)));
   if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
   const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
   const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
@@ -191,7 +219,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
       return parseSessionArchiveFileReceipt({fileId:syncId,...rest});
     };
     let receipt: SessionArchiveFileReceipt | null = null;
-    try { receipt=parse(await call("GET",`${path}/status`)); } catch(error) { if (!(error && typeof error === "object" && "status" in error && error.status === 404)) throw error; }
+    try { receipt=parse(await call("GET",`${path}/status`,true)); } catch(error) { if (!(error && typeof error === "object" && "status" in error && error.status === 404)) throw error; }
     const check = (receipt: SessionArchiveFileReceipt): void => { if (receipt.fileId !== file.fileId || receipt.byteLength !== file.byteLength || receipt.sha256 !== file.sha256 || receipt.state === "failed") throw new Error("Archive file differs from its original intent."); };
     if (receipt) check(receipt);
     while (receipt?.state !== "complete") {
@@ -201,8 +229,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
       // retry of the final original block asks the same writer to reconcile it.
       const start=offset===file.byteLength && offset!=="0" ? String(Math.floor((Number(offset)-1)/524288)*524288) : offset;
       const block=read(start,524288);
-      try { receipt=parse(await call("PUT",`${path}?offset=${start}${purpose==="resource"?"&purpose=resource&migrationOnly=true":""}`,block,{"Daynight-File-Byte-Length":file.byteLength,"Daynight-File-SHA256":file.sha256,"Daynight-Chunk-SHA256":sha256(block),...(descriptor===undefined?{}:{"Daynight-Resource-Descriptor":JSON.stringify(descriptor)})})); }
-      catch(error) { const current=parse(await call("GET",`${path}/status`));check(current);if (current.state!=="complete" && current.acceptedOffset===offset) throw error;receipt=current; }
+      try { receipt=parse(await call("PUT",`${path}?offset=${start}${purpose==="resource"?"&purpose=resource&migrationOnly=true":""}`,true,block,{"Daynight-File-Byte-Length":file.byteLength,"Daynight-File-SHA256":file.sha256,"Daynight-Chunk-SHA256":sha256(block),...(descriptor===undefined?{}:{"Daynight-Resource-Descriptor":JSON.stringify(descriptor)})})); }
+      catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; const current=parse(await call("GET",`${path}/status`,true));check(current);if (current.state!=="complete" && current.acceptedOffset===offset) throw error;receipt=current; }
       check(receipt);
     }
   };
@@ -221,7 +249,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
       finally { lease.close(); }
     }
   }
-  const sealed=parseSessionArchivePreparation(await call("POST","/seal"));
+  const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));
   if (sealed.phase!=="sealed"||sealed.recordId!==ticket.sessionId||sealed.historyEpoch!==intent.historyEpoch||sealed.sourceThrough!==intent.sourceThrough) throw new Error("Archive seal was not confirmed.");
   const partial=frozen.refs.unavailable||frozen.resources.some(resource=>resource.status!=="available");
   const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
@@ -231,8 +259,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   let current=await status();
   if (current.state!=="ready") {
     assertFrozen();
-    try { current=parseSessionArchiveStatus((await call("PUT","/content",body) as {archive:unknown}).archive); }
-    catch(error) { current=await status();if(!matches(current))throw error; }
+    try { current=parseSessionArchiveStatus((await call("PUT","/content",true,body) as {archive:unknown}).archive); }
+    catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; current=await status();if(!matches(current))throw error; }
   }
   if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
   assertFrozen();
