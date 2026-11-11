@@ -110,13 +110,18 @@ func TestTaskProposedDefaultMigrationPreservesExistingResources(t *testing.T) {
 	}
 }
 
+// Historical schemas predate typed resources and their ready predicate.
+const historicalTaskReady = `(t.status = 'todo' AND NOT EXISTS (
+ SELECT 1 FROM task_dependencies d WHERE d.project_id = t.project_id AND d.task_id = t.id
+ AND ` + pg.TaskDependencyUnsatisfied + `))`
+
 // Pre-timing rows have unknown execution intervals and gain the explicit legacy permission during migration.
 func snapshotTaskBeforeTiming(t *testing.T, database *Store, projectID, id string) model.Task {
 	t.Helper()
 	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT
 		t.id::text, t.project_id::text, t.title, t.description, t.status, t.version,
 		t.created_at, t.updated_at, NULL::timestamptz, NULL::timestamptz, true, NULL::text, t.properties, `+
-		pg.TaskDependsOn+`, ARRAY[]::text[], `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
+		pg.TaskDependsOn+`, ARRAY[]::text[], `+pg.TaskBlockedBy+`, `+historicalTaskReady+`
 		FROM tasks t WHERE t.project_id = $1 AND t.id = $2`, projectID, id))
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +145,7 @@ func scanHistoricalTask(row pgx.Row) (model.Task, error) {
 }
 
 const historicalTaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
- t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, NULL::text, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + pg.TaskReady
+ t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, NULL::text, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + historicalTaskReady
 
 func snapshotHistoricalTask(t *testing.T, database *Store, projectID, id string) model.Task {
 	t.Helper()
@@ -152,7 +157,7 @@ func snapshotHistoricalTask(t *testing.T, database *Store, projectID, id string)
 }
 
 const historicalPlatformTaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
- t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + pg.TaskReady
+ t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.properties, ` + pg.TaskDependsOn + `, ` + pg.TaskExternalDependsOn + `, ` + pg.TaskBlockedBy + `, ` + historicalTaskReady
 
 type statusMigrationRow struct {
 	ID        string

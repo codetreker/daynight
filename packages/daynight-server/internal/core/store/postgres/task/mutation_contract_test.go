@@ -870,7 +870,7 @@ func TestTaskReadAndWriteDatabaseFailures(t *testing.T) {
 	ctx := t.Context()
 	project := writerProject(t, database, 1)
 	target := writerTask(t, database, project.ID, 11, model.TaskTodo)
-	testutil.MustExec(t, database.Pool, "DROP TABLE tasks")
+	testutil.MustExec(t, database.Pool, "DROP VIEW task_resource_rows; DROP TABLE tasks")
 	operations := []func() error{
 		func() error {
 			return writerRead(t, database, func(dao store.TaskReader) error {

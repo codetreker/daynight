@@ -52,7 +52,7 @@ func PrepareUpdate(ctx context.Context, dao store.TaskWriteDAO, id string, input
 	if err := ValidateUpdate(current, values); err != nil {
 		return Mutation{}, err
 	}
-	if err := ValidateCandidate(ctx, dao, id, values); err != nil {
+	if err := validateCandidate(ctx, dao, id, values, current.DependsOn); err != nil {
 		return Mutation{}, err
 	}
 	return Mutation{ID: id, Current: current, Values: values, Changed: Changed(current, values)}, nil

@@ -48,6 +48,10 @@ func TestExternalDependencyCountBeforeNormalizationAndGraph(t *testing.T) {
 	}
 }
 
+func (d *countingAdmissionDAO) VisibleTaskIDs(_ context.Context, ids []string) ([]string, error) {
+	return ids, nil
+}
+
 func (d *countingAdmissionDAO) Reachable(context.Context, string, string, store.DependencyReplacement) (bool, error) {
 	d.walks++
 	return false, nil

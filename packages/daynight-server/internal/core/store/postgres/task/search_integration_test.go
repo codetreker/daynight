@@ -104,8 +104,8 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	}
 	titles, e := s.Titles(ctx, f.project, []string{a.ID, b.ID})
 	mustOK(t, e)
-	if titles[a.ID] != a.Title || titles[b.ID] != b.Title {
-		t.Fatalf("titles: %v", titles)
+	if len(titles) != 0 {
+		t.Fatalf("ordinary tasks returned as Goal titles: %v", titles)
 	}
 	_, e = w.DeleteTask(ctx, a.ID, false)
 	mustOK(t, e)

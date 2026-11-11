@@ -49,6 +49,8 @@ func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 }
 
 type TaskListRequest struct {
+	Type       model.TaskType
+	Parent     *string
 	AssignedTo *string
 	model.PageRequest
 	Status             *model.TaskStatus

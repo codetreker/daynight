@@ -21,6 +21,8 @@ import (
 )
 
 type Request struct {
+	Type               model.TaskType
+	Parent             *string
 	Query              string
 	AssignedTo         *string
 	Status             *model.TaskStatus
@@ -59,6 +61,8 @@ type Page struct {
 }
 
 type cursorScope struct {
+	Type               model.TaskType             `json:"type"`
+	Parent             *string                    `json:"parent"`
 	Version            int                        `json:"version"`
 	UserID             string                     `json:"userId"`
 	ProjectID          string                     `json:"projectId"`
@@ -144,6 +148,10 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 	if request.CompatiblePlatform != nil && !request.CompatiblePlatform.Valid() {
 		return Page{}, &model.Fault{Code: "invalid_input", Message: "Compatible platform must be windows, linux or macos."}
 	}
+	kind, parent, err := taskcore.ResourceFilter(request.Type, request.Parent)
+	if err != nil {
+		return Page{}, err
+	}
 	assignment, err := taskcore.AssignmentFilter(request.AssignedTo, userID)
 	if err != nil {
 		return Page{}, err
@@ -157,7 +165,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		return Page{}, err
 	}
 	hash := sha256.Sum256([]byte(request.Query))
-	scope := cursorScope{Version: 2, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	scope := cursorScope{Version: 3, Type: kind, Parent: parent, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
 	var prior *cursor
 	if request.Cursor != nil {
 		value, err := decodeCursor(*request.Cursor, scope)
@@ -178,7 +186,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		if prior != nil && prior.Fence != fence {
 			return &model.Fault{Code: "search_changed", Message: "Tasks changed during this search."}
 		}
-		selection := store.TaskSearchQuery{Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
+		selection := store.TaskSearchQuery{Type: request.Type, Parent: parent, Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
 		if prior != nil {
 			selection.After = &prior.Position
 		}
@@ -187,39 +195,27 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			return err
 		}
 		result.Total = rows.Total
-		ids := make([]string, 0, len(rows.Items))
+		parents := make([]string, 0, len(rows.Items))
+		seen := make(map[string]bool)
 		for _, row := range rows.Items {
-			ids = append(ids, row.ID)
+			if row.Type == model.TaskTypeTask && row.ParentID != nil && !seen[*row.ParentID] {
+				parents = append(parents, *row.ParentID)
+				seen[*row.ParentID] = true
+			}
 		}
-		contexts := make(map[string]*Context, len(ids))
-		if len(ids) > 0 {
-			graph, err := snapshot.ContextGraph(ctx, projectID, ids)
+		contexts := make(map[string]*Context, len(rows.Items))
+		if len(parents) > 0 {
+			titles, err := snapshot.Titles(ctx, projectID, parents)
 			if err != nil {
 				return err
 			}
-			result.NodeCount = int64(len(graph.Nodes))
-			representatives, err := componentRepresentatives(ctx, graph, ids)
-			if err != nil {
-				return err
-			}
-			wanted := make([]string, 0, len(representatives))
-			seen := make(map[string]bool, len(representatives))
-			for _, id := range ids {
-				representative := representatives[id]
-				if representative != "" && !seen[representative] {
-					seen[representative] = true
-					wanted = append(wanted, representative)
-				}
-			}
-			if len(wanted) > 0 {
-				titles, err := snapshot.Titles(ctx, projectID, wanted)
-				if err != nil {
-					return err
-				}
-				for id, representative := range representatives {
-					if representative != "" {
-						contexts[id] = &Context{TaskID: representative, Title: titles[representative]}
+			for _, row := range rows.Items {
+				if row.Type == model.TaskTypeTask && row.ParentID != nil {
+					title, ok := titles[*row.ParentID]
+					if !ok {
+						return fmt.Errorf("task %s has invalid parent %s", row.ID, *row.ParentID)
 					}
+					contexts[row.ID] = &Context{TaskID: *row.ParentID, Title: title}
 				}
 			}
 		}

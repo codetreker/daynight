@@ -55,11 +55,14 @@ func testTaskSearchRejectsInvalidDAOInputs(t *testing.T, db *postgres.Store) {
 
 func testTaskSearchReadFailuresDoNotBecomeResults(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	project, a, b := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	project, a, b, goal := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$3,'a'),($2,$3,'b')`, a, b, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,type,title) VALUES($1,$2,'goal','goal')`, goal, project); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project, b, a); err != nil {
@@ -79,7 +82,7 @@ func testTaskSearchReadFailuresDoNotBecomeResults(t *testing.T, db *postgres.Sto
 				s := task.NewSearchSnapshot(&readerFaultQueryTx{Tx: tx, failAt: test.failAt, scan: test.scan, iteration: test.iteration})
 				var err error
 				if test.titles {
-					_, err = s.Titles(ctx, project, []string{a})
+					_, err = s.Titles(ctx, project, []string{goal})
 				} else {
 					_, err = s.ContextGraph(ctx, project, []string{a})
 				}
@@ -274,10 +277,8 @@ func testTaskSearchContextAndFence(t *testing.T, db *postgres.Store) {
 		if err != nil {
 			return err
 		}
-		for _, id := range ids[:3] {
-			if titles[id] != id {
-				t.Errorf("title missing: %s", id)
-			}
+		if len(titles) != 0 {
+			t.Errorf("ordinary tasks returned as Goal titles: %v", titles)
 		}
 		return nil
 	})

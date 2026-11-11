@@ -11,7 +11,11 @@ import (
 
 func TaskPresence(ctx context.Context, tx pgx.Tx, projectID, taskID, lock string) (store.TaskPresence, error) {
 	var presence store.TaskPresence
-	err := tx.QueryRow(ctx, `SELECT deleted_at FROM tasks WHERE project_id=$1 AND id=$2`+lock, projectID, taskID).Scan(&presence.DeletedAt)
+	relation, deleted := "task_resource_rows", "effective_deleted_at"
+	if lock != "" {
+		relation, deleted = "tasks", "deleted_at"
+	}
+	err := tx.QueryRow(ctx, `SELECT `+deleted+` FROM `+relation+` WHERE project_id=$1 AND id=$2`+lock, projectID, taskID).Scan(&presence.DeletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return presence, nil
 	}
