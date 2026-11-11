@@ -405,7 +405,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
           return;
         }
         if (!unavailableRef.current) setNotice("saved");
-        if (routeGeneration.current !== operationRoute || returnRead.current || unavailableRef.current) {
+        if (routeGeneration.current !== operationRoute || returnRead.current || unavailableRef.current && !revokedAccess.current) {
           returnRead.current = true; returnNotice.current = "saved"; setReturnReadRequired(true);
           await load(publicationSignal, "saved");
           return;
@@ -420,7 +420,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         const currentProject = projectRef.current;
         const latest = currentProject !== null && currentProject.settings.version > saved.settings.version ? currentProject : saved;
         projectRef.current = latest; setProject(latest);
-        if (draftGeneration.current === submittedDraftGeneration) {
+        if (draftGeneration.current === submittedDraftGeneration || discardedDraftGeneration.current === draftGeneration.current && cancelledDraftGeneration.current !== draftGeneration.current) {
           draftVersion.current = null; draftConflictRef.current = false; setDraftConflict(false);
           const value = String(latest.settings.executionWarningMinutes);
           draftRef.current = value; setDraft(value);
