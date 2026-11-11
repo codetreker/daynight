@@ -73,7 +73,7 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || result.steps.find((step) => step.id === target)?.status !== status) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export type AddStepInput = { readonly id: string; readonly title: string; readonly description: string; readonly status: StepStatus; readonly version: bigint; readonly placement?: { readonly before: string } | { readonly after: string } };
@@ -92,7 +92,7 @@ export const deleteTaskStep = async (projectId: string, taskId: string, stepId: 
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version + 1n || result.steps.some((step) => step.id === target)) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const editTaskStep = async (projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -111,7 +111,7 @@ export const editTaskStep = async (projectId: string, taskId: string, stepId: st
     const targetStep = result.steps.find((step) => step.id === target);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || targetStep?.title !== title || targetStep.description !== description) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const addTaskStep = async (projectId: string, taskId: string, input: AddStepInput, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -137,7 +137,7 @@ export const addTaskStep = async (projectId: string, taskId: string, input: AddS
     if (response.status !== 201 || response.headers.get("Location") !== `${path}/${target}` || result.version !== input.version + 1n ||
       !positionValid || added?.id !== target || added.title !== input.title || added.description !== input.description || added.status !== input.status || added.createdAt !== added.updatedAt) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };
 
 export const moveTaskStep = async (projectId: string, taskId: string, stepId: string, placement: StepPlacement, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
@@ -156,5 +156,5 @@ export const moveTaskStep = async (projectId: string, taskId: string, stepId: st
     const result = parseTaskSteps(value, project, task);
     if (response.status !== 200 || result.version !== version && result.version !== version + 1n || !result.steps.some((step) => step.id === target)) throw new ApiError("protocol", response.status);
     return result;
-  }, undefined, true);
+  }, undefined, true, admission.onWriteRejected);
 };

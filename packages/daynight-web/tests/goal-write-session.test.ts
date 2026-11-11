@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { getTaskObservation, pauseAuthRequests } from '../src/api/client';
 import { waitForState as waitFor } from './helpers/waitForState';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
@@ -198,4 +199,37 @@ it('retires old Goal history after an unknown deletion is observed as task_delet
   expect(scope.canPreviewProject(project)).toBe(false);
   const after = await scope.beginTaskRead(project, goal, 3, 3, scope.signal);
   expect(await scope.observeHistory(after, epoch, scope.signal)).toBe('current');
+});
+
+it.each(['confirmed', 'unobserved'] as const)('retains a Goal when a %s delete crosses a principal mismatch', async (outcome) => {
+  const goalDetail = detailFixture(project, task, { type: 'goal', ready: false });
+  let resume = () => {}; let finishDelete!: (value: Response) => void; let finishMismatch!: (value: Response) => void; let dispatched = false; let mismatchRequest = false;
+  const pending = new Promise<Response>(resolve => { finishDelete = resolve; });
+  const mismatch = new Promise<Response>(resolve => { finishMismatch = resolve; });
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions }); sessions.subscribe(project, task, () => {});
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') { dispatched = true; return pending; }
+    if (mismatchRequest) return mismatch;
+    return Promise.resolve(response(goalDetail));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(goalDetail));
+  sessions.deleteTask(project, task, goalDetail.version, false); await waitFor(() => expect(dispatched).toBe(true));
+  const generation = scope.getHistoryGeneration(project); mismatchRequest = true;
+  const observation = getTaskObservation(project, task, scope.signal, { userId: TEST_VIEWER_ID, onPrincipalMismatch: scope.principalMismatch });
+  const rejected = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+  const foreground = pauseAuthRequests();
+  try {
+    if (outcome === 'confirmed') {
+      finishDelete(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
+      await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+    }
+    finishMismatch(wireResponse(goalDetail, { headers: viewerHeaders('99999999-9999-4999-8999-999999999999') }));
+    await rejected;
+    if (outcome === 'unobserved') finishDelete(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe(outcome === 'confirmed' ? 'confirmed' : 'unknown'));
+    expect(sessions.snapshot(project, task).detail).toEqual(goalDetail);
+    expect(scope.getHistoryGeneration(project)).toBe(generation);
+    expect(scope.signal.aborted).toBe(false);
+  } finally { foreground(); resume(); }
 });

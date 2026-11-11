@@ -10,7 +10,7 @@ import { WORKER_USER, workerId } from './helpers/workers';
 
 const scopes: TaskCacheScope[] = [];
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch }); scopes.push(scope); return scope;
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { onIdentityMismatch(); void scope.invalidateScope(); } }); scopes.push(scope); return scope;
 };
 const wrapper = (scope: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}>{children}</TaskCacheProvider>;
 const flush = () => act(async () => { for (let n = 0; n < 40; n++) await Promise.resolve(); });

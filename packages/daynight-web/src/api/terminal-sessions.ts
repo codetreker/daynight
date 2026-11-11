@@ -72,6 +72,10 @@ export function parseSessionHistory(value: unknown): { items: SessionHistoryItem
   }, 200), item => item.sessionId);
   return { items, nextCursor: nullable(o.nextCursor, v => text(v, 1024)) };
 }
+// The HTTP status is trusted only after the principal check (or the 401 lifecycle).
+export class SessionDenialProtocolError extends ApiError {
+  constructor(error: ApiError) { super(error.kind, error.status, error.code, error.requestId, error); }
+}
 async function boundedBytes(response: Response, signal: AbortSignal, max: number): Promise<Uint8Array> {
   signal = responseSignal(response, signal);
   signal.throwIfAborted();
@@ -94,7 +98,12 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expected = 200, v2 = true): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...(v2 ? { [SESSION_PROTOCOL_HEADER]: SESSION_V2_PROTOCOL } : {}), ...init.headers } });
     assertResponsePrincipal(response, userId, onPrincipalMismatch);
-    return json(response, signal, v => { if (response.status !== expected) invalid(); return parse(v); }, async () => decodeStrictSessionJson(await boundedBytes(response, signal, SESSION_V2_LIMITS.archiveMaxBytes + 1024), SESSION_V2_LIMITS.archiveMaxBytes + 1024));
+    try {
+      return await json(response, signal, v => { if (response.status !== expected) invalid(); return parse(v); }, async () => decodeStrictSessionJson(await boundedBytes(response, signal, SESSION_V2_LIMITS.archiveMaxBytes + 1024), SESSION_V2_LIMITS.archiveMaxBytes + 1024));
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === 'protocol' && [401, 403, 404, 410].includes(response.status)) throw new SessionDenialProtocolError(error);
+      throw error;
+    }
   }
   const result = (v: unknown, id: string, operationId: string) => { const r = parseSessionV2Message(v); if (r.type !== 'operation_result' || r.sessionId !== id || r.payload.operationId !== operationId) return invalid(); return r; };
   return {

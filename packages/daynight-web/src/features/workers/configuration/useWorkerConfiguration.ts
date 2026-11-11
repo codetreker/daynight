@@ -2,7 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
-import { TaskCacheLifecycleChanged } from '../../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
@@ -54,7 +54,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
           if (signal.aborted) abort();
         });
         try { await scope.ready(signal); } catch (error) {
-          if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && alive() && !signal.aborted) continue;
           throw error;
         }
         if (enabled && alive()) return;
@@ -123,7 +123,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
             store({ ...initialState(scope, workerId), error, errorSource: 'read', unavailable: true });
           } else update(old => ({ ...old, refreshing: false, error: old.errorSource === 'write' ? old.error : error, errorSource: old.errorSource === 'write' ? 'write' : 'read', unavailable: false }));
         }
-      } finally { if (attempt === generation) read = null; }
+      } finally { if (attempt === generation) { read = null; if (scope.hasIdentityMismatch) update(old => ({ ...old, refreshing: false })); } }
     };
     const replaceDraft = () => update(old => {
       if (old.pending || old.uncertain || old.submission !== null || old.resource?.desired === null || old.resource === null || old.notice === 'conflict' && old.resource.desired.revision === old.baselineRevision) return old;

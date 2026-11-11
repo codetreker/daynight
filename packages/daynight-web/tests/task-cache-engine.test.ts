@@ -2,7 +2,7 @@ import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
 import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pauseAuthRequests } from "../src/api/client";
+import { getTask, pauseAuthRequests } from "../src/api/client";
 import type { Project, TaskSummary, TaskSync, WorkerClaim } from "../src/api/types";
 import { deriveTaskSyncBindings, eligibleTaskExecutionBinding, sameTaskExecutionBinding, taskExecutionBinding } from "../src/features/task-cache/execution-binding";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
@@ -47,7 +47,7 @@ class Channel {
   }
   close() { Channel.channels.delete(this); }
 }
-const scope = (identity = userId, onIdentityMismatch = vi.fn()) => {
+const scope = (identity = userId, onIdentityMismatch: () => void = vi.fn()) => {
   const value = createTaskCacheScope({ userId: identity, onIdentityMismatch }); scopes.push(value); return value;
 };
 const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(database); return database; };
@@ -450,9 +450,29 @@ it("synchronously invalidates a user and rotates its persistent fence while reta
   expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]); expect(await database.getAllFromIndex("summaries", "by-user", otherUser)).toHaveLength(1);
 });
 
-it("invalidates a principal mismatch before the root identity check", async () => {
-  const mismatch = vi.fn(); const cache = scope(userId, mismatch); await seed(cache); cache.principalMismatch();
-  expect(mismatch).toHaveBeenCalledOnce(); expect(() => cache.getAuthorizedProject(projectId)).toThrow(); await cache.invalidateScope();
+it("notifies the owner before destroying a projection on a real principal mismatch", async () => {
+  let resume = () => {};
+  let cache: TaskCacheScope;
+  const mismatch = vi.fn(() => {
+    expect(cache.signal.aborted).toBe(false);
+    expect(cache.isInvalidated).toBe(false);
+    expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+    resume = pauseAuthRequests();
+  });
+  cache = scope(userId, mismatch); await seed(cache);
+  const ticket = await cache.beginSync(projectId, signal());
+  const received = wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) });
+  const body = vi.spyOn(received, "text"); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(received));
+  try {
+    await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch })).rejects.toMatchObject({ kind: "protocol", code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(body).not.toHaveBeenCalled();
+    expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
+    await expect(cache.applySync(ticket, response([task(2)]), signal())).rejects.toMatchObject({ name: "AbortError", retryable: false });
+    const database = await inspect();
+    expect((await database.getAllFromIndex("summaries", "by-user", userId)).map(row => row.taskId)).toEqual([taskId(1)]);
+  } finally { resume(); }
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+  await expect(cache.readProject(projectId, signal())).rejects.toMatchObject({ retryable: false });
 });
 
 it("holds disk reads and publication behind the foreground identity gate", async () => {
@@ -512,12 +532,45 @@ it("aborts its lifetime synchronously and prevents a late cold bootstrap from cr
   expect(await database.get("userScopes", userId)).toBeDefined();
 });
 
-it("rechecks identity when another scope rotates its captured fence and preserves the new scope's rows", async () => {
-  const mismatch = vi.fn(); const old = scope(userId, mismatch); const reset = scope(); await seed(old);
+it("notifies before closing when another scope rotates its fence and rejects old transactions", async () => {
+  let old: TaskCacheScope;
+  const mismatch = vi.fn(() => {
+    expect(old.signal.aborted).toBe(false); expect(old.isInvalidated).toBe(false);
+    expect(old.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+  });
+  old = scope(userId, mismatch); const reset = scope(); await seed(old); const stale = await old.beginSync(projectId, signal());
   await reset.invalidateScope(); const current = scope(); await seed(current, [task(2)]);
   await expect(old.readProject(projectId, signal())).rejects.toMatchObject({ name: "AbortError" });
-  expect(mismatch).toHaveBeenCalledOnce(); expect(old.isInvalidated).toBe(true);
+  expect(mismatch).toHaveBeenCalled(); expect(old.isInvalidated).toBe(false);
+  await expect(old.applySync(stale, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ name: "AbortError" });
   expect((await current.readProject(projectId, signal()))!.graph.tasks[0]!.id).toBe(taskId(2));
+});
+
+it("keeps a replacement fence and its rows when the root invalidates the old scope", async () => {
+  vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  let old: TaskCacheScope; let cleanup: Promise<void> | undefined;
+  old = scope(userId, vi.fn(() => { cleanup = old.invalidateScope(); }));
+  await seed(old); const stale = await old.beginSync(projectId, signal());
+  const reset = scope(); await reset.invalidateScope();
+  const current = scope(); await seed(current, [task(2)]);
+  const database = await inspect(); const currentFence = await database.get("userScopes", userId);
+  await expect(old.applySync(stale, response([task(1, { version: 2n })]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect(cleanup).toBeDefined(); expect(old.signal.aborted).toBe(true); await cleanup;
+  expect(await database.get("userScopes", userId)).toEqual(currentFence);
+  expect((await current.readProject(projectId, signal()))!.graph.tasks.map(row => row.id)).toEqual([taskId(2)]);
+});
+
+it("rejects projection preparation on a changed fence even when the owner pauses", async () => {
+  vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  let resume = () => {};
+  const cache = scope(userId, () => { resume = pauseAuthRequests(); });
+  await seed(cache); const database = await inspect();
+  await database.put("userScopes", { userId, userFence: crypto.randomUUID() });
+  try {
+    await expect(cache.prepareProjection(signal())).rejects.toMatchObject({ name: "AbortError" });
+    expect(cache.signal.aborted).toBe(false); expect(cache.isInvalidated).toBe(false);
+  } finally { resume(); }
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
 });
 
 it("classifies invalid newly received dependencies as protocol data and preserves the valid baseline", async () => {
@@ -635,7 +688,7 @@ it("retires an old bound scope only after its damaged-fence replacement commits 
   const bound = scope(userId, mismatch); const otherTab = scope(); await seed(bound); database = await inspect(); const late = await otherTab.beginSync(projectId, signal());
   const before = await bound.beginSync(projectId, signal()); await database.put("userScopes", { userId, userFence: "damaged" });
   await expect(bound.beginSync(projectId, signal())).rejects.toMatchObject({ name: "AbortError" });
-  expect(mismatch).toHaveBeenCalledOnce(); expect(bound.isInvalidated).toBe(true);
+  expect(mismatch).toHaveBeenCalledOnce(); expect(bound.isInvalidated).toBe(false); expect(bound.signal.aborted).toBe(false);
   const user = (await database.get("userScopes", userId))!; expect(user.userFence).not.toBe(before.userFence); expect(user.userFence).not.toBe("damaged");
   expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", userFence: user.userFence });
   await vi.waitFor(() => expect(observations).toEqual([{ userFence: user.userFence, state: "committed" }]));
@@ -804,4 +857,59 @@ it('publishes claim changes and removal only within the authorized user and proj
   expect(cache.getAuthorizedProject(projectId)).toBeNull();
   await expect(cache.applySync(ticket, response([task(1, { version: 4n, properties: { worker: worker('late', 'active') } })]), signal())).rejects.toMatchObject({ name: 'AbortError' });
   expect(cache.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it("releases existing admission waiters once after concurrent real principal mismatches", async () => {
+  let resume = () => {}; const mismatch = vi.fn(); const cache = scope(userId, mismatch); await seed(cache);
+  let release!: (response: Response) => void; const pendingResponse = new Promise<Response>(resolve => { release = resolve; });
+  vi.stubGlobal("fetch", vi.fn().mockReturnValue(pendingResponse));
+  const first = getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch });
+  const second = getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch });
+  resume = pauseAuthRequests(); const waiting = cache.ready(signal());
+  try {
+    release(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) }));
+    await expect(first).rejects.toMatchObject({ code: "principal_mismatch" });
+    await expect(second).rejects.toMatchObject({ code: "principal_mismatch" });
+    await expect(waiting).rejects.toMatchObject({ name: "AbortError", retryable: false });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(cache.signal.aborted).toBe(false);
+  } finally { resume(); }
+});
+
+it("aborts an in-flight durable write after a real principal mismatch", async () => {
+  const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  const detail: TaskIntrinsicDetail = detailFixture(projectId, taskId(1));
+  await expect(cache.detailTransaction(ticket, signal(), async (details, manifest) => {
+    const write = details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
+    void write.catch(() => {});
+    await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: cache.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+    await write;
+  })).rejects.toMatchObject({ retryable: false });
+  const database = await inspect(); expect(await database.getAll("details")).toEqual([]);
+  expect(cache.getAuthorizedProject(projectId)?.versions.get(taskId(1))).toBe(1n);
+});
+
+it("honors a peer's confirmed project withdrawal after retaining a mismatched scope", async () => {
+  const retained = scope(); await seed(retained); const peer = scope();
+  const ticket = await peer.beginSync(projectId, signal());
+  await peer.applySync(ticket, response([]), signal());
+  const denial = await peer.beginSync(projectId, signal());
+  const events: { accessRevoked?: true }[] = []; retained.subscribe(event => events.push(event));
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: retained.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+  expect(retained.getAuthorizedProject(projectId)).not.toBeNull();
+  expect(await peer.revokeProject(denial, signal())).toBe(true);
+  await vi.waitFor(() => expect(events.some(event => event.accessRevoked)).toBe(true));
+  expect(retained.getAuthorizedProject(projectId)).toBeNull(); expect(retained.signal.aborted).toBe(false);
+});
+
+it("withdraws matching peer directory generations after a retained mismatch", async () => {
+  const peer = scope(); await seed(peer); const denial = await peer.beginSync(projectId, signal());
+  const directory = scope(); const snapshot = await directory.prepareProjection(signal());
+  const events: import('../src/features/task-cache/project-cache').CacheEvent[] = [];
+  directory.subscribeProjection(event => events.push(event));
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(otherUser) })));
+  await expect(getTask(projectId, taskId(1), signal(), { userId, onPrincipalMismatch: directory.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+  expect(await peer.revokeProject(denial, signal())).toBe(true);
+  await vi.waitFor(() => expect(events.some(event => event.accessRevoked && directory.projectionEventMatches(snapshot, event))).toBe(true));
 });

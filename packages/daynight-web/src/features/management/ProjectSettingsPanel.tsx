@@ -27,7 +27,7 @@ const ProjectSettingsContent = ({ projectId, user, navigation, unavailableView, 
   const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange, guard);
   const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: active });
   const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, prompt);
-  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.uncertain]);
+  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain]);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
   const showUnavailable = state.unavailable && unavailableView !== undefined && !guard.isBlocked("delete");
   return <div ref={promptNavigation.owner} onFocusCapture={promptNavigation.rememberFocus}>

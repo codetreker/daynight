@@ -20,7 +20,7 @@ const scopes: TaskCacheScope[] = [];
 let monotonic: number;
 let visibility: DocumentVisibilityState;
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch });
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { onIdentityMismatch(); void scope.invalidateScope(); } });
   vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
   scopes.push(scope); return scope;
 };

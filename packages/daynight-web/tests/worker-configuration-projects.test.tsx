@@ -12,7 +12,7 @@ import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const scopes: TaskCacheScope[] = [];
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch });
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { onIdentityMismatch(); void scope.invalidateScope(); } });
   vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
   scopes.push(scope); return scope;
 };

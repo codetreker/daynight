@@ -53,7 +53,7 @@ const AccountContent = ({ user, onSignOut, onIdentityMismatch, active = true, on
   const prompt = useWorkerPrompt({ scope: 'user' }, { readEnabled: active });
   const navigation = usePromptNavigation({ scope: 'user' }, prompt, { visible: tab === 'prompt', onContinueEditing: () => setTab('prompt', true) });
   useLayoutEffect(() => { if (tab === "tokens") setTokensOpened(true); }, [tab]);
-  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.uncertain); }, [onRetentionChange, prompt.pending, prompt.uncertain]);
+  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain); }, [onRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain]);
   return <div ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div>
     {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}

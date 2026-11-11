@@ -3,6 +3,7 @@ import { BotCreationUnknown, createBot, getBot, getBotDefaults, type Bot, type B
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from '../../api/client';
 import type { WorkerAgent } from '../../api/types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
 import { useBotMessages } from './messages';
 import { BotDirectoryBrowser } from './BotDirectoryBrowser';
 import { useBotCreationModels } from './useBotCreationModels';
@@ -48,7 +49,8 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
       try {
         while (!signal.aborted && !scope.isInvalidated) {
           try { await scope.ready(signal); }
-          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause)) continue; throw cause; }
+          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause) && !(cause instanceof TaskCacheLifecycleChanged && !cause.retryable)) continue; throw cause; }
+          if (scope.hasIdentityMismatch) return;
           if (authRequestsPaused()) continue;
           if (!signal.aborted && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
           return;

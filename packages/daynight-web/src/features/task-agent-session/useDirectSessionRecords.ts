@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ApiError, authRequestsPauseRevision, isAbortError } from '../../api/client';
-import { createTerminalSessionApi, type SessionHistoryItem } from '../../api/terminal-sessions';
+import { createTerminalSessionApi, SessionDenialProtocolError, type SessionHistoryItem } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskDetailSessions, type DirectQualification } from '../task-detail/TaskDetailSession';
-import { TaskCacheLifecycleChanged, type SyncTicket } from '../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange, type SyncTicket } from '../task-cache/project-cache';
 import { clearSessionHistory, readSessionHistoryOwnership, type SessionHistoryOwnership } from './session-history-cache';
 
 type Page = { readonly items: SessionHistoryItem[]; readonly cursor: string | null };
@@ -133,13 +133,13 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
             });
             break;
           } catch (error) {
-            if (error instanceof TaskCacheLifecycleChanged && pauseRevision !== authRequestsPauseRevision() && current()) continue;
+            if (isRetryableTaskCacheLifecycleChange(error) && pauseRevision !== authRequestsPauseRevision() && current()) continue;
             throw error;
           }
         }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
-        const denied = error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0);
+        const denied = error instanceof ApiError && (error.kind === 'server' || error instanceof SessionDenialProtocolError) && [401, 403, 404, 410].includes(error.status ?? 0);
         if (denied) { if (!current()) return; }
         else {
           try { await scope.ready(signal); } catch { return; }

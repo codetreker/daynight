@@ -260,6 +260,7 @@ export type TaskResponseAdmission = {
   readonly userId: string;
   readonly onPrincipalMismatch: () => void;
   readonly onWriteConfirmed?: () => void;
+  readonly onWriteRejected?: (error: ApiError) => void;
   readonly onDispatch?: () => void;
 };
 
@@ -313,7 +314,7 @@ export const updateTaskFields = async (
       body.title !== undefined && result.title !== body.title || body.description !== undefined && result.description !== body.description ||
       body.parentId !== undefined && result.parentId !== body.parentId) throw new ApiError("protocol", response.status);
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 // The epoch and body are one server snapshot; neither a cached epoch nor a
@@ -353,7 +354,7 @@ export const deleteTask = async (
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 204) { admission.onWriteConfirmed?.(); responseSignal(response, signal).throwIfAborted(); return; }
   if (response.ok) throw new ApiError("protocol", response.status);
-  await json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  await json(response, signal, () => { throw new ApiError("protocol", response.status); }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskStatus = async (
@@ -374,7 +375,7 @@ export const setTaskStatus = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const withdrawWorkerClaim = async (
@@ -395,7 +396,7 @@ export const withdrawWorkerClaim = async (
     if (response.status !== 200 || result.version !== exactVersion + 1n || readWorkerClaim(result.properties) !== undefined ||
       result.status !== "todo" || result.allowAgents || result.startedAt !== null || result.completedAt !== null) throw new ApiError("protocol", response.status);
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskAgentPermission = async (
@@ -416,7 +417,7 @@ export const setTaskAgentPermission = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const unpauseTask = async (
@@ -437,7 +438,7 @@ export const unpauseTask = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskRequiredPlatform = async (
@@ -458,7 +459,7 @@ export const setTaskRequiredPlatform = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 export const setTaskAssignedTo = async (
@@ -480,7 +481,7 @@ export const setTaskAssignedTo = async (
       throw new ApiError("protocol", response.status);
     }
     return result;
-  });
+  }, undefined, false, admission.onWriteRejected);
 };
 
 const attachmentTaskUrl = (projectId: string, taskId: string): string =>

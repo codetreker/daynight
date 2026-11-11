@@ -102,18 +102,13 @@ export const saveWorkerPrompt = async (target: PromptTarget, submission: PromptS
     method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(input),
   }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
-  let resource: PromptResource;
-  try {
-    resource = await json(response, signal, value => {
-      if (response.status !== 200) throw new ApiError('protocol', response.status);
-      const resource = parsePromptResource(value, target, userId);
-      if (resource.text !== input.text || BigInt(resource.revision) < BigInt(revision) || BigInt(resource.revision) > BigInt(revision) + 1n) throw new ApiError('protocol', response.status);
-      return resource;
-    }, response => decodePromptJson(response, signal));
-  } catch (error) {
-    if (error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500) admission.onRejection?.(error);
-    throw error;
-  }
-  admission.onReceipt?.(resource);
-  return resource;
+  return json(response, signal, value => {
+    if (response.status !== 200) throw new ApiError('protocol', response.status);
+    const resource = parsePromptResource(value, target, userId);
+    if (resource.text !== input.text || BigInt(resource.revision) < BigInt(revision) || BigInt(resource.revision) > BigInt(revision) + 1n) throw new ApiError('protocol', response.status);
+    admission.onReceipt?.(resource);
+    return resource;
+  }, response => decodePromptJson(response, signal), false, error => {
+    if (error.status !== null && error.status >= 400 && error.status < 500) admission.onRejection?.(error);
+  });
 };

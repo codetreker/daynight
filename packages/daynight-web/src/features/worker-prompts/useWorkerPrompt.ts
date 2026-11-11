@@ -3,7 +3,7 @@ import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../api/clie
 import { getWorkerPrompt, isPromptText, PROMPT_REQUEST_BYTES, promptSubmissionBytes, saveWorkerPrompt, type PromptResource, type PromptTarget } from '../../api/worker-prompts';
 import { useProjectAccessSession } from '../projects/ProjectAccess';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
+import { isRetryableTaskCacheLifecycleChange } from '../task-cache/project-cache';
 import { freezeSubmission, initialPromptState, promptDirty, promptReducer, type PromptAction, type PromptState } from './state';
 
 type OwnedState = { readonly owner: object; readonly key: string; readonly state: PromptState; readonly unavailable: boolean };
@@ -53,14 +53,14 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
           waiters.add(resume); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
         });
         try { await abortable(scope.ready(signal), signal); } catch (error) {
-          if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+          if (isRetryableTaskCacheLifecycleChange(error) && alive() && !signal.aborted) continue;
           throw error;
         }
         if (access !== null) {
           let allowed;
           try { allowed = await abortable(access.waitForFreshAccess(signal, requireActive), signal); }
           catch (error) {
-            if (error instanceof TaskCacheLifecycleChanged && alive() && !signal.aborted) continue;
+            if (isRetryableTaskCacheLifecycleChange(error) && alive() && !signal.aborted) continue;
             throw error;
           }
           if (allowed === null) {
@@ -83,19 +83,19 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       }
       signal.throwIfAborted();
     };
-    const denied = (error: unknown) => error instanceof ApiError && error.status === 404 && error.code === 'not_found';
+    const denied = (error: unknown) => error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
     const clearWhenAdmitted = (stillDenied: () => boolean, kind: 'access' | 'resource' = 'resource') => {
       if (kind === 'access' && denial !== null && denialKind === 'resource') return;
       denial?.abort();
       const controller = new AbortController(); denial = controller; denialKind = kind;
-      const signal = AbortSignal.any([controller.signal, scope.signal]);
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]);
       const work = async () => {
         try {
           while (alive() && !signal.aborted && denial === controller) {
             try { await abortable(scope.ready(signal), signal); }
-            catch (error) { if (error instanceof TaskCacheLifecycleChanged && !signal.aborted) continue; throw error; }
+            catch (error) { if (isRetryableTaskCacheLifecycleChange(error) && !signal.aborted) continue; throw error; }
             if (authRequestsPaused()) continue;
-            if (alive() && !signal.aborted && denial === controller && stillDenied()) clear();
+            if (alive() && !signal.aborted && !scope.hasIdentityMismatch && denial === controller && stillDenied()) clear();
             return;
           }
         } catch { /* The owning scope or denial was retired. */ }
@@ -106,7 +106,7 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
     const publish = (apply: () => void) => {
       publication?.abort();
       const controller = new AbortController(); publication = controller;
-      const signal = AbortSignal.any([controller.signal, scope.signal]);
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]);
       const work = async () => {
         try {
           while (alive() && !signal.aborted && publication === controller) {
@@ -114,7 +114,7 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
               await abortable(waitForAdmission(signal, false, true), signal);
               const snapshot = access?.snapshot();
               if (authRequestsPaused() || snapshot && (snapshot.status !== 'ready' || snapshot.refreshing)) continue;
-              if (alive() && !signal.aborted && publication === controller) apply();
+              if (alive() && !signal.aborted && !scope.hasIdentityMismatch && publication === controller) apply();
               return;
             } catch (error) {
               if (!alive() || signal.aborted || publication !== controller) return;
@@ -128,28 +128,32 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       void work();
     };
     const readNow = async (replace = false) => {
-      if (!alive() || !enabled || !visible || authRequestsPaused() || denial !== null || (read !== null && !replace)) return;
+      if (!alive() || scope.hasIdentityMismatch || !enabled || !visible || authRequestsPaused() || denial !== null || (read !== null && !replace)) return;
       if (replace) read?.abort();
       const controller = new AbortController(); read = controller;
-      const signal = AbortSignal.any([controller.signal, scope.signal]), id = ++sequence;
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]), id = ++sequence;
       let stage: 'before' | 'request' | 'after' = 'before';
       dispatch({ type: 'read/start', id });
       try {
         await waitForAdmission(signal, true);
         stage = 'request';
-        const resource = await getWorkerPrompt(target, signal, admission);
+        const resource = await abortable(getWorkerPrompt(target, signal, admission), signal);
         stage = 'after';
         do {
           await waitForAdmission(signal, true);
           const snapshot = access?.snapshot();
           if (!authRequestsPaused() && (!snapshot || snapshot.status === 'ready' && !snapshot.refreshing)) break;
         } while (alive() && !signal.aborted && read === controller);
+        if (scope.hasIdentityMismatch && alive() && read === controller) { dispatch({ type: 'read/cancel', id }); return; }
         if (!alive() || signal.aborted || read !== controller) return;
         if (get().unavailable) store({ ...get(), unavailable: false });
         dispatch({ type: get().state.write === 'unknown' ? 'reconcile/success' : 'read/success', id, resource });
       } catch (error) {
-        if (!alive() || signal.aborted || read !== controller) return;
+        if (!alive() || read !== controller) return;
+        if (scope.hasIdentityMismatch) { dispatch({ type: 'read/cancel', id }); return; }
+        if (signal.aborted) return;
         try { await waitForAdmission(signal, true); } catch (failure) {
+          if (scope.hasIdentityMismatch) { dispatch({ type: 'read/cancel', id }); return; }
           if (denied(failure) && alive()) {
             if (stage === 'request' && denied(error)) clearWhenAdmitted(() => true);
             else clearWhenAdmitted(() => access?.snapshot().status !== 'ready', 'access');
@@ -166,13 +170,13 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       } finally { if (read === controller) read = null; }
     };
     const saveNow = async () => {
-      if (!alive() || !enabled || !visible || authRequestsPaused() || denial !== null || get().unavailable) return;
+      if (!alive() || scope.hasIdentityMismatch || !enabled || !visible || authRequestsPaused() || denial !== null || get().unavailable) return;
       const state = get().state, submission = freezeSubmission(state, scope.userId, ++sequence);
       if (submission === null || !promptDirty(state) || !isPromptText(submission.text) || promptSubmissionBytes({ expectedUserId: submission.expectedUserId, revision: submission.revision, text: submission.text }) > PROMPT_REQUEST_BYTES) return;
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       writeDispatched = false;
-      const signal = AbortSignal.any([controller.signal, scope.signal]);
+      const signal = AbortSignal.any([controller.signal, scope.signal, scope.mismatchSignal]);
       let dispatched = false;
       let receipt: PromptResource | null = null;
       let rejection: ApiError | null = null;
@@ -191,6 +195,12 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       } catch (error) {
         if (!alive()) return;
         if (receipt !== null) { confirmed(receipt); return; }
+        if (scope.hasIdentityMismatch) {
+          const observed = rejection ?? error;
+          const refusal = observed instanceof ApiError && observed.kind === 'server' && observed.status !== null && observed.status >= 400 && observed.status < 500;
+          dispatch({ type: 'write/settle', id: submission.id, outcome: !dispatched || refusal ? observed instanceof ApiError && observed.code === 'version_conflict' ? 'conflict' : 'refused' : 'unknown' });
+          return;
+        }
         if (signal.aborted && rejection === null && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) {
           dispatch(dispatched ? { type: 'write/unknown', id: submission.id, error: 'write' } : { type: 'write/interrupted', id: submission.id });
           return;
@@ -234,6 +244,6 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
   const unavailable = owned.owner === scope && owned.key === key && owned.unavailable;
   const submission = state.baseline === null ? null : { expectedUserId: scope.userId, revision: state.baseline.revision, text: state.draft };
   const invalid = !isPromptText(state.draft), tooLarge = submission !== null && promptSubmissionBytes(submission) > PROMPT_REQUEST_BYTES;
-  return { ...state, loading: state.resource === null && state.read !== 'error' && !unavailable, unavailable, dirty: promptDirty(state), pending: state.write === 'pending', uncertain: state.write === 'unknown', invalid, tooLarge, readEnabled, edit, refresh, save, discard, abandon, useLatest, keepDraft };
+  return { ...state, loading: state.resource === null && state.read !== 'error' && !unavailable, unavailable, dirty: promptDirty(state), pending: state.write === 'pending', confirmed: state.write === 'confirmed', uncertain: state.write === 'unknown', invalid, tooLarge, readEnabled, edit, refresh, save, discard, abandon, useLatest, keepDraft };
 };
 export type WorkerPromptController = ReturnType<typeof useWorkerPrompt>;

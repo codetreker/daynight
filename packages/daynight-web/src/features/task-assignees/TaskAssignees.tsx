@@ -1,3 +1,4 @@
+import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { listProjectPeople } from "../../api/auth";
 import type { ProjectPeople, ProjectPerson, ProjectPersonVersion } from "../../api/auth-types";
@@ -140,12 +141,13 @@ export class TaskAssignees {
     while (!this.disposed && !this.scope.isInvalidated && !signal.aborted) {
       try {
         await this.scope.ready(signal);
+        if (this.scope.hasIdentityMismatch) throw new TaskCacheLifecycleChanged(false);
         if (authRequestsPaused()) continue;
         if (this.disposed || this.scope.isInvalidated || signal.aborted) return null;
         return work();
       } catch (error) {
         if (this.disposed || this.scope.isInvalidated || signal.aborted) return null;
-        if (authRequestsPaused()) continue;
+        if (authRequestsPaused() && !(error instanceof TaskCacheLifecycleChanged && !error.retryable)) continue;
         throw error;
       }
     }

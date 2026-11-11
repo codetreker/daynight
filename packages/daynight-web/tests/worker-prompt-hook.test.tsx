@@ -1,9 +1,9 @@
 import { act, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { ApiError, assertResponsePrincipal, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import * as promptApi from '../src/api/worker-prompts';
-import { PROMPT_REQUEST_BYTES, promptSubmissionBytes } from '../src/api/worker-prompts';
+import { getWorkerPrompt, PROMPT_REQUEST_BYTES, promptSubmissionBytes } from '../src/api/worker-prompts';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { ProjectAccessSession } from '../src/features/projects/ProjectAccess';
@@ -33,7 +33,7 @@ const response = (body: unknown, status = 200) => new Response(JSON.stringify(bo
 const error = (status: number, code: string) => response({ error: { code, message: 'safe', requestId: 'test-1' } }, status);
 const target = { scope: 'user' } as const;
 
-afterEach(() => { project.current = null; for (const instance of scopes.splice(0)) instance.dispose(); invalidateAuthRequests(); vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); project.current = null; for (const instance of scopes.splice(0)) instance.dispose(); invalidateAuthRequests(); });
 
 describe('prompt editor lifecycle', () => {
   it('freezes the submission and preserves edits while its PUT is pending', async () => {
@@ -367,4 +367,94 @@ describe('prompt editor lifecycle', () => {
     expect(result.current.unavailable).toBe(false); expect(result.current.resource?.revision).toBe('2');
     expect(result.current.draft).toBe('restored'); expect(result.current.dirty).toBe(false);
   });
+});
+
+describe('prompt identity mismatch settlement', () => {
+  it.each(['confirmed', 'conflict', 'unknown'] as const)('settles a dispatched %s without publishing or replaying it', async (outcome) => {
+    const put = deferred<Response>(), mismatch = deferred<Response>(); let resume = () => {};
+    const instance = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(instance);
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old'))).mockImplementationOnce(() => put.promise).mockImplementationOnce(() => mismatch.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ enabled }) => useWorkerPrompt(target, { readEnabled: enabled }), { wrapper: wrapper(instance), initialProps: { enabled: true } });
+    await flush(); act(() => result.current.edit('submitted'));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.edit('continued'));
+    rerender({ enabled: false });
+    const publicationGate = deferred<void>();
+    const ready = vi.spyOn(instance, 'ready').mockImplementation(() => publicationGate.promise);
+    const observation = getWorkerPrompt(target, new AbortController().signal, { userId, onPrincipalMismatch: instance.principalMismatch });
+    const mismatchResult = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+    if (outcome === 'confirmed') put.resolve(response(value('2', 'submitted')));
+    else if (outcome === 'conflict') put.resolve(error(409, 'version_conflict'));
+    else put.reject(new Error('lost'));
+    await flush();
+    try {
+      mismatch.resolve(new Response(JSON.stringify(value('1', 'other')), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': '99999999-9999-4999-8999-999999999999' } }));
+      await act(async () => { await mismatchResult; await saving; });
+      expect(result.current.pending).toBe(false); expect(result.current.confirmed).toBe(outcome === 'confirmed');
+      expect(result.current.uncertain).toBe(outcome === 'unknown'); expect(result.current.conflict).toBe(outcome === 'conflict');
+      expect(result.current.resource?.text).toBe('old'); expect(result.current.baseline?.revision).toBe('1'); expect(result.current.draft).toBe('continued');
+      expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+    } finally { publicationGate.resolve(); ready.mockRestore(); resume(); }
+    await act(async () => result.current.save()); expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it('settles an unanswered dispatched save as unknown when mismatch cancels admission', async () => {
+    const put = deferred<Response>(); let resume = () => {};
+    const instance = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(instance);
+    const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old'))).mockImplementationOnce(() => put.promise)
+      .mockResolvedValueOnce(new Response('{}', { headers: { 'Daynight-User-ID': '99999999-9999-4999-8999-999999999999' } }));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerPrompt(target, { readEnabled: true }), { wrapper: wrapper(instance) });
+    await flush(); act(() => result.current.edit('mine'));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    try {
+      await act(async () => { await expect(getWorkerPrompt(target, new AbortController().signal, { userId, onPrincipalMismatch: instance.principalMismatch })).rejects.toMatchObject({ code: 'principal_mismatch' }); await saving; });
+      expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(true); expect(result.current.draft).toBe('mine');
+      put.resolve(response(value('2', 'mine'))); await flush(); expect(result.current.uncertain).toBe(true);
+    } finally { resume(); }
+  });
+});
+
+it('ends an undispatched prompt save after a retaining owner detects mismatch', async () => {
+  let resume = () => {}; const instance = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(instance);
+  const mismatch = deferred<Response>(), gate = deferred<object | null>(); let calls = 0;
+  project.current = { snapshot: () => ({ status: 'ready', refreshing: false }), subscribe: () => () => {}, waitForFreshAccess: async () => ++calls <= 2 ? {} : gate.promise };
+  const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old', 'project'))).mockImplementationOnce(() => mismatch.promise);
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: true }), { wrapper: wrapper(instance) });
+  await flush(); act(() => result.current.edit('mine'));
+  const observation = getWorkerPrompt(target, new AbortController().signal, { userId, onPrincipalMismatch: instance.principalMismatch });
+  const mismatchResult = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+  let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+  expect(result.current.pending).toBe(true);
+  try {
+    mismatch.resolve(new Response('{}', { headers: { 'Daynight-User-ID': '99999999-9999-4999-8999-999999999999' } }));
+    await act(async () => { await mismatchResult; await saving; });
+    expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false); expect(result.current.draft).toBe('mine');
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
+  } finally { gate.resolve({}); resume(); }
+});
+
+
+it.each(['confirmed', 'conflict'] as const)('retains a verified %s even if mismatch arrives before promise settlement', async outcome => {
+  const put = deferred<Response>(); let resume = () => {};
+  const instance = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(instance);
+  const mismatchResponse = new Response('{}', { headers: { 'Daynight-User-ID': '99999999-9999-4999-8999-999999999999' } });
+  const trigger = () => { try { assertResponsePrincipal(mismatchResponse, userId, instance.principalMismatch); } catch { /* The other response is rejected. */ } };
+  const save = promptApi.saveWorkerPrompt;
+  vi.spyOn(promptApi, 'saveWorkerPrompt').mockImplementation((target, submission, signal, admission) => save(target, submission, signal, {
+    ...admission, onReceipt: receipt => { admission.onReceipt?.(receipt); trigger(); },
+    onRejection: error => { admission.onRejection?.(error); trigger(); },
+  }));
+  const fetch = vi.fn().mockResolvedValueOnce(response(value('1', 'old'))).mockImplementationOnce(() => put.promise); vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => useWorkerPrompt(target, { readEnabled: true }), { wrapper: wrapper(instance) });
+  await flush(); act(() => result.current.edit('mine'));
+  let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+  try {
+    put.resolve(outcome === 'confirmed' ? response(value('2', 'mine')) : error(409, 'version_conflict'));
+    await act(async () => saving);
+    expect(result.current.pending).toBe(false); expect(result.current.confirmed).toBe(outcome === 'confirmed');
+    expect(result.current.conflict).toBe(outcome === 'conflict'); expect(result.current.uncertain).toBe(false);
+    expect(result.current.resource?.text).toBe('old'); expect(result.current.draft).toBe('mine');
+  } finally { resume(); }
 });

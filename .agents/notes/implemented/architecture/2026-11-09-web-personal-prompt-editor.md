@@ -27,11 +27,15 @@ remains separate and a pending publication cannot authorize another save.
 
 Worker prompt and runtime configuration are independent resources. Their
 navigation protection is aggregated into one confirmation; retained owners keep
-pending and unknown writes across route changes. The later
+pending, confirmed and unknown writes across route changes. The later
 [peer-tab decision](2026-11-12-worker-detail-prompt-tab.md) places those forms
 in separate tabs while preserving this protection. Identity and Project access
-checks pause admission and publication without remounting an active editor. Confirmed
-identity changes and access withdrawal retire private state. The
+checks pause admission and publication without remounting an active editor.
+Confirmed identity changes and access withdrawal retire private state. When an
+owner retains the scope after an identity mismatch, the editor settles the
+original operation locally as confirmed, refused, or unknown without installing
+its receipt or replaying it; a confirmed receipt remains distinct from an unknown
+outcome. The
 [Web design](../../../../docs/design/daynight-web.md#个人-worker-prompt-编辑)
 owns the component and request responsibilities.
 
