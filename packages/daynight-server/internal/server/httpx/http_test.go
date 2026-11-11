@@ -392,3 +392,68 @@ func TestSessionContentFaultsRemainExplicitAndRecoverable(t *testing.T) {
 		})
 	}
 }
+
+type failingResponseWriter struct{ header http.Header }
+
+func (w *failingResponseWriter) Header() http.Header { return w.header }
+func (*failingResponseWriter) WriteHeader(int)       {}
+func (*failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("private-connection-secret")
+}
+
+func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	for _, err := range []error{
+		errors.Join(model.ErrNotFound, errors.New("private-database-secret")),
+		&model.Fault{Code: "unexpected", Message: "private-service-secret"},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("X-Request-ID", "project-test")
+		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			WriteError(w, request, logger, "project", "get", err)
+		})).ServeHTTP(response, request)
+		assertProjectCorrelation(t, response, http.StatusInternalServerError, "internal_error")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	response := httptest.NewRecorder()
+	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		WriteError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
+	})).ServeHTTP(response, request)
+	value := decodeProjectError(t, response, http.StatusBadRequest)
+	if value.Error.Details == nil || len(value.Error.Details.TaskIDs) != 1 || value.Error.Details.TaskIDs[0] != "task-id" {
+		t.Fatalf("missing error details: %+v", value)
+	}
+	WriteJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	canceled := httptest.NewRecorder()
+	WriteJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
+	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
+		t.Fatalf("already canceled request wrote a response: %s %+v", canceled.Body, canceled.Header())
+	}
+	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), `"phase":"response"`) {
+		t.Fatalf("write failure not safely diagnosed: %s", &logs)
+	}
+}
+
+func decodeProjectError(t *testing.T, response *httptest.ResponseRecorder, status int) api.ErrorResponse {
+	t.Helper()
+	var result api.ErrorResponse
+	if response.Code != status || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+func assertProjectCorrelation(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	result := decodeProjectError(t, response, status)
+	if result.Error.Code != code || result.Error.Message == "" || result.Error.RequestID != response.Header().Get("X-Request-ID") || result.Error.RequestID != "project-test" {
+		t.Fatalf("unexpected error correlation: %+v", result)
+	}
+}

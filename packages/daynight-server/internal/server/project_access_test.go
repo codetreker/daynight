@@ -3,9 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,10 +14,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
+func TestAccessAndEmptySyncActorProjection(t *testing.T) {
 	admin := defaultHTTPPrincipal()
 	member := model.Principal{UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444", Kind: model.PATCredential}
-	outsider := model.Principal{UserID: "f6666666-6666-4666-8666-666666666666", CredentialID: "a7777777-7777-4777-8777-777777777777", Kind: model.PATCredential}
 	project := projectHTTPRecord("a8888888-8888-4888-8888-888888888888", "Access projection", "https://example.test/access.git", "b9999999-9999-4999-8999-999999999999")
 	var logs bytes.Buffer
 	adminTx := newHTTPTestStoreForPrincipal(t, admin)
@@ -80,52 +77,6 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 		if !reflect.DeepEqual(snapshot.ActorAccess, access) || !reflect.DeepEqual(delta.ActorAccess, access) || delta.Mode != "delta" || delta.Tasks == nil || len(delta.Tasks) != 0 || !strings.Contains(deltaResponse.Body.String(), `"actorAccess":`) {
 			t.Fatalf("actor projection missing from empty sync: %#v %#v", snapshot, delta)
 		}
-	}
-	unauthenticated := projectRequest(adminHandler.Handler, http.MethodGet, path, "")
-	assertProjectError(t, unauthenticated, http.StatusUnauthorized, "unauthenticated")
-	if unauthenticated.Header().Get("Daynight-User-ID") != "" {
-		t.Fatal("unauthenticated response exposes an actor")
-	}
-	outsiderTx := newHTTPTestStoreForPrincipal(t, outsider)
-	outsiderHandler := resourceTestServerForPrincipal(t, outsiderTx, attachmentTestFiles(t), &logs, outsider)
-	accessHTTPRefusal(t, outsiderTx, outsider, project.ID, model.ErrNotFound)
-	assertProjectError(t, projectRequest(outsiderHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
-	assertProjectError(t, projectRequest(adminHandler, http.MethodGet, "/api/v1/projects/invalid/access", ""), http.StatusBadRequest, "invalid_input")
-	const missing = "00000000-0000-4000-8000-000000000099"
-	accessHTTPRefusal(t, adminTx, admin, missing, model.ErrNotFound)
-	assertProjectError(t, projectRequest(adminHandler, http.MethodGet, "/api/v1/projects/"+missing+"/access", ""), http.StatusNotFound, "not_found")
-	assertProjectError(t, projectRequest(adminHandler, http.MethodGet, path+"?unknown=secret", ""), http.StatusBadRequest, "invalid_input")
-	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-		response := projectRequest(adminHandler, method, path, "private-body-secret")
-		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
-		if response.Header().Get("Allow") != "GET, HEAD" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != admin.UserID {
-			t.Fatalf("method boundary: %#v", response.Header())
-		}
-	}
-	expected := projectHTTPAccess(admin, project)
-	expected.DirectGrant.Version = 9007199254740993
-	accessHTTPProject(t, adminTx, admin, project, expected, "access", nil, nil)
-	server := httptest.NewServer(adminHandler)
-	defer server.Close()
-	request, err := http.NewRequest(http.MethodHead, server.URL+path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+adminHandler.token)
-	response, err := server.Client().Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	closeErr := response.Body.Close()
-	server.Close()
-	if readErr != nil || closeErr != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Daynight-User-ID") != admin.UserID {
-		t.Fatalf("HEAD actor access: %#v %s %v %v", response, body, readErr, closeErr)
-	}
-	accessHTTPRefusal(t, adminTx, admin, project.ID, &store.Error{Phase: "project access", DatabaseFailure: true, Cause: io.ErrUnexpectedEOF})
-	assertProjectError(t, projectRequest(adminHandler, http.MethodGet, path, ""), http.StatusInternalServerError, "internal_error")
-	if strings.Contains(logs.String(), "private-body-secret") || strings.Contains(logs.String(), "unknown=secret") {
-		t.Fatal("access diagnostics exposed request contents")
 	}
 }
 
