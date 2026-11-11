@@ -143,7 +143,9 @@ current Daynight scope synchronously with delivery. Later native source denial
 does not authorize a new read or invalidate the saved bytes. A new attempt must
 obtain fresh source decisions. Recovery with a staged file but no matching
 admission fails without committing or repeating source IO; unknown service
-outcomes retain their original capture identity.
+outcomes retain their original capture identity. Local and external retry
+routing invokes this coordinator admission check before returning cached staged
+metadata, so an interrupted admission cannot be presented as transfer-ready.
 
 ## Alternatives
 

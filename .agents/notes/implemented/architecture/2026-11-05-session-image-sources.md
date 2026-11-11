@@ -112,6 +112,11 @@ existing media budget. `reserveCaptureSource` and relay block delivery share
 `readCapture` verifies and delivers each block synchronously while holding its
 policy lease. Cancellation waits for the writer and validation work before
 releasing their reservation; shutdown preserves unknown and retained ownership.
+After writer and stage completion and durable release, the in-memory shared slot
+is returned even when refreshing the storage budget fails. That error still
+reaches the caller. A repeated release reconciles an active slot whose durable
+record already says released; it must not return a slot while joining or release
+persistence remains unconfirmed.
 
 `media.adoptCaptureResource(captureId, attemptId, resource)` requires a durable
 committed receipt matching the original request, occurrence and complete resource,
@@ -128,6 +133,10 @@ again; saved resources are never refreshed through retry. Querying a new
 service retry attempt persists `awaitingRetry` and observes it without starting
 a writer. Only the original `retry_capture` control can start that attempt after
 the prior writer and reservation have stopped and current permission is checked.
+Local and external retries go through their source coordinator before the generic
+cached-stage shortcut. Validated bytes without matching source admission cannot
+be reported as a successful retry. Recovery keeps the original identities and
+settles the incomplete attempt without reopening its source.
 
 Confirmed format and complete-decode failures retain their structured category
 across the helper boundary, so fixing a never-committed source can remain
@@ -177,6 +186,16 @@ capture reuses the existing trusted occurrence and bounded byte pipeline.
 **Refresh a saved image when a read fails.** This can replace historical bytes
 without a new occurrence and conceal storage damage. A new source version needs
 an explicit new occurrence; corruption remains a visible read failure.
+
+**Treat cached validated bytes as sufficient for a source retry.** Validation can
+commit before source admission. Reporting those bytes as retry success lets the
+service enter copying while every transfer rejects the missing admission. The
+coordinator owns that association and must validate even a cached result.
+
+**Return shared slots only after a successful budget refresh.** Free space can
+fall below its floor after release is durable. Keeping the slot in that case
+turns a recoverable storage error into permanent capacity loss. Returning the
+slot after proven cleanup preserves the error without retaining dead work.
 
 ## Consequences
 

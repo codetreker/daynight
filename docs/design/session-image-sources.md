@@ -186,9 +186,9 @@ resolve/open 每次最多 5 秒，源复制最多 30 秒（含打开），解码
 
 source intent 先持久原 occurrence、destination、context、captureId/attemptId、phase、started、awaitingRetry 和冷却状态，再登记 `image_occurrences`；中断后由同一 intent 补登记并等待 `imageOccurrenceAcknowledged`。ACK 覆盖原正文位置后才通过公共 capture 桥 register，拿到 reserved 才执行 `reserveCaptureSource`。`CaptureSourceLease.runWriter` 交付调用方已创建、0600 的空私有普通文件；本地与外部 reader 都只写该文件，随后公共 `stageCapture` 完整验证并建立不可变 prepared 文件。运行中的 source writer、stage 和原预留由同一释放入口取消、join、刷盘删除后结算。
 
-`reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。
+`reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。writer 与 stage 已停止、来源释放已持久确认后，即使刷新空间预算失败也须归还内存槽，预算错误仍交给调用方；重复释放须核对并回收已标记 released 的残留活动槽。join 或释放持久化尚未确认时不能提前归还。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。
 
-final 来源判定通过、helper 完成复制和校验、公共 decoder 成功且 Daynight scope 仍有效后，coordinator 才持久 `sourceAdmission`，绑定原 capture/source record、attempt、实际 policy revision、来源证明摘要和完整 `ValidatedImage`。原始路径遍历证明不持久化。中断后只有 stage 文件而没有匹配 admission，不能提交，也不重新读源；必须协调原 capture 的失败或未知结果。
+final 来源判定通过、helper 完成复制和校验、公共 decoder 成功且 Daynight scope 仍有效后，coordinator 才持久 `sourceAdmission`，绑定原 capture/source record、attempt、实际 policy revision、来源证明摘要和完整 `ValidatedImage`。原始路径遍历证明不持久化。中断后只有 stage 文件而没有匹配 admission，不能提交，也不重新读源；必须协调原 capture 的失败或未知结果。本地与外部 `retry_capture` 先进入来源 coordinator 检查 admission，再决定能否复用 staged metadata，不能由通用 `captureStatus()` 缓存快路提前报告重试成功，使未准入的原 attempt 进入 copying。
 
 `readCapture(input, acquirePolicy, deliver)` 只传输 admission 所对应的不可变副本，逐次核对原 attempt、完整验证元数据和当前 Daynight scope，在同步 policy lease 内读取并调用 `deliver`，验证到发送之间不跨 Promise continuation。后来的原生源限制不重新授权、改写或删除已经合法取得的副本；Daynight 访问权限撤销仍立即拒绝新交付。新 attempt 或重新取源必须重新走原生准入。
 

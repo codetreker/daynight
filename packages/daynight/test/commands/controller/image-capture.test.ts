@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
+import { createMarkdownCaptureCoordinator } from "../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
 import type { NativeProvider } from "../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
@@ -59,8 +60,9 @@ test("an unknown register survives reopen and observes only the original capture
   } finally { journal.close(); }
 });
 
-test("source retries preserve the original locator, isolate attempt bytes and reuse a frozen successful attempt", async () => {
+test.each(["local", "external"] as const)("provider %s retries preserve the original locator, isolate attempt bytes and reuse a frozen successful attempt", async kind => {
   const f = await fixture(), original = await f.source("blue"), replacement = await f.source("red"), attemptId = randomUUID();
+  if (kind === "external") f.request = { ...f.request, locator: { kind, url: "https://images.example/original.png" } };
   let current = f.receipt(); const calls: unknown[] = [];
   const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => { calls.push({ action, body }); return current; };
   const release = vi.fn(), resolver = vi.fn(async () => ({ ...replacement, release })), send = vi.fn();
@@ -109,8 +111,96 @@ test("Markdown retry uses its source coordinator without requiring a native imag
     expect(result.sha256).toBe(source.sha256);
     expect(resolver).toHaveBeenCalledWith({ ...f.request, attemptId }, signal);
     expect(await consumer.retry({ captureId: f.request.captureId, attemptId }, signal)).toEqual(result);
-    expect(resolver).toHaveBeenCalledOnce();
+    expect(resolver).toHaveBeenCalledTimes(2);
   } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
+
+const stagedMarkdownRetry = async (kind: "local" | "external", admitted: boolean) => {
+  const f = await fixture(), source = await f.source("blue");
+  const destination = kind === "local" ? source.inputPath : "https://images.example/original.png";
+  const text = `![original](${destination})`, partId = randomUUID();
+  const occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId, sourceRevision: "1", sourceTextSha256: createHash("sha256").update(text).digest("hex"), callId: null, sourceKey: `${partId}:1:0` };
+  f.journal.projectTimeline({ entryId: occurrence.entryId, revision: "1", kind: "assistant_message", imageProjectionError: null, content: [{ type: "markdown", text, partId, revision: "1", textSha256: occurrence.sourceTextSha256, complete: true, truncated: false, bindings: [{ imageId: occurrence.imageId, start: 0, end: text.length, part: { type: "image_unavailable", imageId: occurrence.imageId, label: "original", error: { code: "source_unavailable", message: "Not captured" } } }], retainedImages: [] }] });
+  const sourceRead = vi.fn(() => { throw new Error("An immutable stage must not reopen its source."); });
+  const create = (journal: ReturnType<typeof openControllerLifecycleStore>) => {
+    let coordinator!: ReturnType<typeof createMarkdownCaptureCoordinator>;
+    const consumer = createControllerCaptureBridge({ journal, capture: async () => { throw new Error("A cached retry must not send a capture command."); }, beforeCapture: async () => {}, provider: () => ({ retryImageCapture: sourceRead }) as unknown as NativeProvider, writable: () => true, retrySource: (request, signal) => coordinator.retry(request, signal) });
+    coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal, bridge: consumer.providerOptions, writable: () => true, fence: () => "test-fence", nativeReadPolicy: () => ({ nativeSessionId: journal.getSnapshot().nativeSessionId!, cwd: f.ticket.cwd, revision: "verified-policy", verify: sourceRead, authorizeCheckpoint: sourceRead }), acquireExternalPolicy: sourceRead, onReceipt() {} });
+    return { consumer, coordinator };
+  };
+  const initial = create(f.journal);
+  initial.coordinator.enqueue(occurrence, destination, initial.coordinator.contextFor(occurrence));
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const record = initial.coordinator.get(occurrence.imageId)!;
+  f.journal.registerImageCaptureRequest(record.request!);
+  f.journal.observeImageCaptureReceipt({ captureId: record.request!.captureId, attemptId: record.request!.attemptId, revision: "1", occurrence, state: "failed", resourceId: null, resource: null, error: { code: "source_unavailable", message: "Original attempt failed" } });
+  const request = f.journal.retryImageCaptureRequest(record.request!.captureId, randomUUID());
+  const validated = await f.journal.media().stageCapture({ ...source, captureId: request.captureId, attemptId: request.attemptId, imageId: occurrence.imageId });
+  // Persist the boundary after staging bytes, before publishing their admission.
+  f.journal.markdownStore.put("source", occurrence.imageId, { ...record, request, started: true, phase: admitted ? "validated" : "reading", sourceAdmission: admitted ? { attemptId: request.attemptId, policyRevision: kind === "local" ? "verified-policy" : null, sourceProofSha256: kind === "local" ? "a".repeat(64) : null, validated } : null });
+  await initial.coordinator.stop(); await f.journal.stopMedia(); f.journal.close();
+  await rm(source.inputPath);
+  const journal = openControllerLifecycleStore(f.file, f.ticket, f.options), current = create(journal);
+  return { ...current, journal, request, validated, source, sourceRead, close: async () => { await current.coordinator.stop(); await journal.stopMedia(); journal.close(); } };
+};
+
+test.each(["local", "external"] as const)("cached %s retry rejects a persisted stage without source admission after reopen", async kind => {
+  const f = await stagedMarkdownRetry(kind, false);
+  try {
+    expect(f.journal.media().captureStatus(f.request.captureId, f.request.attemptId)).toEqual(f.validated);
+    await expect(f.consumer.retry(f.request, new AbortController().signal)).rejects.toMatchObject({ code: "source_unavailable" });
+    expect(f.journal.assertImageCaptureAttempt(f.request.captureId, f.request.attemptId)).toEqual(f.request);
+    expect(f.coordinator.get(f.request.occurrence.imageId)).toMatchObject({ request: f.request, started: true, phase: "reading", sourceAdmission: null });
+    expect(() => f.coordinator.acquireReadPolicy(f.request)).toThrow("policy_restricted");
+    expect(f.sourceRead).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+test.each(["local", "external"] as const)("cached %s retry reuses an admitted immutable stage after source deletion and reopen", async kind => {
+  const f = await stagedMarkdownRetry(kind, true);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) expect(await f.consumer.retry(f.request, new AbortController().signal)).toEqual(f.validated);
+    expect(f.journal.assertImageCaptureAttempt(f.request.captureId, f.request.attemptId)).toEqual(f.request);
+    expect(await f.journal.media().readCapture({ captureId: f.request.captureId, attemptId: f.request.attemptId, sha256: f.validated.sha256, byteLength: f.validated.byteLength, offset: "0", limit: 524288 }, f.coordinator.acquireReadPolicy)).toMatchObject({ preparationId: f.request.attemptId, data: f.source.bytes.toString("base64"), eof: true });
+    expect(f.sourceRead).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+test.each(["local", "external"] as const)("cached %s retries share admission work and clear it after cancellation", async kind => {
+  const f = await stagedMarkdownRetry(kind, true), released = Promise.withResolvers<void>();
+  const resolver = vi.fn(async (request: ImageCaptureRequest, signal: AbortSignal) => {
+    await released.promise; signal.throwIfAborted();
+    return f.coordinator.retry(request, signal);
+  });
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture: async () => { throw new Error("Unexpected capture command."); }, beforeCapture: async () => {}, provider: () => null, writable: () => true, retrySource: resolver });
+  const abort = new AbortController(), reason = new Error("Retry cancelled.");
+  const first = consumer.retry(f.request, abort.signal), second = consumer.retry(f.request, abort.signal);
+  const outcomes = Promise.allSettled([first, second]);
+  try {
+    expect(resolver).toHaveBeenCalledOnce();
+    abort.abort(reason); released.resolve();
+    expect(await outcomes).toEqual([{ status: "rejected", reason }, { status: "rejected", reason }]);
+    expect(await consumer.retry(f.request, new AbortController().signal)).toEqual(f.validated);
+    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(f.journal.assertImageCaptureAttempt(f.request.captureId, f.request.attemptId)).toEqual(f.request);
+    expect(f.journal.media().captureStatus(f.request.captureId, f.request.attemptId)).toEqual(f.validated);
+    expect(f.sourceRead).not.toHaveBeenCalled();
+  } finally { released.resolve(); await outcomes; await f.close(); }
+});
+
+test.each(["local", "external"] as const)("cached %s retries check cancellation and write access before admission", async kind => {
+  const f = await stagedMarkdownRetry(kind, true), resolver = vi.fn(f.coordinator.retry);
+  let writable = true;
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture: async () => { throw new Error("Unexpected capture command."); }, beforeCapture: async () => {}, provider: () => null, writable: () => writable, retrySource: resolver });
+  try {
+    const abort = new AbortController(), reason = new Error("Retry cancelled before admission."); abort.abort(reason);
+    await expect(consumer.retry(f.request, abort.signal)).rejects.toBe(reason);
+    writable = false;
+    await expect(consumer.retry(f.request, new AbortController().signal)).rejects.toThrow("target_changed");
+    expect(resolver).not.toHaveBeenCalled();
+    expect(f.journal.assertImageCaptureAttempt(f.request.captureId, f.request.attemptId)).toEqual(f.request);
+    expect(f.sourceRead).not.toHaveBeenCalled();
+  } finally { await f.close(); }
 });
 
 test("query reconciles a service retry whose request was lost without reviving an earlier attempt", async () => {

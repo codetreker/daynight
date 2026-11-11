@@ -41,10 +41,11 @@ export const createControllerCaptureBridge = (options: {
       if (!options.writable()) throw new Error("Image source retry target_changed.");
       signal.throwIfAborted();
       const request = journal.retryImageCaptureRequest(captureId, attemptId);
-      const saved = journal.media().captureStatus(captureId, attemptId); if (saved) return saved;
       const key = `${captureId}:${attemptId}`, pending = retries.get(key); if (pending) return pending;
       const work = (async () => {
+        // A Markdown stage can survive before its source admission is durable.
         if (options.retrySource && ["local", "external"].includes(request.locator.kind)) return options.retrySource(request, signal);
+        const saved = journal.media().captureStatus(captureId, attemptId); if (saved) return saved;
         if (!provider?.retryImageCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
         const source = await provider.retryImageCapture!(request, signal);
         try {

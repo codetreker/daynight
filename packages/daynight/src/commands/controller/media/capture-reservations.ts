@@ -39,15 +39,18 @@ export const captureSourceReservations = (options: {
     options.checkOpen();
     const id = key(captureId, attemptId), running = active.get(id);
     if (running?.releasing) return running.releasing;
+    const closeBlock = () => { active.delete(id); running?.block.close(); };
     const work = (async () => {
       if (running) { running.controller.abort(new Error("Image source reservation was released.")); await running.work?.catch(() => {}); }
       await options.joinStage(captureId, attemptId);
       const value = load(captureId, attemptId);
-      if (!value || value.released) return;
+      if (!value) return;
+      if (value.released) { closeBlock(); return; }
       if (existsSync(path.join(root, value.source))) unlinkSync(path.join(root, value.source));
       if (!options.stageRetained(captureId, attemptId) && existsSync(path.join(root, value.stage))) unlinkSync(path.join(root, value.stage));
-      options.sync(); value.released = true; save(value); options.checkBudgets(0);
-      active.delete(id); running?.block.close();
+      options.sync(); value.released = true; save(value);
+      // Durable release returns the shared slot even if the remaining budget cannot be refreshed.
+      try { options.checkBudgets(0); } finally { closeBlock(); }
     })();
     if (!running) return work;
     const tracked = work.finally(() => { if (running.releasing === tracked) running.releasing = null; });
