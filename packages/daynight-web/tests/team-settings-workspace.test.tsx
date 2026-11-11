@@ -205,8 +205,13 @@ describe("Team settings workspace", () => {
     const invitationId = "00000000-0000-4000-8000-000000000005";
     const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     const fetcher = install((url, init) => url === `/api/v1/teams/${teamId}/invitations` && init?.method === "POST" ? json({ id: invitationId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201) : undefined);
-    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Invite member" }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create invitation link" }));
+    render(<AuthenticatedApp />);
+    const invite = await screen.findByRole("button", { name: "Invite member" });
+    await waitFor(() => expect(invite).toBeEnabled());
+    fireEvent.click(invite);
+    const create = within(screen.getByRole("dialog")).getByRole("button", { name: "Create invitation link" });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
     const secret = await screen.findByDisplayValue(link);
     go(general); await screen.findByRole("button", { name: "Edit" }); expect(secret).not.toBeVisible();
     go(members); await waitFor(() => expect(secret).toBeVisible());
