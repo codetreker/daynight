@@ -236,6 +236,61 @@ describe("Webhook fixed intent controller", () => {
     const intent = controller(lifetime.signal), listener = vi.fn(); intent.subscribe(listener); const pending = intent.submit(patch()); await dispatched; listener.mockClear(); lifetime.abort(); release(); const result = await pending;
     expect(result.phase).toBe("unknown"); expect(listener).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(1);
   });
+  it("settles canceled preparation without dispatch and ignores a late digest failure", async () => {
+    let entered!: () => void, fail!: (error: Error) => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const digest = new Promise<ArrayBuffer>((_resolve, reject) => { fail = reject; });
+    vi.stubGlobal("crypto", { randomUUID: () => webcrypto.randomUUID(), subtle: { digest: () => { entered(); return digest; } } });
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), pending = intent.submit(patch()); await waiting;
+    const resume = pauseAuthRequests(); intent.stopPending(); const stopped = await pending;
+    expect(stopped.phase).toBe("rejected"); expect(fetch).not.toHaveBeenCalled(); expect(sessionStorage.length).toBe(0);
+    resume(); fail(new Error("late digest failure")); await Promise.resolve();
+    expect(intent.getSnapshot()).toBe(stopped);
+  });
+  it("cancels a pending admission and cannot let its late completion disturb a new intent", async () => {
+    let entered!: () => void, release!: () => void, calls = 0;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const intent = new WebhookIntentController({ serviceOrigin, owner, signal: new AbortController().signal, storage: sessionStorage, admission: { ...admission(), ready: async () => { if (++calls === 1) { entered(); await barrier; throw new Error("late admission failure"); } } } });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedReceipt(options), endpoint: endpoint() })); vi.stubGlobal("fetch", fetch);
+    const pending = intent.submit(patch()); await waiting; const resume = pauseAuthRequests(); intent.stopPending();
+    expect((await pending).phase).toBe("rejected"); expect(fetch).not.toHaveBeenCalled(); expect(sessionStorage.length).toBe(0);
+    resume(); const next = await intent.submit(patch()); expect(next.phase).toBe("confirmed");
+    release(); await Promise.resolve(); await Promise.resolve();
+    expect(intent.getSnapshot()).toBe(next); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("settles a dispatched operation as unknown on pause without a lookup or replay", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { entered(); await barrier; return response({ operation: await submittedReceipt(options), endpoint: endpoint() }); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), pending = intent.submit(patch()); await waiting; const resume = pauseAuthRequests(); intent.stopPending();
+    const unknown = await pending; expect(unknown.phase).toBe("unknown"); expect(unknown.prepared?.operationId).toBeTruthy();
+    expect((await intent.reconcile()).phase).toBe("unknown"); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(1);
+    release(); await Promise.resolve(); await Promise.resolve(); expect(intent.getSnapshot()).toBe(unknown); resume();
+  });
+  it("keeps a trusted receipt when pause interrupts its current projection", async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedReceipt(options), endpoint: endpoint() })); vi.stubGlobal("fetch", fetch);
+    const intent = controller(); let resume: (() => void) | undefined;
+    intent.subscribe(() => { if (intent.getSnapshot().phase === "confirmed" && resume === undefined) { resume = pauseAuthRequests(); intent.stopPending(); } });
+    const result = await intent.submit(patch());
+    expect(result.phase).toBe("confirmed"); expect(result.result?.operation.operationId).toBe(result.prepared?.operationId);
+    expect(result.result?.endpoint).toBeUndefined(); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(0); resume!();
+  });
+  it("notifies owned publication on stop without stopping a later intent", async () => {
+    const intent = controller(), stopped = vi.fn(), unsubscribe = intent.subscribeStop(stopped);
+    const revision = intent.getStopRevision(); intent.stopPending(); expect(intent.getStopRevision()).toBe(revision + 1); expect(stopped).toHaveBeenCalledOnce();
+    unsubscribe(); intent.stopPending(); expect(stopped).toHaveBeenCalledOnce();
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedReceipt(options), endpoint: endpoint() })); vi.stubGlobal("fetch", fetch);
+    expect((await intent.submit(patch())).phase).toBe("confirmed"); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("ends a pending receipt lookup on dispose without accepting its late result", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { if (options.method === "PATCH") throw new TypeError("Lost"); entered(); await barrier; throw new Error("late lookup failure"); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), pending = intent.submit(patch()); await waiting; intent.dispose();
+    const stopped = await pending; expect(stopped.phase).toBe("unknown"); expect(stopped.reconciling).toBe(false); expect(fetch).toHaveBeenCalledTimes(2);
+    release(); await Promise.resolve(); await Promise.resolve(); expect(intent.getSnapshot()).toBe(stopped);
+  });
   it("gates new writes by the current catalog while retaining independent recovery reads", async () => {
     let available = true;
     const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit: () => available });

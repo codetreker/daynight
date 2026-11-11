@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ApiError } from "../../api/client";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ApiError, isAbortError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import type { CurrentUser } from "../../api/auth-types";
 import { getWebhookSecret, type WebhookActiveEndpoint, type WebhookCatalog, type WebhookEndpointSummary, type WebhookOwner, type WebhookSecret, type WebhookSubscription } from "../../api/webhooks";
 import { navigate, webhookUrl, type WebhookRoute } from "../../app/router";
@@ -74,7 +74,13 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     }
   }
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? idleSnapshot);
-  const deletedByReceipt = intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
+  const writePauseRevisions = useRef(new Map<string, number>()), postWriteRead = useRef<AbortController | null>(null), publication = useRef<AbortController | null>(null), editRevision = useRef(0);
+  const [publicationRevision, setPublicationRevision] = useState(0);
+  const publicationReady = useRef<(() => void) | null>(null);
+  const writeContexts = useRef(new Map<string, { readonly modal: Modal | null; readonly edit: number; readonly interaction: number; readonly revision: number; readonly stopRevision: number }>());
+  const presentationGuards = useRef(new Map<string, () => boolean>());
+  const mayPresent = () => !authRequestsPaused() && (scope === null || (!writePauseRevisions.current.has(scope) || writePauseRevisions.current.get(scope) === authRequestsPauseRevision()) && (presentationGuards.current.get(scope)?.() ?? true));
+  const deletedByReceipt = mayPresent() && intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
   const endpoint = sourceEndpoint?.id === deletedByReceipt ? null : sourceEndpoint;
   const historyEndpointId = route.endpointId ?? data.endpointId;
   const historyContextKey = owner === null || ownerAuthorization?.readable !== true || historyEndpointId === null || admission.isInvalidated ? null : JSON.stringify([window.location.origin, admission.userId, owner.kind, owner.id, historyEndpointId, ownerAuthorization.readKey]);
@@ -91,9 +97,16 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const visibleItems = data.items === null ? null : data.items.filter(item => item.id !== deletedByReceipt);
   live.current = { active: canRead, owner, endpoint, endpointId: historyEndpointId, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true };
   const [modal, setModal] = useState<Modal | null>(null), [menu, setMenu] = useState<string | null>(null), [rotation, setRotation] = useState<"overlap" | "immediate">("overlap"), [secret, setSecret] = useState<{ readonly scope: string; readonly value: WebhookSecret } | null>(null), [secretBusy, setSecretBusy] = useState(false), [secretError, setSecretError] = useState<unknown>(null), [copyStatus, setCopyStatus] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
+  const modalRef = useRef(modal); modalRef.current = modal;
   const secretSequence = useRef(0), handled = useRef(new Set<string>()), lifecycle = useRef(0), listRef = useRef<HTMLElement>(null);
   const writeFences = useRef(new Map<string, WebhookReadFence | null>());
   const saveListPosition = useWebhookListPosition(listRef, JSON.stringify([scope, query]), route.endpointId !== null, visibleItems !== null);
+  useEffect(() => {
+    const unsubscribe = subscribeAuthPause(() => postWriteRead.current?.abort());
+    return () => { unsubscribe(); postWriteRead.current?.abort(); postWriteRead.current = null; publication.current?.abort(); publication.current = null; publicationReady.current = null; };
+  }, []);
+  useLayoutEffect(() => { postWriteRead.current?.abort(); postWriteRead.current = null; }, [selectionKey]);
+  useEffect(() => { if (canRead) publicationReady.current?.(); }, [canRead]);
   useEffect(() => { const generation = ++lifecycle.current; return () => { queueMicrotask(() => { if (lifecycle.current === generation) { for (const value of controllers.current.values()) value.dispose(); controllers.current.clear(); } }); }; }, []);
   useEffect(() => { setModal(null); setMenu(null); setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); setLocalError(null); secretSequence.current++; }, [scope]);
   useEffect(() => { setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); secretSequence.current++; }, [endpoint?.id, endpoint?.signing.activeKeyId, endpoint?.capabilities.readSecret, route.tab, route.endpointId, secretAreaVisible]);
@@ -108,12 +121,12 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   useEffect(() => { if (sourceEndpoint !== null && (!sourceEndpoint.capabilities.manage || !sourceEndpoint.capabilities.readSecret)) controller?.forgetCurrentProjection(); }, [sourceEndpoint?.id, sourceEndpoint?.capabilities.manage, sourceEndpoint?.capabilities.readSecret]);
   useEffect(() => { if (modal !== null && modal.kind !== "create" && (endpoint?.id === modal.endpoint.id && !endpoint.capabilities.manage || data.detailError !== null && endpoint === null)) setModal(null); }, [endpoint, modal]);
   useEffect(() => {
-    if (intent.phase !== "confirmed" || intent.result === null || intent.prepared === null || handled.current.has(intent.prepared.operationId)) return;
+    if (intent.phase !== "confirmed" || intent.result === null || intent.prepared === null || handled.current.has(intent.prepared.operationId) || !mayPresent()) return;
     handled.current.add(intent.prepared.operationId); setSecret(null); secretSequence.current++;
     if (intent.result.operation.kind === "endpoint.delete") data.withdraw(intent.result.operation.endpointId);
     if (modal?.scope === scope) setModal(null);
     if (intent.prepared.kind === "endpoint.create" && owner !== null) navigate(webhookUrl({ owner: owner.kind, teamId: owner.kind === "team" ? owner.id : null, endpointId: intent.result.operation.endpointId, tab: "configuration" }));
-  }, [intent]);
+  }, [intent, publicationRevision]);
   useEffect(() => {
     const close = (event: MouseEvent) => { if (!(event.target instanceof Element) || !event.target.closest(".row-actions")) setMenu(null); };
     document.addEventListener("click", close); return () => document.removeEventListener("click", close);
@@ -133,34 +146,77 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const authorization = management ? directories.observeManagementRestricted(requestedOwner, authorizationKey) : directories.observeOwnerDenied(requestedOwner, authorizationKey);
     if (authorization.key !== authorizationKey) { setLocalError(error); directories.refresh(); }
   };
+  const deferConfirmation = (targetScope: string, original: WebhookIntentController, outcome: WebhookIntentState, fence: WebhookReadFence | null, requestedOwner: WebhookOwner) => {
+    const context = writeContexts.current.get(targetScope), operationId = outcome.prepared?.operationId;
+    if (context === undefined || operationId === undefined || isAbortError(outcome.error) || original.getStopRevision() !== context.stopRevision) return;
+    const work = new AbortController(); publication.current?.abort(); publication.current = work; publicationReady.current = null;
+    const signal = AbortSignal.any([work.signal, admission.signal]);
+    const unsubscribe = original.subscribeStop(() => work.abort());
+    signal.addEventListener("abort", () => { unsubscribe(); if (publication.current === work) { publication.current = null; publicationReady.current = null; } }, { once: true });
+    const sameContext = () => !signal.aborted && !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && original.getSnapshot().prepared?.operationId === operationId && writeContexts.current.get(targetScope) === context && original.getStopRevision() === context.stopRevision && interactionSequence.current === context.interaction && modalRef.current === context.modal && editRevision.current === context.edit;
+    const publish = () => {
+      if (publication.current !== work) return;
+      if (!sameContext()) { publication.current = null; publicationReady.current = null; work.abort(); return; }
+      if (authRequestsPaused()) {
+        publicationReady.current = null;
+        void waitForAuthRequests(signal).then(() => { if (sameContext()) { publicationReady.current = publish; publish(); } }, error => { if (sameContext()) setLocalError(error); });
+        return;
+      }
+      if (!live.current.active) return;
+      try {
+        presentationGuards.current.set(targetScope, sameContext);
+        writePauseRevisions.current.set(targetScope, authRequestsPauseRevision());
+        if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) original.forgetCurrentProjection();
+        data.refreshCurrent(); directories.refresh(); setPublicationRevision(value => value + 1);
+      } catch (error) { if (sameContext()) setLocalError(error); }
+      finally { unsubscribe(); if (publication.current === work) { publication.current = null; publicationReady.current = null; } }
+    };
+    void (async () => {
+      try { await waitForAuthRequests(signal); await admission.ready(signal); if (sameContext()) { publicationReady.current = publish; publish(); } }
+      catch (error) { if (sameContext()) setLocalError(error); }
+      finally { if (publication.current === work && publicationReady.current !== publish && !authRequestsPaused()) { unsubscribe(); publication.current = null; } }
+    })();
+  };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
     if (controller === null || scope === null || owner === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
     const state = controller.getSnapshot();
     if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
     if (!isBusy(state)) {
+      postWriteRead.current?.abort(); postWriteRead.current = null; publication.current?.abort(); publication.current = null; publicationReady.current = null;
+      writePauseRevisions.current.set(scope, authRequestsPauseRevision()); presentationGuards.current.delete(scope);
       if (input.kind === "delivery.redeliver" && !live.current.catalog.service.dispatchEnabled) throw webhookAdmissionError("WebhookAdmissionUnavailable");
       const expansion = webhookExpansion(input, live.current.endpoint);
       if (expansion && !live.current.catalog.service.configurationExpansionAvailable) throw webhookAdmissionError("WebhookExpansionUnavailable");
       operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
+      writeContexts.current.set(scope, { modal, edit: editRevision.current, interaction: interactionSequence.current, revision: authRequestsPauseRevision(), stopRevision: controller.getStopRevision() });
     }
     const fence = writeFences.current.get(scope) ?? null;
     const submittedKind = input.kind, submittedEndpointId = input.kind === "delivery.redeliver" ? input.endpointId : null;
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key, readAuthorizationKey = directories.getAuthorization(owner).readKey;
+    const revision = writePauseRevisions.current.get(scope), interaction = writeContexts.current.get(scope)?.interaction;
     const outcome = await controller.submit(input);
+    if (authRequestsPaused() || revision !== authRequestsPauseRevision() || writePauseRevisions.current.get(scope) !== revision) {
+      if (outcome.phase === "confirmed" && writePauseRevisions.current.get(scope) === revision) deferConfirmation(scope, controller, outcome, fence, requestedOwner);
+      return outcome;
+    }
     // A receipt read requires owner access; a rejected management request only
     // disproves administrator authority for forbidden, not Project eligibility
     // refusals or the member's redacted reads.
     if (submittedKind !== "delivery.redeliver" || outcome.phase !== "rejected") observeDenial(outcome.error, requestedOwner, outcome.phase === "rejected" ? authorizationKey : readAuthorizationKey, outcome.phase === "rejected");
     if (submittedKind !== "delivery.redeliver") observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
     if (submittedKind === "delivery.redeliver" && submittedEndpointId !== null && outcome.phase === "rejected") {
-      const sameOwner = () => !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && directories.getAuthorization(requestedOwner).readable;
+      const readController = new AbortController(); postWriteRead.current = readController;
+      const unsubscribe = controller.subscribeStop(() => readController.abort());
+      readController.signal.addEventListener("abort", unsubscribe, { once: true });
+      const sameOwner = () => !readController.signal.aborted && !authRequestsPaused() && revision === authRequestsPauseRevision() && interactionSequence.current === interaction && controller.getSnapshot().prepared?.operationId === outcome.prepared?.operationId && !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && directories.getAuthorization(requestedOwner).readable;
       if (sameOwner()) void (async () => {
         try {
-          const read = await data.readEndpoint(submittedEndpointId);
+          const read = await data.readEndpoint(submittedEndpointId, readController.signal);
           if (read !== null && sameOwner() && live.current.endpointId === submittedEndpointId && !data.accept(read.endpoint, read.fence)) controller.forgetCurrentProjection();
         } catch (error) { if (sameOwner() && live.current.endpointId === submittedEndpointId) setLocalError(error); }
-        finally { if (sameOwner()) { data.refreshCurrent(); directories.refresh(); } }
-      })();
+        finally { unsubscribe(); if (sameOwner()) { data.refreshCurrent(); directories.refresh(); } if (postWriteRead.current === readController) postWriteRead.current = null; }
+      })().catch(error => { if (sameOwner()) setLocalError(error); });
+      else { unsubscribe(); if (postWriteRead.current === readController) postWriteRead.current = null; }
     }
     if (outcome.phase === "confirmed") {
       if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
@@ -170,8 +226,10 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   };
   const reconcile = async () => {
     if (controller === null || owner === null || !canRead) return;
-    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey, revision = authRequestsPauseRevision();
     const outcome = await controller.reconcile();
+    if (authRequestsPaused() || revision !== authRequestsPauseRevision()) return;
+    if (outcome.phase === "confirmed" && scope !== null && !mayPresent()) { deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner); return; }
     observeDenial(outcome.error, requestedOwner, authorizationKey, false);
     if (outcome.phase === "confirmed") { data.refreshCurrent(); directories.refresh(); }
   };
@@ -219,7 +277,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? tabKeys.length - 1 : (index + (event.key === "ArrowRight" ? 1 : tabKeys.length - 1)) % tabKeys.length;
     navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab: tabKeys[next]! })); document.getElementById(`webhook-tab-${tabKeys[next]}`)?.focus();
   };
-  return <section className="webhooks" aria-label="Webhooks">
+  return <section className="webhooks" aria-label="Webhooks" onChangeCapture={() => { editRevision.current++; }} onClickCapture={event => { if (event.target instanceof Element && event.target.closest("dialog") && !event.target.closest(".webhook-pending-notice")) editRevision.current++; }}>
     <div className="heading"><div className="heading-text"><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div><span tabIndex={createRestriction === undefined ? undefined : 0} title={createRestriction}><button className="button primary" type="button" disabled={!createAllowed} title={createRestriction} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus" size={15}/>{m.new}</button></span></div>
     <div className="scope-bar"><div className="scope-group" role="group" aria-label={m.owner}><button className={`scope-button ${route.owner === "personal" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "personal"} onClick={() => selectOwner("personal", null)}><WebhookIcon name="user" size={15}/>{m.personal}</button><button className={`scope-button ${route.owner === "team" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "team"} onClick={() => selectOwner("team", null)}><WebhookIcon name="team" size={16}/>{m.team}</button></div><div className="scope-context"><WebhookIcon name={route.owner === "team" ? "team" : "user"} size={13}/>{route.owner === "team" ? <select className="filter webhook-team-select" aria-label={m.chooseTeam} value={route.teamId ?? ""} onChange={event => selectOwner("team", event.target.value === "" ? null : event.target.value)}><option value="">{m.chooseTeam}</option>{route.teamId !== null && !directories.teams?.some(team => team.id === route.teamId) && <option value={route.teamId}>{route.teamId}</option>}{directories.teams?.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select> : <strong>{ownerLabel}</strong>}<span className="context-divider"/><span>{route.owner === "team" ? m.scopeTeam : m.scopePersonal}</span>{route.owner === "team" && (ownerAuthorization?.status === "admin" || ownerAuthorization?.status === "member") && <span className="role-label">{manageOwner ? m.administrator : m.member}</span>}</div></div>
     {route.error !== null && <div className="inline-error" role="alert">{m.invalidNavigation}</div>}

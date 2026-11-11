@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { StrictMode, useSyncExternalStore } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { CurrentUser } from "../src/api/auth-types";
+import { pauseAuthRequests } from "../src/api/client";
 import { parseWebhookCatalog, type WebhookActiveEndpoint, type WebhookEndpoint, type WebhookReceipt } from "../src/api/webhooks";
 import { browserNavigation } from "../src/app/navigation";
 import { navigate, parseAuthRoute } from "../src/app/router";
@@ -133,6 +134,56 @@ describe("Webhook configuration page", () => {
     fireEvent.click(screen.getByRole("button", { name: labels.add }));
     await within(screen.getByRole("dialog")).findByRole("option", { name: new RegExp(labels.project) });
     expect(view.writes).toHaveLength(0);
+  });
+
+  it("retains the editor and does not refresh after confirmation during identity pause", async () => {
+    const view = await mount(); openEdit(); const draft = setName("Pending edit");
+    view.holdNextWrite(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1));
+    const resume = pauseAuthRequests(), before = view.fetch.mock.calls.length;
+    try {
+      await act(async () => { view.releaseWrite(); });
+      await screen.findByText("Original operation confirmed");
+      expect(screen.getByRole("dialog")).toBeVisible(); expect(draft.value).toBe("Pending edit");
+      expect(view.fetch.mock.calls.length).toBe(before);
+      await act(async () => { resume(); });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(view.fetch.mock.calls.length).toBeGreaterThan(before);
+    } finally { resume(); }
+  });
+
+  it("waits for the page to become active after the identity gate resumes", async () => {
+    const view = await mount(); openEdit(); setName("Pending edit"); view.holdNextWrite(); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1)); const resume = pauseAuthRequests(); view.pause();
+    try {
+      await act(async () => { view.releaseWrite(); }); await screen.findByText("Original operation confirmed");
+      const before = view.fetch.mock.calls.length; await act(async () => { resume(); });
+      expect(screen.getByRole("dialog")).toBeVisible(); expect(view.fetch.mock.calls.length).toBe(before);
+      await act(async () => { view.resume(); }); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    } finally { resume(); }
+  });
+
+  it("preserves a newer edit when a confirmed operation resumes after identity pause", async () => {
+    const view = await mount(); openEdit(); setName("Submitted edit"); view.holdNextWrite(); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1)); const resume = pauseAuthRequests();
+    try {
+      await act(async () => { view.releaseWrite(); }); await screen.findByText("Original operation confirmed");
+      setName("Newer local edit"); const before = view.fetch.mock.calls.length;
+      await act(async () => { resume(); });
+      expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit");
+      expect(view.fetch.mock.calls.length).toBe(before);
+    } finally { resume(); }
+  });
+
+  it("publishes an original receipt explicitly reconciled after a temporary pause", async () => {
+    const view = await mount(); openEdit(); setName("Reconciled edit"); view.loseNextWrite(); let resume: (() => void) | undefined;
+    view.intercept((_url, init) => { if (init.method === "PATCH") resume = pauseAuthRequests(); return null; });
+    try {
+      submitForm(); await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
+      expect(view.fetch.mock.calls.some(([url]) => String(url).includes("/operations/"))).toBe(false);
+      view.intercept(null); await act(async () => { resume!(); });
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(view.writes).toHaveLength(1);
+    } finally { resume?.(); }
   });
 
   it("publishes subscription counts and summaries only after the current background read finishes", async () => {
