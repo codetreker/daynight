@@ -1,3 +1,4 @@
+import { browserNavigation } from "../src/app/navigation";
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -99,6 +100,7 @@ const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullReq
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${projectId}`);
   vi.mocked(searchTasks).mockReset();
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
@@ -444,6 +446,7 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise);
     const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
+    act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     expect(screen.queryByRole("heading", { name: "核心项目" })).toBeNull();
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
@@ -591,14 +594,17 @@ describe("transient task chain dialogs", () => {
     await openChain("已完成根");
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     view.unmount();
+    browserNavigation().dispose(); // A new document does not restore private reading history.
     view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     await openChain("另一任务链");
+    act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     await findListButton("另一任务链");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     await openChain("另一任务链");
+    act(() => browserNavigation().navigate(`/projects/${projectId}`));
     view.rerender(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);

@@ -16,7 +16,8 @@ reading selections with the existing navigation owner. The root tab and file
 remain in the URL; Goal graph, child Task, and external Goal dialog selections
 are held in the page history. Typed resource loading still determines which
 surface is eligible. Shared Goal and detail components accept controlled
-selections, while Project-page callers retain local selection. Ordinary reading
+selections. Project-page callers use those same controlled interfaces for their
+root detail and Goal children. Ordinary reading
 changes push; closing a layer replaces the current entry after the existing draft
 admission. Same-resource editors are identified by their resource, host and
 presentation, not the history entry.
@@ -45,4 +46,4 @@ The state contains no business response, draft, permissions or DOM; existing
 resource, identity and access lifecycles continue to own admission and cleanup.
 Closing does not skip older entries. Nested selections are not a cross-refresh
 or shareable-link contract, and native unnumbered entries retain the existing
-navigation limits. Project-page reading remains local.
+navigation limits.
