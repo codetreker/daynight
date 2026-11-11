@@ -9,7 +9,7 @@ const B = "22222222-2222-4222-8222-222222222222";
 const KEY = "daynight.activeUser";
 const user = { id: A, name: "Alice", email: null, emailVerified: null, avatarUrl: null, personalTeam: { id: A, kind: "personal", name: null } };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-const query = (target: string) => `?returnPath=${encodeURIComponent(target)}`;
+const query = (target: string, callback = "/auth/callback") => `?returnPath=${encodeURIComponent(target)}&callbackPath=${encodeURIComponent(callback)}`;
 
 class Channel extends EventTarget {
   static instances: Channel[] = [];
@@ -31,17 +31,38 @@ beforeEach(() => {
 });
 
 describe("completion return target", () => {
-  it.each(["/", "/setup?source=login#guide", "/projects/one?value=%2F&x=1#detail", "/download/file?encoded=%252F#part", "/auth/complete%3Fok", "/auth/complete%23ok", `/${"é".repeat(2047)}a`])("preserves a safe complete target %s", (target) => {
+  it.each(["/", "/setup?source=login#guide", "/projects/one?value=%2F&x=1#detail", "/download/file?encoded=%252F#part", "/auth/complete%3Fok", "/auth/complete%23ok", "/assets/%FF?x=1#part", "/%C3", "/assets/%E9", `/${"é".repeat(2047)}a`])("preserves a safe complete target %s", (target) => {
     expect(parseLoginCompletionTarget(query(target), "")).toBe(target);
   });
 
   it.each([
-    ["", ""], ["?returnPath=%2F&returnPath=%2Fsetup", ""], ["?returnPath=%2F&other=1", ""],
+    ["%2Fprojects?view=1#part", "/custom/callback", "/custom/%2Fprojects?view=1#part"],
+    ["%2Fprojects?view=1#part", "/api/v1/auth/callback", "/api/v1/auth/%2Fprojects?view=1#part"],
+    ["%2Fprojects", "/%63ustom/callback", "/%63ustom/%2Fprojects"],
+    ["/first/../second/#fragment", "/custom/callback", "/second/#fragment"],
+    ["/auth//../complete", "/auth/callback", "/complete"],
+    ["/first#fragment/../second", "/custom/callback", "/second"],
+    ["/first?x=/../second#part", "/custom/callback", "/first?x=/../second#part"],
+  ])("matches the previous callback redirect for %s from %s", (target, callback, expected) => {
+    expect(parseLoginCompletionTarget(query(target, callback), "")).toBe(expected);
+  });
+
+  it.each([
+    "", "callback", "/", "//foreign.example/callback", "/a/../callback", "/a//callback",
+    "/callback?private=1", "/callback#fragment", "/callback\\bad", "/callback%5Cbad",
+    "/%2Fforeign.example/callback", "/a/%2e%2e/callback", "/bad%00/callback", "/bad%zz/callback",
+  ])("rejects unsafe callback path %s", (callback) => {
+    expect(parseLoginCompletionTarget(query("/setup", callback), "")).toBeNull();
+  });
+
+  it.each([
+    ["", ""], ["?returnPath=%2F", ""], ["?callbackPath=%2Fauth%2Fcallback", ""], [query("/")+"&returnPath=%2Fsetup", ""], [query("/")+"&callbackPath=%2Fx", ""], [query("/")+"&other=1", ""],
     [query("/"), "#fragment"], [query(""), ""], [query("https://example.com"), ""], [query("//example.com/path"), ""],
     [query("/bad\\path"), ""], [query("/bad\rpath"), ""], [query("/bad\npath"), ""], [query("/bad\0path"), ""],
     [query("/bad%5cpath"), ""], [query("/bad%0dpath"), ""], [query("/bad%0apath"), ""], [query("/bad%00path"), ""],
-    [query("/auth/complete"), ""], [query("/auth/complete/child"), ""], [query("/auth//complete"), ""], [query("/auth//../complete"), ""], [query("/auth/\tcomplete"), ""], [query("/auth///complete/child"), ""], [query("/auth/%63omplete"), ""],
-    [query("/other/../auth/complete"), ""], [query("/foo%3f/../auth/complete"), ""], [query("/foo%23/../auth/complete/child"), ""], [query("/auth/complete%2Fchild"), ""],
+    [query("/bad%255cpath"), ""], [query("/bad%250dpath"), ""], [query("/bad%250apath"), ""], [query("/bad%2500path"), ""], [query("%2F%2Fexample.com/path"), ""],
+    [query("/auth/complete"), ""], [query("/auth/complete/child"), ""], [query("/auth//complete"), ""], [query("/auth/\tcomplete"), ""], [query("/auth///complete/child"), ""], [query("/auth/%63omplete"), ""],
+    [query("/auth/%2563omplete"), ""], [query("%2Fauth/complete"), ""], [query("%2Ffoo/../complete?returnPath=%2F"), ""], [query("%2Ffoo/../complete/child"), ""], [query("/other/../auth/complete"), ""], [query("/foo%3f/../auth/complete"), ""], [query("/foo%23/../auth/complete/child"), ""], [query("/auth/complete%2Fchild"), ""],
     [query(`/${"é".repeat(2048)}`), ""],
   ])("rejects unsafe completion query %s and fragment %s", (search, hash) => {
     expect(parseLoginCompletionTarget(search, hash)).toBeNull();
@@ -50,8 +71,8 @@ describe("completion return target", () => {
 
 
 describe("login completion", () => {
-  const mount = (target = "/setup?from=login#guide") => {
-    history.replaceState(null, "", `/auth/complete${query(target)}`);
+  const mount = (target = "/setup?from=login#guide", callback = "/auth/callback") => {
+    history.replaceState(null, "", `/auth/complete${query(target, callback)}`);
     const replace = vi.fn();
     const view = renderWithLocale(<LoginCompletePage replace={replace} />, { locale: "en" });
     return { ...view, replace };
@@ -74,8 +95,24 @@ describe("login completion", () => {
     expect(replace).toHaveBeenCalledTimes(1);
   });
 
+  it.each([["/assets/%FF?x=1#part", "/assets/%FF?x=1#part"], ["%2Fprojects?view=1#part", "/auth/%2Fprojects?view=1#part"]])("publishes before replacing the callback target %s", async (target, expected) => {
+    vi.stubGlobal("fetch", vi.fn(async () => response(user)));
+    const { replace } = mount(target);
+    await waitFor(() => expect(replace).toHaveBeenCalledExactlyOnceWith(expected));
+    expect(localStorage.getItem(KEY)).toBe(JSON.stringify(A));
+    expect(Channel.instances[0]!.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes before navigating to the old custom callback-relative target", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response(user)));
+    const { replace } = mount("%2Fprojects?view=1#part", "/custom/callback");
+    await waitFor(() => expect(replace).toHaveBeenCalledExactlyOnceWith("/custom/%2Fprojects?view=1#part"));
+    expect(localStorage.getItem(KEY)).toBe(JSON.stringify(A));
+    expect(Channel.instances[0]!.postMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects an invalid entry without reading an identity", () => {
-    history.replaceState(null, "", "/auth/complete?returnPath=%2F&extra=1");
+    history.replaceState(null, "", `/auth/complete${query("/")}&extra=1`);
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     const replace = vi.fn(); renderWithLocale(<LoginCompletePage replace={replace} />, { locale: "en" });
     expect(screen.getByRole("heading", { name: "This sign-in destination is invalid" })).toBeVisible();

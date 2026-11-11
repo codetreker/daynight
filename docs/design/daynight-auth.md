@@ -250,7 +250,7 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规范用户 UPSERT 后，
 `initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin 成员行，
 随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
-完整性错误，不在 Authenticate 中补数据。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login` 及实际 callback；
+完整性错误，不在 Authenticate 中补数据。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login`、`/auth/complete` 及实际 callback；
 无目标默认 `/projects`，不把已提供的非法目标替换成默认值。
 
 ### 主站 session 与 PAT
@@ -527,7 +527,9 @@ Team 邀请提交捕获确认框实例与路由或分区可见性变化序号；
 
 接纳真实身份后才受保护地发布共享值。非法或不可读的记录、写入和通知失败以原 cause 与阶段暴露，保留已确认身份。`retryPublication()` 只重试本地发布阶段：写入尚未成功时重新检查来源后发布，写入成功但通知失败时仅调用通知补发；新已知值取代待补发值时要求刷新，不覆盖它。完成后的观察读取失败仅重新读取，不重新发布。missing 是未知而非退出。释放 owner 取消请求并释放信号；该独立能力尚不承担业务根、作用域或退出接线。[账户初始化决策](../../.agents/notes/implemented/architecture/2026-11-12-account-session-initialization.md)记录原因和边界。
 
-前端 `/auth/complete` 使用独立的 `AccountSessionProvider`。页面要求恰好一个 `returnPath` 且自身不带 fragment；目标最多 4096 UTF-8 bytes，必须是安全的本地绝对路径，拒绝反斜杠、CR/LF/NUL、解码后路径注入和完成页循环。目标 query 与 fragment 原样保留。有效 authenticated 身份及本地发布均完成后才以 `location.replace` 回到完整目标；不向目标附加身份或凭据。身份读取失败只重试 `/me`，同步失败只重试当前本地发布阶段；匿名显示登录失效与重新登录入口。若 owner 要求刷新，完成页 header 显示小黄条并执行真实 reload，不自动核验或跳转。服务端 callback 仍直接返回原目标，完成页的服务端路由和 callback 接线尚未启用。
+服务端 callback 保持一次性交换与会话 Cookie，成功后以 303 导向 `/auth/complete`，通过 `url.Values` 分别编码完整原目标 `returnPath` 与实际 callback 请求的转义路径 `callbackPath`，不附加账户标识或凭据。公开、私有和其他允许的本地资源目标均先经过该入口。Go 的 GET/HEAD 路由复用现有 Web shell，其他方法返回 405；完成页及其后代不允许作为 returnPath 或自定义 callback。
+
+前端 `/auth/complete` 使用独立的 `AccountSessionProvider`。页面要求恰好一个 `returnPath` 和一个 `callbackPath`，不接受额外参数或自身 fragment；`callbackPath` 必须是安全的同源本地绝对路径，可包含有效的路径编码。目标最多 4096 UTF-8 bytes，拒绝外部或协议相对地址、反斜杠、CR/LF/NUL、解码后路径注入和完成页循环。目标原值及其 query、fragment 保留；对原系统允许的编码前导斜线等相对引用，以 callback 路径为基址恢复原回跳位置，避免完成页位置改变实际落点。有效 authenticated 身份及本地发布均完成后才以 `location.replace` 返回目标；不向目标附加身份或凭据。身份读取失败只重试 `/me`，同步失败只重试当前本地发布阶段；匿名显示登录失效与重新登录入口。若 owner 要求刷新，完成页 header 显示小黄条并执行真实 reload，不自动核验或跳转。
 
 `features/auth/AccountChangeBanner` 提供受控的 header 提示：调用者以 `active` 选择当前可操作的 header，并提供刷新动作；非活动实例只保留空播报区域，不呈现提示或播报。提示先建立空播报区域，再以 polite status 呈现本地化文案和键盘可达的刷新按钮，不接管焦点、选区或容器状态。窄屏换行由所在 header 布局安排，提示本身允许文字换行并保留操作。组件不发现身份；完成页使用实际 owner 状态，现有业务 header 尚未接入；调用者负责在原生模态或全屏中选择实际活动的 header，并提供真实刷新动作。
 
@@ -672,11 +674,11 @@ Public origin 是无路径/凭据/query/fragment 的 canonical origin，host 小
 
 Callback 与 public origin 精确同源，完整 URL 无凭据、query 或 fragment；路径为
 canonical 非根路径，不接受编码别名、dot-segment、路由通配符或与 API/页面/资源/
-健康入口冲突。页面命名空间包含 `/login`、`/setup`、`/teams` 根及其后代，Team API
+健康入口冲突。页面命名空间包含 `/login`、`/auth/complete`、`/setup`、`/teams` 根及其后代，Team API
 命名空间包含 `/api/v1/teams`；`validateAuthSettings` 在配置和
 启动阶段、创建路由前拒绝冲突。原 callback 占用该命名空间时须改到其他路径并同步
 UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
-这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口和实际
+这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口、完成页和实际
 callback 的 returnPath，防止回调循环。
 
 两个独立开关默认关闭；YAML 使用布尔值，环境变量使用 0/1，其他值拒绝：

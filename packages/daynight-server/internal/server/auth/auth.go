@@ -151,7 +151,8 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 	}
 	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.ExpiresAt, int(identity.SessionLifetime.Seconds())))
 	logger.InfoContext(request.Context(), "login completed", "component", "auth", "phase", "callback", "user_id", result.User.ID, "credential_id", result.Session.ID, "request_id", httpx.RequestID(request.Context()))
-	http.Redirect(w, request, result.ReturnPath, http.StatusSeeOther)
+	destination := url.Values{"returnPath": {result.ReturnPath}, "callbackPath": {request.URL.EscapedPath()}}
+	http.Redirect(w, request, "/auth/complete?"+destination.Encode(), http.StatusSeeOther)
 }
 
 func userResponse(user model.User) api.User {

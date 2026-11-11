@@ -32,7 +32,7 @@ beforeEach(() => {
 
 describe("public and authenticated entry ownership", () => {
   it("routes the completion document to its own account initialization", () => {
-    window.history.replaceState(null, "", "/auth/complete?returnPath=%2Fsetup%3Ffrom%3Dlogin%23guide");
+    window.history.replaceState(null, "", "/auth/complete?returnPath=%2Fsetup%3Ffrom%3Dlogin%23guide&callbackPath=%2Fauth%2Fcallback");
     const pending = Promise.withResolvers<Response>();
     const fetcher = vi.fn((_url: string, _init?: RequestInit) => pending.promise);
     vi.stubGlobal("fetch", fetcher);

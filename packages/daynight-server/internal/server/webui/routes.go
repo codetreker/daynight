@@ -16,7 +16,7 @@ func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	for _, pattern := range []string{
 		"/{$}", "/login", "/webhooks", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/shared-projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
 		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/bots", "/bots/{botId}", "/workers", "/workers/{workerId}",
-		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup",
+		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup", "/auth/complete",
 	} {
 		mux.HandleFunc("GET "+pattern, page)
 		mux.HandleFunc(pattern, httpx.MethodNotAllowed(logger, "GET, HEAD"))
