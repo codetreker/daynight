@@ -6,8 +6,8 @@ import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/
 import { getProject, saveProjectSettings } from "../src/api/project-settings";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { ProjectSettingsPanel } from "../src/features/management/ProjectSettingsPanel";
-import { ProjectAccessBoundary } from "../src/features/projects/ProjectAccess";
-import { TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from "../src/features/projects/ProjectAccess";
+import { TaskCacheLifecycleChanged, TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { parseWarningDraft, useProjectSettings } from "../src/features/management/useProjectSettings";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { wireResponse } from "./helpers/wireJson";
@@ -251,7 +251,7 @@ describe("project settings form", () => {
     } finally { resume(); }
   });
 
-  it.each([false, true])("resumes receipt publication when pause begins at scope admission; admission rejects=%s", async (rejectAdmission) => {
+  it.each(["returned", "interrupted", "resumed-before-catch"] as const)("resumes receipt publication across scope admission: %s", async (admission) => {
     const saving = deferred<Response>();
     const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
     mount(); await ready(); change(); submit();
@@ -261,19 +261,61 @@ describe("project settings form", () => {
     const barrier = vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementationOnce(async function (this: TaskCacheScope, signal) {
       await originalReady.call(this, signal);
       resume = pauseAuthRequests();
-      if (rejectAdmission) throw new DOMException("scope admission interrupted", "AbortError");
+      if (admission === "resumed-before-catch") resume();
+      if (admission !== "returned") throw new TaskCacheLifecycleChanged();
     });
     try {
       await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
       await waitFor(() => expect(resume).toBeDefined());
       await waitFor(() => expect(screen.queryByRole("button", { name: "正在保存…" })).toBeNull());
-      expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
-      change("110");
-      act(() => resume!());
-      await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
-      expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
+      if (admission === "resumed-before-catch") {
+        await waitFor(() => expect(screen.getByRole("button", { name: "取消" })).toBeDisabled());
+        expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+      } else {
+        expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+        change("110");
+        act(() => resume!());
+        await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
+        expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
+      }
       expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
     } finally { barrier.mockRestore(); resume?.(); }
+  });
+
+  it("waits for a new access check begun after the first fresh observation before dispatch", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    let session: ProjectAccessSession;
+    let completion: Promise<void> | undefined;
+    const Probe = () => {
+      session = useProjectAccess(id).session;
+      const state = useProjectSettings(id, userId, true, true);
+      return <><input aria-label="draft" value={state.draft} onChange={(event) => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button></>;
+    };
+    render(<ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary>);
+    await waitFor(() => expect(screen.getByLabelText("draft")).toHaveValue("60"));
+    fireEvent.change(screen.getByLabelText("draft"), { target: { value: "90" } });
+    const before = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+    const originalReady = TaskCacheScope.prototype.ready;
+    const originalSnapshot = session!.snapshot;
+    const barrier = vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementationOnce(async function (this: TaskCacheScope, signal) {
+      await originalReady.call(this, signal);
+      session.snapshot = () => {
+        session.snapshot = originalSnapshot;
+        const observed = originalSnapshot();
+        holdPermission = true; void session.revalidate();
+        return observed;
+      };
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "submit" }));
+      await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(before));
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+      holdPermission = false; await act(async () => permission.resolve(json(members("member"))));
+      await act(async () => completion);
+      expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+      expect(screen.getByLabelText("draft")).toHaveValue("90");
+    } finally { barrier.mockRestore(); session!.snapshot = originalSnapshot; }
   });
 
   it("retains a newer draft when an unknown save is reconciled after a pause", async () => {

@@ -4,6 +4,7 @@ import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "
 import { getProject, isExecutionWarningMinutes, saveProjectSettings } from "../../api/project-settings";
 import type { Project } from "../../api/types";
 import type { ProjectManagementGuard } from "./ProjectManagementGuard";
+import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
 
 export type SettingsNotice = "saved" | "cancelled" | "conflict" | "permission" | "reconciled" | null;
 export const parseWarningDraft = (draft: string): number | null => {
@@ -101,7 +102,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     while (true) {
       try { await access.session.scope.ready(signal); return; }
       catch (failure) {
-        if (signal.aborted || access.session.scope.isInvalidated || !authRequestsPaused()) throw failure;
+        if (signal.aborted || access.session.scope.isInvalidated || !(failure instanceof TaskCacheLifecycleChanged)) throw failure;
       }
     }
   };
@@ -223,9 +224,13 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       }
       const [saved] = await Promise.all([abortable(getProject(projectId, signal), signal), abortable(access.session.revalidate(), signal)]);
       let admitted;
-      do { admitted = await waitForFreshAccess(signal); } while (authRequestsPaused());
+      let currentAccess;
+      do {
+        admitted = await waitForFreshAccess(signal);
+        currentAccess = access.session.snapshot();
+      } while (authRequestsPaused() || currentAccess.refreshing || currentAccess.status === "ready" && currentAccess.access !== admitted);
       if (signal.aborted || access.session.scope.isInvalidated || current !== generation.current || !currentRoute()) { finishRead("cancelled"); return; }
-      if (admitted === null) { pendingSettingsRead.current = true; finishRead("failed"); return; }
+      if (admitted === null || currentAccess.status !== "ready" || access.session.scope.isProjectSuspended(projectId)) { pendingSettingsRead.current = true; finishRead("failed"); return; }
       if (confirmedFloor.current !== null && saved.settings.version < confirmedFloor.current) throw new Error("Project settings read is older than the confirmed save");
       if (projectRef.current !== null && saved.settings.version < projectRef.current.settings.version) throw new Error("Project settings read is older than the displayed settings");
       pendingSettingsRead.current = false;
@@ -366,8 +371,14 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       })();
     };
     try {
-      const fresh = await waitForFreshAccess(signal, true);
-      if (signal.aborted || !routeRef.current || operationRoute !== routeGeneration.current || access.session.scope.isInvalidated || operationGeneration !== generation.current || projectRef.current?.settings.version !== project.settings.version) return;
+      let fresh;
+      let currentAccess;
+      do {
+        fresh = await waitForFreshAccess(signal, true);
+        currentAccess = access.session.snapshot();
+      } while (!signal.aborted && (currentAccess.refreshing || currentAccess.status === "ready" && currentAccess.access !== fresh));
+      if (signal.aborted || !activeRef.current || !routeRef.current || operationRoute !== routeGeneration.current || access.session.scope.isInvalidated || access.session.scope.isProjectSuspended(projectId) || operationGeneration !== generation.current || projectRef.current?.settings.version !== project.settings.version) return;
+      if (currentAccess.status !== "ready") return;
       if (fresh === null) return;
       if (fresh.effectiveRole !== "admin") { setNotice("permission"); return; }
       if (fresh.ownership.teamId !== ownership.teamId || fresh.ownership.version !== ownership.version) { setNotice("conflict"); return; }
