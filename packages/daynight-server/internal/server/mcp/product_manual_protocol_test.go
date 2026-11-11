@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -169,9 +170,14 @@ func TestProductManualAuthenticationRequired(t *testing.T) {
 func TestProductManualPublishedVersionUpdate(t *testing.T) {
 	files, _ := manualFixture(t)
 	original := string(files["manuals/concepts.md"].Data)
-	updated := strings.Replace(original, "Daynight", "DAYNIGHT", 1)
-	if original == updated || len(original) != len(updated) {
-		t.Fatal("fixture must supply a same-size updated edition")
+	_, width := utf8.DecodeRuneInString(original)
+	replacement := "x"
+	if strings.HasPrefix(original, replacement) {
+		replacement = "y"
+	}
+	updated := strings.Repeat(replacement, width) + original[width:]
+	if original == updated || len(original) != len(updated) || !utf8.ValidString(updated) {
+		t.Fatal("fixture must supply a distinct same-size UTF-8 edition")
 	}
 	files["manuals/concepts.md"].Data = []byte(updated)
 	read := func(source fs.FS) string {
