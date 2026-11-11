@@ -1,3 +1,4 @@
+import { parseToolPathTelemetry, type ToolPathTelemetry } from "./worker-tool-paths";
 import { parseWorkerRuntimeConfiguration, type WorkerRuntimeConfiguration } from './worker-runtime-configuration';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { array, executionPlatform, id, malformed, record, string, timestamp } from './parse';
@@ -23,6 +24,7 @@ export type WorkerAssistantHost = {
   }[];
 };
 export type WorkerTelemetry = {
+  readonly toolPaths?: ToolPathTelemetry;
   readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly assistantHost?: WorkerAssistantHost;
   readonly machine: WorkerMachine;
@@ -132,10 +134,11 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
   return { protocolVersion: 1, ...(data.creationConfigurationVersion === 1 ? { creationConfigurationVersion: 1 as const } : {}), observedAt: timestamp(data.observedAt), defaultCwd,
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
-const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration'].filter(key => Object.hasOwn(record(value), key))]);
+const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry => {
+  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration', ...(toolPathsSupported ? ['toolPaths'] : [])].filter(key => Object.hasOwn(record(value), key))]);
   const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
   return {
+    ...(Object.hasOwn(data, 'toolPaths') ? { toolPaths: parseToolPathTelemetry(data.toolPaths, executionPlatform(data.platform)) } : {}),
     ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
     ...(Object.hasOwn(data, 'runtimeConfiguration') ? { runtimeConfiguration: parseWorkerRuntimeConfiguration(data.runtimeConfiguration) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
@@ -190,10 +193,10 @@ const task = (value: unknown): WorkerTaskSnapshot => {
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
     status: choice<TaskStatus>(data.status, ['proposed', 'todo', 'in_progress', 'done', 'cancelled']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
 };
-export const parseWorkerDetail = (value: unknown, workerId: string): WorkerDetailResponse => {
+export const parseWorkerDetail = (value: unknown, workerId: string, toolPathsSupported = false): WorkerDetailResponse => {
   const data = fields(value, ['observedAt', 'worker']);
   const worker = fields(data.worker, [...summaryFields, 'telemetry', 'inventoryObservedAt', 'tasks']);
-  const observed = summary(worker), sampled = telemetry(worker.telemetry), tasks = array(worker.tasks, task);
+  const observed = summary(worker), sampled = telemetry(worker.telemetry, toolPathsSupported), tasks = array(worker.tasks, task);
   const inventoryObservedAt = worker.inventoryObservedAt === null ? null : timestamp(worker.inventoryObservedAt);
   if (observed.workerId !== requestId(workerId) || sampled.machine.id !== observed.machine.id || sampled.machine.name !== observed.machine.name || sampled.platform !== observed.platform || new Set(tasks.map(task => task.taskId)).size !== tasks.length) return malformed();
   if (observed.taskObservationState === 'unavailable' ? inventoryObservedAt !== null || tasks.length !== 0 : inventoryObservedAt === null || observed.activeTaskCount !== tasks.length) return malformed();
@@ -210,19 +213,23 @@ export const listWorkers = async (query: { readonly limit?: number; readonly cur
     cursor(query.cursor);
     parameters.set('cursor', query.cursor);
   }
-  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json' } });
+  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
+    const tools = response.headers.get('Daynight-Worker-Tool-Paths');
+    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
     return parseWorkerPage(value);
   });
 };
 export const getWorker = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission): Promise<WorkerDetailResponse> => {
   const userId = requestId(admission.userId), canonicalWorkerId = requestId(workerId);
-  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json' } });
+  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
-    return parseWorkerDetail(value, canonicalWorkerId);
+    const tools = response.headers.get('Daynight-Worker-Tool-Paths');
+    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
+    return parseWorkerDetail(value, canonicalWorkerId, tools === '1');
   });
 };

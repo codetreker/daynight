@@ -34,6 +34,10 @@ and the stored-byte budget. An old service replacing the observation discards
 that extension; after upgrade its absence means no current mode evidence, not
 permission to revive a stale applied result.
 
+The [tool-path configuration decision](2026-11-11-worker-tool-path-configuration.md)
+extends independent negotiation and locked adoption to each tool, and adds
+selection-aware inputs to native qualification without replacing mode evidence.
+
 Mode and global native settings form one application unit. Validation receives
 the target mode explicitly, including local model and effort normalization. The
 existing serialized cache owner persists the successful pair before publishing

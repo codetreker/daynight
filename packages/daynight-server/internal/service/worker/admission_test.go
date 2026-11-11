@@ -472,6 +472,7 @@ func TestWorkerAdmissionConstructorsBindProductionOperations(t *testing.T) {
 	for _, workers := range []*Workers{NewWorkers(nil), NewWorkersWithPrompts(nil, nil)} {
 		for _, pair := range []struct{ actual, expected any }{
 			{workers.report.validate, workercore.ValidateReport},
+			{workers.report.validateToolPathTargets, workercore.ValidateToolPathTargets},
 			{workers.report.parseConfiguration, workercore.ParseWorkerConfigurationExchange},
 			{workers.report.admit, workercore.AdmitActiveWorker},
 			{workers.report.matchTasks, workercore.MatchTaskSnapshots},

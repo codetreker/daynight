@@ -19,14 +19,12 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 		httpx.WriteError(w, request, logger, "worker_configuration", "validate", err)
 		return
 	}
-	controlMode, err := controlModeProtocol(request.Header)
+	capabilities, err := workerCapabilities(request.Header)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_configuration", "validate", err)
 		return
 	}
-	if controlMode {
-		w.Header().Set(workerControlModeHeader, "1")
-	}
+	writeWorkerCapabilities(w.Header(), capabilities)
 	var result model.WorkerConfigurationResource
 	if request.Method == http.MethodPut {
 		fields, decodeErr := httpx.DecodeObject(w, request, "revision", "value")
@@ -37,7 +35,7 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 			if revisionErr != nil {
 				err = revisionErr
 			} else {
-				value, valueErr := workercore.ParseWorkerConfigurationProtocol(fields["value"], controlMode)
+				value, valueErr := workercore.ParseWorkerConfigurationProtocol(fields["value"], capabilities)
 				if valueErr != nil {
 					err = valueErr
 				} else {
@@ -53,5 +51,5 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	w.Header().Set(workerConfigurationHeader, "1")
-	httpx.WriteJSON(w, request, logger, http.StatusOK, projectConfiguration(result, controlMode))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, projectConfiguration(result, capabilities))
 }

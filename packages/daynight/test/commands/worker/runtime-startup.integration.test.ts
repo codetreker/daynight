@@ -457,6 +457,35 @@ describe("worker cloud-first startup", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
+  it("rediscovers tool support after a mode-capable server upgrades without restarting the Worker", async () => {
+    const f = await fixture(false, false), base = desired([]);
+    const initial: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "web" } };
+    const upgraded: WorkerCloudDesired = { ...initial, value: { ...initial.value, toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValueOnce(resource(initial)).mockResolvedValue(resource(upgraded));
+    let channel: ReporterOptions["configuration"];
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
+    const { cancellation, running } = start(f);
+    const operation = createOperation();
+    try {
+      await vi.waitFor(() => expect(channel).toBeDefined());
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledOnce();
+      await channel!.accept(channel!.capture(), { desired: initial, observationRevision: "0", observationAccepted: false });
+
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledTimes(2);
+      expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
+      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).desired).toEqual(upgraded);
+      expect(channel!.capture().toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+
+      await channel!.accept(channel!.capture(), { desired: upgraded, observationRevision: "0", observationAccepted: false });
+      await channel!.prepare!(operation);
+      expect(remote.configuration).toHaveBeenCalledTimes(2);
+      expect(remote.reportConfiguration).not.toHaveBeenCalled();
+    } finally { operation.dispose(); cancellation.abort(); await running; }
+  });
+
   it("ignores stale managed YAML when the cloud target already exists", async () => {
     const f = await fixture(false, false), cancellation = new AbortController();
     const source = stringify({ ...f.document, worker: { maxConcurrent: 0, agent: "removed-agent", args: false, repositories: null } });

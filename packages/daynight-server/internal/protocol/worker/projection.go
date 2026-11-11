@@ -23,7 +23,7 @@ func Summary(worker model.WorkerSnapshot) WorkerSummary {
 func Detail(worker model.WorkerSnapshot) WorkerDetail {
 	telemetry := worker.Telemetry
 	response := WorkerDetail{WorkerSummary: Summary(worker), InventoryObservedAt: optionalTime(worker.TaskSnapshot.InventoryObservedAt), Tasks: make([]WorkerTaskSnapshot, 0, len(worker.TaskSnapshot.Items)),
-		Telemetry: WorkerTelemetry{Machine: WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
+		Telemetry: WorkerTelemetry{ToolPaths: telemetry.ToolPaths, Machine: WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
 			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: assistantHostResponse(telemetry.AssistantHost), RuntimeConfiguration: RuntimeConfiguration(telemetry.RuntimeConfiguration),
 			OS:     probeResponse(telemetry.OS, func(value model.WorkerOS) WorkerOS { return WorkerOS(value) }),
 			CPU:    probeResponse(telemetry.CPU, func(value model.WorkerCPU) WorkerCPU { return WorkerCPU(value) }),

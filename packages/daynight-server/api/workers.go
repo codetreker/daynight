@@ -20,3 +20,11 @@ type WorkerSummary = workerprotocol.WorkerSummary
 type WorkerDetail = workerprotocol.WorkerDetail
 type WorkerPage = workerprotocol.WorkerPage
 type WorkerDetailResponse = workerprotocol.WorkerDetailResponse
+
+type ToolPathChoice = workerprotocol.ToolPathChoice
+type WorkerToolPaths = workerprotocol.WorkerToolPaths
+type ToolPathTelemetry = workerprotocol.ToolPathTelemetry
+type ToolPathObservation = workerprotocol.ToolPathObservation
+type ToolPathActual = workerprotocol.ToolPathActual
+type ToolPathActiveSelection = workerprotocol.ToolPathActiveSelection
+type ToolPathError = workerprotocol.ToolPathError
