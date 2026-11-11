@@ -532,7 +532,7 @@ export class TaskDetailSessions {
       : await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
-      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
+      catch (error) { if (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged && !error.retryable || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
     const floor = this.stepsFloor(entry);
@@ -864,7 +864,7 @@ export class TaskDetailSessions {
     }
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
-      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
+      catch (error) { if (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged && !error.retryable || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
     const requested = entry.steps.parentRequested;
