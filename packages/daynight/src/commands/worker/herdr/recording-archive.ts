@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { writeDurableJson } from "../../controller/pending-content.js";
+import { writeDurableJson } from "../../../platform/durable-json.js";
 import { decodeSessionV2Archive, parseSessionV2Archive, verifySessionV2Archive } from "../../../session/v2/archive.js";
 import { parseSessionV2Message, parseSessionV2Owner, parseSessionV2Runs, sessionV2ReceiptDigest, verifySessionV2Receipt } from "../../../session/v2/protocol.js";
 import { canonicalSessionJson, decodeStrictSessionJson, exact, hash, integer, seq, SessionV2Error, SESSION_V2_PROTOCOL, uuid } from "../../../session/v2/values.js";
@@ -11,7 +11,7 @@ import { HerdrSessionHttpError, type HerdrSessionState } from "./session-api.js"
 import type { HerdrLifecycleRecord } from "./lifecycle-types.js";
 import type { HerdrRecordingSnapshot } from "./recording-types.js";
 import type { Operation } from "../../../api/operation.js";
-import { ensureHerdrDurableDirectory, syncHerdrDirectory } from "./durable-directory.js";
+import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 
 type Message<K extends SessionV2Message["type"]> = Extract<SessionV2Message, { type: K }>;
 export type HerdrArchiveDisposition = { operationId: string; action: "abandon" | "delete"; phase: "intent" | "completed"; at: number; sourceIdentity: string | null; archiveFiles: { name: string; identity: string }[] };
@@ -59,7 +59,7 @@ const build = (record: HerdrLifecycleRecord, source: HerdrRecordingSnapshot, fin
 /** Fixed requests and receipts survive the Worker; the caller owns scheduling and native stop proof. */
 export const createHerdrRecordingArchive = (options: { directory: string; api: HerdrArchiveApi; now?: () => number }) => {
   const now = options.now ?? Date.now, api = options.api;
-  ensureHerdrDurableDirectory(options.directory);
+  ensureDurableDirectory(options.directory);
   const file = (record: HerdrLifecycleRecord) => path.join(options.directory, `${uuid(record.sessionId)}.archive-state.json`);
   const sealFile = (record: HerdrLifecycleRecord) => path.join(options.directory, `${uuid(record.sessionId)}.archive-seal.json`);
   const entryIdentity = (stat: { dev: bigint; ino: bigint }) => `${stat.dev}:${stat.ino}`;
@@ -86,7 +86,7 @@ export const createHerdrRecordingArchive = (options: { directory: string; api: H
         const before = fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.size > 8n * 1024n * 1024n) corrupt("Invalid archive journal file.");
         raw = readFileSync(fd);
-        fsyncSync(fd); syncHerdrDirectory(options.directory);
+        fsyncSync(fd); syncDurableDirectory(options.directory);
         const after = lstatSync(target, { bigint: true });
         if (!after.isFile() || after.isSymbolicLink() || entryIdentity(after) !== entryIdentity(before)) corrupt("The archive journal changed during durability observation.");
       } finally { closeSync(fd); }
@@ -221,7 +221,7 @@ export const createHerdrRecordingArchive = (options: { directory: string; api: H
             const temporary = `${sealFile(record)}.${randomUUID()}.tmp`, fd = openSync(temporary, "wx", 0o600);
             try { writeFileSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
             renameSync(temporary, sealFile(record));
-            syncHerdrDirectory(options.directory);
+            syncDurableDirectory(options.directory);
           }
           state.seal = { sha256: digest(body), byteLength: String(Buffer.byteLength(body)), completeness: doc.completeness }; state = save(record, state);
         }

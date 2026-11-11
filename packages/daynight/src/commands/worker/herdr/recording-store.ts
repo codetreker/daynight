@@ -4,7 +4,7 @@ import path from "node:path";
 import { assertTerminalBinding, parseSessionV2Owner, parseTerminalBinding, parseTerminalFrame } from "../../../session/v2/protocol.js";
 import { canonicalSessionJson, decodeStrictSessionJson, seq, timestamp, uuid, SESSION_V2_LIMITS, SessionV2Error } from "../../../session/v2/values.js";
 import type { SessionV2BoundaryGap, SessionV2FrameFile, SessionV2FrameIndex, SessionV2IntervalGap, SessionV2Segment, TerminalBinding, TerminalFrame } from "../../../session/v2/types.js";
-import { ensureHerdrDurableDirectory, syncHerdrDirectory } from "./durable-directory.js";
+import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import type { HerdrLocalSegment } from "./lifecycle-types.js";
 import type { HerdrRecordingBoundary, HerdrRecordingIdentity, HerdrRecordingObservation, HerdrRecordingRun, HerdrRecordingScreen, HerdrRecordingSnapshot } from "./recording-types.js";
 
@@ -33,7 +33,7 @@ const safeFile = (file: string): void => { const stat = lstatSync(file); if (!st
 const durableFile = (file: string, data: string): void => {
   const temporary = `${file}.${randomUUID()}.tmp`, fd = openSync(temporary, "wx", 0o600);
   try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(temporary, file); syncHerdrDirectory(path.dirname(file));
+  renameSync(temporary, file); syncDurableDirectory(path.dirname(file));
 };
 const bytes = (value: unknown): number => Buffer.byteLength(canonicalSessionJson(value));
 
@@ -48,13 +48,13 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
   const directory = options.directory, manifest = path.join(directory, "manifest.json"), journal = path.join(directory, "journal.jsonl"), framesDirectory = path.join(directory, "frames");
   const existed = existsSync(directory);
   if (existed && (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink())) corrupt();
-  ensureHerdrDurableDirectory(directory);
+  ensureDurableDirectory(directory);
   const header = { schemaVersion: 1, ...identity };
   if (existsSync(manifest)) { safeFile(manifest); if (!same(decodeStrictSessionJson(readFileSync(manifest), 16_384), header)) corrupt(); }
   else {
     if (readdirSync(directory).length !== 0) corrupt();
     durableFile(manifest, canonicalSessionJson(header));
-    ensureHerdrDurableDirectory(framesDirectory); durableFile(journal, ""); syncHerdrDirectory(directory);
+    ensureDurableDirectory(framesDirectory); durableFile(journal, ""); syncDurableDirectory(directory);
   }
   if (!existsSync(journal) || !existsSync(framesDirectory) || !lstatSync(framesDirectory).isDirectory() || lstatSync(framesDirectory).isSymbolicLink()) corrupt();
   safeFile(journal);
@@ -199,7 +199,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       if (synchronize) {
         // A selected file may be visible after a crash before either durability
         // barrier completed. Registration requires both the bytes and its name.
-        fsyncSync(fd); syncHerdrDirectory(framesDirectory);
+        fsyncSync(fd); syncDurableDirectory(framesDirectory);
       }
       const after = lstatSync(filename, { bigint: true }), currentParent = lstatSync(framesDirectory, { bigint: true });
       if (!after.isFile() || after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || !currentParent.isDirectory() || currentParent.isSymbolicLink() || currentParent.dev !== parent.dev || currentParent.ino !== parent.ino) corrupt();
