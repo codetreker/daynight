@@ -1256,6 +1256,9 @@ operation bindings; tests execute their actual construction, callbacks and
 orchestration with independently configured callback errors, transaction
 completion and final writer errors. Scope capability identity, exact arguments,
 ordering and result/secret suppression are checked without a storage model.
+Authenticator access admission also executes the real Core with a controlled
+credential-family DAO, checking token hash, resource, scope, UTC time, identity
+and refusal.
 
 ```bash
 source scripts/env.sh
@@ -1285,7 +1288,8 @@ Production constructors bind the real implementations and retain `time.Now`;
 strict unit expectations verify context, principal, identifiers, inputs,
 current-scope capabilities, call order, completion outcomes and error chains.
 Ordinary tests clear database and UniAuth fixture variables and do not simulate
-persisted state.
+persisted state. OAuth credential scenarios use the real Bot operations with
+controlled DAO facts, including the deletion credential recheck after mutation.
 
 Model catalog tests execute request encoding, response identity association,
 result validation and decoding, pagination, catalog consistency checks, bounded
@@ -1626,7 +1630,9 @@ Task service tests use synthetic domain inputs and controlled DAO, snapshot and
 transaction boundaries. Unconfigured calls fail explicitly. Callback execution
 and proposed writes remain separate from `committed`, `not_committed` and
 `unknown` results; tests retain permission, version, error-chain, cancellation
-and source-fact assertions.
+and source-fact assertions. OAuth Thread tests retain the Task presence barrier
+and subsequent credential refusal with controlled DAO facts; they do not model
+a database lock or a credential changing during the wait.
 
 The List coordination suite controls directly invoked project authorization and
 Task read operations. It checks the original context, principal, canonical IDs,
@@ -1886,7 +1892,9 @@ real Service and Core with controlled DAO facts through a host registering only
 their adapters. Bot's completed-response loss test also uses real Service and
 Core, the SDK and socket through a Bot-only host; its later reads use explicitly
 supplied DAO facts, not persisted readback. The Root MCP and REST Bot lifecycle
-retains shared application construction. Principals and domain results are
+retains shared application construction. Entry OAuth tests retain access identity and stable grant authority across tokens,
+request reauthentication and refresh-token refusal. Root retains default OAuth
+admission, Team wiring and REST exclusion. Principals and domain results are
 explicit facts; operations verify arguments, context, authority and calls.
 Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
