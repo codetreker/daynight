@@ -40,6 +40,13 @@ try {
   if (launchError) throw launchError;
   process.exitCode = result.code ?? 128 + constants.signals[result.signal!];
   if (process.exitCode === 0) {
+    const failure = join(directory, 'go-test.failed.json');
+    try {
+      accessSync(failure);
+      throw new Error('Recorded go test capture failure: ' + failure);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     // A future go-cov release must not silently bypass the scoped go shim.
     const capture = JSON.parse(readFileSync(join(directory, 'go-test.complete.json'), 'utf8'));
     if (capture.version !== 1 || !Number.isSafeInteger(capture.bytes) || capture.bytes < 0

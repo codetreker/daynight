@@ -2037,7 +2037,9 @@ Each coverage invocation also retains the original `go test -json` bytes under
 coverage summary omits a test's failure detail. `go-test.complete.json` records
 the captured byte count and the Go process's exit code or signal; it confirms
 complete capture, including a failed test run, rather than a passing result.
-A missing marker means the log may be partial. Later invocations use new
+A missing marker means the log may be partial. `go-test.failed.json` records a
+capture failure and prevents success even if another invocation publishes a
+completion marker afterward. Later invocations use new
 directories, preserving earlier evidence. The corresponding CI artifacts include
 these files even when validation fails.
 

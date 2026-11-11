@@ -6,6 +6,18 @@ import { join } from 'node:path';
 const [realGo, directory, ...args] = process.argv.slice(2);
 let descriptor: number | undefined;
 const fail = (error: unknown): never => {
+  // Keep the first capture failure even if an overlapping invocation later
+  // finishes the raw stream and publishes its own completion marker.
+  if (directory !== undefined) {
+    try {
+      writeFileSync(join(directory, 'go-test.failed.json'),
+        JSON.stringify({ version: 1, error: String(error) }) + '\n', { flag: 'wx', mode: 0o600 });
+    } catch (recordError) {
+      if ((recordError as NodeJS.ErrnoException).code !== 'EEXIST') {
+        try { writeSync(2, 'Unable to record go test capture failure: ' + String(recordError) + '\n'); } catch {}
+      }
+    }
+  }
   try { writeSync(2, 'Unable to capture go test output: ' + String(error) + '\n'); } catch {}
   if (descriptor !== undefined) { try { closeSync(descriptor); } catch {} }
   // The outer command-timeout owns the group, including children of a killed shim.

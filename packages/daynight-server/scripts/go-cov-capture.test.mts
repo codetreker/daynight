@@ -48,6 +48,9 @@ test('capture failures cannot become success even when the consumer ignores fail
     const [run] = await f.runs();
     assert.ok(run);
     assert.equal(await exists(join(run, 'go-test.complete.json')), false);
+    const failure = JSON.parse(await readFile(join(run, 'go-test.failed.json'), 'utf8'));
+    assert.equal(failure.version, 1);
+    assert.match(failure.error, /capture (?:open denied|disk full|close failed)/);
     if (fault === 'write') {
       const partial = await readFile(join(run, 'go-test.jsonl'));
       assert.ok(partial.length > 0 && partial.length < payload.length * 2);
@@ -126,4 +129,21 @@ test('a repeated go test cannot reuse a previous completion after capture fails'
   assert.ok(run);
   assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
   assert.equal(await exists(join(run, 'go-test.complete.json')), false);
+});
+
+
+test('overlapping capture failure survives a later successful completion', async t => {
+  const f = await fixture(t, 'overlap');
+  const result = f.run();
+  assert.deepEqual(JSON.parse(await readFile(join(f.root, 'second-result'), 'utf8')), [125, null]);
+  assert.equal(result.status, 125, result.stderr);
+  const [run] = await f.runs();
+  assert.ok(run);
+  assert.deepEqual(await readFile(join(run, 'go-test.jsonl')), payload);
+  assert.deepEqual(JSON.parse(await readFile(join(run, 'go-test.complete.json'), 'utf8')),
+    { version: 1, bytes: payload.length, exitCode: 0, signal: null });
+  const failure = JSON.parse(await readFile(join(run, 'go-test.failed.json'), 'utf8'));
+  assert.equal(failure.version, 1);
+  assert.match(failure.error, /EEXIST.*go-test.jsonl/);
+  assert.match(result.stderr, /capture failure.*go-test.failed.json/);
 });

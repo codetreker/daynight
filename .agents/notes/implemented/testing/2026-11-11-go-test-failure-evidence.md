@@ -25,7 +25,10 @@ directory. A completion marker records the byte count and Go process outcome
 only after the stream ends and the file closes successfully. A failed test can
 have a complete capture; a missing marker leaves the evidence partial. Capture
 errors and a nominally successful invocation without complete capture fail the
-validation entry. CI preserves these files alongside its coverage profile.
+validation entry. A persistent failure record also prevents a later successful
+capture from hiding a rejected, overlapping invocation. The pinned runner calls
+`go test` once; additional invocations cannot silently reuse that run's evidence.
+CI preserves these files alongside its coverage profile.
 
 The existing command supervisor owns the entire coverage process group. The
 adapter does not create another group or retry tests. This ownership matters
