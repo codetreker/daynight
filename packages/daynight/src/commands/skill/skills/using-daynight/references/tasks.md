@@ -132,8 +132,8 @@ withdrawing prerequisite satisfaction. Cancelled cannot return to another state.
 | proposed or todo to done | Record completion only; elapsed execution time is unknown. |
 | Enter cancelled | Record cancelledAt and preserve execution start/completion times. |
 
-A real status change increments the version once. Current-version same-status
-requests change no fields. Metadata and same-status writes preserve timing.
+A real status change increments the version once. Same-status requests change
+no fields. Metadata and same-status writes preserve timing.
 `cancelledAt` is required and nullable in time-bearing projections: non-null only
 when cancelled. Current terminal time is completedAt for done and cancelledAt
 for cancelled; historical completion time does not establish cancelled delivery.
@@ -198,10 +198,10 @@ other keys; preserve existing PR entries when replacing pullRequests. Remove
 deletes a key. Absence, an empty array and JSON null differ; null is valid only
 where the schema allows it.
 
-Set/remove accept `--project` and `--if-version`, not `--json`. For dash-prefixed
-names or values, put options first and `--` before positional arguments. A
-current-version same-value set or already-absent removal changes no stored
-fields. Results include Task/Project IDs, exact version and all properties.
+Set/remove accept `--project`, not `--json`. For dash-prefixed names or values,
+put options first and `--` before positional arguments. A same-value set or
+already-absent removal changes no stored fields. Results include Task/Project
+IDs, exact version and all properties.
 Unknown, read-only, malformed or illegally stored values return `400 invalid_input`;
 database and internal faults remain `500 internal_error`.
 

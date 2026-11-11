@@ -7,15 +7,15 @@ management. Worker observations and task status are separate; an active claim
 identifies the execution and does not by itself grant additional authority.
 
 A worker-managed Task may expose the `paused` property. With the necessary
-authority and the exact Task version observed for the decision, set or clear it:
+authority, set or clear it through ordinary Task property operations:
 
 ```bash
 daynight task set-property <task-id> paused true --project <project-id> --if-version <observed-version>
 daynight task set-property <task-id> paused false --project <project-id> --if-version <observed-version>
 ```
 
-For claim-bound completion, use the original explicitly supplied claim ID and
-version observed for that decision:
+Claim-bound completion additionally requires the original explicitly supplied
+claim ID:
 
 ```bash
 daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>

@@ -77,10 +77,9 @@ Project discovery, explicit Project identity or Task identity.
 
 Use `team create`, `team rename` and `team delete` for ordinary Team lifecycle
 changes. Rename and delete resolve the explicit or default Team and read its
-real name and version. Protect an earlier decision with that exact
-`--if-version`; a supplied version differing from the read Team version fails
-locally. Personal Teams cannot be renamed or deleted; deletion requires an
-empty Team.
+real name and Team metadata version. A supplied version differing from the read
+Team version fails locally. Personal Teams cannot be renamed or deleted;
+deletion requires an empty Team.
 
 Writes need interactive confirmation or boolean `--confirm`. Team deletion's
 interactive challenge is the displayed JSON string literal, decoded and matched
@@ -90,10 +89,10 @@ write. Confirmation does not waive authorization or service preconditions.
 
 Use `team member list` to obtain the target's membership version before
 `team member set-role` or `team member remove`; `team leave` uses the current
-user's membership version. Supply its exact `--if-version` for an earlier
-decision. Team metadata and Project grant versions cannot replace it. A mismatch
-with the current observation fails before writing. Membership changes also need
-interactive confirmation or `--confirm`. Ordinary Teams retain an admin and
+user's membership version. Team metadata and Project grant versions cannot
+replace a membership version. A mismatch with the current observation fails
+locally before writing. Membership changes also need interactive confirmation or
+`--confirm`. Ordinary Teams retain an admin and
 Personal membership is immutable. These operations do not change Project grants
 or the saved default. A confirmed receipt reports the actor's remaining role;
 self-exit does not require a later permission-sensitive Team read.

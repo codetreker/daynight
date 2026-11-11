@@ -20,20 +20,23 @@ an executor lock or renewable lease and does not establish ownership.
 
 ## Decisions and versions
 
-Before a Task metadata, status, property or deletion decision, read
-`task show <task-id> --json` and retain its exact `version`. Supply that version
-with `--if-version`; reread before the next change. Versions are positive decimal
-int64 values: preserve every digit without floating-point rounding.
+`--if-version` makes a write conditional on the resource's current version
+matching the supplied version. Use the version from the observation on which the
+decision was based. A mismatch rejects the write even when the requested value
+already equals the current value. Version tokens and delivery generations are
+positive decimal int64 values; preserve every digit without floating-point rounding.
 
-Without an explicit version, commands that support a pre-submission read fetch
-the latest version immediately before writing. This cannot protect an earlier
-decision. A stale same-value write can still conflict. On conflict, reread and
+Before a Task metadata, status, property or deletion decision, read
+`task show <task-id> --json` and retain its `version`. Other topics identify the
+resource and read that supply their version. Pass the observed version through
+`--if-version` and reread before the next change.
+
+When the option is omitted, commands that support a pre-submission read obtain
+the latest version immediately before writing. That read cannot protect an
+earlier decision. A failed pre-submission read prevents the write. Commands that
+require an explicit version have no such default. On conflict, reread and
 reassess current content, dependencies and authorization before deciding again;
 do not substitute a newer version and replay the old decision.
-
-Steps share the Task version; Team membership, Team metadata, Project ownership
-and Webhook configuration have their own versions. Use the resource and version
-specified by the operation's topic. Attachment bytes are unversioned.
 
 ## Uncertain results
 

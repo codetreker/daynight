@@ -10,14 +10,13 @@ can follow any other, including itself, and multiple Steps can be in progress.
 Done does not establish a passed review or Task completion. Steps do not affect
 readiness, claims or execution authority, and Task status does not update Steps.
 
-For writes, read [write safety](write-safety.md) and the complete current
-`task step list <task-id> --json`. The collection shares the Task's exact positive
-int64 version with metadata, properties and status. Supply it with `--if-version`;
-unrelated Task changes can conflict. An explicit Project/version submits one
-write; otherwise the CLI first reads the complete Steps once, and a failed
-pre-read prevents writing. The 1 MiB request limit includes JSON escaping.
-Actual changes increment the parent version once; valid no-ops preserve version
-and times, while stale same-value operations still conflict.
+For writes, follow [write safety](write-safety.md).
+`task step list <task-id> --json` supplies the collection's parent Task version,
+shared with Task metadata, properties and status. When
+[`--if-version`](write-safety.md#decisions-and-versions) is omitted, the CLI reads
+the complete Steps before writing. Actual changes increment the parent version
+once; no-ops preserve version and times. The 1 MiB request limit includes JSON
+escaping.
 
 Each write retains its original Project, Task, Step ID and request UUID. An
 unknown outcome exits 1 with no success resource. The CLI may read current facts
@@ -65,8 +64,8 @@ Title is required; omitted description is empty and omitted status is todo.
 Titles and Markdown retain original text. `--before` and `--after` are exclusive
 Task-local anchors; omit both to append. `--id` accepts an eight-hex value;
 otherwise one UUIDv4 first segment is chosen before submission. Unknown results
-do not select a replacement ID. A confirmed add increments parent version once
-and returns the complete collection in the requested position.
+do not select a replacement ID. A confirmed add returns the complete collection
+in the requested position.
 
 ## Update content or status
 
@@ -79,8 +78,7 @@ Update requires title, description or both; both save atomically. Omission
 preserves a field and `--description=""` clears it. Titles need at least one
 non-Unicode-White_Space character; U+FEFF alone is valid and U+0085 alone invalid.
 Original characters and whitespace remain intact. Set-status accepts all four
-Step states independently from the Task and other Steps. Current-version
-same-value updates preserve the resource, including timestamps.
+Step states independently from the Task and other Steps.
 
 ## Move a Step
 
@@ -93,7 +91,7 @@ Choose exactly one of `--before`, `--after`, `--first` or `--last`. A relative
 anchor must be another Step in the same Task. Invalid combinations and
 self-reference fail before configuration or network access. Movement preserves
 every Step's identity, content, status and timestamps, and the relative order of
-other Steps. Moving to the current position is a version-checked no-op.
+other Steps. Moving to the current position is a no-op.
 
 ## Delete a Step
 
@@ -104,10 +102,9 @@ daynight task step delete <task-id> 00ABCDEF --if-version <observed-version> --j
 
 Delete permanently removes one record and its description in any Step state.
 Referenced attachments, PRs, Sessions and other materials remain; there is no
-Step history or restore command. Confirmed deletion increments parent version
-once and returns the complete remaining collection, including steps: [] after
-the last deletion. Repeated deletion, a soft-deleted parent and version
-exhaustion remain errors.
+Step history or restore command. Confirmed deletion returns the complete
+remaining collection, including steps: [] after the last deletion. Repeated
+deletion, a soft-deleted parent and version exhaustion remain errors.
 
 Confirmed write text prints `Step added. ID: <id>`, `Step updated. ID: <id>`,
 `Step status set. ID: <id>`, `Step moved. ID: <id>` or `Step deleted. ID: <id>`,

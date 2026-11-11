@@ -21,11 +21,10 @@ Team do not select an owner; `--team personal` is not a personal Webhook owner.
 Use each leaf's `--help` for complete options. Catalog supplies registered events
 and service limits.
 
-IDs are canonical UUIDs. Versions and delivery generations are positive decimal
-int64 values; preserve all digits. Except create, writes require the observed
-`--if-version`; redelivery also requires `--if-generation`. The CLI does not
-silently obtain a newer version or retry a conflict. Read current configuration
-or delivery facts before deciding.
+IDs are canonical UUIDs. Except create, writes require the endpoint configuration
+version through [`--if-version`](write-safety.md#decisions-and-versions);
+redelivery also requires its delivery generation through `--if-generation`.
+The CLI has no implicit latest-version read.
 
 ## JSON input
 
