@@ -79,7 +79,8 @@ describe('status menu and reviewed confirmation', () => {
       historyGeneration: 1, displayRequiresFreshRead: false, assignmentUncertain: false, sessionCurrent: false,
       canDisplayAssignee: true, canDisplayStatus: true, canDisplayDelete: true, canDisplayAgentPermission: true, canDisplayRequiredPlatform: true, canDisplayWithdrawClaim: false,
       canUnpause: false, canWithdrawClaim: false, canDelete: true, canSetAssignedTo: true, canSetRequiredPlatform: true, canSetAgentPermission: true, canSetStatus: true,
-      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, reconcile: noOp,
+      canSetParent: true, canEditGoal: false,
+      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, setParent: noOp, editGoal: noOp, reconcile: noOp,
     } as const;
     vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
     vi.spyOn(taskReading, 'TaskDetailReading').mockReturnValue(<></>);

@@ -3,7 +3,7 @@ import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
-import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
+import { canonicalId, id, record, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
 import type { ExecutionPlatform, Attachment, AttachmentPage, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
 import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, type TaskSyncJsonRead } from "./project-json";
 
@@ -240,6 +240,57 @@ export type TaskResponseAdmission = {
 };
 
 export type TaskObservation = { readonly epoch: string; readonly detail: TaskDetail };
+
+export type CreateTaskInput = {
+  readonly title: string;
+  readonly description?: string;
+  readonly type?: "task" | "goal";
+  readonly parentId?: string | null;
+  readonly status?: TaskStatus;
+  readonly assignedTo?: string | null;
+};
+
+export const createTask = async (projectId: string, input: CreateTaskInput, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const body = { ...input,
+    ...(input.parentId === undefined ? {} : { parentId: input.parentId === null ? null : requestId(input.parentId) }),
+    ...(input.assignedTo === undefined ? {} : { assignedTo: input.assignedTo === null ? null : requestId(input.assignedTo) }) };
+  const response = await request(`/api/v1/projects/${project}/tasks`, signal, {
+    method: "POST", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: stringifyApiJson(body),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 201) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, id(record(data).id));
+    if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) ||
+      result.title !== body.title || result.description !== (body.description ?? "") ||
+      result.status !== (body.status ?? (result.type === "goal" ? "todo" : "proposed")) ||
+      body.assignedTo !== undefined && result.assignedTo !== body.assignedTo) throw new ApiError("protocol", response.status);
+    return result;
+  });
+};
+
+export const updateTaskFields = async (
+  projectId: string, taskId: string, fields: { readonly title?: string; readonly description?: string; readonly parentId?: string | null },
+  exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId), task = requestId(taskId);
+  if (!isTaskVersion(exactVersion) || fields.title === undefined && fields.description === undefined && fields.parentId === undefined) throw new ApiError("protocol");
+  const body = { ...fields, ...(fields.parentId === undefined ? {} : { parentId: fields.parentId === null ? null : requestId(fields.parentId) }) };
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, ...body }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || result.version !== exactVersion && result.version !== exactVersion + 1n ||
+      body.title !== undefined && result.title !== body.title || body.description !== undefined && result.description !== body.description ||
+      body.parentId !== undefined && result.parentId !== body.parentId) throw new ApiError("protocol", response.status);
+    return result;
+  });
+};
 
 // The epoch and body are one server snapshot; neither a cached epoch nor a
 // search result can substitute for this receipt.

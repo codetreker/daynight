@@ -484,6 +484,8 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('combobox', { name: '所属 Goal' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
     await user.tab();
     expect(links[0]).toHaveFocus();

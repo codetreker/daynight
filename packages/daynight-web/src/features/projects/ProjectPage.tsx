@@ -9,6 +9,7 @@ import { canonicalId } from "../../api/validation";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
+import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
@@ -382,7 +383,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
           </div>
         </div>
-        <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button></div>
+        <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
       </div>
       <div className="project-layout">
         <ProjectSectionTabs section={section} onChange={selectSection} />
@@ -430,7 +431,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: onOpenTask,
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, pagination: goalPagination }} />}
+              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination }} />}
             </div>
           </section>
         </div>
