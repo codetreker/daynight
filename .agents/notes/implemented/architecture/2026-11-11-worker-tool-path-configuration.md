@@ -89,6 +89,7 @@ authenticated read to detect upgrades without restarting the Worker.
 
 The API and cache seams do not implement Worker Task/Bot/Herdr launch integration.
 The default collector emits no tool-path facts without a runtime snapshot source.
-Web configuration API tool support is opt-in until its form preserves and edits
-these fields; legacy saves remain safe. Real Provider startup and the tool-path
-form retain their own delivery and acceptance boundaries.
+The [Web consumer](../feature/2026-11-12-worker-tool-path-web.md) negotiates the
+extension and preserves the three-state drafts and submitted projection. Legacy
+saves remain safe. Real Provider startup retains its own acceptance boundary;
+controlled browser results prove presentation and configuration handling only.

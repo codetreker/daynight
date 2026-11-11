@@ -1,13 +1,14 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
+import type { ExecutionPlatform } from '../../../api/types';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { TaskCacheLifecycleChanged } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; dispatched: boolean };
+type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; dispatched: boolean };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null;
@@ -15,15 +16,20 @@ type State = {
   readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean;
 };
 const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false });
-const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => submission.controlModeSupported ? submission.draft
-  : { ...submission.draft, agentControlMode: state.baselineDraft?.agentControlMode };
+const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => {
+  const { toolPaths: _tools, ...draft } = submission.draft;
+  const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
+  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
+};
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
 
-export const useWorkerConfiguration = (workerId: string, { readEnabled }: { readonly readEnabled: boolean }) => {
+export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPathsEditable = false, platform }: { readonly readEnabled: boolean; readonly toolPathsEditable?: boolean; readonly platform?: ExecutionPlatform }) => {
   const scope = useTaskCacheScope();
   const [state, setState] = useState<State>(() => initialState(scope, workerId));
   const stateRef = useRef(state), actions = useRef<Actions>(emptyActions);
+  const toolAccess = useRef({ editable: toolPathsEditable, platform });
+  useLayoutEffect(() => { toolAccess.current = { editable: toolPathsEditable, platform }; }, [toolPathsEditable, platform]);
   const setDraft = useCallback((update: ConfigurationDraftUpdate) => actions.current.setDraft(update), []);
   const refresh = useCallback(() => actions.current.refresh(), []);
   const loadLatest = useCallback(() => actions.current.loadLatest(), []);
@@ -68,13 +74,21 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
         // Establish its baseline without replacing any existing field edits.
         old = { ...old, draft: { ...old.draft, agentControlMode: mode }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, agentControlMode: mode } };
       }
+      const tools = resource.desired?.value.toolPaths;
+      if (resource.toolPathsSupported === true && tools !== undefined && old.draft !== null && old.draft.toolPaths === undefined) {
+        old = { ...old, draft: { ...old.draft, toolPaths: structuredClone(tools) }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, toolPaths: structuredClone(tools) } };
+      }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
+        // A legacy projection cannot settle an unknown write to a hidden field.
+        if (submitted.toolPathsSupported && (resource.toolPathsSupported !== true || tools === undefined)) {
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        }
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported)) {
+        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported, submitted.toolPathsSupported)) {
           return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: resource.desired.revision, protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
@@ -102,7 +116,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       if (explicit) update(old => ({ ...old, refreshing: true }));
       try {
         await waitForAdmission(signal);
-        const resource = await getWorkerConfiguration(workerId, signal, admission);
+        const resource = await getWorkerConfiguration(workerId, signal, { ...admission, toolPathsSupported: true });
         await waitForAdmission(signal);
         if (current()) acceptRead(resource);
       } catch (error) {
@@ -144,16 +158,26 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       if (old.pending || old.uncertain || old.draft === null || old.baselineRevision === null || old.resource?.desired === null || old.resource === null) return;
       if (old.resource.desired.revision !== old.baselineRevision) { update(value => ({ ...value, notice: 'conflict' })); return; }
       const controlModeSupported = old.resource.controlModeSupported === true;
-      const parsed = parseConfigurationDraft(old.draft, controlModeSupported);
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported)) return;
-      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, dispatched: false };
+      const toolPathsSupported = old.resource.toolPathsSupported === true && toolAccess.current.editable;
+      const parsed = parseConfigurationDraft(old.draft, controlModeSupported, { toolPathsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported)) return;
+      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, dispatched: false };
+      const toolsAdmitted = () => !submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true;
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
       update(value => ({ ...value, pending: true, error: null, errorSource: null, notice: null, submission: submitted }));
       try {
         await waitForAdmission(signal);
         if (!alive() || signal.aborted) return;
-        const incoming = await saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, onDispatch: () => { submitted.dispatched = true; } });
+        if (!toolsAdmitted()) {
+          update(value => ({ ...value, pending: false, submission: null }));
+          return;
+        }
+        const incoming = await saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, onDispatch: () => {
+          // The API can wait for identity again after the scope admission above.
+          if (!toolsAdmitted()) throw new Error('Worker tool path editing is unavailable.');
+          submitted.dispatched = true;
+        } });
         await waitForAdmission(signal);
         if (!alive() || signal.aborted) return;
         update(value => {
@@ -242,7 +266,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty,
-    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true),
+    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true, current.resource?.toolPathsSupported === true && toolPathsEditable),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

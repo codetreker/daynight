@@ -129,6 +129,8 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
 
+工具草稿保留三项 choice/null，空 path 不隐式变成 auto。客户端独立记录工具能力，只有服务确认且 Worker 快照包含工具报告才允许编辑与提交路径；缺能力时保存其它配置采用保留工具目标的旧投影。未知工具保存的回读必须包含提交时的工具投影，缺失不能确认结果。工具实际应用来自 telemetry.toolPaths，并核对当前 desired revision 和 choice，不能从配置保存或旧版本 probe 推断成功。
+
 保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。完整编辑与交互要求由[Web 需求](daynight-web.md#云端运行配置)拥有，机制由[Web 设计](../design/daynight-web.md#worker-云端配置编辑)拥有；Web 展示的应用结果来自 Worker 报告，不能作为本机副作用的独立证明。
 
 ## 失败与验证

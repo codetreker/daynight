@@ -1,6 +1,7 @@
 import { isConfigurationText, parseWorkerConfigurationValue, type WorkerConfigurationNative, type WorkerConfigurationOverrides, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
 import { canonicalId } from '../../../api/parse';
-import type { WorkerAgent } from '../../../api/types';
+import type { ExecutionPlatform, WorkerAgent } from '../../../api/types';
+import { parseToolPathChoice, type Tool, type WorkerCloudToolPaths } from '../../../api/worker-tool-paths';
 
 export type NativeDraft = { readonly agent: WorkerAgent; readonly model: string; readonly args: string };
 export type ProjectNativeDraft = {
@@ -10,15 +11,19 @@ export type ProjectNativeDraft = {
 export type ConfigurationDraft = {
   readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
   readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
+  readonly toolPaths?: WorkerCloudToolPaths;
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
 };
-export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode';
+export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode' | 'toolPath';
 export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValue | null; readonly errors: Readonly<Record<string, DraftIssue>> };
+export type ConfigurationDraftOptions = { readonly toolPathsSupported?: boolean; readonly platform?: ExecutionPlatform };
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
+const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.agentControlMode === undefined ? {} : { agentControlMode: value.agentControlMode }),
+  ...(value.toolPaths === undefined ? {} : { toolPaths: structuredClone(value.toolPaths) }),
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
   projects: value.projects.map(project => ({ projectId: project.projectId, native: {
     agent: project.nativeOverrides.agent === undefined ? 'inherit' : project.nativeOverrides.agent,
@@ -28,8 +33,15 @@ export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDr
     args: JSON.stringify(project.nativeOverrides.args === undefined ? [] : project.nativeOverrides.args),
   } })),
 });
-export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSupported = draft.agentControlMode !== undefined): ParsedConfigurationDraft => {
+export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSupported = draft.agentControlMode !== undefined, options: ConfigurationDraftOptions = {}): ParsedConfigurationDraft => {
   const errors: Record<string, DraftIssue> = {};
+  const toolPathsSupported = options.toolPathsSupported ?? draft.toolPaths !== undefined;
+  if (toolPathsSupported) for (const tool of tools) {
+    const choice = draft.toolPaths?.[tool];
+    if (choice === null) continue;
+    try { parseToolPathChoice(choice, options.platform); }
+    catch { errors[`toolPaths.${tool}`] = 'toolPath'; }
+  }
   const number = (raw: string, key: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number => {
     const value = Number(raw);
     if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < minimum || value > maximum) errors[key] = 'integer';
@@ -66,20 +78,20 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     return { projectId: project.projectId, nativeOverrides };
   });
   return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
-    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), native, projects }) : null, errors };
+    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), native, projects }) : null, errors };
 };
-const withoutControlMode = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'] }>(source: T) => {
-  const { agentControlMode: _mode, ...rest } = source;
-  return rest;
+const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths }>(source: T, includeControlMode: boolean, includeToolPaths: boolean) => {
+  const { agentControlMode, toolPaths, ...rest } = source;
+  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}) };
 };
-export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true): boolean =>
-  JSON.stringify(parseWorkerConfigurationValue(includeControlMode ? left : withoutControlMode(left))) === JSON.stringify(parseWorkerConfigurationValue(includeControlMode ? right : withoutControlMode(right)));
-export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true): boolean =>
-  JSON.stringify(includeControlMode ? left : withoutControlMode(left)) === JSON.stringify(includeControlMode ? right : withoutControlMode(right));
+export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true): boolean =>
+  JSON.stringify(parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths))) === JSON.stringify(parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths)));
+export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true): boolean =>
+  JSON.stringify(projectedFields(left, includeControlMode, includeToolPaths)) === JSON.stringify(projectedFields(right, includeControlMode, includeToolPaths));
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
   // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
   const baseline = { ...draftFromValue(desired), projects: [] };
-  const native = parseConfigurationDraft({ ...baseline, native: draft.native }).value?.native;
+  const native = parseConfigurationDraft({ ...baseline, native: draft.native }, undefined, { toolPathsSupported: false }).value?.native;
   const projects = new Map(desired.projects.map(project => [project.projectId, project.nativeOverrides]));
   return {
     maxConcurrent: errors.maxConcurrent !== undefined || Number(draft.maxConcurrent) !== desired.maxConcurrent,
@@ -87,10 +99,11 @@ export const configurationFieldChanges = (draft: ConfigurationDraft, desired: Wo
     recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
     preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
     agentControlMode: errors.agentControlMode !== undefined || draft.agentControlMode !== desired.agentControlMode,
+    toolPaths: Object.fromEntries(tools.map(tool => [tool, errors[`toolPaths.${tool}`] !== undefined || JSON.stringify(draft.toolPaths?.[tool]) !== JSON.stringify(desired.toolPaths?.[tool])])) as Readonly<Record<Tool, boolean>>,
     native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),
     projects: new Map(draft.projects.map(project => {
       const expected = projects.get(project.projectId);
-      const overrides = parseConfigurationDraft({ ...baseline, projects: [project] }).value?.projects[0]?.nativeOverrides;
+      const overrides = parseConfigurationDraft({ ...baseline, projects: [project] }, undefined, { toolPathsSupported: false }).value?.projects[0]?.nativeOverrides;
       return [project.projectId, expected === undefined || overrides === undefined || JSON.stringify(overrides) !== JSON.stringify(expected)];
     })),
   };
@@ -106,5 +119,5 @@ export const mergeConfigurationResources = (current: WorkerConfigurationResource
   if (current === null) return incoming;
   const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision)) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}) };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
 };
