@@ -286,7 +286,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (snapshot !== null) {
       const ids = target.kind === "standalone" ? progress.recentStandaloneIds
         : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
-      const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter(Boolean);
+      const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
       const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
       if (filters.assignee !== assigneeFilter || filters.status !== statusFilter) {
         chainPagination.onPageChange(1); standalonePagination.onPageChange(1);

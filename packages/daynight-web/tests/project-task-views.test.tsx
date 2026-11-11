@@ -608,6 +608,24 @@ describe('project overview and task workspace', () => {
     expect(graphRequest).toHaveBeenCalledOnce();
   });
 
+  it('clears a status filter that only matches a different Goal scope before locating an overview chain', async () => {
+    const rootId = canonicalTask(1), childId = canonicalTask(2), goalId = canonicalTask(3);
+    graphRequest.mockResolvedValue(snapshot([
+      seed(rootId, 'done'), { ...seed(childId, 'todo', [rootId]), parentId: goalId }, { ...seed(goalId), type: 'goal' },
+    ]));
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    expect(chainRow(rootId)).toBeNull();
+    fireEvent.click(sectionTab('overview'));
+    fireEvent.click(progressButton(`任务 ${rootId}`));
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('all');
+    expect(chainRow(rootId)).toBeVisible();
+    expect(chainRow(rootId)).toHaveFocus();
+    expect(screen.queryByText('无法定位所选任务')).toBeNull();
+  });
+
   it('locates the standalone list from its overview aggregate and expires the temporary highlight', async () => {
     let scroll = 0;
     vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);

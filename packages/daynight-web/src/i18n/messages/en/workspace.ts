@@ -43,7 +43,7 @@ export const workspace: WorkspaceMessages = {
     list: "Standalone task list",
     summary: ({ visible, total }) => `Newest first · ${number(visible)} / ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
     summaryLabel: ({ visible, total }) => `Showing ${number(visible)} of ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
-    empty: "No standalone tasks", emptyDetail: "All current tasks are connected by ordinary dependencies. View them in the task chains tab.", createdOn: ({ date }) => `Created on ${date}`,
+    empty: "No standalone tasks", emptyDetail: "Standalone tasks outside a Goal will appear here.", createdOn: ({ date }) => `Created on ${date}`,
   },
   pagination: {
     label: ({ list }) => `${list} pagination`, range: ({ start, end, total }) => `${number(start)}–${number(end)} of ${number(total)}`,

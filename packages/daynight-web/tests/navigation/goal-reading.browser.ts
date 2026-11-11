@@ -26,6 +26,8 @@ async function expectHit(target: Locator) {
 async function install(page: Page) {
   let details = all;
   let currentGraph = graph;
+  let forbiddenGoal = false;
+  let goalReads = 0;
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
@@ -37,7 +39,13 @@ async function install(page: Page) {
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: () => ({ pullRequests: [] }) }));
     const detail = details.find(item => path === `/api/v1/projects/${projectId}/tasks/${item.id}`);
-    if (detail !== undefined) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+    if (detail !== undefined) {
+      if (detail.id === goalId) {
+        goalReads++;
+        if (forbiddenGoal) return send({ error: { code: 'forbidden', message: 'Forbidden', requestId: '00000000-0000-4000-8000-000000000099' } }, 403);
+      }
+      return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+    }
     if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path.endsWith('/attachments')) return send({ items: [{ path: 'notes.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path.endsWith('/attachments/files/notes.txt')) return route.fulfill({ body: 'notes', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
@@ -45,7 +53,7 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { addCrossGoal: () => {
+  return { forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
     currentGraph = graphFixture(details);
   }, addOutsideChain: () => {
@@ -65,6 +73,34 @@ async function install(page: Page) {
     currentGraph = graphFixture(details);
   } };
 }
+
+test('a forbidden goal retires its attachment confirmation, while ordinary refresh preserves it', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  await goalDialog.getByRole('tab', { name: 'Attachments' }).click();
+  await goalDialog.getByRole('button', { name: 'More actions: notes.txt' }).click();
+  await page.getByRole('menuitem', { name: 'Delete' }).click();
+  const confirmation = page.locator('dialog.attachment-delete-dialog');
+  await expect(confirmation).toBeVisible();
+  const original = await confirmation.elementHandle();
+  const before = fixture.goalReads();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(fixture.goalReads).toBeGreaterThan(before);
+  await expect(confirmation).toBeVisible();
+  expect(await confirmation.evaluate((element, previous) => element === previous && (element as HTMLDialogElement).open, original)).toBe(true);
+  fixture.forbidGoal();
+  const beforeFailure = fixture.goalReads();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(fixture.goalReads).toBeGreaterThan(beforeFailure);
+  await expect(confirmation).toHaveCount(0);
+  await expect(goalDialog.getByRole('alert')).toBeVisible();
+  await goalDialog.getByRole('button', { name: 'Close task details' }).click();
+  await expect(goalDialog).toHaveCount(0);
+});
 for (const width of [1440, 390]) test(`Goal retains reading state and nested keyboard ownership at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   await install(page);
