@@ -78,7 +78,7 @@ it.skipIf(process.platform === "win32")("bounds a probe whose exited child leave
   // The fixture descendant exits by itself; the observer must not signal its group.
   await new Promise(resolve => setTimeout(resolve, 1250));
   expect(bounded).not.toBe("deadline-missed");
-  expect(result.stdout).toContain("descendant-started");
+  expect(result.stdout, JSON.stringify(result)).toContain("descendant-started");
   expect(result.timedOut).toBe(true);
 });
 
