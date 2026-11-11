@@ -5,13 +5,16 @@ import type { TaskDetail } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { OverlayOwnerContext } from '../../app/overlay';
 import type { GoalChildren, ResourceReading } from '../../app/page-history';
+import { useProjectHistoryGeneration } from '../../app/use-page-history';
 import { isThreadScopeLoss } from '../task-thread/api';
 import { GoalDetailSurface } from '../goal-detail/GoalDetailSurface';
 import { projectTaskScope } from '../task-graph/scope';
+import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { DetailFrame, useDetailOverlay } from './DetailFrame';
 import { TaskDetailPageBar, TaskDetailSurface, type TaskDetailSurfaceProps } from './TaskDetailSurface';
 import { useTaskDetail } from './useTaskDetail';
 import { TaskDetailDialog } from './TaskDetailDialog';
+import type { TaskObservationInput } from './TaskDetailSession';
 import { ResourceChildDraftHost } from './TaskDraftNavigation';
 
 type Props = TaskDetailSurfaceProps & {
@@ -25,11 +28,31 @@ type Props = TaskDetailSurfaceProps & {
 // Resolve the resource before mounting either type's business controllers. The
 // detail session's read fence also retires a delayed response across epochs.
 export const TypedDetail = (props: Props) => {
-  const summary = props.snapshot?.summaries.get(props.taskId);
-  const summaryInput = props.snapshot != null && props.observation?.kind !== 'direct' && summary?.type !== 'goal';
-  const waitingForSummary = summaryInput && summary === undefined;
+  const identity = `${props.projectId}/${props.taskId}`;
+  const scope = useTaskCacheScope();
+  const generation = useProjectHistoryGeneration(scope, props.projectId);
+  type KnownType = { identity: string; scope: typeof scope; generation: number; type: 'task' | 'goal' | undefined;
+    snapshot: typeof props.snapshot; blockedSnapshot: typeof props.snapshot };
+  const known = useRef<KnownType>({ identity, scope, generation, type: undefined, snapshot: props.snapshot, blockedSnapshot: null });
+  if (known.current.identity !== identity || known.current.scope !== scope || known.current.generation !== generation) {
+    const blockedSnapshot = known.current.identity === identity && known.current.scope === scope && known.current.snapshot === props.snapshot ? props.snapshot : null;
+    known.current = { identity, scope, generation, type: undefined, snapshot: props.snapshot, blockedSnapshot };
+  }
+  known.current.snapshot = props.snapshot;
+  const blocked = props.snapshot != null && known.current.blockedSnapshot === props.snapshot;
+  const summary = blocked ? undefined : props.snapshot?.summaries.get(props.taskId);
+  if (props.observation?.kind === 'direct' && known.current.type === 'task') known.current.type = undefined;
+  if (summary !== undefined && props.observation?.kind !== 'direct') known.current.type = summary.type;
+  const type = props.snapshot == null ? known.current.type : summary?.type;
+  const summaryInput = props.observation?.kind !== 'direct' && (props.snapshot != null || props.observation?.kind === 'project-summary') && type !== 'goal';
+  const waitingForSummary = summaryInput && type === undefined;
   const task = useTaskDetail(props.projectId, props.taskId, summaryInput
-    ? { kind: 'project-summary', revision: props.snapshot!.revision, task: props.snapshot!.index.nodes.get(props.taskId) } : { kind: 'direct' });
+    ? blocked ? { kind: 'project-summary', revision: 0, task: undefined }
+      : props.snapshot == null && props.observation?.kind === 'project-summary' ? props.observation
+        : { kind: 'project-summary', revision: props.snapshot?.revision ?? 0, task: props.snapshot?.index.nodes.get(props.taskId) }
+    : { kind: 'direct' });
+  // An admitted direct Goal uses the same typed owner as a summary Goal.
+  if (props.observation?.kind === 'direct' && task.detail?.type === 'goal' && task.status === 'ready' && !task.requiresFreshRead) known.current.type = 'goal';
   const restoreLoading = useRef(true);
   const activeGoal = useRef<string | null>(null);
   const parentAdmitted = useRef(false);
@@ -63,6 +86,14 @@ const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeo
     const node = props.snapshot?.index.nodes.get(nested.id);
     admittedNested.current = props.goalChildren === undefined || graphEligible && props.snapshot != null && (node === undefined || node.parentId === props.taskId) ? nested.id : null;
   }
+  const childObservation = useRef<{ id: string; input: TaskObservationInput } | null>(null);
+  if (nested === null || admittedNested.current !== nested.id) childObservation.current = null;
+  else if (childObservation.current?.id !== nested.id) {
+    const node = props.snapshot?.index.nodes.get(nested.id);
+    childObservation.current = { id: nested.id, input: node === undefined ? { kind: 'direct' } : { kind: 'project-summary', revision: props.snapshot!.revision, task: node } };
+  } else if (childObservation.current.input.kind === 'project-summary' && props.snapshot != null) {
+    childObservation.current.input = { kind: 'project-summary', revision: props.snapshot.revision, task: props.snapshot.index.nodes.get(nested.id) };
+  }
   const nestedTrigger = useRef<HTMLElement | null>(null);
   const setNested = (next: ResourceReading | null, replace = false) => {
     if (props.goalChildren === undefined) setLocalNested(next);
@@ -81,7 +112,7 @@ const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeo
   return <GoalDetailSurface {...props} closeChain={closeChain} resourceUnavailable={scopeLost} detailError={props.detailError ?? (scopeLost ? refusal.current : null)} detail={props.detail} snapshot={props.snapshot ?? null}
     onSelectTask={(id, trigger) => { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); }}
     renderNested={(owner: RefObject<HTMLElement | null>) => nested === null || admittedNested.current !== nested.id ? null : <ResourceChildDraftHost><TaskDetailDialog projectId={props.projectId} taskId={nested.id} parentGoalId={props.taskId} snapshot={props.snapshot ?? null}
-      observation={props.snapshot?.index.nodes.has(nested.id) ? { kind: 'project-summary', revision: props.snapshot.revision, task: props.snapshot.index.nodes.get(nested.id) } : { kind: 'direct' }}
+      observation={childObservation.current!.input}
       {...(props.goalChildren !== undefined && !props.snapshot?.index.nodes.has(nested.id) ? { requireParentMatch: true } : {})}
       {...(props.goalChildren === undefined ? {} : { navigation: nested.navigation, onNavigate: (navigation: ResourceReading['navigation']) => setNested({ ...nested, navigation }) })}
       onClose={() => setNested(null, true)} onRestoreFocus={() => { const trigger = nestedTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus({ preventScroll: true }); else { const fallback = owner.current?.querySelector<HTMLElement>('.task-chain-close, .task-detail-title') ?? document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title'); if (fallback !== null && fallback !== undefined && !fallback.closest('[hidden], [inert]')) fallback.focus({ preventScroll: true }); } }}

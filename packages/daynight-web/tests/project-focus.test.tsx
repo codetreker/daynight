@@ -1,5 +1,5 @@
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTask, getTaskSync } from '../src/api/client';
@@ -53,6 +53,7 @@ const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullReq
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${projectId}`);
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -112,6 +113,17 @@ const expectModalReleased = () => {
 };
 
 describe('project dialog focus restoration', () => {
+  it('restores focus to the graph trigger on Back and opens the detail on Forward', async () => {
+    graphRequest.mockResolvedValue(graph());
+    const { trigger } = await openDialog();
+    act(() => history.back());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '所选任务' })).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    act(() => history.forward());
+    const restored = await screen.findByRole('dialog', { name: '所选任务' });
+    expect(within(restored).getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
+  });
+
   it('keeps active details focused when a merge replaces the open chain representative row', async () => {
     window.localStorage.setItem(`daynight:project-view:${projectId}`, JSON.stringify({ expandedRootId: remainingId }));
     const before = [...remainingChain, task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item, position) => ({ ...item, createdAt: `2026-10-20T11:59:0${position}Z` }));

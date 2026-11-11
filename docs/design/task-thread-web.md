@@ -6,7 +6,7 @@
 
 `TaskDetailSurface` 组合 Discussion、概览、附件和可选 Session；`TaskDetailReading` 将各面板交给 `TaskDetailPanels`。顺序为概览、附件、讨论、可选 Session。Discussion 不依赖 claim、任务状态或 Controller 在线，普通 Web 发言只发送 body 和可选 replyTo，不携带 claimId。
 
-`TaskDetailTab` 类型与 router 的运行时白名单都包含 discussion。`?tab=discussion` 使用既有任务 URL，独立页以 URL 恢复页签，弹层仍保存本地选择。同一任务切换页签不卸载 Discussion；离开任务页面、关闭详情或账号生命周期退休则释放其内存。面板全部保持挂载并使用 hidden/inert，因此 controller 的活动状态必须由明确的 active 参数控制。
+`TaskDetailTab` 类型与 router 的运行时白名单都包含 discussion。`?tab=discussion` 使用既有任务 URL，独立页以 URL 恢复根页签；项目页和独立页的嵌套详情通过各自的阅读历史恢复页签。同一任务切换页签不卸载 Discussion；离开任务页面、关闭详情或账号生命周期退休则释放其内存。面板全部保持挂载并使用 hidden/inert，因此 controller 的活动状态必须由明确的 active 参数控制。
 
 | 所有者 | 职责 |
 | --- | --- |
