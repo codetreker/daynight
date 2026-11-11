@@ -31,6 +31,21 @@ beforeEach(() => {
 });
 
 describe("public and authenticated entry ownership", () => {
+  it("routes the completion document to its own account initialization", () => {
+    window.history.replaceState(null, "", "/auth/complete?returnPath=%2Fsetup%3Ffrom%3Dlogin%23guide");
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn((_url: string, _init?: RequestInit) => pending.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const view = mount();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/v1/me");
+    expect(window.location.pathname).toBe("/auth/complete");
+    expect(screen.queryByRole("heading", { name: "Public product introduction" })).toBeNull();
+    const signal = fetcher.mock.calls[0]![1]!.signal!;
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+  });
+
   it("shows a local bilingual OAuth error without logging in or retaining request parameters", () => {
     window.history.replaceState(null, "", "/oauth/authorize?client_id=bad&state=private&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback");
     const fetcher = vi.fn(() => { throw new Error("Error page must not fetch or authenticate"); });

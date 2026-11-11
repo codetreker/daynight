@@ -1,6 +1,7 @@
 import type { AuthMessages } from "../auth";
 
 export const auth: AuthMessages = {
+  completion: { title: "Completing sign-in", loading: "Confirming your account…", syncError: "Sign-in completed, but account synchronization failed.", retrySync: "Retry account synchronization", refreshRequired: "Refresh this page to continue." },
   accountChange: { message: "Account changed", reload: "Refresh page" },
   roles: { admin: "Administrator", member: "Member" },
   shell: {

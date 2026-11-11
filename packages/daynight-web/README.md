@@ -28,7 +28,8 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 projects, member and invitation management, CLI device authorization, and personal access tokens. The
 `AuthenticatedApp` implements their browser components and API client. Production
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
-shows the public introduction, `/setup` selects the zero-API guide, and other pages
+shows the public introduction, `/setup` selects the zero-API guide, `/auth/complete`
+confirms and publishes an account before replacing the return target, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
 the project index. Team settings share one page shell: `/teams/{teamId}/settings`
 opens General, and `/teams/{teamId}/members` opens Members & invitations. Business
@@ -2358,6 +2359,14 @@ serially with bounded stages and uploads coverage evidence. The browser job runs
 the assistant suite below without depending on the quality job or its artifacts. The module browser
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
+
+The independent login completion page validates a single local return target,
+retains its query and fragment, and waits for server-confirmed identity and local
+account publication before replacing the document. Identity and publication retries
+are separate; a superseded account requires an explicit reload. The server callback
+still returns directly to its original target until its completion route is enabled.
+The identity-cache browser fixture exercises the completion entry and native
+cross-page storage and BroadcastChannel signals with controlled API responses.
 
 The controlled `AccountChangeBanner` presents a localized polite status and a
 caller-supplied refresh action in the active header. Inactive instances keep an empty live region without presenting or announcing a notice.
