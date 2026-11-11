@@ -12,12 +12,15 @@ proofs would weaken the existing failure detection.
 
 ## Decision
 
-The lifecycle test constructs the real application and replaces its exported
-Identity and TaskSteps outputs before constructing the Server. Strict direct
-operations supply independent facts and check each request's principal, context,
-arguments, order and calls. Real authentication adaptation, tool registration,
-schemas, SDK, HTTP and response encoding remain in the test. The Application
-assembly tests separately verify the default constructor bindings and identities.
+The original lifecycle test constructed the real application and replaced its
+exported Identity and TaskSteps outputs before constructing the Server. Strict
+direct operations supplied independent facts and checked each request's principal,
+context, arguments, order and calls. Real authentication adaptation, tool
+registration, schemas, SDK, HTTP and response encoding remained in the test.
+The Application assembly tests separately verified default constructor bindings.
+The later [component ownership decision](2026-11-11-go-component-test-ownership.md)
+moves the lifecycle matrix to a focused MCP Entry host while retaining those
+operation and wire observations; Root retains application assembly proofs.
 
 Step read, content and order Service tests retain their coordination proofs;
 Core owns admission and encoding, and the Webhook Capturer owns event freezing.
@@ -42,8 +45,8 @@ could conceal incorrect wire arguments.
 
 ## Consequences
 
-The Root test isolates protocol and registration failures without claiming that
-controlled completion proves persistence. Receiver tests remain necessary and
-contribute to validation cost; package timing alone does not establish a hosted
-CI improvement. Other Root MCP and Identity matrices retain their own existing
-boundaries.
+The operation test isolates protocol and registration failures without claiming
+that controlled completion proves persistence. Receiver tests remain necessary
+and contribute to validation cost; package timing alone does not establish a
+hosted CI improvement. Other Root MCP and Identity matrices retain their own
+existing boundaries.

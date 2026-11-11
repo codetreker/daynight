@@ -82,6 +82,14 @@ func (d taskHTTPIdentityDAO) Authenticate(ctx context.Context, kind model.Creden
 }
 
 func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
+	return newTaskCredentialFixtureMode(t, false)
+}
+
+func newTaskThreadCredentialFixture(t *testing.T) *taskCredentialFixture {
+	return newTaskCredentialFixtureMode(t, true)
+}
+
+func newTaskCredentialFixtureMode(t *testing.T, thread bool) *taskCredentialFixture {
 	t.Helper()
 	project, task, _ := taskHTTPMockModels()
 	f := &taskCredentialFixture{t: t, database: newHTTPTestStore(t), project: project, task: task}
@@ -110,9 +118,13 @@ func newTaskCredentialFixture(t *testing.T) *taskCredentialFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := sessioncore.NewEngine(nil)
 	mux := http.NewServeMux()
-	taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.database), taskservice.NewObservations(f.database, engine), auth, logger)
+	if thread {
+		taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(f.database), auth, logger)
+	} else {
+		engine := sessioncore.NewEngine(nil)
+		taskhttp.TaskRoutes(mux, taskservice.NewTasks(f.database), taskservice.NewObservations(f.database, engine), auth, logger)
+	}
 	logged := httpx.RequestLogging(logger, mux)
 	f.server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		f.requestMu.Lock()

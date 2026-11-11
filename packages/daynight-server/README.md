@@ -580,11 +580,11 @@ control budget. A new open releases its control slot only after acquiring a cont
 slot. Permits remain held until the handler and response delivery finish. The
 opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
 the 64 MiB Step collection and concurrent summary write admission with sampled
-Go heap. After preparing the isolated database and UniAuth fixture, run it
+Go heap. After preparing an isolated database, run it
 separately from CI:
 
 ```bash
-go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
+go test -race -tags=stress ./internal/server/mcp -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
 ```
 
 The application stops webhook claims and rejects new HTTP work before draining
@@ -1360,8 +1360,10 @@ The regular `internal/server/task` suite exercises production routing, HTTP
 parsing, credential middleware, DTO conversion, error mapping and the server-owned
 encoder or response writer. Task reads, writes, observations and sync also run
 with real Task components over narrowly controlled snapshot and project-write
-capabilities. Other scenarios use direct Task, Step, Thread, Search or Sync
-operation mocks where precise results are needed. Configured calls are required;
+capabilities. Step and Thread HTTP scenarios also use real services and narrowly
+controlled DAO facts, with local files for attachment effects. Other scenarios
+use direct Task, Step, Thread, Search or Sync operation mocks where precise
+results are needed. Configured calls are required;
 extra or unconfigured calls fail. Project/Task facts and principals are synthetic
 inputs, without an in-memory business state machine or full-application startup.
 The package's `!stress` TestMain clears `DAYNIGHT_TEST_DATABASE_URL` and
@@ -1744,11 +1746,10 @@ records why database clocks and lock observations are required together.
 ### HTTP scenario ownership
 
 Root `internal/server` unit tests assemble actual modules, routes and HTTP
-authentication over controlled collaborators. The MCP Step lifecycle supplies
-direct Identity and Step operations after application assembly and before Server
-construction; its Service, Core, Capturer and Store receivers retain lower
-coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
-domain records, query results, proposed writes, call counts and transaction
+authentication over controlled collaborators. The MCP Step lifecycle uses a
+focused Entry host with controlled operations; its Service, Core, Capturer and
+Store receivers retain lower coordination, rules and persistence proofs. Other
+DAO/scope fixtures supply fixed domain records, query results, proposed writes, call counts and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
 state. Configuration validation and startup ordering live with Config and App;
 `internal/server/webui` owns the static route and request-log matrix. Root retains
@@ -1847,12 +1848,13 @@ explicit facts; operations verify arguments, context, authority and calls.
 Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;
-its Tasks dependency still serves ready and dependency reads. The Root Step
-lifecycle executes real application and Server construction with controlled
-Identity and Step outputs, retaining both protocol versions and per-request
-operation checks. Its lower receivers retain business and DAO responsibilities.
-The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
-`DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
+its Tasks dependency still serves ready and dependency reads. The Step lifecycle
+uses a focused Entry host and controlled operations, retaining both protocol
+versions and per-request checks. Thread scenarios use real Service and Core
+with controlled DAO facts and retain completed-response loss. Lower receivers
+retain business and DAO responsibilities. The ordinary test binary clears
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running;
+the separate stress build retains the database variable for its physical witness.
 
 Run from this module with the unit resource overlay:
 

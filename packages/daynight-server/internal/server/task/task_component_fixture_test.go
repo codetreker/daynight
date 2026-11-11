@@ -28,6 +28,7 @@ import (
 type httpTestStore struct {
 	t                *testing.T
 	ReadSnapshotCall func(context.Context, func(store.SnapshotScope) error) error
+	WriteThreadCall  func(context.Context, func(store.ThreadScope) error) (store.Completion, error)
 	WriteProjectCall func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
 }
 
@@ -46,6 +47,12 @@ func (s *httpTestStore) WriteProject(ctx context.Context, id string, run func(st
 		unexpectedHTTPCall(s.t, "WriteProject")
 	}
 	return s.WriteProjectCall(ctx, id, run)
+}
+func (s *httpTestStore) WriteThread(ctx context.Context, run func(store.ThreadScope) error) (store.Completion, error) {
+	if s.WriteThreadCall == nil {
+		unexpectedHTTPCall(s.t, "WriteThread")
+	}
+	return s.WriteThreadCall(ctx, run)
 }
 func unexpectedHTTPCall(t *testing.T, name string) {
 	t.Helper()
@@ -157,6 +164,7 @@ func (base taskHTTPMockBase) need(method string, configured bool) {
 }
 
 type taskHTTPSnapshotScopeMock struct {
+	AttachmentDAOFn func() store.AttachmentReader
 	taskHTTPMockBase
 	CredentialDAOFn func() store.CredentialReader
 	ProjectDAOFn    func() store.ProjectReader
@@ -201,8 +209,8 @@ func (mock *taskHTTPSnapshotScopeMock) BotDAO() store.BotReader {
 }
 
 func (mock *taskHTTPSnapshotScopeMock) AttachmentDAO() store.AttachmentReader {
-	mock.need("AttachmentDAO", false)
-	panic("unreachable")
+	mock.need("AttachmentDAO", mock.AttachmentDAOFn != nil)
+	return mock.AttachmentDAOFn()
 }
 
 func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time, error) {
@@ -244,6 +252,9 @@ func (mock *taskHTTPProjectScopeMock) SessionDAO() store.ProjectSessionDAO {
 }
 
 type taskHTTPReaderMock struct {
+	TaskHeaderFn func(context.Context, string, string) (model.TaskHeader, error)
+	TaskStepFn   func(context.Context, string, string) (model.TaskStep, error)
+	TaskStepsFn  func(context.Context, string) ([]model.TaskStep, error)
 	taskHTTPMockBase
 	TaskFn                     func(context.Context, string, string) (model.Task, error)
 	TaskBodiesFn               func(context.Context, string, []string) ([]model.Task, error)
@@ -296,18 +307,18 @@ func (mock *taskHTTPReaderMock) TaskPresence(p0 context.Context, p1 string, p2 s
 }
 
 func (mock *taskHTTPReaderMock) TaskHeader(p0 context.Context, p1 string, p2 string) (model.TaskHeader, error) {
-	mock.need("TaskHeader", false)
-	panic("unreachable")
+	mock.need("TaskHeader", mock.TaskHeaderFn != nil)
+	return mock.TaskHeaderFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPReaderMock) TaskStep(p0 context.Context, p1 string, p2 string) (model.TaskStep, error) {
-	mock.need("TaskStep", false)
-	panic("unreachable")
+	mock.need("TaskStep", mock.TaskStepFn != nil)
+	return mock.TaskStepFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPReaderMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", false)
-	panic("unreachable")
+	mock.need("TaskSteps", mock.TaskStepsFn != nil)
+	return mock.TaskStepsFn(p0, p1)
 }
 
 func (mock *taskHTTPReaderMock) TaskStepPage(p0 context.Context, p1 string, p2 int64, p3 int, p4 bool) ([]store.TaskStepProjection, error) {
@@ -366,6 +377,13 @@ func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, pr
 }
 
 type taskHTTPWriterMock struct {
+	TaskHeaderFn     func(context.Context, string) (model.TaskHeader, error)
+	TaskStepsFn      func(context.Context, string) ([]model.TaskStep, error)
+	InsertTaskStepFn func(context.Context, string, model.TaskStep) error
+	TouchTaskFn      func(context.Context, string, time.Time) error
+	UpdateTaskStepFn func(context.Context, string, model.TaskStep) error
+	MoveTaskStepFn   func(context.Context, string, string, int64, int64) error
+	DeleteTaskStepFn func(context.Context, string, string, int64, int64) error
 	taskHTTPMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
@@ -430,38 +448,38 @@ func (mock *taskHTTPWriterMock) DeleteTask(p0 context.Context, p1 string, p2 boo
 }
 
 func (mock *taskHTTPWriterMock) TaskHeader(p0 context.Context, p1 string) (model.TaskHeader, error) {
-	mock.need("TaskHeader", false)
-	panic("unreachable")
+	mock.need("TaskHeader", mock.TaskHeaderFn != nil)
+	return mock.TaskHeaderFn(p0, p1)
 }
 
 func (mock *taskHTTPWriterMock) TaskSteps(p0 context.Context, p1 string) ([]model.TaskStep, error) {
-	mock.need("TaskSteps", false)
-	panic("unreachable")
+	mock.need("TaskSteps", mock.TaskStepsFn != nil)
+	return mock.TaskStepsFn(p0, p1)
 }
 
 func (mock *taskHTTPWriterMock) InsertTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("InsertTaskStep", false)
-	panic("unreachable")
+	mock.need("InsertTaskStep", mock.InsertTaskStepFn != nil)
+	return mock.InsertTaskStepFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPWriterMock) TouchTask(p0 context.Context, p1 string, p2 time.Time) error {
-	mock.need("TouchTask", false)
-	panic("unreachable")
+	mock.need("TouchTask", mock.TouchTaskFn != nil)
+	return mock.TouchTaskFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPWriterMock) UpdateTaskStep(p0 context.Context, p1 string, p2 model.TaskStep) error {
-	mock.need("UpdateTaskStep", false)
-	panic("unreachable")
+	mock.need("UpdateTaskStep", mock.UpdateTaskStepFn != nil)
+	return mock.UpdateTaskStepFn(p0, p1, p2)
 }
 
 func (mock *taskHTTPWriterMock) MoveTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("MoveTaskStep", false)
-	panic("unreachable")
+	mock.need("MoveTaskStep", mock.MoveTaskStepFn != nil)
+	return mock.MoveTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 func (mock *taskHTTPWriterMock) DeleteTaskStep(p0 context.Context, p1 string, p2 string, p3 int64, p4 int64) error {
-	mock.need("DeleteTaskStep", false)
-	panic("unreachable")
+	mock.need("DeleteTaskStep", mock.DeleteTaskStepFn != nil)
+	return mock.DeleteTaskStepFn(p0, p1, p2, p3, p4)
 }
 
 type taskHTTPProjectReaderMock struct {

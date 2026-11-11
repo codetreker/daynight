@@ -85,10 +85,12 @@ response before discarding it; a separate reader observes explicitly supplied
 Bot facts. Root retains the shared MCP and REST application lifecycle. These
 controlled facts do not establish persistence.
 
-The MCP test binary clears database and UniAuth fixture variables before test
-execution. Full module validation can provide infrastructure to its physical
-owners without lending it to these protocol units. Native body-timeout tests
-assert the 15-second production default and use a 200-millisecond instance value
+The ordinary MCP test binary clears database and UniAuth fixture variables before
+test execution. The separate stress build retains the database variable for its
+real PostgreSQL Step capacity witness. Full module validation can provide
+infrastructure to its physical owners without lending it to these protocol units.
+Native body-timeout tests assert the 15-second production default and use a
+200-millisecond instance value
 through the same logical body deadline and actual socket deadline. The timeout
 response, connection close and input-slot release remain observable.
 
