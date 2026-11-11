@@ -22,6 +22,48 @@ beforeEach(() => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
 });
 
+it.each(["original page", "Back to original page"] as const)("keeps receipt navigation bound to the submitted location: %s", async (scenario) => {
+  const pending = Promise.withResolvers<Response>();
+  const team = personalTeamPage(userId).items[0]!;
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url === `/api/v1/teams/${source}`) return Promise.resolve(json(team));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) return pending.promise;
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 10000 }));
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
+  await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1));
+  if (scenario === "Back to original page") {
+    act(() => navigate("/workers"));
+    expect(window.location.pathname).toBe("/workers");
+    await act(async () => { await new Promise<void>((resolve) => { window.addEventListener("popstate", () => resolve(), { once: true }); window.history.back(); }); });
+    expect(window.location.pathname).toBe(`/projects/${projectId}/settings`);
+    expect(screen.getByRole("dialog", { name: "Transfer project" })).toBe(dialog);
+  }
+  await act(async () => pending.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: targetTeam, ownership: { teamId: target, version: 2n }, actorAccess: null })));
+  const receipt = await screen.findByText(/Project transferred to Destination/);
+  expect(receipt).toHaveTextContent("You no longer have access to this project");
+  if (scenario === "original page") await waitFor(() => expect(window.location.pathname).toBe(`/teams/${source}`));
+  else {
+    expect(await screen.findByRole("link", { name: "Go to Team projects" })).toHaveAttribute("href", `/teams/${source}`);
+    expect(window.location.pathname).toBe(`/projects/${projectId}/settings`);
+  }
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+}, 20000);
+
 it("retains an unknown transfer across route changes without replaying it", async () => {
   const pending = Promise.withResolvers<Response>();
   let transferSignal: AbortSignal | undefined;
@@ -317,3 +359,80 @@ it("retains transfer choices and permits retry when a background Team reread fai
   await waitFor(() => expect(within(dialog).queryByRole("alert")).toBeNull(), { timeout: 20000 });
   expect(select).toHaveValue(source); expect(reads).toBe(3);
 });
+
+it("does not redirect a replacement settings owner when the old source lookup finishes", async () => {
+  const sourceRead = Promise.withResolvers<Response>();
+  const team = personalTeamPage(userId).items[0]!;
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url === `/api/v1/teams/${source}`) return sourceRead.promise;
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) return Promise.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: targetTeam, ownership: { teamId: target, version: 2n }, actorAccess: null }));
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 10000 }));
+  const originalOwner = screen.getByRole("navigation", { name: "Project settings" }).parentElement!;
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
+  await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url === `/api/v1/teams/${source}`)).toBe(true), { timeout: 10000 });
+  expect(await screen.findByText(/Project transferred to Destination/)).toBeInTheDocument();
+  act(() => navigate("/workers"));
+  await waitFor(() => expect(originalOwner.isConnected).toBe(false));
+  act(() => navigate(`/projects/${projectId}/settings`));
+  await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}/settings`));
+  await act(async () => sourceRead.resolve(json(team)));
+  expect(await screen.findByRole("link", { name: "Go to Team projects" })).toHaveAttribute("href", `/teams/${source}`);
+  expect(window.location.pathname).toBe(`/projects/${projectId}/settings`);
+}, 20000);
+
+it("retains a newer transfer draft across a second route change while old cleanup finishes", async () => {
+  const cleanupAccess = Promise.withResolvers<Response>();
+  const laterTarget = "00000000-0000-4000-8000-000000000703";
+  const ownership = { teamId: target, version: 2n };
+  const transferredAccess = { ...access, ownerTeam: targetTeam, ownership };
+  let afterTransfer = false, cleanupStarted = false;
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) {
+      if (afterTransfer) { cleanupStarted = true; return cleanupAccess.promise; }
+      return Promise.resolve(json(access));
+    }
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: "admin" }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) { afterTransfer = true; return Promise.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: targetTeam, ownership, actorAccess: transferredAccess })); }
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 10000 }));
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  const input = within(dialog).getByLabelText("Team ID or link");
+  fireEvent.change(input, { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
+  await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+  await waitFor(() => expect(cleanupStarted).toBe(true), { timeout: 10000 });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.change(input, { target: { value: laterTarget } });
+  act(() => navigate("/workers"));
+  await act(async () => cleanupAccess.resolve(json(transferredAccess)));
+  expect(await screen.findByText(/Project transferred to Destination/)).toBeInTheDocument();
+  act(() => navigate(`/projects/${projectId}/settings`));
+  expect(await screen.findByRole("dialog", { name: "Transfer project" })).toBe(dialog);
+  expect(within(dialog).getByLabelText("Team ID or link")).toHaveValue(laterTarget);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
+}, 20000);

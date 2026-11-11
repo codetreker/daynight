@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { browserNavigation } from "../src/app/navigation";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
@@ -25,9 +27,10 @@ beforeEach(() => {
   vi.clearAllMocks(); controller = new AbortController(); window.history.replaceState({}, "", `/projects/${projectId}/settings`);
   scope = { userId, signal: controller.signal, isInvalidated: false, principalMismatch: mismatch, ready: async (signal: AbortSignal) => signal.throwIfAborted() } as unknown as TaskCacheScope;
 });
-const Harness = ({ value = receipt }: { readonly value?: ProjectTransferReceipt }) => {
+const Harness = ({ value = receipt, ownsEditor = () => true }: { readonly value?: ProjectTransferReceipt; readonly ownsEditor?: () => boolean }) => {
   const transfer = useTransferNavigation(scope, user, refresh);
-  return <><button type="button" onClick={() => transfer.complete(value)}>Complete</button><TransferResultNotice result={transfer.result} retry={transfer.retry} dismiss={transfer.dismiss} /></>;
+  const location = useRef(browserNavigation().snapshot());
+  return <><button type="button" onClick={() => transfer.complete(value, { location: location.current, ownsEditor })}>Complete</button><TransferResultNotice result={transfer.result} retry={transfer.retry} dismiss={transfer.dismiss} /></>;
 };
 const render = createLocaleRender("en");
 
@@ -69,6 +72,31 @@ describe("confirmed transfer navigation", () => {
     vi.mocked(getTeam).mockResolvedValue(team); render(<Harness />);
     window.history.replaceState({}, "", "/workers"); fireEvent.click(screen.getByText("Complete"));
     await screen.findByRole("link", { name: "Go to Team projects" });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+  it("does not redirect after leaving and returning to the same settings entry before the receipt", async () => {
+    vi.mocked(getTeam).mockResolvedValue(team);
+    render(<Harness />);
+    act(() => browserNavigation().navigate("/workers"));
+    expect(window.location.pathname).toBe("/workers");
+    act(() => window.history.back());
+    await waitFor(() => expect(browserNavigation().snapshot().pathname).toBe(`/projects/${projectId}/settings`));
+    fireEvent.click(screen.getByText("Complete"));
+    await screen.findByRole("link", { name: "Go to Team projects" });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+  it("keeps the receipt but does not redirect when the editor changes during the source read", async () => {
+    const pending = Promise.withResolvers<Team>();
+    let original = true;
+    vi.mocked(getTeam).mockReturnValueOnce(pending.promise);
+    render(<Harness ownsEditor={() => original} />);
+    fireEvent.click(screen.getByText("Complete"));
+    await waitFor(() => expect(getTeam).toHaveBeenCalledOnce());
+    original = false;
+    await act(async () => pending.resolve(team));
+    expect(screen.getByRole("status")).toHaveTextContent("Project transferred to Target");
+    expect(screen.getByRole("link", { name: "Go to Team projects" })).toHaveAttribute("href", `/teams/${sourceId}`);
     expect(navigate).not.toHaveBeenCalled();
   });
   it("does not redirect a user who navigated away or install a response after identity invalidation", async () => {

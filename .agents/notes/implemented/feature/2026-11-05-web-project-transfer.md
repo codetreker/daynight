@@ -15,8 +15,13 @@ Project settings show the actual owner and use confirmed `canTransfer` for the
 transfer control; dispatch requires fresh ProjectAccess. The dialog previews a selected or
 explicit same-service target before a versioned confirmation. The server receipt
 establishes success and supplies the actor's remaining access. When access is
-lost, the matching Task cache generation is revoked before navigation. The source
-Team is checked by ID; only a confirmed 404 chooses Personal. A failed check
+lost, the matching Task cache generation is revoked before navigation. Submission
+captures the editor instance, in-memory draft revision and navigation context.
+Closing the dialog, resetting its draft and automatic navigation require those
+owners still to match; a late receipt cannot replace a newer editor or route.
+The receipt and resource facts retain their original admission rules, and the
+shared operation's pending and promise timing is unchanged. The source Team is
+checked by ID; only a confirmed 404 chooses Personal. A failed check
 retains the successful result and permits retrying navigation. Unknown writes
 retain a read-only check and are never automatically replayed. Confirmed Project
 revocation clears unsubmitted private previews without discarding a dispatched
@@ -41,4 +46,6 @@ accessible source, so absence would send the actor to Personal incorrectly.
 The existing reminder form and explicit Project identity remain intact. Users
 can transfer to a Team they have not joined while seeing the predicted loss of
 access. Cache cleanup and source navigation can fail independently of an already
-confirmed transfer; their errors remain visible and retryable.
+confirmed transfer; their errors remain visible and retryable. If the user has
+changed editor or location, the confirmed result remains available without
+automatically taking over the newer presentation.
