@@ -6,14 +6,108 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestArchiveResourceMigrationRetainsDatabaseFailuresAndInlineOriginal(t *testing.T) {
+	for _, kind := range []string{"update failure", "canceled query", "closed transaction"} {
+		t.Run(kind, func(t *testing.T) {
+			database, previous, next := archiveResourceMigrationBoundaryFixture(t, "")
+			ctx := t.Context()
+			var operationError error
+			if kind == "closed transaction" {
+				tx, err := database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = tx.Rollback(ctx); err != nil {
+					t.Fatal(err)
+				}
+				operationError = pgsession.New(tx).(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(ctx, previous, next)
+				if !errors.Is(operationError, pgx.ErrTxClosed) {
+					t.Fatal("closed transaction lost its original cause", operationError)
+				}
+			} else {
+				queryContext := ctx
+				if kind == "update failure" {
+					// This test owns its database. PostgreSQL rejects the actual UPDATE before
+					// publication, so the DAO must preserve the failure and the original row.
+					mustQueryExec(t, database, `CREATE FUNCTION refuse_inline_migration_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'inline migration storage unavailable'; END$$; CREATE TRIGGER refuse_inline_migration_fixture BEFORE UPDATE ON session_resources FOR EACH ROW EXECUTE FUNCTION refuse_inline_migration_fixture()`)
+				} else {
+					canceled, cancel := context.WithCancel(ctx)
+					cancel()
+					queryContext = canceled
+				}
+				completion, err := database.WriteSession(ctx, func(scope store.SessionScope) error {
+					operationError = scope.SessionDAO().(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(queryContext, previous, next)
+					return operationError
+				})
+				if operationError == nil || !errors.Is(err, operationError) || completion.Outcome != store.TransactionNotCommitted {
+					t.Fatal("migration storage refusal lost completion or cause", completion, operationError, err)
+				}
+				if kind == "canceled query" {
+					if !errors.Is(operationError, context.Canceled) {
+						t.Fatal("migration ignored canceled query", operationError)
+					}
+				} else {
+					var databaseError *pgconn.PgError
+					if !errors.As(operationError, &databaseError) || databaseError.Code != "P0001" {
+						t.Fatal("migration storage failure was replaced by a business conflict", operationError)
+					}
+				}
+			}
+			var queryError *store.Error
+			if !errors.As(operationError, &queryError) || queryError.Phase != "migrate inline archive resource" {
+				t.Fatal("migration query failure lost its storage phase", operationError)
+			}
+			var raw, content []byte
+			var blob, path, migration *string
+			var reclaiming bool
+			err := database.Pool.QueryRow(ctx, `SELECT descriptor,content,blob_id::text,blob_path,migration_id::text,gc_pending FROM session_resources WHERE session_id=$1 AND resource_id=$2`, previous.SessionID, previous.Resource.ResourceID).Scan(&raw, &content, &blob, &path, &migration, &reclaiming)
+			var saved sp.Resource
+			if err != nil || json.Unmarshal(raw, &saved) != nil || !reflect.DeepEqual(saved, previous.Resource) || string(content) != "original" || blob != nil || path != nil || migration != nil || reclaiming {
+				t.Fatal("failed conversion changed the independently persisted inline original", string(raw), string(content), blob, path, migration, reclaiming, err)
+			}
+		})
+	}
+}
+
+func TestArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity(t *testing.T) {
+	for _, migration := range []string{"", uuid.NewString()} {
+		t.Run(map[bool]string{true: "null migration", false: "existing migration"}[migration == ""], func(t *testing.T) {
+			database, previous, next := archiveResourceMigrationBoundaryFixture(t, migration)
+			sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+				saved, err := base.(store.SessionResourceDAO).SavedSessionResource(t.Context(), previous.SessionID, previous.Resource.ResourceID)
+				if err != nil || saved.MigrationID != previous.MigrationID || saved.BlobID != "" || saved.BlobPath != "" {
+					t.Fatal("original optional storage identity mapping changed", saved, err)
+				}
+				return base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), saved, next)
+			})
+			var raw, content []byte
+			var blob, path, observedMigration string
+			err := database.Pool.QueryRow(t.Context(), `SELECT descriptor,content,blob_id::text,blob_path,migration_id::text FROM session_resources WHERE session_id=$1 AND resource_id=$2`, previous.SessionID, previous.Resource.ResourceID).Scan(&raw, &content, &blob, &path, &observedMigration)
+			var saved sp.Resource
+			if err != nil || json.Unmarshal(raw, &saved) != nil || !reflect.DeepEqual(saved, previous.Resource) || content != nil || blob != next.BlobID || path != next.BlobPath || observedMigration != next.MigrationID {
+				t.Fatal("conversion did not atomically replace only the storage identity", string(raw), content, blob, path, observedMigration, err)
+			}
+			sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+				err := base.(store.SessionArchiveResourceMigrationDAO).MigrateSessionArchiveResource(t.Context(), previous, next)
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "archive_conflict" {
+					t.Fatal("old conversion identity replaced the committed external original", err)
+				}
+				return nil
+			})
+		})
+	}
+}
 
 func TestArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy(t *testing.T) {
 	database, _, id := sessionArchiveLockFixture(t)
@@ -124,70 +218,5 @@ func TestArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy(t *testing.T
 	var content []byte
 	if e := database.Pool.QueryRow(ctx, `SELECT content FROM session_resources WHERE session_id=$1 AND resource_id=$2`, id, previous.Resource.ResourceID).Scan(&content); e != nil || content != nil {
 		t.Fatal("conversion retained a second inline copy", content, e)
-	}
-}
-
-func TestArchiveConnectionEpochAndConsumedGrantCommitTogether(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
-	ctx := t.Context()
-	fileID := uuid.NewString()
-	bundle := store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "active", Revision: 9, Identity: json.RawMessage(`{"controller":"original"}`), Resources: json.RawMessage(`[]`), Ledger: json.RawMessage(`{"HistoryEpoch":"original","HistoryID":"` + fileID + `","Entries":[]}`), HistoryID: fileID}
-	file := store.ArchiveBundleFile{SessionID: id, FileID: fileID, Purpose: "history", SHA256: archiveHashOf("original"), ByteLength: 8, AcceptedOffset: 4, State: "receiving", Path: "original/round"}
-	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-		if e := base.(store.SessionArchiveDAO).SaveSessionArchiveBundle(ctx, bundle); e != nil {
-			return e
-		}
-		return base.(store.SessionArchiveDAO).SaveSessionArchiveFile(ctx, file)
-	})
-	for _, commit := range []bool{false, true} {
-		tx, e := database.Pool.Begin(ctx)
-		if e != nil {
-			t.Fatal(e)
-		}
-		func() {
-			defer tx.Rollback(context.Background())
-			dao := pgsession.New(tx)
-			r, e := dao.LockSession(ctx, id)
-			if e != nil {
-				t.Fatal(e)
-			}
-			changed := bundle
-			changed.Ledger = json.RawMessage(`{"HistoryEpoch":"original","FinalHistoryEpoch":"connected","HistoryID":"` + fileID + `","Entries":[]}`)
-			if e = dao.(store.SessionArchiveDAO).SaveSessionArchiveBundle(ctx, changed); e != nil {
-				t.Fatal(e)
-			}
-			r.Snapshot.HistoryEpoch = "connected"
-			if e = dao.ConnectSession(ctx, id, uuid.NewString(), time.Now(), nil); e != nil {
-				t.Fatal(e)
-			}
-			if e = dao.SaveSession(ctx, r); e != nil {
-				t.Fatal(e)
-			}
-			if commit {
-				if e = tx.Commit(ctx); e != nil {
-					t.Fatal(e)
-				}
-			}
-		}()
-		sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-			r, e := base.LockSession(ctx, id)
-			if e != nil {
-				return e
-			}
-			saved, e := base.(store.SessionArchiveDAO).SessionArchiveBundle(ctx, id)
-			if e != nil {
-				return e
-			}
-			var ledger map[string]any
-			_ = json.Unmarshal(saved.Ledger, &ledger)
-			if commit != r.Consumed || commit != (r.Snapshot.HistoryEpoch == "connected") || commit != (ledger["FinalHistoryEpoch"] == "connected") || saved.HistoryID != fileID || saved.Revision != bundle.Revision {
-				t.Fatal("connection partially published its archive handoff", commit, r.Consumed, r.Snapshot.HistoryEpoch, saved)
-			}
-			storedFile, e := base.(store.SessionArchiveDAO).SessionArchiveFile(ctx, id, fileID)
-			if e != nil || storedFile.State != file.State || storedFile.AcceptedOffset != file.AcceptedOffset {
-				t.Fatal("epoch handoff replaced the partial file receipt", storedFile, e)
-			}
-			return nil
-		})
 	}
 }

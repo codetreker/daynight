@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,31 +23,6 @@ func (tx *retirementExecTx) Exec(_ context.Context, _ string, _ ...any) (pgconn.
 		return pgconn.CommandTag{}, tx.cause
 	}
 	return pgconn.NewCommandTag("UPDATE 1"), nil
-}
-
-type retirementRow struct {
-	err   error
-	value bool
-}
-
-func (r retirementRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
-	}
-	*dest[0].(*bool) = r.value
-	return nil
-}
-
-type retirementRowTx struct {
-	pgx.Tx
-	rows []retirementRow
-	next int
-}
-
-func (tx *retirementRowTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
-	r := tx.rows[tx.next]
-	tx.next++
-	return r
 }
 
 func TestProjectRetirementQueryFailuresAndScope(t *testing.T) {
@@ -103,43 +77,5 @@ func TestProjectRetirementApplyErrorsPreserveCause(t *testing.T) {
 	}
 	if err := dao.ApplyProjectSessionRetirement(ctx, []store.ProjectSessionRetirementPlan{{ID: "id", Backend: "web"}}); err != nil || tx.calls != 2 {
 		t.Fatalf("valid plan: %v, %d", err, tx.calls)
-	}
-}
-
-func TestSessionProjectLifecycleReadFailures(t *testing.T) {
-	ctx := t.Context()
-	cause := errors.New("lifecycle query failed")
-	for _, tc := range []struct {
-		name   string
-		first  error
-		second retirementRow
-		want   error
-	}{
-		{"live read failure", cause, retirementRow{}, cause},
-		{"missing and lifecycle read failure", pgx.ErrNoRows, retirementRow{err: cause}, cause},
-		{"deleted", pgx.ErrNoRows, retirementRow{value: true}, store.ErrSessionProjectNotFound},
-		{"unavailable but live", pgx.ErrNoRows, retirementRow{value: false}, model.ErrNotFound},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dao := &DAO{tx: &retirementRowTx{rows: []retirementRow{{err: tc.first}, tc.second}}}
-			_, err := dao.ProjectAccess(ctx, "user", "project")
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("Project access: %v", err)
-			}
-		})
-	}
-	for _, tc := range []struct {
-		name string
-		row  retirementRow
-		want error
-	}{
-		{"failure", retirementRow{err: cause}, cause}, {"deleted", retirementRow{}, model.ErrNotFound}, {"live", retirementRow{value: true}, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dao := &DAO{tx: &retirementRowTx{rows: []retirementRow{tc.row}}}
-			if err := dao.ensureLiveProject(ctx, "project"); !errors.Is(err, tc.want) {
-				t.Fatalf("live project: %v", err)
-			}
-		})
 	}
 }

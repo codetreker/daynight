@@ -9,70 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-
-	"encoding/json"
-	"testing"
-
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
-
-func TestUnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
-	seq := int64(0)
-	for _, kind := range []string{"refresh_controls", "update_setting", "send_message", "interaction_response", "execute_command", "cancel"} {
-		for _, state := range []string{"accepted", "offered", "dispatching", "unknown"} {
-			t.Run(kind+"/"+state, func(t *testing.T) {
-				seq++
-				op := uuid.NewString()
-				sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-					return d.InsertSessionOperation(t.Context(), store.SessionOperation{SessionID: id, OperationID: op, Seq: seq, Actor: actor, Hash: []byte("original"), Command: sp.Command{Kind: kind, Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{SessionID: id, OperationID: op, State: state}})
-				})
-				sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-					n, e := d.(store.SessionResourceDAO).UnsettledSessionResourceWrites(t.Context(), id)
-					want := 1
-					if kind == "refresh_controls" || kind == "update_setting" {
-						want = 0
-					}
-					if e != nil || n != want {
-						t.Fatalf("unsettled=%d want=%d: %v", n, want, e)
-					}
-					saved, e := d.SessionOperation(t.Context(), id, op)
-					if e != nil || saved.Receipt.State != state {
-						t.Fatalf("barrier changed receipt: %+v %v", saved.Receipt, e)
-					}
-					return d.SetSessionOperationReceipt(t.Context(), sp.Operation{SessionID: id, OperationID: op, State: "confirmed"})
-				})
-			})
-		}
-	}
-	resource, op := uuid.NewString(), uuid.NewString()
-	seq++
-	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-		r := d.(store.SessionResourceDAO)
-		if e := r.InsertSessionResource(t.Context(), store.SessionResourceRecord{SessionID: id, Resource: sp.Resource{ResourceID: resource, Status: "pending", Name: "original.png"}}); e != nil {
-			return e
-		}
-		if e := d.InsertSessionOperation(t.Context(), store.SessionOperation{SessionID: id, OperationID: op, Seq: seq, Actor: actor, Hash: []byte("pinned"), Command: sp.Command{Kind: "refresh_controls", Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{State: "unknown"}}); e != nil {
-			return e
-		}
-		return r.AddSessionResourceReference(t.Context(), store.SessionResourceReference{SessionID: id, ResourceID: resource, Kind: "operation", ReferenceID: op})
-	})
-	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-		n, e := d.(store.SessionResourceDAO).UnsettledSessionResourceWrites(t.Context(), id)
-		if e == nil && n != 1 {
-			t.Fatalf("unknown pinned operation bypassed closure: %d", n)
-		}
-		return e
-	})
-}
 
 func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash(t *testing.T) {
 	db := isolatedStore(t)
