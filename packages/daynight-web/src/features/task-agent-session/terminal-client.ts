@@ -30,6 +30,7 @@ export class TerminalSessionClient {
   private listeners = new Set<() => void>();
   private visible = false;
   private ended = false;
+  private accountRefreshSuspended = false;
   private generation = 0;
   private channel: { close(): void } | null = null;
   private channelState: TerminalSessionState | null = null;
@@ -75,7 +76,7 @@ export class TerminalSessionClient {
   getSnapshot = (): TerminalClientSnapshot => this.view;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   private owned() { return !this.ended; }
-  private live(generation = this.generation) { return this.owned() && this.visible && (this.options.isCurrent?.() ?? true) && generation === this.generation; }
+  private live(generation = this.generation) { return this.owned() && !this.accountRefreshSuspended && this.visible && (this.options.isCurrent?.() ?? true) && generation === this.generation; }
   private channelMatches(state: TerminalSessionState | null) {
     const channel = this.channelState;
     return state !== null && channel !== null && sameAdmissionState(state, channel);
@@ -104,7 +105,7 @@ export class TerminalSessionClient {
     if (this.view.pending && this.pendingOperation !== null) this.publish({ pending: false, result: { operationId: this.pendingOperation.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } });
   }
   setVisible = (visible: boolean): void => {
-    if (!this.owned()) return;
+    if (!this.owned() || this.accountRefreshSuspended) return;
     if (this.visible === visible) {
       // A transient admission gate can close when a timer fires between visibility checks.
       if (visible && this.channel === null && this.reconnectTimer === null && !this.opening && (this.interrupted || this.view.availability !== 'not_applicable')) void this.start();
@@ -114,6 +115,12 @@ export class TerminalSessionClient {
     this.visible = visible;
     if (!visible) { this.stopTransport(); this.publish({ transport: 'paused' }); }
     else void this.start();
+  };
+  /** Stop this viewer until page refresh, retaining its last presentation and local operation state. */
+  suspendForAccountRefresh = (): void => {
+    this.accountRefreshSuspended = true; this.visible = false;
+    this.stopTransport();
+    if (this.owned()) this.publish({ transport: 'paused' });
   };
   private receive(next: TerminalSessionState, generation: number, source: 'read' | 'channel', readRevision = this.channelRevision) {
     if (!this.live(generation)) return;
@@ -150,6 +157,7 @@ export class TerminalSessionClient {
       if (this.view.pending && this.pendingOperation !== null) {
         if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
         this.publish({ pending: false, result: { operationId: this.pendingOperation.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } });
+        if (!this.live(generation)) return;
         this.pendingOperation = { ...this.pendingOperation, generation: -1 };
       }
     }
@@ -170,6 +178,7 @@ export class TerminalSessionClient {
     this.opening = true; this.interrupted = false; const generation = this.generation, controller = this.request();
     if (this.view.session !== null || this.view.phase === 'loading') this.publish({ transport: 'connecting', ...(this.view.phase === 'loading' ? { error: null } : {}) });
     try {
+      if (!this.live(generation)) return;
       const current = this.view.session === null ? await this.options.api.current(controller.signal) : await this.options.api.state(this.view.session.sessionId, controller.signal);
       if (!this.live(generation)) return;
       if (current.status !== 'registered') {
@@ -182,10 +191,13 @@ export class TerminalSessionClient {
       if (this.view.transport !== 'connecting') this.publish({ transport: 'connecting' });
       this.receive(current, generation, 'read');
       if (!this.live(generation) || this.view.session === null) return;
-      this.channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation, 'channel'), error => {
+      const channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation, 'channel'), error => {
         if (!this.live(generation)) return;
-        this.stopTransport(); this.publish({ phase: 'disconnected', transport: 'disconnected', error: error ?? null }); this.scheduleReconnect();
+        this.stopTransport(); if (this.accountRefreshSuspended) return;
+        this.publish({ phase: 'disconnected', transport: 'disconnected', error: error ?? null }); this.scheduleReconnect();
       });
+      if (!this.live(generation)) { channel.close(); return; }
+      this.channel = channel;
       this.renewTimer = setInterval(() => { if (!this.live()) { this.stopTransport(); this.publish({ transport: 'paused' }); return; } this.publish({}); if (this.view.ownsControl && !this.view.pending) void this.control('renew_control'); }, SESSION_V2_LIMITS.leaseRenewMs);
     } catch (error) { if (this.live(generation)) this.failure(error); }
     finally { this.forget(controller); if (generation === this.generation) { this.opening = false; if (this.owned() && this.visible && !this.live(generation)) this.interrupted = true; } }
@@ -212,7 +224,8 @@ export class TerminalSessionClient {
   }
   private failure(error: unknown) {
     if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) { this.invalidate(error); return; }
-    this.stopTransport(); this.publish({ phase: this.view.session === null ? 'error' : 'disconnected', transport: 'disconnected', error });
+    this.stopTransport(); if (this.accountRefreshSuspended) return;
+    this.publish({ phase: this.view.session === null ? 'error' : 'disconnected', transport: 'disconnected', error });
     this.scheduleReconnect();
   }
   refresh = (): Promise<void> => this.refreshState(false);
@@ -271,6 +284,13 @@ export class TerminalSessionClient {
   private async dispatch(command: TerminalCommand) {
     const pending = { command, generation: this.generation, startedAt: Date.now() }; if (!this.persist(pending)) return; this.pendingOperation = pending;
     this.publish({ pending: true, unknownAcknowledged: false, result: { operationId: command.payload.operationId, state: 'queued', errorCode: null }, error: null });
+    if (!this.live(pending.generation)) {
+      if (this.pendingOperation === pending) {
+        if (this.persist(null)) { this.pendingOperation = null; this.publish({ pending: false, result: null }); }
+        else this.markUnknown(pending, this.persistenceError);
+      }
+      return;
+    }
     const controller = this.request();
     try {
       const result = await this.boundedRequest(controller, SESSION_V2_LIMITS.inputTimeoutMs, () => this.options.api.command(command.sessionId, this.browserClientId, command, controller.signal));
@@ -294,8 +314,10 @@ export class TerminalSessionClient {
     const command = pending.command;
     if (result.sessionId !== command.sessionId || result.claimId !== command.claimId || result.executionGeneration !== command.executionGeneration || result.payload.operationId !== command.payload.operationId) { this.invalidate(); return; }
     if (!terminal(result.payload.state) && Date.now() - pending.startedAt >= SESSION_V2_LIMITS.inputTimeoutMs) { this.markUnknown(pending); return; }
+    const generation = this.generation;
     this.publish({ pending: !terminal(result.payload.state), result: result.payload });
     if (terminal(result.payload.state)) { if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null; if (result.payload.state !== 'unknown') this.persist(null); void this.refresh(); return; }
+    if (!this.live(generation)) return;
     if (this.pollTimer !== null) clearTimeout(this.pollTimer);
     this.pollTimer = setTimeout(() => { this.pollTimer = null; void this.queryOperation(true); }, Math.min(500, SESSION_V2_LIMITS.inputTimeoutMs - (Date.now() - pending.startedAt)));
   }
@@ -324,7 +346,7 @@ export class TerminalSessionClient {
     } catch (error) {
       if (ownsQuery()) {
         this.markUnknown(pending, error);
-        if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) this.invalidate(error);
+        if (ownsQuery() && error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) this.invalidate(error);
       }
     } finally { this.forget(controller); }
   }
