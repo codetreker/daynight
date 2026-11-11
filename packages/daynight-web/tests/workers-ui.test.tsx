@@ -36,7 +36,7 @@ let detailState: ReturnType<typeof useWorker>;
 const listed = (items: readonly WorkerSummary[] = [summary()]): ReturnType<typeof useWorkers> => ({ snapshot: { observedAt, items }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const shown = (worker: WorkerDetail = detail()): ReturnType<typeof useWorker> => ({ snapshot: { observedAt, worker }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const showList = () => renderWithLocale(<WorkersPage readEnabled />, { locale: 'en' });
-const showDetail = () => renderWithLocale(<WorkerDetailPage workerId={id(1)} readEnabled />, { locale: 'en' });
+const showDetail = () => renderWithLocale(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />, { locale: 'en' });
 
 beforeEach(() => {
   refresh.mockReset(); listState = listed(); detailState = shown();
@@ -136,12 +136,12 @@ describe('Worker detail presentation', () => {
     task.focus();
     for (let attempt = 0; attempt < 2; attempt++) {
       detailState = { ...detailState, stale: true, refreshing: true };
-      view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
       expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.queryByRole('alert')).toBeNull();
       expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(screen.getByRole('heading', { name: /Task snapshot/ })).toBeInTheDocument();
       expect(screen.getByText('State at the last observation')).toBe(caption); expect(caption).toHaveAttribute('aria-hidden', 'false');
       expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '34.25'); expect(task).toHaveFocus();
-      detailState = shown(); view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      detailState = shown(); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
       expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.getByText('online')).toBeInTheDocument(); expect(task).toHaveFocus();
       expect(screen.getByRole('heading', { name: 'Tasks in progress 1' })).toBe(currentHeading); expect(caption).toHaveAttribute('aria-hidden', 'true');
     }
@@ -153,12 +153,12 @@ describe('Worker detail presentation', () => {
     expect(alert).toHaveTextContent('Worker updates could not be synchronized.'); expect(alert).toHaveTextContent('last confirmed observation');
     expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(screen.queryByText('offline')).toBeNull();
     for (let attempt = 0; attempt < 2; attempt++) {
-      detailState = { ...detailState, refreshing: true }; view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      detailState = { ...detailState, refreshing: true }; view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
       expect(screen.getByRole('alert')).toBe(alert); expect(within(alert).getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
-      detailState = { ...detailState, refreshing: false }; view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      detailState = { ...detailState, refreshing: false }; view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
       expect(within(alert).getByRole('button', { name: 'Retry' })).toBeEnabled();
     }
-    detailState = shown(); view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+    detailState = shown(); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
     expect(screen.queryByRole('alert')).toBeNull(); expect(screen.getByText('online')).toBeInTheDocument();
   });
 
@@ -192,7 +192,7 @@ describe('Worker detail presentation', () => {
   it('distinguishes no task inventory from a genuinely empty observation', () => {
     detailState = shown({ ...detail(), taskObservationState: 'unavailable', activeTaskCount: null, taskObservedAt: null, inventoryObservedAt: null, tasks: [] });
     const view = showDetail(); expect(screen.getByText('Task information awaiting synchronization')).toBeInTheDocument(); expect(screen.queryByText('No tasks currently in progress')).toBeNull(); expect(screen.queryByRole('table')).toBeNull();
-    detailState = shown({ ...detail(), activeTaskCount: 0, tasks: [] }); view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+    detailState = shown({ ...detail(), activeTaskCount: 0, tasks: [] }); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
     expect(screen.getByText('No tasks currently in progress')).toBeInTheDocument(); expect(screen.getByText('0', { selector: '.worker-count-badge' })).toBeInTheDocument();
   });
 
@@ -214,9 +214,9 @@ describe('Worker detail presentation', () => {
     detailState = { ...shown(), serverMilliseconds: Date.parse(report) + 72 * 3600_000 };
     const view = showDetail(); expect(screen.getByRole('heading', { name: 'worker-1' })).toBeInTheDocument();
     detailState = { ...detailState, serverMilliseconds: Date.parse(report) + 72 * 3600_000 + 1 };
-    view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />); expect(screen.queryByText('/srv/workspaces/runtime')).toBeNull(); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(screen.queryByText('/srv/workspaces/runtime')).toBeNull(); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
     detailState = { ...detailState, snapshot: null, serverMilliseconds: null, status: 'unavailable' };
-    view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('link', { name: '← Back to my Workers' })); expect(window.location.pathname).toBe('/workers');
   });

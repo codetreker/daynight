@@ -1,6 +1,7 @@
-import { useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { WorkerExecutableProbe, WorkerHerdrProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
+import { useWorkerHistory } from '../../app/use-page-history';
 import { taskDetailUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { isWorkerOnline, isWorkerRecent } from './observation';
@@ -45,7 +46,7 @@ const TaskRows = ({ tasks }: { readonly tasks: readonly WorkerTaskSnapshot[] }) 
   </tbody></table>;
 };
 
-export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: { readonly workerId: string; readonly readEnabled: boolean; readonly onRetentionChange?: (retain: boolean) => void }) => {
+export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled, onRetentionChange }: { readonly workerId: string; readonly userId: string; readonly active?: boolean; readonly readEnabled: boolean; readonly onRetentionChange?: (retain: boolean) => void }) => {
   const state = useWorker(workerId, { readEnabled });
   const monitoring = useWorkerMonitoring(workerId, { readEnabled });
   const refresh = () => { state.refresh(); monitoring.refresh(); };
@@ -62,10 +63,12 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
   const taskSnapshot = !online || state.stale || worker?.taskObservationState === 'stale';
   const bytes = (value: number) => formatWorkerBytes(value, locale);
   const percent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
-  const [navigation, setNavigation] = useState<{ readonly workerId: string; readonly section: 'overview' | 'configuration'; readonly opened: boolean }>({ workerId, section: 'overview', opened: false });
-  const section = navigation.workerId === workerId ? navigation.section : 'overview';
-  const configurationOpened = navigation.workerId === workerId && navigation.opened;
-  const selectSection = (next: 'overview' | 'configuration') => setNavigation(old => ({ workerId, section: next, opened: next === 'configuration' || old.workerId === workerId && old.opened }));
+  const { section, select: selectSection, error: historyError } = useWorkerHistory(userId, workerId, active);
+  const [opened, setOpened] = useState<{ workerId: string; opened: boolean }>({ workerId, opened: false });
+  const configurationOpened = opened.workerId === workerId && opened.opened || section === 'configuration';
+  useLayoutEffect(() => {
+    if (section === 'configuration' && !historyError) setOpened({ workerId, opened: true });
+  }, [workerId, section, historyError]);
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const next = event.key === 'Home' ? 'overview' : event.key === 'End' ? 'configuration' : event.key === 'ArrowLeft' || event.key === 'ArrowRight' ? section === 'overview' ? 'configuration' : 'overview' : null;
     if (next === null) return;
@@ -73,12 +76,14 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
   };
   return <div className="worker-page" ref={page}>
     <a className="worker-back-link" href="/workers" onClick={followWorkerLink}>← {m.back}</a>
+    {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
+    <div hidden={historyError} inert={historyError}>
     {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}>{worker.machine.name}</h1>
         <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
         <p className="worker-id">{m.workerId} · {worker.workerId}</p></div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div>}</div>}
     {(worker === undefined || unavailable) && section === 'configuration' && <div className="page-heading worker-detail-heading"><h1 id="page-title" tabIndex={-1}>{m.workerId} · {workerId}</h1></div>}
     <div className="worker-tabs" role="tablist" aria-label={m.configuration.sections}>{(['overview', 'configuration'] as const).map(value => <button key={value} type="button" role="tab" id={`worker-tab-${value}`} aria-controls={`worker-panel-${value}`} aria-selected={section === value} tabIndex={section === value ? 0 : -1} onClick={() => selectSection(value)} onKeyDown={onTabKeyDown}>{m.configuration[value]}</button>)}</div>
-    <section className="worker-section" id="worker-panel-overview" role="tabpanel" aria-labelledby="worker-tab-overview" hidden={section !== 'overview'}>
+    <section className="worker-section" id="worker-panel-overview" role="tabpanel" aria-labelledby="worker-tab-overview" hidden={section !== 'overview'} inert={section !== 'overview'}>
     {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled /> : <>
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
@@ -119,6 +124,7 @@ export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: {
       </section><p className="worker-detail-footnote">{m.footer}</p>
     </>}
     </section>
-    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform } : {})} onContinueEditing={() => selectSection('configuration')} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} /></section>}
+    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'} inert={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform } : {})} onContinueEditing={() => selectSection('configuration', true)} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} /></section>}
+    </div>
   </div>;
 };
