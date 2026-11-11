@@ -18,7 +18,9 @@ cleanup grace the outcome reports pending while ownership remains with the
 caller. Output beyond the limit is drained without being retained. Stop and
 stream errors remain observable, including errors arriving after the pending
 outcome. Ordinary repository Git reads retain their bounded API and share the
-same command, environment, limits, and diagnostic policy.
+same command, environment, limits, and diagnostic policy. Stop is dispatched
+before formatting failure diagnostics, whose token scanning is linear in the
+captured output size, so unbroken stderr cannot delay termination quadratically.
 
 ## Alternatives
 

@@ -20,9 +20,37 @@ export const gitEnvironment = (overrides: Readonly<Record<string, string | undef
   GIT_TERMINAL_PROMPT: "0",
 });
 
+// Scan each non-whitespace token once: backtracking address regexes can hold a
+// live Git child past its stop deadline on long unbroken diagnostics.
+const schemeCharacter = (char: string): boolean => /[a-z\d+.-]/i.test(char);
+const wordCharacter = (char: string): boolean => /[a-z\d_]/i.test(char);
+const redactUrl = (token: string): string => {
+  let search = 0;
+  for (;;) {
+    const separator = token.indexOf("://", search);
+    if (separator < 0 || separator + 3 === token.length) return token;
+    let start = separator;
+    while (start > 0 && schemeCharacter(token[start - 1]!)) start--;
+    for (let index = start; index < separator; index++) {
+      if (/[a-z]/i.test(token[index]!) && (index === 0 || !wordCharacter(token[index - 1]!))) {
+        return `${token.slice(0, index)}[redacted URL]`;
+      }
+    }
+    search = separator + 3;
+  }
+};
+const redactAddress = (token: string): string => {
+  let at = -1;
+  for (let index = 0; index < token.length; index++) {
+    if (token[index] === "@" && index > 0 && at < 0) at = index;
+    if (token[index] === ":" && at > 0 && index > at + 1 && index + 1 < token.length) return "[redacted repository address]";
+  }
+  return token;
+};
+
 export const diagnostic = (value: string): string => value
-  .replace(/\b[a-z][a-z\d+.-]*:\/\/[^\s"'<>]+/gi, "[redacted URL]")
-  .replace(/[^\s"'<>]+@[^\s"'<>]+:[^\s"'<>]+/g, "[redacted repository address]")
+  .replace(/[^\s"'<>]+/g, redactUrl)
+  .replace(/[^\s"'<>]+/g, redactAddress)
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
   .slice(0, 8192);
 

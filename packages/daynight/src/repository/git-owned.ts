@@ -168,8 +168,9 @@ export const startOwnedRepositoryGit = (
       const size = name === "stdout" ? stdoutBytes : stderrBytes;
       if (size + chunk.length > maxOutputBytes) {
         saving = false;
+        stop();
         recordFailure(new RepositoryGitError(`Repository Git ${name} exceeded its ${maxOutputBytes}-byte limit`, null, null, diagnostic(Buffer.concat(stderr).toString("utf8"))));
-        stop(); return;
+        return;
       }
       if (name === "stdout") { stdoutBytes += chunk.length; stdout.push(chunk); }
       else { stderrBytes += chunk.length; stderr.push(chunk); }
@@ -186,9 +187,9 @@ export const startOwnedRepositoryGit = (
   commandTimer = setTimeout(() => {
     let operationError: unknown;
     try { operation.check(); } catch (error) { operationError = error; }
-    if (operationError === undefined) recordFailure(new RepositoryGitError("Repository Git command deadline exceeded", exitCode, exitSignal, diagnostic(Buffer.concat(stderr).toString("utf8"))));
-    else if (!stopRequested) recordFailure(operationError);
+    if (operationError !== undefined && !stopRequested) recordFailure(operationError);
     stop();
+    if (operationError === undefined) recordFailure(new RepositoryGitError("Repository Git command deadline exceeded", exitCode, exitSignal, diagnostic(Buffer.concat(stderr).toString("utf8"))));
   }, timeoutMs);
   commandTimer.unref();
   if (operation.signal.aborted) abort();

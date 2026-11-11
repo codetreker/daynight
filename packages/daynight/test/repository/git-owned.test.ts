@@ -314,3 +314,32 @@ it("retains an output stream error until the real child and both streams close",
     await command.joined;
   }
 }, 15_000);
+
+it("stops a real child promptly on stdout overflow after long stderr", async () => {
+  const root = await repository();
+  const script = path.join(root, "large-output.mjs");
+  const ready = path.join(root, "large-output-ready");
+  const trigger = path.join(root, "large-output-trigger");
+  const lateWrite = path.join(root, "large-output-late-write");
+  await writeFile(script, `import { existsSync, writeFileSync } from 'node:fs';\nprocess.stderr.write('x'.repeat(32768), () => writeFileSync(${JSON.stringify(ready)}, 'ready'));\nconst poll = setInterval(() => {\n  if (!existsSync(${JSON.stringify(trigger)})) return;\n  clearInterval(poll);\n  process.stdout.write('y'.repeat(1100000));\n  setTimeout(() => writeFileSync(${JSON.stringify(lateWrite)}, 'late'), 400);\n}, 10);\nsetTimeout(() => process.exit(1), 8000).unref();\n`);
+  helpers.gitReplacement = script;
+  const command = startOwnedRepositoryGit(root, ["fixture"], operation(), {});
+  const child = helpers.gitChildren.at(-1)!;
+  let stderrBytes = 0;
+  child.stderr!.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; });
+  try {
+    await waitForFile(ready);
+    await expect.poll(() => stderrBytes, { timeout: 5000, interval: 10 }).toBe(32768);
+    await writeFile(trigger, "go");
+    const outcome = await command.outcome;
+    expect(outcome.kind).not.toBe("success");
+    if (outcome.kind === "success") throw new Error("Overflow returned success");
+    expect(errorText(outcome.error)).toContain("stdout exceeded its 1048576-byte limit");
+    expect((await command.joined).kind).toBe("local-closed");
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    await expect(readFile(lateWrite)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    command.requestStop();
+    await command.joined;
+  }
+}, 20_000);
