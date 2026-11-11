@@ -26,6 +26,9 @@ Task HTTP reads, writes and sync run with their real Task components and
 narrowly controlled snapshot and project-write capabilities. Task deletion
 retains a Root cross-route tombstone proof. The Task assignee stress sample
 retains the real application, SQL capture and query plans at the Task adapter.
+Step and Thread HTTP scenarios use their real registrars and services with
+controlled DAO facts; file-effect witnesses use local files. Root retains the
+assembled Step-to-Attachment authorization proof.
 
 Go tests live in the package and directory of the tested object, normally in
 `xxx_test.go` for `xxx.go`. Files over about 1000 lines may be split by cohesive
@@ -45,6 +48,11 @@ Project and Team HTTP organization scenarios use their real registrars and
 Service/Core with controlled DAO facts. Project, Team and Invitation MCP
 scenarios use a focused Entry host with those real collaborators and the SDK;
 Root retains full catalog, default authentication and cross-route proofs.
+Step MCP lifecycle scenarios use the same focused host with controlled Step
+operations, and Thread scenarios retain the real service with controlled DAO
+facts. The separate Step stress test uses PostgreSQL and real Step services.
+The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
+records why those operation-level observations were introduced.
 The Webhook Runner process-recovery and takeover witnesses live with the Runner
 and retain real PostgreSQL, TLS, subprocess and lease fencing mechanisms under
 their existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)

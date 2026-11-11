@@ -431,8 +431,11 @@ func TestMCPShutdownReusesDrainAndClosesAllAdmission(t *testing.T) {
 }
 
 // newAdapterHost exercises selected adapters through the real Entry and SDK.
-func newAdapterHost(t *testing.T, auth Authenticator, output io.Writer, register func(*Entry, string) error) (*httptest.Server, *Entry) {
+func newAdapterHost(t *testing.T, auth Authenticator, output io.Writer, register func(*Entry, string) error, wrap ...func(http.Handler) http.Handler) (*httptest.Server, *Entry) {
 	t.Helper()
+	if len(wrap) > 1 {
+		t.Fatal("MCP adapter host accepts at most one handler wrapper")
+	}
 	server := httptest.NewUnstartedServer(nil)
 	var entry *Entry
 	started := false
@@ -462,7 +465,11 @@ func newAdapterHost(t *testing.T, auth Authenticator, output io.Writer, register
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", entry)
-	server.Config.Handler = httpx.RequestLogging(logger, mux)
+	var handler http.Handler = mux
+	if len(wrap) == 1 {
+		handler = wrap[0](handler)
+	}
+	server.Config.Handler = httpx.RequestLogging(logger, handler)
 	server.Start()
 	started = true
 	return server, entry

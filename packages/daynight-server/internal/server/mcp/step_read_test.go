@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -262,4 +266,221 @@ func TestRegisterToolRejectsInvalidBudgetClass(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid budget class was accepted")
 	}
+}
+
+type mcpStepMarkerKey struct{}
+type mcpStepMarker struct {
+	mu        sync.Mutex
+	authCalls int
+	principal model.Principal
+}
+
+func mcpStepRequestMarker(t *testing.T, ctx context.Context) *mcpStepMarker {
+	t.Helper()
+	marker, ok := ctx.Value(mcpStepMarkerKey{}).(*mcpStepMarker)
+	if !ok || marker == nil {
+		t.Error("MCP request context lost its marker")
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		t.Errorf("MCP operation context is already canceled: %v", err)
+	}
+	return marker
+}
+
+const mcpStepsProjectID = "c3333333-3333-4333-8333-333333333333"
+const mcpStepsTaskID = "d4444444-4444-4444-8444-444444444444"
+
+type mcpStepIdentity struct {
+	t          *testing.T
+	principals map[string]model.Principal
+}
+
+func (i *mcpStepIdentity) Authenticate(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
+	marker := mcpStepRequestMarker(i.t, ctx)
+	principal, ok := i.principals[token]
+	if !ok || kind != model.PATCredential || principal.Kind != model.PATCredential {
+		i.t.Errorf("unexpected MCP credential kind/token")
+		return model.Principal{}, errors.New("unexpected MCP credential")
+	}
+	if marker != nil {
+		marker.mu.Lock()
+		marker.authCalls++
+		marker.principal = principal
+		marker.mu.Unlock()
+	}
+	return principal, nil
+}
+
+func newMCPStepOperationServer(t *testing.T, principals map[string]model.Principal) (*httptest.Server, *mcpStepOperations) {
+	t.Helper()
+	ops := &mcpStepOperations{t: t, total: make(map[string]int)}
+	identity := &mcpStepIdentity{t: t, principals: principals}
+	server, _ := newAdapterHost(t, identity, io.Discard, func(entry *Entry, _ string) error {
+		if err := RegisterStepReadTools(entry, ops); err != nil {
+			return err
+		}
+		return RegisterStepWriteTools(entry, ops)
+	}, func(handler http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			marker := &mcpStepMarker{}
+			handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mcpStepMarkerKey{}, marker)))
+			if r.URL.Path == "/mcp" && r.Method != http.MethodOptions && r.Header.Get("Authorization") != "" {
+				marker.mu.Lock()
+				calls := marker.authCalls
+				marker.mu.Unlock()
+				if calls != 1 {
+					t.Errorf("MCP HTTP request authentication calls = %d, want 1", calls)
+				}
+			}
+		})
+	})
+	return server, ops
+}
+
+type mcpStepOperations struct {
+	t       *testing.T
+	mu      sync.Mutex
+	current *mcpStepOperationPlan
+	total   map[string]int
+}
+
+type mcpStepOperationPlan struct {
+	owner        *mcpStepOperations
+	actor        model.Principal
+	order        []string
+	next         int
+	ctx          context.Context
+	marker       *mcpStepMarker
+	onListPage   func(context.Context, model.Principal, string, string, int64, int, *int64, bool) (taskservice.StepsPage, error)
+	onGetSummary func(context.Context, model.Principal, string, string, string) (taskservice.StepSummary, error)
+	onGet        func(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
+	onAdd        func(context.Context, model.Principal, string, string, taskservice.AddTaskStep) (taskservice.StepsWriteResult, error)
+	onUpdate     func(context.Context, model.Principal, string, string, string, taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error)
+	onSetStatus  func(context.Context, model.Principal, string, string, string, taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error)
+	onMove       func(context.Context, model.Principal, string, string, string, taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error)
+	onDelete     func(context.Context, model.Principal, string, string, string, taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error)
+}
+
+func (o *mcpStepOperations) plan(actor model.Principal, order ...string) *mcpStepOperationPlan {
+	p := &mcpStepOperationPlan{owner: o, actor: actor, order: append([]string(nil), order...)}
+	o.mu.Lock()
+	o.current = p
+	o.mu.Unlock()
+	return p
+}
+func (p *mcpStepOperationPlan) verify() {
+	p.owner.t.Helper()
+	p.owner.mu.Lock()
+	defer p.owner.mu.Unlock()
+	if p.next != len(p.order) {
+		p.owner.t.Errorf("Step operation calls = %d, want %d (%v)", p.next, len(p.order), p.order)
+	}
+}
+func (o *mcpStepOperations) counts() map[string]int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make(map[string]int, len(o.total))
+	for k, v := range o.total {
+		out[k] = v
+	}
+	return out
+}
+func (o *mcpStepOperations) invoke(ctx context.Context, actor model.Principal, name string) *mcpStepOperationPlan {
+	marker := mcpStepRequestMarker(o.t, ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.total[name]++
+	p := o.current
+	if p == nil {
+		o.t.Errorf("unconfigured Step.%s call", name)
+		return nil
+	}
+	if p.next >= len(p.order) || p.order[p.next] != name {
+		o.t.Errorf("unexpected Step.%s call at index %d, want %v", name, p.next, p.order)
+		return nil
+	}
+	p.next++
+	if actor != p.actor {
+		o.t.Errorf("Step.%s actor = %+v, want %+v", name, actor, p.actor)
+	}
+	if marker != nil {
+		marker.mu.Lock()
+		calls, authenticated := marker.authCalls, marker.principal
+		marker.mu.Unlock()
+		if calls != 1 || authenticated != actor {
+			o.t.Errorf("Step.%s authentication = %d/%+v, want 1/%+v", name, calls, authenticated, actor)
+		}
+	}
+	if p.ctx == nil {
+		p.ctx, p.marker = ctx, marker
+	} else if p.ctx != ctx || p.marker != marker {
+		o.t.Errorf("Step.%s did not retain the tool context and request marker", name)
+	}
+	return p
+}
+func (o *mcpStepOperations) missing(name string) error {
+	o.t.Errorf("unconfigured Step.%s callback", name)
+	return errors.New("unconfigured Step." + name)
+}
+
+func (o *mcpStepOperations) ListPage(ctx context.Context, actor model.Principal, project, taskID string, after int64, limit int, version *int64, summary bool) (taskservice.StepsPage, error) {
+	p := o.invoke(ctx, actor, "ListPage")
+	if p == nil || p.onListPage == nil {
+		return taskservice.StepsPage{}, o.missing("ListPage")
+	}
+	return p.onListPage(ctx, actor, project, taskID, after, limit, version, summary)
+}
+func (o *mcpStepOperations) GetSummary(ctx context.Context, actor model.Principal, project, taskID, id string) (taskservice.StepSummary, error) {
+	p := o.invoke(ctx, actor, "GetSummary")
+	if p == nil || p.onGetSummary == nil {
+		return taskservice.StepSummary{}, o.missing("GetSummary")
+	}
+	return p.onGetSummary(ctx, actor, project, taskID, id)
+}
+func (o *mcpStepOperations) List(ctx context.Context, actor model.Principal, project, taskID string) (taskservice.StepsDocument, error) {
+	o.invoke(ctx, actor, "List")
+	return taskservice.StepsDocument{}, o.missing("List")
+}
+func (o *mcpStepOperations) Get(ctx context.Context, actor model.Principal, project, taskID, id string) (taskservice.StepDocument, error) {
+	p := o.invoke(ctx, actor, "Get")
+	if p == nil || p.onGet == nil {
+		return taskservice.StepDocument{}, o.missing("Get")
+	}
+	return p.onGet(ctx, actor, project, taskID, id)
+}
+func (o *mcpStepOperations) Add(ctx context.Context, actor model.Principal, project, taskID string, input taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+	p := o.invoke(ctx, actor, "Add")
+	if p == nil || p.onAdd == nil {
+		return taskservice.StepsWriteResult{}, o.missing("Add")
+	}
+	return p.onAdd(ctx, actor, project, taskID, input)
+}
+func (o *mcpStepOperations) Update(ctx context.Context, actor model.Principal, project, taskID, id string, input taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error) {
+	p := o.invoke(ctx, actor, "Update")
+	if p == nil || p.onUpdate == nil {
+		return taskservice.StepsWriteResult{}, o.missing("Update")
+	}
+	return p.onUpdate(ctx, actor, project, taskID, id, input)
+}
+func (o *mcpStepOperations) SetStatus(ctx context.Context, actor model.Principal, project, taskID, id string, input taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error) {
+	p := o.invoke(ctx, actor, "SetStatus")
+	if p == nil || p.onSetStatus == nil {
+		return taskservice.StepsWriteResult{}, o.missing("SetStatus")
+	}
+	return p.onSetStatus(ctx, actor, project, taskID, id, input)
+}
+func (o *mcpStepOperations) Move(ctx context.Context, actor model.Principal, project, taskID, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+	p := o.invoke(ctx, actor, "Move")
+	if p == nil || p.onMove == nil {
+		return taskservice.StepsWriteResult{}, o.missing("Move")
+	}
+	return p.onMove(ctx, actor, project, taskID, id, input)
+}
+func (o *mcpStepOperations) Delete(ctx context.Context, actor model.Principal, project, taskID, id string, input taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error) {
+	p := o.invoke(ctx, actor, "Delete")
+	if p == nil || p.onDelete == nil {
+		return taskservice.StepsWriteResult{}, o.missing("Delete")
+	}
+	return p.onDelete(ctx, actor, project, taskID, id, input)
 }

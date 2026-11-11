@@ -1,6 +1,6 @@
 //go:build stress
 
-package server
+package mcp
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
@@ -17,10 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -79,7 +82,7 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Fatal("stress tests are local-only")
 	}
-	base := projectTestStore(t)
+	base := testutil.OpenStore(t, postgres.Open)
 	gate := &stressStepsGate{entered: make(chan struct{}), release: make(chan struct{})}
 	cfg := base.Pool.Config().Copy()
 	cfg.ConnConfig.Tracer = gate
@@ -89,9 +92,20 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	db := &postgres.Store{Pool: pool}
-	handler := projectDatabaseTestHandler(t, db, io.Discard)
-	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Stress Steps", RepoURL: "https://example.com/stress-steps", ExpectedUserID: handler.principal.UserID})), 201)
-	task := createHTTPTask(t, handler, project.ID, "Parent")
+	_, principal, _ := testutil.AuthRecords(t, db)
+	project, err := testutil.CreatePrivateProject(t.Context(), db, principal, testutil.QueryID(1), "Stress Steps", "https://example.com/stress-steps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := taskservice.NewTasks(db).Create(t.Context(), principal, project.ID, taskcore.CreateTask{Title: "Parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := identityservice.New(db, nil, "")
+	pat, err := identity.CreatePAT(t.Context(), principal, identitycore.CreatePAT{Name: "Stress Steps"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 0, time.UTC)
 	header := model.TaskHeader{ProjectID: project.ID, ID: task.ID, Version: math.MaxInt64}
 	items := make([]model.TaskStep, 128)
@@ -123,9 +137,14 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	if remaining != 0 {
 		t.Fatal("fixture did not reach capacity")
 	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	session := mcpPATClient(t, server.URL, handler.token)
+	steps := taskservice.NewTaskSteps(db)
+	server, _ := newAdapterHost(t, identity, io.Discard, func(entry *Entry, _ string) error {
+		if err := RegisterStepReadTools(entry, steps); err != nil {
+			return err
+		}
+		return RegisterStepWriteTools(entry, steps)
+	})
+	session := mcpPATClient(t, server.URL, pat.Secret)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	args := map[string]any{"projectId": project.ID, "taskId": task.ID, "stepId": "00000000", "position": "last", "ifVersion": "1", "returnView": "summary"}
@@ -218,7 +237,7 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	for i, protocol := range []string{"2025-11-25", "2026-07-28"} {
 		runtime.GC()
 		client := sdk.NewClient(&sdk.Implementation{Name: "mcp-steps-capacity", Version: "1"}, nil)
-		connection, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: mcpPATTransport{token: handler.token}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: protocol})
+		connection, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: headerTransport{base: http.DefaultTransport, token: pat.Secret}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: protocol})
 		if err != nil {
 			t.Fatalf("%s connection: %v", protocol, err)
 		}
