@@ -63,11 +63,11 @@ func (w *Writer) ReportTaskSnapshots(ctx context.Context, userID string, invento
 		ids[index] = reference.TaskID
 	}
 	rows, err := w.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, worker_property.value, p.name
-		FROM tasks t
+		FROM task_resource_rows t
 		JOIN (`+pg.ProjectAccessRelation+`) a ON a.project_id=t.project_id AND a.user_id=$2
 		JOIN projects p ON p.id=t.project_id
  LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'
-		WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, ids, userID)
+		WHERE t.id=ANY($1::uuid[]) AND t.effective_deleted_at IS NULL`, ids, userID)
 	if err != nil {
 		return nil, pg.QueryError("read reported task sources", err)
 	}
@@ -173,9 +173,9 @@ func (s *Reader) filterWorkerTasks(ctx context.Context, userID string, workers [
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text FROM tasks t
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text FROM task_resource_rows t
 		JOIN (`+pg.ProjectAccessRelation+`) a ON a.project_id=t.project_id AND a.user_id=$2
-		WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, ids, userID)
+		WHERE t.id=ANY($1::uuid[]) AND t.effective_deleted_at IS NULL`, ids, userID)
 	if err != nil {
 		return pg.QueryError("filter worker task visibility", err)
 	}
@@ -212,7 +212,7 @@ func (s *Reader) WorkerSummaries(ctx context.Context, userID string, observedAt 
         w.telemetry->'machine'->>'ID', w.telemetry->'machine'->>'Name', w.telemetry->>'platform',
         w.task_snapshot->>'state', w.task_snapshot->'observedAt' AS task_observed_at,
         (SELECT count(*) FROM jsonb_array_elements(w.task_snapshot->'items') item
-          JOIN tasks t ON t.id=(item->>'taskId')::uuid AND t.project_id=(item->>'projectId')::uuid AND t.deleted_at IS NULL
+          JOIN task_resource_rows t ON t.id=(item->>'taskId')::uuid AND t.project_id=(item->>'projectId')::uuid AND t.effective_deleted_at IS NULL
           WHERE EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=t.project_id AND a.user_id=$1))
         FROM workers w
         WHERE w.user_id=$1 AND w.last_seen_at >= $2::timestamptz - interval '72 hours'

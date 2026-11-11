@@ -45,8 +45,8 @@ the parent and verifies the current remains valid while the parent credential re
 fails. Its grant, ledger, revocation, corrupt-data, rollback, cleanup and
 redaction assertions remain with the actual DAO and transaction mechanism.
 
-The [Go dependency policy decision](2026-11-08-go-test-dependency-boundaries.md)
-owns the common direct-operation rule. This decision applies it to Runtime
+The [component test ownership decision](2026-11-11-go-component-test-ownership.md)
+owns the common boundary selection rule. This decision uses a direct-operation boundary for Runtime
 without changing production authorization, lock order or lifecycle behavior.
 
 ## Alternatives

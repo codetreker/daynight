@@ -36,6 +36,22 @@ func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) 
 	if err != nil {
 		return input, err
 	}
+	if raw, ok := fields["type"]; ok {
+		var value string
+		if json.Unmarshal(raw, &value) != nil || value == "" {
+			return input, httpx.InvalidInput("type must be task or goal")
+		}
+		input.Type = model.TaskType(value)
+	}
+	if raw, ok := fields["parentId"]; ok {
+		value := "none"
+		if !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			if json.Unmarshal(raw, &value) != nil || value == "none" {
+				return input, httpx.InvalidInput("parentId must be a UUID or null")
+			}
+		}
+		input.Parent = &value
+	}
 	input.AssignedTo, err = httpx.OptionalString(fields, "assignedTo")
 	if err != nil {
 		return input, err
@@ -84,7 +100,7 @@ func searchResponse(page tasksearch.Page) api.TaskSearchPage {
 		if item.Context != nil {
 			c = &api.TaskSearchContext{TaskID: item.Context.TaskID, Title: item.Context.Title}
 		}
-		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
+		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, Type: string(item.Type), ParentID: item.ParentID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
 	}
 	return out
 }
@@ -95,7 +111,7 @@ func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, pri
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor")
+	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor", "type", "parentId")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return

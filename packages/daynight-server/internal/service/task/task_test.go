@@ -129,6 +129,23 @@ func (fixture *taskRuleFixture) dependencies(ctx context.Context, ids []string, 
 		}
 		return slices.Clone(tasks), nil
 	}
+	fixture.writer.VisibleTaskIDsFn = func(actual context.Context, requested []string) ([]string, error) {
+		if actual != ctx {
+			fixture.t.Fatal("dependency visibility query changed context")
+		}
+		var visible []string
+		for _, id := range requested {
+			if !slices.Contains(ids, id) {
+				fixture.t.Fatalf("unexpected dependency visibility query: %v", requested)
+			}
+			for _, task := range tasks {
+				if task.ID == id {
+					visible = append(visible, id)
+				}
+			}
+		}
+		return visible, nil
+	}
 }
 
 func (fixture *taskRuleFixture) noCycles(ctx context.Context, id string, ids []string) {

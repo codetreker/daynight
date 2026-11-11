@@ -4,6 +4,8 @@ import "time"
 
 type GraphTask struct {
 	ID                string     `json:"id"`
+	Type              string     `json:"type"`
+	ParentID          *string    `json:"parentId"`
 	TitlePreview      string     `json:"titlePreview"`
 	TitleTruncated    bool       `json:"titleTruncated"`
 	Status            string     `json:"status"`

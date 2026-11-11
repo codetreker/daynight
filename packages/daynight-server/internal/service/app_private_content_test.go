@@ -70,7 +70,7 @@ func TestOpenAppWithLoggerReportsMaintenance(t *testing.T) {
 		t.Fatal("private content lifecycle missing")
 	}
 	got := logs.wait(t, "private transfer maintenance")
-	if !strings.Contains(got, `"component":"mcptransfer"`) || !strings.Contains(got, `"temp_reserved_bytes":0`) || strings.Contains(got, c.UniAuthAppSecret) {
+	if !strings.Contains(got, `"component":"mcptransfer"`) || !strings.Contains(got, `"temp_reserved_bytes":0`) || strings.Contains(got, c.UniAuth.AppSecret) {
 		t.Fatalf("unsafe or incomplete maintenance record: %s", got)
 	}
 }
@@ -93,7 +93,7 @@ func TestOpenAppReportsBackgroundMaintenanceFailure(t *testing.T) {
 		}
 	})
 	got := logs.wait(t, "private transfer maintenance failed")
-	if !strings.Contains(got, `"operation":"maintain"`) || strings.Contains(got, c.UniAuthAppSecret) || strings.Contains(got, "private_transfers") {
+	if !strings.Contains(got, `"operation":"maintain"`) || strings.Contains(got, c.UniAuth.AppSecret) || strings.Contains(got, "private_transfers") {
 		t.Fatalf("unsafe failure log: %s", got)
 	}
 }

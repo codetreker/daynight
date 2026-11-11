@@ -15,8 +15,9 @@ import (
 	"syscall"
 	"testing"
 
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -171,7 +172,7 @@ func TestSafeFailureDiagnostics(t *testing.T) {
 		err        error
 		diagnostic string
 	}{
-		{&config.ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a numeric loopback IP"}, "DAYNIGHT_LISTEN_ADDR must use a numeric loopback IP"},
+		{&configvalue.ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a numeric loopback IP"}, "DAYNIGHT_LISTEN_ADDR must use a numeric loopback IP"},
 		{&store.Error{Phase: "connect", Cause: errors.New("password-secret")}, "database connect failed"},
 		{&RuntimeError{Phase: "listen", Cause: errors.New("password-secret")}, "HTTP listen failed"},
 	} {

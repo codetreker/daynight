@@ -54,12 +54,29 @@ it('distinguishes loading, absent, read error, stale and expiry at their boundar
   view.rerender(<WorkerMonitoring state={{ ...state(absent), expired: true }} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
 });
 
-it('presents a batch summary without inventing a reason and localizes the available phase', () => {
-  const item: WorkerMonitoringItem = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: { capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: receivedAt, nextPollAt: null }, capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [], permissionProjection: 'current' } } };
-  const view = renderWithLocale(<MonitoringCard item={item} now={time + 90_000} />, { locale: 'zh-CN' });
-  expect(screen.getByText('等待下次检查')).toBeInTheDocument(); expect(screen.getByText(/执行名额: 2 \/ 2 已占用/)).toBeInTheDocument(); expect(screen.getByText(/运行观测已陈旧/)).toBeInTheDocument();
-  expect(screen.queryByText(/清理占用容量/)).toBeNull();
-  view.rerender(<MonitoringCard item={item} now={time + 3_600_000} />); expect(screen.getByText('运行观测已过期')).toBeInTheDocument();
+const summary: Extract<WorkerMonitoringItem, { state: 'available' }> = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
+  capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: receivedAt, nextPollAt: null },
+  capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: ['cleanup-capacity-blocked'], permissionProjection: 'current' },
+} };
+
+it('keeps phase and capacity while omitting diagnostics at the age and expiry boundaries', () => {
+  const view = renderWithLocale(<MonitoringCard item={summary} now={time} />, { locale: 'zh-CN' });
+  const card = view.container.querySelector('.monitoring-card-state')!;
+  expect(card).toHaveTextContent('等待下次检查执行名额: 2 / 2 已占用');
+  expect(card.children).toHaveLength(2); expect(card.querySelector('time')).toBeNull();
+  expect(card).not.toHaveTextContent('清理占用容量'); expect(card).not.toHaveTextContent('收到时间');
+  view.rerender(<MonitoringCard item={summary} now={time + 90_000} />);
+  expect(card).not.toHaveTextContent('运行观测已陈旧'); expect(card.children).toHaveLength(2);
+  view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, capacity: { ...summary.summary.capacity!, quality: 'stale' } } }} now={time + 90_000} />);
+  expect(card).toHaveTextContent('运行观测已陈旧'); expect(card.children).toHaveLength(2);
+  view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, capacity: null } }} now={time + 3_599_999} />);
+  expect(card).toHaveTextContent('尚未观测到容量。'); expect(card.children).toHaveLength(2);
+  view.rerender(<MonitoringCard item={summary} now={time + 3_600_000} />); expect(screen.getByText('运行观测已过期')).toBeInTheDocument();
+  view.rerender(<MonitoringCard item={summary} now={null} />); expect(screen.getByText('未知')).toBeInTheDocument();
+  view.rerender(<MonitoringCard item={null} now={time} />); expect(screen.getByText('运行监控: 未知')).toBeInTheDocument();
+  const absent: WorkerMonitoringItem = { workerId: id(1), state: 'absent', revision: null, receivedAt: null, expiresAt: null, summary: null };
+  view.rerender(<MonitoringCard item={absent} now={time} />); expect(screen.getByText('没有近期运行观测')).toBeInTheDocument();
+  view.rerender(<MonitoringCard item={absent} now={time} expired />); expect(screen.getByText('运行观测已过期')).toBeInTheDocument();
 });
 
 it.each([
@@ -70,27 +87,29 @@ it.each([
   ['no-projects-selected', 'No projects selected', '未选择项目'], ['no-ready-tasks', 'No ready tasks', '没有就绪任务'],
   ['claim-unconfirmed', 'Claim unconfirmed', '领取结果未确认'], ['retained-resource-conflict', 'Retained resource conflict', '保留资源冲突'],
   ['stopping', 'Stopping', '正在停止'],
-] as const)('presents the actual summary reason %s in both languages', (code, english, chinese) => {
-  const item: WorkerMonitoringItem = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
-    capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: null, nextPollAt: null },
-    capacity: null, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [code], permissionProjection: 'current' },
-  } };
+] as const)('omits reason %s from the summary but localizes it in detail', (code, english, chinese) => {
+  const item: WorkerMonitoringItem = { ...summary, summary: { ...summary.summary, admission: { ...summary.summary.admission, reasonCodes: [code] } } };
+  const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, admission: { ...detail.data.admission, reasons: [{ ...detail.data.admission.reasons[0]!, code }] } } };
   const view = renderWithLocale(<MonitoringCard item={item} now={time} />, { locale: 'en' });
-  expect(screen.getByText(english)).toBeInTheDocument(); view.setLocale('zh-CN'); expect(screen.getByText(chinese)).toBeInTheDocument();
+  expect(screen.queryByText(english)).toBeNull(); expect(view.container.querySelector('time')).toBeNull();
+  view.setLocale('zh-CN'); expect(screen.queryByText(chinese)).toBeNull();
+  view.rerender(<WorkerMonitoring state={state(snapshot)} readEnabled />);
+  expect(screen.getByRole('heading', { name: '准入原因' }).parentElement).toHaveTextContent(chinese);
+  view.setLocale('en'); expect(screen.getByRole('heading', { name: 'Admission reasons' }).parentElement).toHaveTextContent(english);
 });
 
-it('never presents missing, partial, restricted or withdrawn summary reasons as idle', () => {
-  const base: Extract<WorkerMonitoringItem, { state: 'available' }> = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
-    capturedAt: receivedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', lastSuccessfulAt: null, nextPollAt: null },
-    capacity: { observedAt: receivedAt, quality: 'current', limit: 2, occupied: 2, available: 0 }, detailCoverage: 'complete', admission: { observedAt: receivedAt, coverage: 'complete', reasonCodes: [], permissionProjection: 'restricted' },
-  } };
-  const view = renderWithLocale(<MonitoringCard item={base} now={time} />, { locale: 'en' });
-  expect(screen.queryByText('No ready tasks')).toBeNull(); expect(screen.getByText('Admission reason unknown')).toBeInTheDocument();
-  expect(screen.getByText(/Some reasons are not visible/)).toBeInTheDocument();
-  view.rerender(<MonitoringCard item={{ ...base, summary: { ...base.summary, admission: { ...base.summary.admission, coverage: 'partial', reasonCodes: [] } } }} now={time} />);
-  expect(screen.getByText('Admission reason unknown')).toBeInTheDocument(); expect(screen.queryByText('No ready tasks')).toBeNull();
-  view.rerender(<MonitoringCard item={{ ...base, summary: { ...base.summary, admission: null } }} now={time} />);
-  expect(screen.getByText('Admission reason unknown')).toBeInTheDocument(); expect(screen.getByText(/2 \/ 2 occupied/)).toBeInTheDocument();
+it('omits reason and timestamps for empty, partial, restricted and withdrawn admission', () => {
+  const view = renderWithLocale(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: { ...summary.summary.admission, reasonCodes: [] } } }} now={time} />, { locale: 'en' });
+  const card = view.container.querySelector('.monitoring-card-state')!;
+  const assertSummary = () => {
+    expect(card).toHaveTextContent('Waiting for next check'); expect(card).toHaveTextContent('2 / 2 occupied');
+    expect(card.children).toHaveLength(2); expect(card.querySelector('time')).toBeNull();
+    expect(card).not.toHaveTextContent(/Admission|Received|No ready tasks|Some reasons/);
+  };
+  assertSummary();
+  view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: { ...summary.summary.admission, coverage: 'partial', reasonCodes: ['no-ready-tasks'] } } }} now={time} />); assertSummary();
+  view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: { ...summary.summary.admission, permissionProjection: 'restricted' } } }} now={time} />); assertSummary();
+  view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: null } }} now={time} />); assertSummary();
 });
 
 it('marks capacity responsibility truncation even with a nonempty list', () => {

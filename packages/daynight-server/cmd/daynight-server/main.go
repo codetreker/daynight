@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -28,7 +30,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	if len(args) != 0 {
-		httpx.LogFailure(logger, ctx, "configuration", "arguments", &config.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})
+		httpx.LogFailure(logger, ctx, "configuration", "arguments", &configvalue.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -38,7 +40,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		httpx.LogFailure(logger, ctx, "configuration", "load", err)
 		return 1
 	}
-	startup, cancelStartup := context.WithTimeout(ctx, cfg.StartupTimeout)
+	startup, cancelStartup := context.WithTimeout(ctx, cfg.Server.StartupTimeout)
 	defer cancelStartup()
 	app, err := service.OpenAppWithLogger(startup, cfg, logger)
 	if err != nil {
@@ -52,13 +54,13 @@ func serveApp(ctx, startup context.Context, cancelStartup context.CancelFunc, cf
 	handler, err := server.New(app, cfg, logger)
 	if err == nil {
 		var metrics []server.MetricsEndpoint
-		if cfg.MetricsListenAddress != "" {
-			metrics = append(metrics, server.MetricsEndpoint{Address: cfg.MetricsListenAddress, Registry: app.Metrics})
+		if cfg.Monitoring.Metrics.MetricsListenAddress != "" {
+			metrics = append(metrics, server.MetricsEndpoint{Address: cfg.Monitoring.Metrics.MetricsListenAddress, Registry: app.Metrics})
 		}
-		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close, metrics...)
+		runtime, startErr := server.Start(startup, cfg.Server.ListenAddress, cfg.Server.StartupTimeout, cfg.Server.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close, metrics...)
 		if startErr == nil {
 			if startErr = app.Start(ctx); startErr != nil {
-				cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+				cleanup, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 				defer cancel()
 				err = errors.Join(startErr, runtime.Close(cleanup))
 				httpx.LogFailure(logger, ctx, "server", "startup", err)

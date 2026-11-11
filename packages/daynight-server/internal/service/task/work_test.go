@@ -22,11 +22,18 @@ var workTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 type workServiceReader struct {
 	store.TaskReader
+	bodies  func(context.Context, string, []string) ([]model.Task, error)
 	fence   store.TaskListFence
 	groups  func(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error)
 	targets func(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error)
 }
 
+func (r *workServiceReader) TaskBodies(ctx context.Context, project string, ids []string) ([]model.Task, error) {
+	if r.bodies == nil {
+		panic("unexpected TaskBodies")
+	}
+	return r.bodies(ctx, project, ids)
+}
 func (r *workServiceReader) TaskCacheEpoch(context.Context, string) (string, error) {
 	return workProject, nil
 }

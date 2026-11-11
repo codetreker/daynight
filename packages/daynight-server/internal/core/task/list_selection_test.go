@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -297,7 +298,7 @@ func TestTaskAssignedToCursorScopeAndVersion(t *testing.T) {
 		t.Fatalf("self-filtered cursor: %#v %v", page, err)
 	}
 	fields := selectionCursorFields(t, *page.NextCursor)
-	if fields["version"] != float64(2) || fields["kind"] != "tasks" {
+	if fields["version"] != float64(3) || fields["kind"] != "tasks" {
 		t.Fatalf("task cursor version/kind: %#v", fields)
 	}
 	request.Cursor, request.AssignedTo = page.NextCursor, ptr(strings.ToUpper(actor))
@@ -322,5 +323,30 @@ func TestTaskAssignedToCursorScopeAndVersion(t *testing.T) {
 	for _, invalid := range []string{"", "ME", "Unassigned", " me", "null", "bad", strings.Repeat("a", 36)} {
 		_, err := reader.list(actor, ListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &invalid})
 		selectionInvalidInput(t, err)
+	}
+}
+
+func TestTaskResourceCursorScope(t *testing.T) {
+	project, actor := "abcdef22-2222-4222-8222-222222222222", "abcdef11-1111-4111-8111-111111111111"
+	parent := "abcdef33-3333-4333-8333-333333333333"
+	selection, err := SelectList(project, actor, ListRequest{PageRequest: model.PageRequest{Limit: 1}, Parent: &parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := query.EncodeListCursor(selection.Scope, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "abcdef44-4444-4444-8444-444444444444")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []ListRequest{
+		{PageRequest: model.PageRequest{Limit: 1, Cursor: &cursor}},
+		{PageRequest: model.PageRequest{Limit: 1, Cursor: &cursor}, Parent: ptr("none")},
+		{PageRequest: model.PageRequest{Limit: 1, Cursor: &cursor}, Type: model.TaskTypeGoal},
+	} {
+		if _, err := SelectList(project, actor, request); err == nil {
+			t.Fatalf("accepted different scope: %#v", request)
+		}
+	}
+	if _, err := SelectList(project, actor, ListRequest{PageRequest: model.PageRequest{Limit: 1}, Type: model.TaskTypeGoal, Parent: &parent}); err == nil {
+		t.Fatal("accepted Goal parent")
 	}
 }

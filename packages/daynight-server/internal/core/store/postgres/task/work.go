@@ -10,12 +10,12 @@ import (
 )
 
 const workComponents = `WITH RECURSIVE reach(seed,id) AS (
- SELECT id,id FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND status='in_progress' AND assigned_to=$2::uuid
+ SELECT id,id FROM task_resource_rows WHERE project_id=$1 AND effective_deleted_at IS NULL AND type='task' AND status='in_progress' AND assigned_to=$2::uuid
  UNION
  SELECT member.seed,neighbor.id FROM reach member CROSS JOIN LATERAL (
  SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
  UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
- ) neighbor JOIN LATERAL (SELECT id FROM tasks WHERE project_id=$1 AND id=neighbor.id AND deleted_at IS NULL OFFSET 0) live ON true
+ ) neighbor JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND effective_deleted_at IS NULL AND type='task' OFFSET 0) live ON true
 ), labels AS (SELECT seed,min(id::text) AS group_id FROM reach GROUP BY seed),
  members AS MATERIALIZED (SELECT DISTINCT labels.group_id,reach.id FROM reach JOIN labels USING(seed)),
  roots AS MATERIALIZED (SELECT m.group_id,t.id,t.created_at FROM members m JOIN tasks t ON t.id=m.id AND t.project_id=$1
@@ -80,11 +80,11 @@ func (s *Reader) TaskWorkGroups(ctx context.Context, projectID string, q store.T
 }
 
 const workTargetComponents = `WITH RECURSIVE members(group_id,id) AS (
- SELECT id::text,id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) AND deleted_at IS NULL
+ SELECT id::text,id FROM task_resource_rows WHERE project_id=$1 AND id=ANY($2::uuid[]) AND effective_deleted_at IS NULL AND type='task'
  UNION SELECT member.group_id,neighbor.id FROM members member CROSS JOIN LATERAL (
  SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
  UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
- ) neighbor JOIN LATERAL (SELECT id FROM tasks WHERE project_id=$1 AND id=neighbor.id AND deleted_at IS NULL OFFSET 0) live ON true
+ ) neighbor JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND effective_deleted_at IS NULL AND type='task' OFFSET 0) live ON true
 ) `
 
 func (s *Reader) TaskWorkTargets(ctx context.Context, projectID string, groups []string, after *store.TaskWorkTargetPosition, limit int) (store.TaskWorkTargets, error) {

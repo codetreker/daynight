@@ -157,7 +157,7 @@ func newTaskResourceFixture(t *testing.T) *taskResourceFixture {
 func taskFixtureTask() model.Task {
 	stamp := time.Date(2026, 11, 1, 2, 3, 4, 567000000, time.UTC)
 	assigned := testUserID
-	return model.Task{ID: testTargetID, ProjectID: testProjectID, Title: "Test task", Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: stamp, UpdatedAt: stamp, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: &assigned, Ready: true}
+	return model.Task{ID: testTargetID, ProjectID: testProjectID, Type: model.TaskTypeTask, Title: "Test task", Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: stamp, UpdatedAt: stamp, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: &assigned, Ready: true}
 }
 
 type taskResourceQueryMock struct {

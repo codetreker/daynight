@@ -507,7 +507,9 @@ service’s creation-time and Worker ID order within each group. Heartbeats do n
 change that relative order.
 
 The list also reads current monitoring summaries in batches of at most 100 loaded
-Worker IDs and presents their permission-filtered admission reasons. Detail shows scheduling and admission, actual capacity, parallel
+Worker IDs. Cards show the scheduling phase and capacity, including the capacity
+stale indicator, without admission reasons or monitoring timestamps and age.
+Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
 retry times are displayed without inventing external waits or deadlines.
@@ -519,7 +521,8 @@ distinct presentations; failed monitoring reads retain dated observations and
 leave host resources visible. Project withdrawal removes associated private
 details and invalidates list reason sets whose individual scopes are unavailable;
 late responses cannot restore them. Total Worker capacity remains visible, and
-reported identity-free reasons return on an admitted reread. Background checks retain page interaction and
+reported identity-free reasons return in the projection on an admitted reread.
+Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
@@ -2020,8 +2023,11 @@ task details at that file, even while preview content is loading.
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, five-state setting,
 automatic-execution permission, execution platform, assignee and attachment management.
-`TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
-and focus restoration. `TaskDetailPage` provides an ordinary full-page container,
+`TaskDetailDialog` supplies the modal portal. `DetailFrame` and its overlay hook
+share the focus loop, counted scroll lock, fullscreen scroll restoration and
+kept-mounted slots. Explicit parent ownership follows React across portals;
+child layers hold inert leases on their parent and alone handle detail Escape/Tab.
+Focus restoration remains with the opening workspace. `TaskDetailPage` provides an ordinary full-page container,
 return-to-project link and language selector. Their outer workspaces own fullscreen
 mode and the shared Surface handles layered Escape. Standalone fullscreen hides
 the auxiliary top bar while keeping an explicit return-to-project link in the
@@ -2032,7 +2038,7 @@ platform use the same confirmation/review owner; assignment uses the same mutati
 gate and review freshness. File deletion keeps its own
 modal confirmation. These interactions remain available in either container.
 Ordinary standalone mode retains native page and frame keys. Fullscreen supplies
-an `AttachmentKeyboardOwner` with the active reading root and `onEscape`; the
+an `AttachmentKeyboardOwner` with the active reading root, layer eligibility and `onEscape`; the
 already-loaded same-origin frame updates its listeners without reloading. The
 bridge adds a final Window handler for each Escape/Tab event after the child
 application's current Window consumers, so consumed shortcuts retain precedence

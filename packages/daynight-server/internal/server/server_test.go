@@ -1,0 +1,695 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+)
+
+type Dependencies struct {
+	Store store.Transactions
+	Ready func(context.Context) error
+	Files filestorage.Storage
+}
+
+func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.Handler, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	client, err := service.NewIdentityClient(c.UniAuth)
+	if err != nil {
+		return nil, err
+	}
+	return New(service.NewModules(c, d.Store, d.Ready, d.Files, client), c, logger)
+}
+
+type resourceTestHandler struct {
+	http.Handler
+	token     string
+	principal model.Principal
+}
+
+func resourceTestServer(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+	return resourceTestServerForPrincipal(t, database, files, output, defaultHTTPPrincipal())
+}
+
+func resourceTestServerForPrincipal(t *testing.T, database store.Transactions, files filestorage.Storage, output io.Writer, principal model.Principal) *resourceTestHandler {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, configuredTestConfig(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := handler.(Handler)
+	t.Cleanup(func() {
+		application.BeginShutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := application.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return &resourceTestHandler{Handler: httpx.RequestLogging(logger, handler), token: httpTestToken(principal.Kind), principal: principal}
+}
+
+func authorizeResourceRequest(handler http.Handler, request *http.Request) {
+	if resource, ok := handler.(*resourceTestHandler); ok {
+		request.Header.Set("Authorization", "Bearer "+resource.token)
+	}
+}
+
+// Each callback supplies independent facts; writes never determine later reads.
+type httpTestStore struct {
+	t                           *testing.T
+	ReadSnapshotCall            func(ctx context.Context, fn func(store.SnapshotScope) error) error
+	WriteIdentityCall           func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
+	WriteProjectCall            func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
+	WriteProjectCreationCall    func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
+	CreateTeamCall              func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
+	WriteTeamCall               func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
+	WriteWorkerCall             func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
+	ReadPromptSnapshotCall      func(ctx context.Context, fn func(store.PromptSnapshot) error) error
+	WritePromptCall             func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
+	WriteBotCall                func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
+	WriteSessionCall            func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
+	WriteThreadCall             func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
+	WriteAttachmentMutationCall func(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error)
+	PutAttachmentCall           func(ctx context.Context, item model.Attachment) (model.Attachment, bool, error)
+	DeleteAttachmentCall        func(ctx context.Context, project, task, path string) error
+	WritePrivateTransferCall    func(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error)
+	WriteOAuthClientsCall       func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
+	WriteAuthorizationsCall     func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
+	WriteCredentialFamilyCall   func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
+	WriteGrantLifecycleCall     func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
+	ReadTaskSearchCall          func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
+	WriteWebhookCall            func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
+	ReadWebhookSnapshotCall     func(ctx context.Context, fn func(store.WebhookReadScope) error) error
+}
+
+var _ store.Transactions = (*httpTestStore)(nil)
+
+func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
+	if s.ReadSnapshotCall == nil {
+		unexpectedHTTPCall(s.t, "ReadSnapshot")
+	}
+	return s.ReadSnapshotCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteIdentity(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error) {
+	if s.WriteIdentityCall == nil {
+		unexpectedHTTPCall(s.t, "WriteIdentity")
+	}
+	return s.WriteIdentityCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if s.WriteProjectCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProject")
+	}
+	return s.WriteProjectCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteProjectCreation(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error) {
+	if s.WriteProjectCreationCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectCreation")
+	}
+	return s.WriteProjectCreationCall(ctx, owner, fn)
+}
+
+func (s *httpTestStore) CreateTeam(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error) {
+	if s.CreateTeamCall == nil {
+		unexpectedHTTPCall(s.t, "CreateTeam")
+	}
+	return s.CreateTeamCall(ctx, owner, fn)
+}
+
+func (s *httpTestStore) WriteTeam(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error) {
+	if s.WriteTeamCall == nil {
+		unexpectedHTTPCall(s.t, "WriteTeam")
+	}
+	return s.WriteTeamCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteWorker(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error) {
+	if s.WriteWorkerCall == nil {
+		unexpectedHTTPCall(s.t, "WriteWorker")
+	}
+	return s.WriteWorkerCall(ctx, fn)
+}
+
+func (s *httpTestStore) ReadPromptSnapshot(ctx context.Context, fn func(store.PromptSnapshot) error) error {
+	if s.ReadPromptSnapshotCall == nil {
+		unexpectedHTTPCall(s.t, "ReadPromptSnapshot")
+	}
+	return s.ReadPromptSnapshotCall(ctx, fn)
+}
+
+func (s *httpTestStore) WritePrompt(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error) {
+	if s.WritePromptCall == nil {
+		unexpectedHTTPCall(s.t, "WritePrompt")
+	}
+	return s.WritePromptCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteBot(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {
+	if s.WriteBotCall == nil {
+		unexpectedHTTPCall(s.t, "WriteBot")
+	}
+	return s.WriteBotCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteSession(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	if s.WriteSessionCall == nil {
+		unexpectedHTTPCall(s.t, "WriteSession")
+	}
+	return s.WriteSessionCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteThread(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error) {
+	if s.WriteThreadCall == nil {
+		unexpectedHTTPCall(s.t, "WriteThread")
+	}
+	return s.WriteThreadCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteAttachmentMutation(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error) {
+	if s.WriteAttachmentMutationCall == nil {
+		unexpectedHTTPCall(s.t, "WriteAttachmentMutation")
+	}
+	return s.WriteAttachmentMutationCall(ctx, fn)
+}
+
+func (s *httpTestStore) PutAttachment(ctx context.Context, item model.Attachment) (model.Attachment, bool, error) {
+	if s.PutAttachmentCall == nil {
+		unexpectedHTTPCall(s.t, "PutAttachment")
+	}
+	return s.PutAttachmentCall(ctx, item)
+}
+
+func (s *httpTestStore) DeleteAttachment(ctx context.Context, project, task, path string) error {
+	if s.DeleteAttachmentCall == nil {
+		unexpectedHTTPCall(s.t, "DeleteAttachment")
+	}
+	return s.DeleteAttachmentCall(ctx, project, task, path)
+}
+
+func (s *httpTestStore) WritePrivateTransfer(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error) {
+	if s.WritePrivateTransferCall == nil {
+		unexpectedHTTPCall(s.t, "WritePrivateTransfer")
+	}
+	return s.WritePrivateTransferCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteOAuthClients(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error) {
+	if s.WriteOAuthClientsCall == nil {
+		unexpectedHTTPCall(s.t, "WriteOAuthClients")
+	}
+	return s.WriteOAuthClientsCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteAuthorizations(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error) {
+	if s.WriteAuthorizationsCall == nil {
+		unexpectedHTTPCall(s.t, "WriteAuthorizations")
+	}
+	return s.WriteAuthorizationsCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteCredentialFamily(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
+	if s.WriteCredentialFamilyCall == nil {
+		unexpectedHTTPCall(s.t, "WriteCredentialFamily")
+	}
+	return s.WriteCredentialFamilyCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteGrantLifecycle(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error) {
+	if s.WriteGrantLifecycleCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGrantLifecycle")
+	}
+	return s.WriteGrantLifecycleCall(ctx, fn)
+}
+
+func (s *httpTestStore) ReadTaskSearch(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error {
+	if s.ReadTaskSearchCall == nil {
+		unexpectedHTTPCall(s.t, "ReadTaskSearch")
+	}
+	return s.ReadTaskSearchCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteWebhook(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error) {
+	if s.WriteWebhookCall == nil {
+		unexpectedHTTPCall(s.t, "WriteWebhook")
+	}
+	return s.WriteWebhookCall(ctx, owner, id, fn)
+}
+
+func (s *httpTestStore) ReadWebhookSnapshot(ctx context.Context, fn func(store.WebhookReadScope) error) error {
+	if s.ReadWebhookSnapshotCall == nil {
+		unexpectedHTTPCall(s.t, "ReadWebhookSnapshot")
+	}
+	return s.ReadWebhookSnapshotCall(ctx, fn)
+}
+
+func unexpectedHTTPCall(t *testing.T, name string) {
+	t.Helper()
+	t.Errorf("unconfigured or extra DAO call: %s", name)
+	panic("unconfigured or extra DAO call: " + name)
+}
+
+func defaultHTTPPrincipal() model.Principal {
+	return model.Principal{UserID: "a1111111-1111-4111-8111-111111111111", CredentialID: "b2222222-2222-4222-8222-222222222222", Kind: model.PATCredential}
+}
+
+func httpTestToken(kind model.CredentialKind) string {
+	const value = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	switch kind {
+	case model.PATCredential:
+		return "dnpat_" + value
+	case model.SessionCredential:
+		return "dnst_" + value
+	case model.OAuthCredential:
+		return model.OAuthAccessPrefix + value
+	default:
+		panic("unsupported HTTP fixture credential kind: " + string(kind))
+	}
+}
+
+func defaultHTTPToken() string { return httpTestToken(model.PATCredential) }
+
+func newHTTPTestStore(t *testing.T) *httpTestStore {
+	return newHTTPTestStoreForPrincipal(t, defaultHTTPPrincipal())
+}
+
+func newHTTPTestStoreForPrincipal(t *testing.T, principal model.Principal) *httpTestStore {
+	t.Helper()
+	s := &httpTestStore{t: t}
+	s.WriteIdentityCall = func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error) {
+		dao := &httpAuthenticationDAO{httpRejectedIdentityDAO: httpRejectedIdentityDAO{t: t}, principal: principal, hash: secret.Hash(httpTestToken(principal.Kind))}
+		err := fn(httpAuthenticationScope{t: t, dao: dao})
+		if dao.calls != 1 {
+			t.Errorf("authentication DAO calls = %d, want 1", dao.calls)
+		}
+		if err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
+	return s
+}
+
+type httpAuthenticationScope struct {
+	t   *testing.T
+	dao store.IdentityDAO
+}
+
+func (s httpAuthenticationScope) IdentityDAO() store.IdentityDAO { return s.dao }
+func (s httpAuthenticationScope) PersonalTeamDAO() store.PersonalTeamDAO {
+	unexpectedHTTPCall(s.t, "PersonalTeamDAO")
+	return nil
+}
+
+type httpAuthenticationDAO struct {
+	httpRejectedIdentityDAO
+	principal model.Principal
+	hash      []byte
+	calls     int
+}
+
+func (d *httpAuthenticationDAO) Authenticate(ctx context.Context, kind model.CredentialKind, hash []byte, now time.Time) (model.Principal, error) {
+	d.calls++
+	if d.calls != 1 || kind != d.principal.Kind || !bytes.Equal(hash, d.hash) || now.IsZero() || now.Location() != time.UTC {
+		d.t.Errorf("authentication arguments/calls = %s/%x/%v/%d", kind, hash, now, d.calls)
+		panic("invalid authentication DAO call")
+	}
+	return d.principal, nil
+}
+
+type httpRejectedIdentityDAO struct{ t *testing.T }
+
+func (d httpRejectedIdentityDAO) Authenticate(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.Authenticate")
+	panic("unreachable")
+}
+
+func (d httpRejectedIdentityDAO) CleanupCredentials(context.Context, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.CleanupCredentials")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) CleanupLoginCredentials(context.Context, time.Time, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.CleanupLoginCredentials")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) AdmitLogin(context.Context, []byte, int, int) (time.Time, string, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.AdmitLogin")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) InsertLogin(context.Context, model.LoginTransaction) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.InsertLogin")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) ConsumeLogin(context.Context, []byte, []byte, time.Time) (model.LoginTransaction, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.ConsumeLogin")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.UpsertUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) InsertSession(context.Context, model.Session) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.InsertSession")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) IdentityUser(context.Context, string) (model.User, store.PersonalTeamFacts, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.IdentityUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) IdentityPersonalTeam(context.Context, string) (store.PersonalTeamFacts, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.IdentityPersonalTeam")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) DeleteSession(context.Context, model.Principal) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.DeleteSession")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) LockSession(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockSession")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) InsertPAT(context.Context, model.PersonalAccessToken) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.InsertPAT")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) ListPATs(context.Context, string, time.Time) ([]model.PersonalAccessToken, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.ListPATs")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) DeletePAT(context.Context, string, string) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.DeletePAT")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) LockActivePAT(context.Context, string, string, time.Time) (model.PersonalAccessToken, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockActivePAT")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) SetPATExpiry(context.Context, string, *time.Time) (model.PersonalAccessToken, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.SetPATExpiry")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) PruneDeviceRates(context.Context, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PruneDeviceRates")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) IncrementDeviceRate(context.Context, model.DeviceRateBucket, time.Time) (int, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.IncrementDeviceRate")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) PruneDevices(context.Context, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PruneDevices")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) InsertDevice(context.Context, model.DeviceAuthorization) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.InsertDevice")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) DeviceByUserCode(context.Context, string, string, bool) (model.DeviceAuthorization, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.DeviceByUserCode")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) LockDeviceByHash(context.Context, []byte) (model.DeviceAuthorization, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockDeviceByHash")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) SetDeviceDecision(context.Context, string, string, string) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.SetDeviceDecision")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) DelayDevicePoll(context.Context, string, time.Time, bool) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.DelayDevicePoll")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) ConsumeDevice(context.Context, string) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.ConsumeDevice")
+	panic("unreachable")
+}
+
+// Independent operations use independent plans rather than a cross-goroutine FIFO.
+type httpCallPlan struct {
+	t          *testing.T
+	mu         sync.Mutex
+	want, seen map[string]int
+}
+
+func newHTTPCallPlan(t *testing.T, want map[string]int) *httpCallPlan {
+	t.Helper()
+	p := &httpCallPlan{t: t, want: make(map[string]int, len(want)), seen: make(map[string]int)}
+	for name, count := range want {
+		p.want[name] = count
+	}
+	t.Cleanup(p.Verify)
+	return p
+}
+func (p *httpCallPlan) Called(name string) {
+	p.mu.Lock()
+	p.seen[name]++
+	got, want := p.seen[name], p.want[name]
+	p.mu.Unlock()
+	if got > want {
+		unexpectedHTTPCall(p.t, name)
+	}
+}
+func (p *httpCallPlan) Verify() {
+	p.t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for name, want := range p.want {
+		if p.seen[name] != want {
+			p.t.Errorf("DAO %s calls = %d, want %d", name, p.seen[name], want)
+		}
+	}
+}
+
+type httpTestSnapshot struct {
+	t              *testing.T
+	Credentials    store.CredentialReader
+	Teams          store.TeamReader
+	Projects       store.ProjectReader
+	Tasks          store.TaskReader
+	Workers        store.WorkerReader
+	Sessions       store.SessionReader
+	Bots           store.BotReader
+	Attachments    store.AttachmentReader
+	ObservedAtCall func(context.Context) (time.Time, error)
+}
+
+func newHTTPTestSnapshot(t *testing.T) *httpTestSnapshot { return &httpTestSnapshot{t: t} }
+func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
+	if s.Credentials == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")
+	}
+	return s.Credentials
+}
+func (s *httpTestSnapshot) TeamDAO() store.TeamReader {
+	if s.Teams == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.TeamDAO")
+	}
+	return s.Teams
+}
+func (s *httpTestSnapshot) ProjectDAO() store.ProjectReader {
+	if s.Projects == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.ProjectDAO")
+	}
+	return s.Projects
+}
+func (s *httpTestSnapshot) TaskDAO() store.TaskReader {
+	if s.Tasks == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.TaskDAO")
+	}
+	return s.Tasks
+}
+func (s *httpTestSnapshot) WorkerDAO() store.WorkerReader {
+	if s.Workers == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.WorkerDAO")
+	}
+	return s.Workers
+}
+func (s *httpTestSnapshot) SessionDAO() store.SessionReader {
+	if s.Sessions == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.SessionDAO")
+	}
+	return s.Sessions
+}
+func (s *httpTestSnapshot) BotDAO() store.BotReader {
+	if s.Bots == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.BotDAO")
+	}
+	return s.Bots
+}
+func (s *httpTestSnapshot) AttachmentDAO() store.AttachmentReader {
+	if s.Attachments == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.AttachmentDAO")
+	}
+	return s.Attachments
+}
+func (s *httpTestSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
+	if s.ObservedAtCall == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.ObservedAt")
+	}
+	return s.ObservedAtCall(ctx)
+}
+
+func TestReadinessUsesResourceAndReportsFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	var failure error
+	calls := 0
+	healthRoutes(mux, func(ctx context.Context) error {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("readiness has no deadline")
+		}
+		return failure
+	}, testLogger())
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		if status != http.StatusOK {
+			failure = errors.New("private database failure")
+		}
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if response.Code != status || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("readiness status=%d headers=%v", response.Code, response.Header())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("readiness called %d times", calls)
+	}
+}
+
+const uiTestScriptPath = "/assets/app-12345678.js"
+
+func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
+	return httpx.RequestLogging(logger, handler)
+}
+
+func TestUIWiringAndUnknownRoutes(t *testing.T) {
+	var logs bytes.Buffer
+	handler := uiTestHandler(t, &logs)
+	root := projectRequest(handler, http.MethodGet, "/", "")
+	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><body>server test shell</body></html>\n" {
+		t.Fatalf("root UI response: %d %+v", root.Code, root.Header())
+	}
+	var entries []map[string]any
+	decoder := json.NewDecoder(&logs)
+	for decoder.More() {
+		var entry map[string]any
+		if err := decoder.Decode(&entry); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
+		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
+	}
+	device := projectRequest(handler, http.MethodGet, "/device?user_code=BCDFG-HJKLM", "")
+	if device.Code != http.StatusOK || !bytes.Equal(device.Body.Bytes(), root.Body.Bytes()) || device.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("device shell wiring: %d %+v", device.Code, device.Header())
+	}
+	asset := projectRequest(handler, http.MethodGet, uiTestScriptPath, "")
+	if asset.Code != http.StatusOK || asset.Body.String() != "console.log(\"server test asset\");\n" || asset.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("asset wiring: %d %+v", asset.Code, asset.Header())
+	}
+	for _, target := range []string{
+		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
+		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
+		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
+		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/shared-projects/extra",
+		"/test-sessions/id/extra", "/test-sessions/id/assets/missing.js", "/assets/missing-test-session.js",
+		"/bots/", "/bots-list", "/bots/id/extra", "/bots/id/assets/missing.js",
+		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
+		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
+	} {
+		response := projectRequest(handler, http.MethodGet, target, "")
+		assertProjectError(t, response, http.StatusNotFound, "not_found")
+		if strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("unknown path returned SPA HTML: %s", target)
+		}
+	}
+	if strings.Contains(logs.String(), "private") || strings.Contains(logs.String(), "BCDFG-HJKLM") {
+		t.Fatalf("UI request leaked to logs: %s", &logs)
+	}
+}
+
+func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
+	f := newTaskHTTPFixture(t)
+	path := taskCollection(f.project.ID) + "/" + f.target.ID
+	graph := graphPath(f.project.ID, f.target.ID)
+	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
+		switch target {
+		case "/api/v1/projects":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
+		case "/api/v1/projects/" + f.project.ID:
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
+		case "/api/v1/projects/" + f.project.ID + "/members":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
+		case taskCollection(f.project.ID):
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+		case path:
+			f.expectRead(f.target)
+		case graph:
+			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
+		}
+		response := projectRequest(f.handler, http.MethodGet, target, "")
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
+		}
+		if (target == path || target == graph) && response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project.ID+"/members", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	response := httptest.NewRecorder()
+	f.handler.ServeHTTP(response, request)
+	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
+		t.Fatal("member API must retain authenticated JSON behavior")
+	}
+}
+
+func TestUIRegistrationKeepsDataRoutesProtected(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	for _, path := range []string{
+		"/api/v1/test-sessions",
+		"/api/v1/test-sessions/10000000-0000-0000-0000-000000000001",
+		"/api/v1/me/bots",
+		"/api/v1/me/bots/10000000-0000-0000-0000-000000000001",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("UI registration changed protected API: %s %d %+v", path, response.Code, response.Header())
+		}
+	}
+}

@@ -1,6 +1,7 @@
 import { useId, useState, useLayoutEffect, type KeyboardEvent, type ReactNode } from 'react';
 import type { TaskDetailTab } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { KeptMountedSlot } from './DetailFrame';
 
 type PanelSlot = ReactNode | ((active: boolean) => ReactNode);
 type TaskDetailPanelsProps = {
@@ -54,6 +55,6 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
     <div className="task-detail-tabs" role="tablist" aria-label={messages.inspection.detail.title}>
       {tabs.map((tab) => <button key={tab} className="task-detail-tab" id={tabId(tab)} role="tab" type="button" aria-selected={active === tab} aria-controls={panelId(tab)} tabIndex={active === tab ? 0 : -1} onClick={() => activate(tab)} onKeyDown={(event) => navigate(event, tab)}>{labels[tab]}</button>)}
     </div>
-    {tabs.map((tab) => <div key={tab} id={panelId(tab)} className={`task-detail-panel task-detail-panel-${tab}`} role="tabpanel" aria-labelledby={tabId(tab)} hidden={active !== tab} inert={active !== tab}>{content(tab)}</div>)}
+    {tabs.map((tab) => <KeptMountedSlot key={tab} id={panelId(tab)} className={`task-detail-panel task-detail-panel-${tab}`} role="tabpanel" aria-labelledby={tabId(tab)} active={active === tab}>{content(tab)}</KeptMountedSlot>)}
   </div>;
 };

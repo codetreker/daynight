@@ -1,4 +1,5 @@
 import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
+import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
@@ -19,7 +20,7 @@ export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promi
   if (grant.sessionId !== ticket.sessionId || grant.claimId !== ticket.claimId || grant.testExecutionId !== ticket.testExecutionId || grant.executionGeneration !== ticket.executionGeneration || grant.controllerId !== ticket.controllerId || grant.controllerInstanceId !== ticket.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("Controller credential is stale or belongs to another execution.");
   return grant;
 };
-export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
+export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
@@ -28,7 +29,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let reconciliation: ControllerOperation[][] = [];
   const mediaRequests = new Map<string, { key: string; promise: Promise<void>; controller: AbortController }>();
   const captureRequests = new Map<string, { action: ImageCaptureAction; captureId: string; attemptId: string | null; resolve(receipt: ImageCaptureReceipt): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-  let mediaBlocks = 0, mediaDecoders = 0;
+  let mediaDecoders = 0;
   const decoderQueue: { start(): void }[] = [];
   const acquireDecoder = (controller: AbortController): Promise<void> | null => {
     if (mediaDecoders === 0) { mediaDecoders++; return Promise.resolve(); }
@@ -53,17 +54,21 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     if (previous) { if (previous.key !== key) throw new Error("Media request ID has different content."); return; }
     const decode = request.action === "complete" || request.action === "retry_capture";
     const controller = new AbortController();
-    if (!synchronized || !decode && mediaBlocks >= 2) { respond(null, { code: "rate_limited", message: "Controller media capacity is unavailable." }); return; }
+    if (!synchronized) { respond(null, { code: "rate_limited", message: "Controller media capacity is unavailable." }); return; }
+    let blockLease: ControllerMediaBlockLease | null = null;
     // Only complete/retry metadata can queue; chunk bodies remain bounded by
     // the two active block slots and are reoffered under their durable identity.
     const admission = decode ? acquireDecoder(controller) : Promise.resolve();
     if (admission === null) { respond(null, { code: "rate_limited", message: "Controller decoder queue is full." }); return; }
-    if (!decode) mediaBlocks++;
     let acquired = !decode;
     const work = (async () => {
       // Publish the bounded in-flight identity before any synchronous failure.
       await Promise.resolve();
       try {
+        if (!decode) {
+          blockLease = journal.media().tryAcquireMediaBlock();
+          if (!blockLease) { respond(null, { code: "rate_limited", message: "Controller media capacity is unavailable." }); return; }
+        }
         await admission; acquired = true; controller.signal.throwIfAborted();
         const media = journal.media(); let result: ImageResponse["result"];
         switch (request.action) {
@@ -74,17 +79,20 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
           case "release": result = await media.release(request.body); break;
           case "read_prepared": result = await media.readPrepared(request.body); break;
           case "read": result = await media.read(request.body); break;
-          case "read_capture": result = await media.readCapture(request.body); break;
+          case "read_capture": await media.readCapture(request.body, callbacks.acquireCaptureReadPolicy, chunk => respond(chunk, null)); return;
           case "retry_capture":
             if (!callbacks.onRetryCapture) throw new Error("component_unsupported: Image source retry resolver is unavailable.");
             result = await callbacks.onRetryCapture(request.body, controller.signal); break;
         }
         respond(result, null);
       } catch (error) {
+        if (request.action === "retry_capture" && error !== null && typeof error === "object" && "code" in error && error.code === "rate_limited") {
+          respond(null, { code: "rate_limited", message: "Controller source capture capacity is unavailable." }); return;
+        }
         const description = String(error);
         const code = request.action === "release" && (error instanceof ImageReleaseStorageError || isImageReleaseStorageFailure(error)) ? "release_storage_unavailable" : description.includes("component_unsupported") ? "component_unsupported" : description.includes("target_changed") ? "target_changed" : description.includes("budget") || description.includes("capacity") ? "budget_exceeded" : description.includes("conflict") ? "upload_conflict" : description.includes("in_use") ? "upload_in_use" : "image_unavailable";
         respond(null, { code, message: "The Controller could not complete this image request." });
-      } finally { if (acquired) { if (decode) releaseDecoder(); else mediaBlocks--; } mediaRequests.delete(requestKey); }
+      } finally { if (acquired && decode) releaseDecoder(); blockLease?.close(); mediaRequests.delete(requestKey); }
     })();
     mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(String(error)));
   };

@@ -5,6 +5,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
@@ -44,11 +45,11 @@ type Handler interface {
 }
 
 func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
-	auth, err := authhttp.NewAuthentication(app.Identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
+	auth, err := authhttp.NewAuthentication(app.Identity, authconfig.AuthSettings{PublicOrigin: config.Server.PublicOrigin, AllowHTTPTestOrigin: config.Server.AllowHTTPTestOrigin}, logger)
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger, app.OAuth)
+	endpoint, err := mcphttp.New(app.Identity, config.Server.PublicOrigin, config.MCP.Origins.AllowedOrigins, logger, app.OAuth)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +57,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		endpoint.BeginShutdown()
 		return nil, errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError)
 	}
-	if err := registerMCPTools(app.Application, endpoint, config.PublicOrigin); err != nil {
+	if err := registerMCPTools(app.Application, endpoint, config.Server.PublicOrigin); err != nil {
 		endpoint.BeginShutdown()
 		return nil, err
 	}
@@ -66,14 +67,14 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
 	web := webhttp.New(app.Web)
 	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
-	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants}
+	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants}
 	mux.Handle("/oauth/register", oauthhttp.Handler(profile.Clients))
 	mux.HandleFunc("/oauth/authorize", authorization.Start)
 	mux.HandleFunc("/oauth/token", tokens.Token)
 	mux.HandleFunc("/oauth/revoke", tokens.Revoke)
 	mux.HandleFunc("/api/v1/oauth/requests/{id}", authorization.Inspect)
 	mux.HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
-	oauthhttp.RegisterMetadata(mux, config.PublicOrigin)
+	oauthhttp.RegisterMetadata(mux, config.Server.PublicOrigin)
 	auth.RegisterRoutes(mux)
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
@@ -91,7 +92,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	}, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
-	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSyncOverlap)
+	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSync.Overlap)
 	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
 	if app.Webhooks != nil {
 		webhookhttp.NewRoutes(app.Webhooks, auth, logger).RegisterRoutes(mux)

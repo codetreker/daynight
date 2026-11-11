@@ -12,7 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	httpwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -49,7 +50,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			id := identity.New(f.db, nil, testOrigin+"/auth/callback")
-			authenticator, err := auth.NewAuthentication(id, config.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
+			authenticator, err := auth.NewAuthentication(id, authconfig.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,6 +1,8 @@
 import { expect, test } from "vitest";
 import { CopilotProjection } from "../../../src/commands/controller/providers/copilot-projection.js";
-import type { ProviderEntry } from "../../../src/commands/controller/providers/types.js";
+import { CopilotImages } from "../../../src/commands/controller/providers/copilot-images.js";
+import { CopilotImageInputs } from "../../../src/commands/controller/providers/copilot-image-input.js";
+import type { MarkdownTimelineMetadata, ProviderOptions, ProviderEntry } from "../../../src/commands/controller/providers/types.js";
 const setup = () => { const entries: ProviderEntry[] = []; return { entries, projection: new CopilotProjection("session", entry => entries.push(entry)) }; };
 test("Copilot final reasoning and message correct the stable streamed row, ignoring late deltas", () => {
   const { entries, projection } = setup();
@@ -56,4 +58,21 @@ test("Copilot displays a failed tool's identical error and output once", () => {
   const { entries, projection } = setup();
   projection.accept({ id: "c", type: "tool.execution_complete", data: { toolCallId: "t", success: false, error: { message: "permission denied" }, result: { content: "permission denied", detailedContent: "permission denied" } } });
   expect(entries.at(-1)).toMatchObject({ status: "failed", output: [{ type: "text", text: "permission denied" }] });
+});
+
+
+test("Copilot native image projection preserves markdown completion and plain tool metadata", async () => {
+  const metadata: Array<MarkdownTimelineMetadata | undefined> = [], entries: ProviderEntry[] = [];
+  const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onSpawn() {}, onState() {}, onTimeline(entry, value) { entries.push(entry); metadata.push(value); } };
+  const images = new CopilotImages(options, "session", new CopilotImageInputs(options, "session"));
+  const projection = new CopilotProjection("session", options.onTimeline, images);
+  try {
+    projection.accept({ id: "delta", type: "assistant.message_delta", data: { messageId: "message", deltaContent: "![image](local.png)" } });
+    projection.accept({ id: "final", type: "assistant.message", data: { messageId: "message", content: "![image](local.png)" } });
+    projection.accept({ id: "user", type: "user.message", data: { content: "![image](local.png)", attachments: [{ type: "blob", mimeType: "image/png", path: "/controlled/native.png" }] } });
+    projection.accept({ id: "tool", type: "tool.execution_complete", data: { toolCallId: "call", success: true, result: { contents: [{ type: "text", text: "![not-markdown](local.png)" }] } } });
+    expect(entries.map(entry => entry.kind)).toEqual(["assistant_message", "assistant_message", "user_message", "tool_call"]);
+    expect(metadata).toEqual([{ complete: false, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "markdown", truncated: false }, { complete: true, format: "plain", truncated: false }]);
+    expect(entries[2]).toMatchObject({ content: [{ type: "text" }, { type: "image_unavailable" }] });
+  } finally { await images.close(); }
 });

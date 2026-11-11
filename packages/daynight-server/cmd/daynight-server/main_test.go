@@ -180,14 +180,14 @@ func TestRunStartupFailures(t *testing.T) {
 		}
 		output := &persistenceProcessLog{}
 		logger := slog.New(slog.NewJSONHandler(output, nil))
-		startup, cancelStartup := context.WithTimeout(t.Context(), cfg.StartupTimeout)
+		startup, cancelStartup := context.WithTimeout(t.Context(), cfg.Server.StartupTimeout)
 		defer cancelStartup()
 		app, err := service.OpenAppWithLogger(startup, cfg, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			cleanup, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 			defer cancel()
 			if err := app.Close(cleanup); err != nil {
 				t.Error(err)
@@ -207,7 +207,7 @@ func TestRunStartupFailures(t *testing.T) {
 		if err := app.Ready(t.Context()); err == nil {
 			t.Fatal("worker startup failure retained database resources")
 		}
-		listener, err := net.Listen("tcp", cfg.ListenAddress)
+		listener, err := net.Listen("tcp", cfg.Server.ListenAddress)
 		if err != nil {
 			t.Fatalf("worker startup failure retained listener: %v", err)
 		}

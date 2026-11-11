@@ -19,7 +19,8 @@ import (
 	"testing"
 	"time"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	transfercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coretask "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -75,7 +76,7 @@ func TestProductionInputBodyBoundaries(t *testing.T) {
 		}
 		return task, nil
 	}}
-	authentication, err := authhttp.NewRequestAuthentication(authenticate, configpkg.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: true}, logger)
+	authentication, err := authhttp.NewRequestAuthentication(authenticate, authconfig.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

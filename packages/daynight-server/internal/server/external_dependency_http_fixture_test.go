@@ -24,7 +24,7 @@ func newExternalHTTPFixture(t *testing.T) *externalHTTPFixture {
 }
 func externalHTTPRecord(projectID, id, title string) model.Task {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	return model.Task{ID: id, ProjectID: projectID, Title: title, Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: at, UpdatedAt: at, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true}
+	return model.Task{ID: id, Type: model.TaskTypeTask, ProjectID: projectID, Title: title, Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: at, UpdatedAt: at, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true}
 }
 func externalHTTPChanged(before model.Task) model.Task {
 	after := copyTaskHTTPTask(before)
@@ -33,11 +33,11 @@ func externalHTTPChanged(before model.Task) model.Task {
 }
 func externalHTTPWrite(row model.Task) store.TaskWrite {
 	row = copyTaskHTTPTask(row)
-	return store.TaskWrite{AssignedTo: row.AssignedTo, RequiredPlatform: row.RequiredPlatform, AllowAgents: row.AllowAgents, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn}
+	return store.TaskWrite{Type: row.Type, ParentID: row.ParentID, AssignedTo: row.AssignedTo, RequiredPlatform: row.RequiredPlatform, AllowAgents: row.AllowAgents, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn}
 }
 func externalHTTPAPI(row model.Task) api.Task {
 	row = copyTaskHTTPTask(row)
-	return api.Task{ID: row.ID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
+	return api.Task{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
 }
 func externalHTTPCheck(t *testing.T, actual, expected any) {
 	t.Helper()
@@ -72,8 +72,17 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 	if current != nil {
 		want["current"] = 1
 	}
+	var added []string
 	if validateDependencies {
 		want["prerequisites"] = 1
+		for _, id := range values.DependsOn {
+			if current == nil || !slices.Contains(current.DependsOn, id) {
+				added = append(added, id)
+			}
+		}
+		if len(added) > 0 {
+			want["visible"] = 1
+		}
 		for _, id := range values.DependsOn {
 			want["reachable:"+id] = 1
 		}
@@ -115,6 +124,12 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 			f.require(ctx, f.project.ID)
 			externalHTTPCheck(f.t, ids, values.DependsOn)
 			return copyTaskHTTPRows(dependencies), nil
+		}
+		writer.VisibleTaskIDsFn = func(ctx context.Context, ids []string) ([]string, error) {
+			plan.Called("visible")
+			f.require(ctx, f.project.ID)
+			externalHTTPCheck(f.t, ids, added)
+			return slices.Clone(ids), nil
 		}
 		writer.ReachableFn = func(ctx context.Context, start, target string, replacement store.DependencyReplacement) (bool, error) {
 			plan.Called("reachable:" + start)
@@ -193,7 +208,7 @@ func (f *externalHTTPFixture) graph(root string, rows []model.Task) {
 	f.noStorage()
 	result := make([]model.GraphTask, len(rows))
 	for index, row := range rows {
-		result[index] = model.GraphTask{ID: row.ID, TitlePreview: row.Title, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AllowAgents: row.AllowAgents, Ready: row.Ready, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt}
+		result[index] = model.GraphTask{ID: row.ID, Type: row.Type, ParentID: row.ParentID, TitlePreview: row.Title, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AllowAgents: row.AllowAgents, Ready: row.Ready, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt}
 	}
 	f.expectGraph(root, result)
 }

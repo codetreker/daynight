@@ -32,6 +32,11 @@ func (s *Observations) ObserveGet(ctx context.Context, principal model.Principal
 		if refusal != nil {
 			return refusal
 		}
+		values := []model.Task{task}
+		if err := decorateGoalProgress(ctx, snapshot.TaskDAO(), projectID, values); err != nil {
+			return err
+		}
+		task = values[0]
 		result.Task = task
 		result.Epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, projectID)
 		if err != nil {
@@ -59,7 +64,7 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
-	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID})
+	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID})
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
@@ -83,6 +88,9 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 		}
 		result.NextCursor = page.NextCursor
 		tasks = page.Items
+		if err := decorateGoalProgress(ctx, snapshot.TaskDAO(), projectID, tasks); err != nil {
+			return err
+		}
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -179,18 +187,13 @@ func (s *Observations) ObservedMCPList(ctx context.Context, principal model.Prin
 		if err != nil {
 			return err
 		}
+		if request.View == "full" {
+			if err := expandPriorityPage(ctx, snapshot.TaskDAO(), projectID, page.Items); err != nil {
+				return err
+			}
+		}
 		tasks = make([]model.Task, len(page.Items))
 		for i := range page.Items {
-			if request.View == "full" {
-				var refusal *model.Fault
-				page.Items[i].Task, refusal, err = s.operations.task(ctx, snapshot.TaskDAO(), projectID, page.Items[i].Task.ID)
-				if err != nil {
-					return err
-				}
-				if refusal != nil {
-					return refusal
-				}
-			}
 			tasks[i] = page.Items[i].Task
 		}
 		items = page.Items

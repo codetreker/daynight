@@ -11,8 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
@@ -36,7 +37,7 @@ func TestRequestAuthenticationConfiguration(t *testing.T) {
 			h, err := NewRequestAuthentication(func(context.Context, model.CredentialKind, string) (model.Principal, error) {
 				t.Fatal("configuration invoked a credential operation")
 				return model.Principal{}, nil
-			}, config.AuthSettings{PublicOrigin: test.origin, AllowHTTPTestOrigin: test.allowHTTP}, slog.Default())
+			}, authconfig.AuthSettings{PublicOrigin: test.origin, AllowHTTPTestOrigin: test.allowHTTP}, slog.Default())
 			if (err == nil) != test.accepted {
 				t.Fatalf("accepted=%t err=%v", test.accepted, err)
 			}
@@ -62,7 +63,7 @@ func TestRequestAuthenticationProtocolAndIdentity(t *testing.T) {
 					t.Fatalf("credential input: kind=%s secret=%q context=%v", actualKind, secret, ctx.Value(contextKey{}))
 				}
 				return principal, nil
-			}, config.AuthSettings{PublicOrigin: "https://example.com"}, logger)
+			}, authconfig.AuthSettings{PublicOrigin: "https://example.com"}, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +116,7 @@ func TestRequestAuthenticationRejectsMalformedCredentialsBeforeCallingIdentity(t
 			h, err := NewRequestAuthentication(func(context.Context, model.CredentialKind, string) (model.Principal, error) {
 				t.Fatal("malformed credentials reached identity")
 				return model.Principal{}, nil
-			}, config.AuthSettings{PublicOrigin: "https://example.com"}, logger)
+			}, authconfig.AuthSettings{PublicOrigin: "https://example.com"}, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +165,7 @@ func TestRequestAuthenticationCookieWriteOrigin(t *testing.T) {
 					t.Fatalf("credential kind=%s secret=%q", kind, secret)
 				}
 				return model.Principal{UserID: "user", Kind: kind}, nil
-			}, config.AuthSettings{PublicOrigin: "https://example.com"}, slog.Default())
+			}, authconfig.AuthSettings{PublicOrigin: "https://example.com"}, slog.Default())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +187,7 @@ func TestRequestAuthenticationPreservesIdentityFailure(t *testing.T) {
 			cause := errors.New("identity failure sentinel")
 			h, err := NewRequestAuthentication(func(context.Context, model.CredentialKind, string) (model.Principal, error) {
 				return model.Principal{}, cause
-			}, config.AuthSettings{PublicOrigin: "https://example.com"}, slog.Default())
+			}, authconfig.AuthSettings{PublicOrigin: "https://example.com"}, slog.Default())
 			if err != nil {
 				t.Fatal(err)
 			}

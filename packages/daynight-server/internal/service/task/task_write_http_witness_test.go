@@ -57,7 +57,7 @@ func newWriteWitness(t *testing.T, method string, outcome store.TransactionOutco
 		prepareCreate: func(ctx context.Context, dao store.TaskWriteDAO, id string, values store.TaskWrite) (taskcore.Mutation, error) {
 			f.prepare("create", ctx, dao)
 			parsed, err := uuid.Parse(id)
-			want := store.TaskWrite{Title: "Unwritten task", Status: model.TaskTodo, Properties: model.TaskProperties{}, DependsOn: []string{}, ExternalDependsOn: []string{}}
+			want := store.TaskWrite{Type: model.TaskTypeTask, Title: "Unwritten task", Status: model.TaskTodo, Properties: model.TaskProperties{}, DependsOn: []string{}, ExternalDependsOn: []string{}}
 			if err != nil || parsed.String() != id || parsed.Version() != 4 || !reflect.DeepEqual(values, want) {
 				t.Fatalf("PrepareCreate arguments changed: id=%q values=%#v want=%#v", id, values, want)
 			}
@@ -235,6 +235,9 @@ func (d *writeWitnessTaskDAO) Task(context.Context, string) (model.Task, error) 
 }
 func (d *writeWitnessTaskDAO) TasksByID(context.Context, []string) ([]model.Task, error) {
 	panic(d.f.unexpected("TaskWriteDAO.TasksByID"))
+}
+func (d *writeWitnessTaskDAO) VisibleTaskIDs(context.Context, []string) ([]string, error) {
+	panic(d.f.unexpected("TaskWriteDAO.VisibleTaskIDs"))
 }
 func (d *writeWitnessTaskDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ActiveDependentIDs"))

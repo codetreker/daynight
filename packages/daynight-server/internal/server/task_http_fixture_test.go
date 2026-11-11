@@ -219,6 +219,8 @@ var _ store.ThreadScope = (*taskHTTPThreadScopeMock)(nil)
 type taskHTTPReaderMock struct {
 	taskHTTPMockBase
 	TaskFn                 func(context.Context, string, string) (model.Task, error)
+	TaskBodiesFn           func(context.Context, string, []string) ([]model.Task, error)
+	GoalProgressesFn       func(context.Context, string, []string) (map[string]model.GoalProgress, error)
 	TasksFn                func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
 	TaskListFenceFn        func(context.Context, string) (store.TaskListFence, error)
 	TaskPriorityListFn     func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
@@ -238,6 +240,14 @@ type taskHTTPReaderMock struct {
 	TaskSyncTasksFn        func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
 }
 
+func (mock *taskHTTPReaderMock) TaskBodies(ctx context.Context, project string, ids []string) ([]model.Task, error) {
+	mock.need("TaskBodies", mock.TaskBodiesFn != nil)
+	return mock.TaskBodiesFn(ctx, project, ids)
+}
+func (mock *taskHTTPReaderMock) GoalProgresses(ctx context.Context, project string, ids []string) (map[string]model.GoalProgress, error) {
+	mock.need("GoalProgresses", mock.GoalProgressesFn != nil)
+	return mock.GoalProgressesFn(ctx, project, ids)
+}
 func (mock *taskHTTPReaderMock) Task(p0 context.Context, p1 string, p2 string) (model.Task, error) {
 	mock.need("Task", mock.TaskFn != nil)
 	return mock.TaskFn(p0, p1, p2)
@@ -334,6 +344,7 @@ type taskHTTPWriterMock struct {
 	taskHTTPMockBase
 	TaskFn               func(context.Context, string) (model.Task, error)
 	TasksByIDFn          func(context.Context, []string) ([]model.Task, error)
+	VisibleTaskIDsFn     func(context.Context, []string) ([]string, error)
 	ActiveDependentIDsFn func(context.Context, string) ([]string, error)
 	ReachableFn          func(context.Context, string, string, store.DependencyReplacement) (bool, error)
 	CreateTaskFn         func(context.Context, string, store.TaskWrite) (model.Task, error)
@@ -358,6 +369,11 @@ func (mock *taskHTTPWriterMock) Task(p0 context.Context, p1 string) (model.Task,
 func (mock *taskHTTPWriterMock) TasksByID(p0 context.Context, p1 []string) ([]model.Task, error) {
 	mock.need("TasksByID", mock.TasksByIDFn != nil)
 	return mock.TasksByIDFn(p0, p1)
+}
+
+func (mock *taskHTTPWriterMock) VisibleTaskIDs(ctx context.Context, ids []string) ([]string, error) {
+	mock.need("VisibleTaskIDs", mock.VisibleTaskIDsFn != nil)
+	return mock.VisibleTaskIDsFn(ctx, ids)
 }
 
 func (mock *taskHTTPWriterMock) ActiveDependentIDs(p0 context.Context, p1 string) ([]string, error) {
@@ -841,7 +857,7 @@ func taskHTTPMockModels() (model.Project, model.Task, model.Principal) {
 	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	principal := defaultHTTPPrincipal()
 	project := model.Project{ID: "33333333-3333-4333-8333-333333333333", Name: "Project", RepoURL: "https://github.com/example/repository", CreatedAt: observed, UpdatedAt: observed, Settings: model.ProjectSettings{Version: 1, ExecutionWarningMinutes: 120}, Ownership: model.ProjectOwnership{TeamID: "44444444-4444-4444-8444-444444444444", Version: 1, UpdatedAt: observed}}
-	task := model.Task{ID: "55555555-5555-4555-8555-555555555555", ProjectID: project.ID, Title: "Task", Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: observed, UpdatedAt: observed, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: &principal.UserID, Ready: true}
+	task := model.Task{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, ProjectID: project.ID, Title: "Task", Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, CreatedAt: observed, UpdatedAt: observed, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: &principal.UserID, Ready: true}
 	return project, task, principal
 }
 

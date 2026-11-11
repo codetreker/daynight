@@ -6,7 +6,7 @@
 
 Task 状态为 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。`proposed` 表示尚未确认的提议，`todo` 表示已确认待办，`in_progress` 表示执行中，`done` 表示完成交付，`cancelled` 表示不再需要执行。后两者均为已结束，但取消不证明交付、验收或成果保存成功。新建任务默认 proposed，创建时可显式指定 proposed 或 todo；外部提议通常保留默认值，内部已确认的多步任务可直接创建为 todo。初始版本为 1，`startedAt`、`completedAt`、`cancelledAt` 均为 null；只有 todo 且全部直接前置满足时才 ready。proposed 由使用方决定何时采用，不增加审批命令或强制流转阶段。
 
-CLI 提供 `daynight task set-status <task-id> <status>` 与等价 `dn`，保留项目发现、`--project`、精确 `--if-version` 和补全。`cancelled` 通过同一入口设置。显式 `--claim-id <claim-id>` 仅用于 done，经本地 UUID 校验和规范化后调用现有 claim-bound 完成；其他目标在配置、Git 和网络前拒绝。省略不从任务或环境推断 claim。普通 task update 保持元数据职责，不接受 status。
+CLI 提供 `daynight task set-status <task-id> <status>` 与等价 `dn`，保留项目发现、`--project`、精确 `--if-version` 和补全。目标类型和身份在写入前读取，显式版本保持原值；Goal 完成或取消提示其子 Task 状态保留、后续自动领取被排除，交互确认或 `--force` 才提交。force 只跳过 Goal 提示，不绕过服务端检查。`cancelled` 通过同一入口设置。显式 `--claim-id <claim-id>` 仅用于 done，经本地 UUID 校验和规范化后调用现有 claim-bound 完成；其他目标在配置、Git 和网络前拒绝。省略不从任务或环境推断 claim。普通 task update 保持元数据职责，不接受 status。
 
 状态与任务记录不授予执行、部署、交付、重开或强制撤回权限。同状态请求先核验权限与精确版本，再返回完整 Task；不修改字段、版本、updatedAt 或计时。过期同状态请求仍冲突，实际状态改变只递增一次版本。
 

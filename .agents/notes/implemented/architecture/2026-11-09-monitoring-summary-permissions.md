@@ -9,6 +9,9 @@ observation. Reasons may refer to projects or tasks whose current visibility
 changes independently of the stored observation. The bounded Redis header cannot
 expose private identifiers to the browser or replace a current permission check.
 
+The later [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
+removes these reasons from list cards while preserving the projection.
+
 ## Decision
 
 The v2 stored summary contains bounded compact permission references and stable

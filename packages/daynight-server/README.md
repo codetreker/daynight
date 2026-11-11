@@ -194,7 +194,7 @@ The [project Task search requirements](../../docs/spec/daynight-task-search.md)
 and [design](../../docs/design/daynight-task-search.md) define the read-only
 `POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
 IDs, complete titles and Markdown descriptions using literal expressions, returns ranked
-pages with real ordinary-dependency context, and rejects continuation when the
+pages with their actual visible parent Goal context, and rejects continuation when the
 project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
 
@@ -498,7 +498,9 @@ Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked
-summaries; request `full` for complete content. Step page cursors bind the parent
+summaries; request `full` for complete content. Task full and summary schemas
+require `type` and nullable `parentId`; the Goal full schema also describes
+`progress`. Current public Task writes create ordinary tasks only. Step page cursors bind the parent
 version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
@@ -638,6 +640,8 @@ HTTPS and leaves that exception disabled. Register the exact callback URL with
 UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
 owns the shared authentication setup.
+
+Startup configuration fields, defaults, environment decoding and validation belong to their respective modules. `internal/config` assembles these types and invokes cross-module checks before resources are opened. An empty environment value retains the existing default; the storage root is required and relative paths use the process working directory.
 
 The executable accepts no command-line arguments. Arguments are rejected before
 configuration, database connections or HTTP listeners are initialized, and the
@@ -1040,11 +1044,23 @@ and persisted readback. Other Worker suites use the fixtures required by their
 own proof. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
 records these proof owners.
 
+### Worker HTTP tests
+
+`internal/server/worker` owns the Worker route input, telemetry, privacy and
+configuration protocol matrices. The ordinary report and configuration cases
+assemble the real Worker registrar, request authentication, Service and Core
+with controlled storage capabilities; exact refusal and capacity cases use
+strict operation callbacks. Controlled results do not prove physical commits.
+`internal/server/httpx` owns the error classification and response mapping for
+Worker transaction failures and Session content faults. Root retains its shared
+fixtures for other consumers. Existing integration tests retain their real
+infrastructure requirements.
+
 ### Worker capacity tests
 
-The root Report and Configuration capacity matrices register real Worker HTTP
-routes and credential middleware with direct Worker operation mocks. They check
-full arguments, exact calls, response content and private headers. Report
+The `internal/server/worker` Report and Configuration capacity matrices register
+real Worker HTTP routes and credential middleware with direct Worker operation
+mocks. They check full arguments, exact calls, response content and private headers. Report
 byte-field overflows arrive at the operation and receive a supplied service
 refusal; Report collection overflow is rejected by the actual wire parser.
 Configuration PUT and observation overflow inputs are parsed before any business
@@ -1065,7 +1081,7 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
   -run '^(TestWorker(Report|Configuration)Capacity|TestPutConfigurationCapacity|TestExchangeConfigurationCapacity)' \
-  ./internal/server ./internal/core/worker
+  ./internal/server/worker ./internal/core/worker
 ```
 
 The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
@@ -1100,7 +1116,7 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
   -run '^(TestWorkerAssistantHostHTTP|TestWorkerAssistantHostReportValidationAndSnapshot|TestExchangeConfigurationAssistantHostCompatibility|TestWorkerAdmission)' \
-  ./internal/server ./internal/core/worker ./internal/service/worker
+  ./internal/server/worker ./internal/core/worker ./internal/service/worker
 ```
 
 The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)
@@ -1297,15 +1313,15 @@ records these proof owners and the distinct read/completion behavior.
 
 ### Business rules and DAO mocks
 
-The [test-writing rules](../../docs/writing_tests.md) define the dependency
-boundary of each test. Core tests execute business rules over constructed domain
-facts and narrow `core/store` DAO, scope or transaction mocks. Service tests
-execute their own assembly, orchestration, transaction coordination and shared
-resource lifetime, mocking directly invoked core and other lower business
-operations. They also control DAO, scope, transaction and external-resource
-calls made by the service itself. Server units execute the real HTTP adapter
-with directly invoked service or core use case mocks. DAO-only mocks that still
-execute lower business decisions do not isolate service or server behavior.
+The [test-writing rules](../../docs/writing_tests.md) choose component boundaries
+by behavior and total cost. Core tests execute business rules over constructed
+domain facts and required controlled dependencies. Service tests execute their
+own assembly, orchestration, transaction coordination and shared resource
+lifetime; Server tests execute the real HTTP adapter. Inexpensive, deterministic
+Service and Core collaborators may remain real. Control only the capability
+needed for expensive or unpredictable dependencies or precise outcomes, errors,
+blocking and cancellation. Go tests live with their tested object; consider splitting files
+by cohesive responsibility after about 1000 lines and consolidate small helpers.
 
 Check exact principal, IDs, inputs, context, transaction-bound capabilities,
 expected calls and order, results and error chains. Service transaction callbacks
@@ -1315,9 +1331,9 @@ resources while executing production construction, wiring and the real lifetime
 mechanism under test. Shared types and pure data remain ordinary values, and pure/protocol
 code executes at its owner. Store tests own physical database mechanisms; API
 integration tests own representative normal assembled flows. Unconfigured access
-must fail immediately. Unit selections must execute without
-`DAYNIGHT_TEST_DATABASE_URL`; database isolation alone does not establish the
-direct operation boundary.
+must fail immediately. Selections designed without a database must execute
+without `DAYNIGHT_TEST_DATABASE_URL`; real database mechanisms use an isolated
+PostgreSQL instance.
 
 The regular `internal/server/task` suite uses direct Task, Step and Thread
 service mocks plus Search and Sync operations. It exercises production routing,
@@ -1356,7 +1372,7 @@ tests outside the Task HTTP suite remain part of the module check. Command
 process tests use the startup/shutdown entry. Their mechanism and ownership are
 determined by the test-writing rules.
 
-The complete `internal/service/webhook` suite uses narrow transaction and DAO
+The ordinary `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
 requested writes, and fail on unexpected access. They do not simulate a database
 or interpret recorded writes as committed state. Time-dependent cases provide
@@ -1375,8 +1391,8 @@ Capture source facts and producer invocation belong to their Task, Step, Thread
 and Worker owners. PostgreSQL tests retain the real operation fences, actor
 reads, multi-record rollback, source/capture atomicity, lease and retention locks,
 commit acknowledgement loss and fresh-process readback. The startup/shutdown
-check also runs `TestWebhookRunnerAbruptProcessRecovery` with
-`-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
+check also runs `TestWebhookRunnerAbruptProcessRecovery` in
+`internal/service/webhook` with `-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
 finalize COMMIT acknowledgement followed by an enabled Runner restart. This
 focused process witness runs in the independent lifecycle job;
 production-duration timeout and capacity stress cases remain separate. HTTP and protocol tests
@@ -1708,10 +1724,12 @@ construction; its Service, Core, Capturer and Store receivers retain lower
 coordination, rules and persistence proofs. Other DAO/scope fixtures supply fixed
 domain records, query results, proposed writes, call counts and transaction
 completion as explicit test inputs. Callback writes do not determine future reads or simulate committed
-state. The complete ordinary root selection executes with
-`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
-SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
-pinned auth fixture as described in [validation](#validate).
+state. Configuration validation and startup ordering live with Config and App;
+`internal/server/webui` owns the static route and request-log matrix. Root retains
+actual `New` route composition, API protection and representative shell and asset
+wiring. Tests of UniAuth result/browser binding and SDK wire loss retain their
+isolated gateway, real proxy and sockets; prepare the pinned auth fixture as
+described in [validation](#validate).
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
@@ -2003,7 +2021,7 @@ Ordinary discovery excludes stress-tagged files. With an isolated database,
 and refuses a nonempty `CI` environment. Direct command-package stress runs also
 need `startupshutdown` alongside their existing `stress` and, where required,
 `webhooktest` tags.
-The server runtime two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
+The `internal/service/webhook` two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
 `TestWebhookTwoInstanceTakeoverAndFencingStress`) is selected explicitly by the
 stress entry point. It uses a private deterministic capture
 stream and verifies its first-slot admission before testing second-slot recovery

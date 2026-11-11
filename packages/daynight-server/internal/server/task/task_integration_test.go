@@ -57,14 +57,14 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 	collection := taskCollection(testProjectID)
 	response := projectRequest(h, http.MethodPost, collection, `{"title":"Default values"}`)
 	actual := decodeResponse[api.Task](t, response, http.StatusCreated)
-	if actual.ID != created.ID || actual.ProjectID != created.ProjectID || actual.Title != created.Title || actual.Description != created.Description || actual.Status != string(created.Status) || actual.Version != created.Version || actual.Ready != created.Ready || !reflect.DeepEqual(actual.DependsOn, created.DependsOn) || !reflect.DeepEqual(actual.BlockedBy, created.BlockedBy) || actual.CreatedAt != created.CreatedAt || actual.UpdatedAt != created.UpdatedAt || response.Header().Get("Location") != collection+"/"+testTaskID {
+	if actual.ID != created.ID || actual.Type != model.TaskTypeTask || actual.ParentID != nil || actual.ProjectID != created.ProjectID || actual.Title != created.Title || actual.Description != created.Description || actual.Status != string(created.Status) || actual.Version != created.Version || actual.Ready != created.Ready || !reflect.DeepEqual(actual.DependsOn, created.DependsOn) || !reflect.DeepEqual(actual.BlockedBy, created.BlockedBy) || actual.CreatedAt != created.CreatedAt || actual.UpdatedAt != created.UpdatedAt || response.Header().Get("Location") != collection+"/"+testTaskID {
 		t.Fatalf("created DTO: %+v headers=%v", actual, response.Header())
 	}
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 19 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 21 {
 		t.Fatalf("task DTO fields: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt", "startedAt", "completedAt"} {
+	for _, key := range []string{"id", "type", "parentId", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt", "startedAt", "completedAt"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing task DTO field %s", key)
 		}
@@ -150,6 +150,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"title":"x","dependsOn":null}`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
 		`{"title":"x","status":null}`, `{"title":"x","status":1}`, `{"title":"x","status":[]}`, `{"title":"x","status":{}}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
+		`{"title":"x","type":"goal"}`, `{"title":"x","type":"task"}`, `{"title":"x","parentId":null}`, `{"title":"x","parentId":"` + testTaskID + `"}`,
 		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
 		t.Run("create_"+body[:min(len(body), 70)], func(t *testing.T) {
@@ -164,6 +165,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"version":1,"Title":"x"}`, `{"version":1,"version":1,"title":"x"}`, `{"version":1,"id":"readonly"}`, `{"version":1,"title":null}`, `{"version":1,"title":1}`,
 		`{"version":1,"description":null}`, `{"version":1,"description":false}`, `{"version":1,"status":null}`, `{"version":1,"status":[]}`, `{"version":1,"status":"blocked"}`, `{"version":1,"status":"todo"}`, `{"version":1,"status":"done","title":"Changed"}`,
 		`{"version":1,"dependsOn":null}`, `{"version":1,"dependsOn":true}`, `{"version":1,"dependsOn":[null]}`, `{"version":1,"unknown":"private-body-secret"}`,
+		`{"version":1,"type":"goal"}`, `{"version":1,"title":"x","type":"task"}`, `{"version":1,"parentId":null}`, `{"version":1,"parentId":"` + testTaskID + `"}`,
 	} {
 		t.Run("patch_"+body[:min(len(body), 70)], func(t *testing.T) {
 			assertProjectError(t, projectRequest(h, http.MethodPatch, path, body), http.StatusBadRequest, "invalid_input")

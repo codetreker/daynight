@@ -19,7 +19,7 @@
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
-提供事务内授权、私有创建和邀请。`internal/config` 负责读取和验证中立配置；`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
+提供事务内授权、私有创建和邀请。`internal/config` 组合各模块拥有的强类型启动配置并协调环境变量加载和跨模块验证；各模块拥有自身字段、默认值和纯校验，通用配置错误和标量解析归 `utils/configvalue`。`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
@@ -148,7 +148,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 | 对象 | 字段与含义 |
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
-| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
+| Task | `id`、`projectId`、资源类型 `type`、可空 `parentId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
@@ -162,6 +162,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 - project 按 `(created_at, id)` 列表；
 - task 按 `(project_id, created_at, id)` 列表及按状态筛选；
+- 类型和直接父资源分别按 `(project_id, type, created_at, id)` 与 `(project_id, parent_id, created_at, id)` 排序；
 - 未删除 task 的原生负责人按 `(project_id, assigned_to, created_at, id)` 索引；
 - 依赖按 `(project_id, task_id)` 查询前置任务；
 - 依赖按 `(project_id, depends_on_task_id)` 查询直接下游任务。
@@ -179,6 +180,10 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 `013_task_required_platform.sql` 增加 task 同行的 `required_platform` 可空 text，CHECK 仅接受 windows/linux/macos；既有和未指定值的新行均为 null，不重写任务版本、业务时间或其他字段。完整任务、图精简投影、创建/更新候选和生命周期写入都显式携带平台；API 资源始终输出 `requiredPlatform`，不以字段缺失表达任意平台。
 
 `028_task_assignment.sql` 增加 `assigned_to uuid NULL` 和未删除任务的项目/负责人/keyset 索引。全部既有及软删除任务取得 NULL，version、业务时间、properties、worker 和 Session 保持。完整 Task、同步摘要和图 projection/scanner 显式读取同一原生列，不从属性或执行者推断责任。
+
+`061_task_type_parent.sql` 为 Task 增加非空 `type`（默认 `task`）、可空 `parent_id` 及类型和父资源分页索引。旧行仅取得结构默认值，不改变业务身份、状态、版本、时间、资料或依赖。普通创建显式使用 `task` 和空 Parent；公开写入不接受这两个字段。完整与摘要资源的映射和编码携带两者，窄回执和引用保持原投影。
+
+`062_task_resource_rows.sql` 以同项目 Parent 的类型与删除事实构造有效删除视图；无需锁定的存在性和对外查询复用该关系，在排序、分页和聚合前过滤。带锁入口仍锁定物理行；资料和 Session 的完整父行锁序由其自身生命周期负责。依赖不变量继续读取物理普通任务与边，只有新增目标要求可见。Goal full 的进度在同一读取快照对选定页批量聚合，空容器为零；摘要和同步不携带进度。
 
 `032_personal_project_ownership.sql` 建立真实 `teams`、`team_members` 与 `project_ownership`，
 并原地重命名 `project_members` 及其 sequence/约束/索引为 `project_grants`。
@@ -521,12 +526,11 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 ## 验证设计
 
 [测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
-core 实际执行业务规则，使用合成领域输入及所需 DAO、scope 和 transaction mock。
-service 实际执行自身装配、编排、事务协调与共享资源生命周期，mock 直接调用的 core
-及其他下层业务操作，并控制自身所需的 DAO、scope、transaction 和外部资源。server
-HTTP 适配单元测试 mock handler 直接调用的 service 或 core 用例，保留实际路由、协议
-认证、编解码与请求生命周期。仅 mock DAO 并继续执行下层业务，不能隔离 server 或
-service 的职责；不连接 PostgreSQL 也不足以证明直接操作边界。
+core 实际执行业务规则，使用合成领域输入及所需受控 DAO、scope 和 transaction。
+service 实际执行自身装配、编排、事务协调与共享资源生命周期；server 保留实际路由、
+协议认证、编解码与请求生命周期。按行为及准备、执行、清理成本选择范围，保留廉价
+确定的真实协作；昂贵、不可控或需要精确结果、错误及时间顺序时控制所需窄能力。真实
+SQL、传输和资源生命周期证明仍使用实际机制。
 
 Mock 明确检查 principal、ID、输入、context、事务绑定能力、方法、调用次数及所需
 顺序，独立提供操作结果、完成结果和错误。service 的实际事务 callback 仍执行，

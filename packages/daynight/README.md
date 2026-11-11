@@ -212,8 +212,8 @@ daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped
 daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
-daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
-daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
+daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task thread read <task-id> [--before-id <message-id> | --after-id <message-id>] [--count=N] [--details] [--project <project-id>]
 daynight task thread post <task-id> --body <text> [--reply-to <message-id>] [--claim-id <claim-id>] [--project <project-id>]
@@ -862,7 +862,7 @@ daynight task update <task-id> --clear-required-platform --if-version <version>
 daynight task create --title "Review installation" --assigned-to <user-uuid>
 daynight task update <task-id> --assigned-to <user-uuid> --if-version <version>
 daynight task update <task-id> --clear-assigned-to --if-version <version>
-daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
 daynight task graph <task-id> --json
@@ -902,12 +902,27 @@ server origin and repository identity, after ensuring `/.daynight/` is effective
 in the root `.gitignore`. A cached binding is verified against the server on each
 use and remains stable if another project later shares that repository.
 
-Creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Creation uses `allowAgents=false` and unrestricted
+Repository Git commands share the invocation deadline, cap each command at
+30 seconds, and bound each output stream to 1 MiB. On Windows, native creation
+assigns Git to a private Job before its first instruction. Cancellation and
+command failures
+that require stopping retain the original cause when cleanup is uncertain;
+root or pipe closure alone does not establish descendant completion. Unforced
+Git completion joins the real output streams and releases its own ownership
+without terminating ordinary background work. The
+[repository Git design](../../docs/design/daynight-project-task.md#git-定位与仓库身份)
+defines the lifecycle and failure rules.
+
+Task resources require `type` (`task` or `goal`) and a nullable `parentId`. A Goal has no parent, uses `todo`, `in_progress`, `done` or `cancelled`, and is never ready. Full Goal reads include progress; its Session observation is `not_applicable`. Graph nodes are ordinary Tasks, and dependency IDs may refer to unavailable resources without exposing their details.
+
+Before setting a Goal to `done` or `cancelled`, the CLI explains on stderr that child Task states are retained and future automatic claims are excluded. Before deleting a Goal, it explains that the Goal and all its Tasks become invisible, membership remains, and running Tasks stop through the existing process after a successful observation. Confirm interactively or supply `--force`; noninteractive calls without it do not submit. Both commands read the target type and identity even with `--if-version`, and retain the caller’s exact version for the write. `--force` skips only the Goal prompt; the service still applies its business and version checks.
+
+Ordinary task creation defaults to `proposed`; `--status proposed|todo` explicitly selects the initial state, so confirmed internal multi-step work can start in todo. Ordinary creation uses `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `proposed`, `todo`, `in_progress`, `done` or `cancelled`. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
-reopening and direct completion; cancellation is irreversible and does not prove
-delivery. Cancelled records and materials remain readable.
+sets `proposed`, `todo`, `in_progress`, `done` or `cancelled` for ordinary Tasks. The nonterminal states and done allow direct setting without a mandatory proposed or todo stage, retaining
+reopening and direct completion; ordinary Task cancellation is irreversible and does not prove
+delivery. Goals support the other four statuses and can be reopened. Cancelled records and materials remain readable.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -916,7 +931,7 @@ and is never inferred from a task or environment. Without it, ordinary status
 setting is unchanged. Release and continuation of released work use their protected
 operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
-without it, the CLI reads once immediately before submitting. No write retries
+without it, the CLI reads the target before submitting. No write retries
 occur. A controller-bounded worker assignment executes its supplied claim in the
 provided worktree, finishes with the explicit claim ID after delivery, and leaves
 system worktree cleanup and next-task selection to its controller. Version is
@@ -3524,7 +3539,9 @@ Ctrl+C stops new work and polling, terminates current managed execution, waits
 for operations and closes SQLite before releasing the instance lock. Agents must
 run tools in the foreground and stop their services before returning. Normal
 unforced exit and drained streams are evidence under that contract. POSIX uses
-current process groups; Windows cancels live trees with `taskkill /T /F`.
+current process groups; Windows skill discovery and review phases stop their
+held Jobs and join captured process objects and direct streams. The legacy
+unowned helper retains its separate ancestry checks and termination policy.
 Uncertain termination retains the lock and interrupted state.
 
 Startup checks the PID in an existing `~/.daynight/instance.lock` with a

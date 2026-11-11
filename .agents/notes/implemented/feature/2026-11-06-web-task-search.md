@@ -13,7 +13,7 @@ currently available graph, without losing the ordinary browsing position.
 
 The project task workspace submits an explicit expression to the server and
 keeps its draft, applied query, filters and cursor pages separate from ordinary
-lists. The server supplies matching, order and chain context; the Web validates
+lists. The server supplies matching, order and actual parent Goal context; the Web validates
 the response and requests each known page. A changed cursor restarts at the
 first page once. Identity, project and history fences withdraw stale results.
 Search hits select the existing direct Task observation, which reads a complete
@@ -26,7 +26,7 @@ own their respective contracts.
 ## Alternatives
 
 **Search cached summaries.** Summaries omit complete descriptions, can lag the
-server and cannot establish the matching evidence or complete chain context.
+server and cannot establish the matching evidence or the actual parent context.
 
 **Treat a hit as a full Task.** The search projection lacks detail fields and
 does not establish the epoch and version required for detail admission or writes.

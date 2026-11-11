@@ -213,7 +213,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo", "include")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo", "include", "type", "parentId")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -225,6 +225,15 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		return service.TaskListRequest{}, err
 	}
 	result := service.TaskListRequest{PageRequest: page}
+	if value, exists := values["type"]; exists {
+		result.Type = model.TaskType(value[0])
+		if result.Type == "" {
+			return result, httpx.InvalidInput("type must be task or goal")
+		}
+	}
+	if value, exists := values["parentId"]; exists {
+		result.Parent = &value[0]
+	}
 	if value, exists := values["assignedTo"]; exists {
 		result.AssignedTo = &value[0]
 	}

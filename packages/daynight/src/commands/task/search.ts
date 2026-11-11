@@ -13,7 +13,7 @@ type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 
 // Both renderers consume the same explicit projection, independently of wire additions.
 const projectResults = (items: readonly TaskSearchItem[]): TaskSearchItem[] => items.map((item) => ({
-  id: item.id, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
+  id: item.id, type: item.type, parentId: item.parentId, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
   context: item.context === null ? null : { taskId: item.context.taskId, title: item.context.title },
   match: { fields: [...item.match.fields], descriptionSnippet: item.match.descriptionSnippet },
 }));
@@ -23,6 +23,8 @@ const renderText = (project: string, items: readonly TaskSearchItem[]): string =
   if (items.length === 0) return `${header}No matching tasks.\n`;
   return `${header}Found ${items.length} matching ${items.length === 1 ? "task" : "tasks"}.\n\n${items.map((item) => [
     `ID: ${terminalText(item.id)}`,
+    `Type: ${item.type}`,
+    `Parent: ${item.parentId === null ? "none" : terminalText(item.parentId)}`,
     `Title: ${terminalText(item.title)}`,
     `Status: ${terminalText(item.status)}`,
     `Goal: ${item.context === null ? "none" : `${terminalText(item.context.taskId)}  ${terminalText(item.context.title)}`}`,

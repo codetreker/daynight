@@ -33,6 +33,8 @@ type TaskSearchPosition struct {
 }
 
 type TaskSearchQuery struct {
+	Type               model.TaskType
+	Parent             *string
 	Expression         *tasksearch.Node
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
@@ -43,6 +45,8 @@ type TaskSearchQuery struct {
 }
 
 type TaskSearchRow struct {
+	Type                   model.TaskType
+	ParentID               *string
 	ID, Title, Description string
 	Status                 model.TaskStatus
 	AssignedTo             *string

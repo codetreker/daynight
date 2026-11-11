@@ -11,6 +11,6 @@ try {
   const result = await validateImageFile(request);
   process.stdout.write(JSON.stringify({ version: 1, buildId: IMAGE_VALIDATION_BUILD_ID, result, error: null }) + "\n");
 } catch (error) {
-  process.stdout.write(JSON.stringify({ version: 1, buildId: IMAGE_VALIDATION_BUILD_ID, result: null, error: { code: error instanceof ImageValidationError ? error.code : "image_decode_failed", message: error instanceof ImageValidationError ? error.message : "Image validation could not complete.", retry: "never" } }) + "\n");
+  process.stdout.write(JSON.stringify({ version: 1, buildId: IMAGE_VALIDATION_BUILD_ID, result: null, error: { code: error instanceof ImageValidationError ? error.code : "image_validation_unavailable", message: error instanceof ImageValidationError ? error.message : "Image validation could not complete.", retry: "never" } }) + "\n");
 }
 process.stderr.write(JSON.stringify({ peakRssBytes: String(process.resourceUsage().maxRSS * 1024) }) + "\n");

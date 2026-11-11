@@ -1,4 +1,4 @@
--- Schema snapshot version: 60
+-- Schema snapshot version: 62
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -597,6 +597,59 @@ CREATE TABLE "task_properties" (
     CONSTRAINT "task_properties_name_check" CHECK (("name" <> ''::"text"))
 );
 
+CREATE TABLE "tasks" (
+    "id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "title" "text" NOT NULL,
+    "description" "text" DEFAULT ''::"text" NOT NULL,
+    "status" "text" DEFAULT 'proposed'::"text" NOT NULL,
+    "version" bigint DEFAULT 1 NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "started_at" timestamp with time zone,
+    "completed_at" timestamp with time zone,
+    "allow_agents" boolean DEFAULT false NOT NULL,
+    "required_platform" "text",
+    "deleted_at" timestamp with time zone,
+    "assigned_to" "uuid",
+    "cancelled_at" timestamp with time zone,
+    "type" "text" DEFAULT 'task'::"text" NOT NULL,
+    "parent_id" "uuid",
+    CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
+    CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
+    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
+    CONSTRAINT "tasks_title_check" CHECK (("btrim"("title") <> ''::"text")),
+    CONSTRAINT "tasks_version_check" CHECK (("version" > 0))
+);
+
+CREATE VIEW "task_resource_rows" AS
+ SELECT "t"."id",
+    "t"."project_id",
+    "t"."title",
+    "t"."description",
+    "t"."status",
+    "t"."version",
+    "t"."created_at",
+    "t"."updated_at",
+    "t"."started_at",
+    "t"."completed_at",
+    "t"."allow_agents",
+    "t"."required_platform",
+    "t"."deleted_at",
+    "t"."assigned_to",
+    "t"."cancelled_at",
+    "t"."type",
+    "t"."parent_id",
+    "p"."type" AS "parent_type",
+    "p"."deleted_at" AS "parent_deleted_at",
+    COALESCE("t"."deleted_at",
+        CASE
+            WHEN (("t"."type" = 'task'::"text") AND ("p"."type" = 'goal'::"text")) THEN "p"."deleted_at"
+            ELSE NULL::timestamp with time zone
+        END) AS "effective_deleted_at"
+   FROM ("tasks" "t"
+     LEFT JOIN "tasks" "p" ON ((("p"."project_id" = "t"."project_id") AND ("p"."id" = "t"."parent_id"))));
+
 CREATE TABLE "task_sessions" (
     "id" "uuid" NOT NULL,
     "project_id" "uuid",
@@ -669,29 +722,6 @@ CREATE TABLE "task_threads" (
     "last_created_at" timestamp(3) with time zone,
     "last_message_id" "uuid",
     CONSTRAINT "task_threads_check" CHECK ((("last_created_at" IS NULL) = ("last_message_id" IS NULL)))
-);
-
-CREATE TABLE "tasks" (
-    "id" "uuid" NOT NULL,
-    "project_id" "uuid" NOT NULL,
-    "title" "text" NOT NULL,
-    "description" "text" DEFAULT ''::"text" NOT NULL,
-    "status" "text" DEFAULT 'proposed'::"text" NOT NULL,
-    "version" bigint DEFAULT 1 NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
-    "started_at" timestamp with time zone,
-    "completed_at" timestamp with time zone,
-    "allow_agents" boolean DEFAULT false NOT NULL,
-    "required_platform" "text",
-    "deleted_at" timestamp with time zone,
-    "assigned_to" "uuid",
-    "cancelled_at" timestamp with time zone,
-    CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
-    CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
-    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['proposed'::"text", 'todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
-    CONSTRAINT "tasks_title_check" CHECK (("btrim"("title") <> ''::"text")),
-    CONSTRAINT "tasks_version_check" CHECK (("version" > 0))
 );
 
 CREATE TABLE "team_invitations" (
@@ -1542,7 +1572,11 @@ CREATE INDEX "tasks_project_created_id" ON "tasks" USING "btree" ("project_id", 
 
 CREATE INDEX "tasks_project_id_id_idx" ON "tasks" USING "btree" ("project_id", "id");
 
+CREATE INDEX "tasks_project_parent_created_id" ON "tasks" USING "btree" ("project_id", "parent_id", "created_at", "id");
+
 CREATE INDEX "tasks_project_status_created_id" ON "tasks" USING "btree" ("project_id", "status", "created_at", "id");
+
+CREATE INDEX "tasks_project_type_created_id" ON "tasks" USING "btree" ("project_id", "type", "created_at", "id");
 
 CREATE INDEX "tasks_project_updated_id" ON "tasks" USING "btree" ("project_id", "updated_at", "id");
 

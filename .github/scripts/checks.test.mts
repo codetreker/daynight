@@ -38,7 +38,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-runtime", "verify-completion", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -58,15 +58,26 @@ const ordinary = jobs.get("verify")!;
 const installed = jobs.get("verify-installed")!;
 const nativeStages = [ordinary, installed];
 const nativePlatforms = ["ubuntu-latest", "windows-latest", "macos-15"];
+const ordinaryEntries = [...ordinary.matchAll(/^          - os: (.+)\n            shard: "(.*)"\n            suffix: "(.*)"$/gm)]
+  .map((match) => ({ os: match[1]!, shard: match[2]!, suffix: match[3]! }));
+
 
 test("Linux, Windows and macOS share independent ordinary and installed CLI matrices", () => {
   assert.equal(jobs.has("verify-macos"), false);
   assert.equal(jobs.has("verify-macos-installed"), false);
+  assert.deepEqual(installed.match(/^        os: \[([^\]]+)\]$/m)![1]!.split(", "), nativePlatforms);
+  assert.deepEqual(ordinaryEntries, [
+    { os: "ubuntu-latest", shard: "", suffix: "" },
+    { os: "windows-latest", shard: "1/2", suffix: "-shard-1" },
+    { os: "windows-latest", shard: "2/2", suffix: "-shard-2" },
+    { os: "macos-15", shard: "", suffix: "" },
+  ]);
+  assert.match(ordinary, /^    name: verify \(CLI tests, \$\{\{ matrix.os \}\}\$\{\{ matrix.suffix \}\}\)$/m);
   for (const stage of nativeStages) {
     assert.match(stage, /^    needs: detect-changes$/m);
     assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
     assert.match(stage, /^      fail-fast: false$/m);
-    assert.deepEqual(stage.match(/^        os: \[([^\]]+)\]$/m)![1]!.split(", "), nativePlatforms);
+
     assert.match(stage, /^    runs-on: \$\{\{ matrix.os \}\}$/m);
     assert.match(stage, /^    timeout-minutes: 10$/m);
     assert.match(stage, /^          node-version: 24$/m);
@@ -112,7 +123,7 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
   const ordinaryUploads = uploadSteps(ordinary);
   const installedUploads = uploadSteps(installed);
-  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-termination-macos-15"]);
+  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-probes-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-failures-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-termination-macos-15", "daynight-cli-tests-results-${{ matrix.os }}${{ matrix.suffix }}"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
@@ -123,9 +134,15 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
     assert.match(probe, /^          if-no-files-found: error$/m);
   }
+  const failures = ordinaryUploads[3]!;
+  assert.match(failures, /^        if: \$\{\{ always\(\) \}\}$/m);
+  assert.deepEqual(artifactPaths(failures), [".tmp/cli-test-failures/*.jsonl"]);
+  assert.match(failures, /^          include-hidden-files: true$/m);
+  assert.match(failures, /^          if-no-files-found: warn$/m);
+  assert.match(failures, /^          retention-days: 30$/m);
 });
 
-const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
+const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
 const stepsOf = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
 
 const selectsPlatform = (step: string, platform: string): boolean => {
@@ -152,10 +169,10 @@ test("each matrix checks Darwin ARM64 before recording its macOS environment", (
   }
 });
 
-test("each platform runs its ordinary and installed suite exactly once", () => {
+test("each native phase runs completely, with two disjoint Windows ordinary shards", () => {
   const ordinarySuites = stepsOf(ordinary).filter((step) => step.includes("exec vitest run"));
   const installedSuites = stepsOf(installed).filter((step) => step.includes("exec vitest run"));
-  assert.equal(ordinarySuites.length, 2);
+  assert.equal(ordinarySuites.length, 3);
   assert.equal(installedSuites.length, 1);
   assert.doesNotMatch(installedSuites[0]!, /^        if:/m);
   const phases: string[] = [];
@@ -164,7 +181,10 @@ test("each platform runs its ordinary and installed suite exactly once", () => {
     const selectedInstalled = installedSuites.filter((step) => selectsPlatform(step, platform));
     assert.equal(selectedOrdinary.length, 1, `${platform} ordinary suite count`);
     assert.equal(selectedInstalled.length, 1, `${platform} installed suite count`);
-    assert.equal(selectedOrdinary[0]!.match(/^        run: (.+)$/m)![1], platform === "macos-15" ? observedVitest : "pnpm --filter @codetreker/daynight exec vitest run");
+    const expected = platform === "macos-15" ? observedVitest : platform === "windows-latest"
+      ? "pnpm --filter @codetreker/daynight exec vitest run --config vitest.windows-shards.config.ts --shard=${{ matrix.shard }}"
+      : "pnpm --filter @codetreker/daynight exec vitest run";
+    assert.equal(selectedOrdinary[0]!.match(/^        run: (.+)$/m)![1], expected);
     assert.match(selectedInstalled[0]!, /^        run: pnpm --filter @codetreker\/daynight exec vitest run --config vitest.acceptance.config.ts$/m);
     phases.push(`${platform}:ordinary`, `${platform}:installed`);
   }
@@ -176,7 +196,8 @@ test("each platform runs its ordinary and installed suite exactly once", () => {
       assert.equal(matching.length, 1);
       assert.doesNotMatch(matching[0]!, /^        if:/m);
     }
-    assert.doesNotMatch(stage, /timeout-minutes: 20|installed-evidence|!cancelled|--grep|--shard/);
+    assert.doesNotMatch(stage, /timeout-minutes: 20|installed-evidence|!cancelled|--grep|--exclude|--passWithNoTests|--testNamePattern|--changed|--related/);
+    if (stage === installed) assert.doesNotMatch(stage, /--shard/);
   }
 });
 
@@ -194,20 +215,90 @@ test("macOS termination diagnostics use only the ordinary matrix and upload afte
   assert.ok(ordinary.indexOf(upload) > ordinary.indexOf(observer));
 });
 
-test("matrix artifacts retain unique names across all three platforms", () => {
-  const names = nativeStages.flatMap((stage) => uploadSteps(stage).flatMap((step) => {
+test("matrix artifacts retain unique names for both Windows shards and every other native phase", () => {
+  const names = uploadSteps(ordinary).flatMap((step) => {
     const name = artifactName(step);
-    if (name === "daynight-runtime-package") return [name];
-    if (name === "daynight-cli-tests-termination-macos-15") return [name];
-    return nativePlatforms.map((platform) => name.replace("${{ matrix.os }}", platform));
-  }));
-  assert.equal(names.length, 14);
+    if (name === "daynight-runtime-package" || name === "daynight-cli-tests-termination-macos-15") return [name];
+    const entries = name.startsWith("daynight-cli-tests-results-") ? ordinaryEntries.filter(entry => entry.os === "windows-latest") : ordinaryEntries;
+    return entries.map(entry => name.replace("${{ matrix.os }}", entry.os).replace("${{ matrix.suffix }}", entry.suffix));
+  });
+  names.push(...uploadSteps(installed).flatMap(step => nativePlatforms.map(platform => artifactName(step).replace("${{ matrix.os }}", platform))));
+  assert.equal(names.length, 22);
   assert.equal(new Set(names).size, names.length);
-  for (const platform of nativePlatforms) {
-    for (const prefix of ["daynight-cli-tests", "daynight-cli-tests-probes", "daynight-cli-installed", "daynight-cli-installed-probes"]) {
-      assert.ok(names.includes(`${prefix}-${platform}`));
-    }
+  for (const { os, suffix } of ordinaryEntries) {
+    for (const prefix of ["daynight-cli-tests", "daynight-cli-tests-probes", "daynight-cli-tests-failures"]) assert.ok(names.includes(`${prefix}-${os}${suffix}`));
   }
+  for (const platform of nativePlatforms) {
+    for (const prefix of ["daynight-cli-installed", "daynight-cli-installed-probes"]) assert.ok(names.includes(`${prefix}-${platform}`));
+  }
+});
+
+test("Windows discovery remains whole and execution outcome comes from the real test step", () => {
+  const steps = stepsOf(ordinary);
+  const discovery = steps.find(step => step.includes("exec vitest list"))!;
+  const run = steps.find(step => step.includes("id: windows-tests\n"))!;
+  const receipt = steps.find(step => step.includes("windows-cli-shards.mts record"))!;
+  assert.match(discovery, /^        if: matrix.os == 'windows-latest'$/m);
+  assert.match(discovery, /^        run: pnpm --filter @codetreker\/daynight exec vitest list --config vitest.windows-shards.config.ts --filesOnly --json=..\/..\/.tmp\/windows-cli-shard\/discovered.json$/m);
+  assert.doesNotMatch(discovery, /--shard|--exclude|--grep|continue-on-error/);
+  assert.match(run, /^        if: matrix.os == 'windows-latest'$/m);
+  assert.match(receipt, /^        if: \$\{\{ always\(\) && matrix.os == 'windows-latest' && steps.windows-tests.outcome != 'skipped' \}\}$/m);
+  assert.match(receipt, /^          CLI_TEST_RESULT: \$\{\{ steps.windows-tests.outcome \}\}$/m);
+  assert.match(receipt, /^        run: node .github\/scripts\/windows-cli-shards.mts record \$\{\{ matrix.shard \}\}$/m);
+  assert.ok(steps.indexOf(discovery) < steps.indexOf(run));
+  assert.ok(steps.indexOf(run) < steps.indexOf(receipt));
+  const upload = uploadSteps(ordinary).find(step => artifactName(step).startsWith("daynight-cli-tests-results-"))!;
+  assert.match(upload, /^        if: \$\{\{ always\(\) && matrix.os == 'windows-latest' \}\}$/m);
+  assert.deepEqual(artifactPaths(upload), [".tmp/windows-cli-shard/*.json"]);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          retention-days: 30$/m);
+  assert.ok(steps.indexOf(receipt) < steps.indexOf(upload));
+});
+
+const selectedCLIStep = stepsOf(gate).find(step => step.includes("name: Require selected CLI jobs to succeed\n"))!;
+const selectedCLICommand = selectedCLIStep.match(/^        run: (.+)$/m)![1]!;
+const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success", COMPLETION_RESULT: "success" };
+
+test("selected CLI requires every ordinary shard, installed phase, runtime and completion job", () => {
+  assert.match(selectedCLIStep, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"], ["COMPLETION_RESULT", "verify-completion"]]) {
+    assert.ok(selectedCLIStep.includes(`${variable}: \${{ needs.${job}.result }}`));
+  }
+});
+
+for (const variable of Object.keys(cliResults)) {
+  for (const result of ["success", "failure", "cancelled", "skipped"]) {
+    test(`selected CLI ${variable}=${result} executes the actual workflow guard`, () => {
+      const outcome = spawnSync("bash", ["-e", "-c", selectedCLICommand], { env: { ...process.env, ...cliResults, [variable]: result }, encoding: "utf8", timeout: 5_000 });
+      if (outcome.error) throw outcome.error;
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.status === 0, result === "success");
+    });
+  }
+}
+
+test("the final gate verifies both current-run artifacts against its own checkout", () => {
+  const steps = stepsOf(gate);
+  const downloads = steps.filter(step => step.includes("uses: actions/download-artifact@"));
+  assert.equal(downloads.length, 2);
+  for (const [index, download] of downloads.entries()) {
+    assert.ok(download.includes(`name: daynight-cli-tests-results-windows-latest-shard-${index + 1}`));
+    assert.ok(download.includes(`path: .tmp/windows-cli-shards/${index + 1}`));
+    assert.match(download, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+    assert.doesNotMatch(download, /run-id:|repository:|continue-on-error/);
+  }
+  const checkout = steps.find(step => step.includes("uses: actions/checkout@"))!;
+  const node = steps.find(step => step.includes("uses: actions/setup-node@"))!;
+  const verify = steps.find(step => step.includes("windows-cli-shards.mts verify"))!;
+  assert.match(checkout, /^          persist-credentials: false$/m);
+  assert.doesNotMatch(checkout, /^          ref:/m);
+  assert.match(node, /^          node-version: 24$/m);
+  assert.match(verify, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+  assert.match(verify, /^        run: node .github\/scripts\/windows-cli-shards.mts verify .tmp\/windows-cli-shards$/m);
+  assert.doesNotMatch(gate, /continue-on-error/);
+  for (const prerequisite of [selectedCLIStep, checkout, node, ...downloads]) assert.ok(steps.indexOf(prerequisite) < steps.indexOf(verify));
+  assert.ok(workflow.includes("node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts .github/scripts/windows-cli-shards.test.mts"));
 });
 
 test("unselected CLI matrices may skip while other selected modules succeed", () => {

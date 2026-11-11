@@ -72,7 +72,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite")); stores.add(webStore);
   const frozen = webStore.register({ projectId: retainedProjectId, taskId, claimId, worktreeId, project: retainedProject, serverOrigin, workerId, userId,
     configuration: { agent: "codex", agentControlMode: "web", model: "retained-model", args: [], recoveryLimit: 2 } }, Date.now());
-  const task: Task = {
+  const task: Task = { type: "task", parentId: null,
     id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,

@@ -11,8 +11,8 @@ import (
 const taskAssigneesCatalogueQuery = `WITH candidate_ids (user_id) AS (
   SELECT user_id FROM (` + pg.ProjectAccessRelation + `) access WHERE project_id = $1
   UNION
-  SELECT assigned_to FROM tasks
-  WHERE project_id = $1 AND deleted_at IS NULL AND assigned_to IS NOT NULL
+  SELECT assigned_to FROM task_resource_rows
+  WHERE project_id = $1 AND effective_deleted_at IS NULL AND assigned_to IS NOT NULL
 )
 SELECT candidate.user_id::text, profile.id::text, profile.name, profile.avatar_url,
   EXISTS (SELECT 1 FROM (` + pg.ProjectAccessRelation + `) access WHERE access.project_id = $1 AND access.user_id = candidate.user_id)
@@ -25,8 +25,8 @@ const taskAssigneesResolveQuery = `SELECT requested.user_id::text, profile.id::t
 FROM unnest($2::uuid[]) requested(user_id)
 LEFT JOIN (` + pg.ProjectAccessRelation + `) access ON access.project_id = $1 AND access.user_id = requested.user_id
 LEFT JOIN LATERAL (
-  SELECT task.id FROM tasks task
-  WHERE task.project_id = $1 AND task.assigned_to = requested.user_id AND task.deleted_at IS NULL
+  SELECT task.id FROM task_resource_rows task
+  WHERE task.project_id = $1 AND task.assigned_to = requested.user_id AND task.effective_deleted_at IS NULL
   LIMIT 1
 ) retained ON true
 LEFT JOIN users profile ON profile.id = requested.user_id AND (access.user_id IS NOT NULL OR retained.id IS NOT NULL)

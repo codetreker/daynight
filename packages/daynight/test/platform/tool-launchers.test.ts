@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { renameSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../src/api/operation.js";
 import { identifyToolLauncher } from "../../src/platform/tool-launchers.js";
 import { resolveToolLaunch, toolCommand } from "../../src/platform/tool-executables.js";
+import { removeFixtureRoot } from "../helpers/tool-fixture-cleanup.js";
 
 const fixtures = new URL("./fixtures/tool-launchers/", import.meta.url);
 const roots: string[] = [];
@@ -49,7 +50,7 @@ const runCodex = async (script: string, args: string[] = [], env = process.env) 
   return stdout;
 };
 
-afterEach(async () => { operations.splice(0).forEach(item => item.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { operations.splice(0).forEach(item => item.dispose()); await Promise.all(roots.splice(0).map(directory => removeFixtureRoot(directory))); });
 
 describe("static tool launchers", () => {
   it("keeps native symlink entry identity without requiring Node", async () => {

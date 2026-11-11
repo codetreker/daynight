@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -38,7 +39,7 @@ func testPrincipal() model.Principal {
 
 func testTask(title string) model.Task {
 	return model.Task{
-		ID: testTaskID, ProjectID: testProjectID, Title: title,
+		ID: testTaskID, Type: model.TaskTypeTask, ProjectID: testProjectID, Title: title,
 		Description: "Task-owned Markdown", Properties: model.TaskProperties{},
 		Status: model.TaskTodo, Version: 1, CreatedAt: testTime, UpdatedAt: testTime,
 		DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true,
@@ -91,7 +92,7 @@ func newHTTPFixture(t *testing.T, output io.Writer) *resourceTestHandler {
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
 		return handler.AuthenticateFunc(ctx, kind, credential)
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

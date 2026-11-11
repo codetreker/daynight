@@ -308,3 +308,13 @@ test("initial persistence uses the same environment snapshot passed to the nativ
     onSpawn: () => { env.CODEX_HOME = join(nativeHome, "not-the-child-home"); } });
   await provider.close();
 });
+
+
+test.each(["inProgress", "completed"])("Codex historical Markdown waits for the native %s turn state", async status => {
+  const projected: { entry: unknown; metadata: unknown }[] = [];
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: "native-thread",
+    env: { ...process.env, CODEX_TEST_MARKDOWN_HISTORY_STATUS: status }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
+    onTimeline: (entry, metadata) => projected.push({ entry, metadata }), onState: () => {}, onSpawn: () => {} });
+  try { expect(projected).toContainEqual({ entry: expect.objectContaining({ kind: "assistant_message", content: [{ type: "text", text: "![image](local)" }] }), metadata: { complete: status === "completed", format: "markdown", truncated: false } }); }
+  finally { await provider.close(); }
+});

@@ -17,7 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	httpwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
@@ -95,7 +96,7 @@ func TestWebhookHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 	defer pool.Close()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	identityService := identity.New(f.db, nil, testOrigin+"/auth/callback")
-	authenticator, err := auth.NewAuthentication(identityService, config.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
+	authenticator, err := auth.NewAuthentication(identityService, authconfig.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

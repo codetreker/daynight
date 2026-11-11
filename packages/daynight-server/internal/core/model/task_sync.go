@@ -12,6 +12,8 @@ const (
 )
 
 type TaskViewRecord struct {
+	Type              TaskType
+	ParentID          *string
 	Properties        TaskProperties
 	ID                string
 	TitlePreview      string
