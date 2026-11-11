@@ -22,6 +22,7 @@ cleanup() {
     [[ $project =~ ^daynight-dev-ci-[0-9]{14}-[0-9]+-[0-9]{5}$ ]] || continue
     rm -rf -- "$repository_dir/.tmp/dev-ci/${project#daynight-dev-ci-}"
     rm -rf -- "$repository_dir/.tmp/dev-ci-private/${project#daynight-dev-ci-}"
+    rm -rf -- "$repository_dir/.tmp/dev-ci-config/${project#daynight-dev-ci-}"
   done
   rm -rf -- "$fixture_root"
 }
@@ -107,9 +108,12 @@ run_case() {
   [[ $(< "$manifest") != *private-fixture-secret* ]]
   local private_dir="$repository_dir/.tmp/dev-ci-private/$(< "$FAKE_DOCKER_STATE/project")"
   private_dir=${private_dir/daynight-dev-ci-/}
+  local run_project="$(< "$FAKE_DOCKER_STATE/project")"
+  local config_dir="$repository_dir/.tmp/dev-ci-config/${run_project#daynight-dev-ci-}"
   if [[ $scenario != cleanup-failure* && $scenario != attachment-volume-left && $scenario != log-volume-left ]]; then
-    [[ ! -d $private_dir ]]
+    [[ ! -d $private_dir && ! -d $config_dir ]]
   else
+    [[ -f $config_dir/config.yml ]]
     [[ $(< "$private_dir/auth.env") != *private-fixture-secret* ]]
     [[ $(< "$private_dir/auth-state.json") != *private-fixture-secret* ]]
   fi
@@ -196,6 +200,37 @@ for callback_status in 0 49; do
   [[ -z $state || $state == Z* ]]
 done
 printf '%s\n' 'PASS callback descendants stop after success and failure'
+
+mkdir() {
+  command mkdir "$@"
+  if [[ ${FAKE_MKDIR_WAIT:-} == 1 && $* == *'/.tmp/dev-ci-config/'* ]]; then
+    printf ready > "$FAKE_DOCKER_STATE/config-created"
+    while [[ ! -f $FAKE_DOCKER_STATE/config-release ]]; do sleep 0.02; done
+  fi
+}
+export -f mkdir
+export FAKE_DOCKER_SCENARIO=passed FAKE_MKDIR_WAIT=1
+export FAKE_DOCKER_STATE="$fixture_root/cancelled-config"
+command mkdir "$FAKE_DOCKER_STATE"
+bash "$runner" true > "$FAKE_DOCKER_STATE/output" 2>&1 &
+fixture_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+  [[ ! -f $FAKE_DOCKER_STATE/config-created ]] || break
+  sleep 0.05
+done
+[[ -f $FAKE_DOCKER_STATE/config-created ]]
+kill -TERM "$fixture_pid"
+touch "$FAKE_DOCKER_STATE/config-release"
+status=0
+wait "$fixture_pid" || status=$?
+fixture_pid=''
+[[ $status -eq 143 ]]
+run_id="$(sed -n 's/^Dev-ci run ID: //p' "$FAKE_DOCKER_STATE/output")"
+[[ $run_id =~ ^[0-9]{14}-[0-9]+-[0-9]{5}$ && ! -d $repository_dir/.tmp/dev-ci-config/$run_id ]]
+rm -rf -- "$repository_dir/.tmp/dev-ci/$run_id"
+unset FAKE_MKDIR_WAIT
+unset -f mkdir
+printf '%s\n' 'PASS cancellation while creating run configuration'
 
 for cancellation_phase in callback bootstrap; do
   export FAKE_DOCKER_SCENARIO="cancelled-$cancellation_phase"

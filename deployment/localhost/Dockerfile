@@ -37,6 +37,6 @@ COPY --from=web /out/image-validation /opt/daynight/image-validation
 ENV DAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node \
     DAYNIGHT_IMAGE_HELPER_PATH=/opt/daynight/image-validation/image-validation-helper.js \
     DAYNIGHT_IMAGE_MANIFEST_PATH=/opt/daynight/image-validation/image-validation-manifest.json \
-    DAYNIGHT_IMAGE_TEMP_DIRECTORY=/var/lib/daynight/storage/.image-validation
+    DAYNIGHT_IMAGE_TEMP_DIRECTORY=storage/.image-validation
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/daynight-server"]

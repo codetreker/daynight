@@ -1,7 +1,7 @@
 # MCP 连接发现与浏览器授权架构
 
 [需求](../spec/daynight-mcp-oauth.md)定义安装发现、浏览器旅程与可观察结果。服务以配置的
-`DAYNIGHT_PUBLIC_ORIGIN` 为 issuer，精确的 `/mcp` URL 为资源。
+`server.public_origin` 为 issuer（可由 `DAYNIGHT_PUBLIC_ORIGIN` 覆盖），精确的 `/mcp` URL 为资源。
 
 ## endpoint 文档与协议分流
 
@@ -25,8 +25,8 @@ protected-resource metadata。stateless SDK 对认证后的 GET/HEAD 返回 405 
 
 authorization-server metadata 描述公开注册、授权、令牌、撤销、code、S256 和 `none`
 客户端认证。客户端可通过动态注册、HTTPS metadata 文档或
-`DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` 配置识别；配置是以 client ID 为键的 JSON
-对象，值为对应公开 metadata 文档。服务启动时校验这些文档及其 ID，拒绝无效配置。
+`oauth.preregistered_clients` 配置识别；YAML 使用以 client ID 为键的 mapping，
+`DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` 可用 JSON 对象覆盖，值为对应公开 metadata 文档。服务启动时校验这些文档及其 ID，拒绝无效配置。
 
 授权入口验证客户端及回调后冻结请求参数，使用独立 HttpOnly 浏览器绑定并进入同源
 `/oauth/consent`。登录返回路径只接受本地路由。浏览器读取安全展示字段；决定操作要求

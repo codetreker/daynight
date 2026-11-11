@@ -81,6 +81,7 @@ inherits:
 | `DAYNIGHT_BASE_URL` | Main-site HTTP origin, such as `http://127.0.0.1:32777` |
 | `DAYNIGHT_DEV_CI_RUN_ID` | Unique run identity used in receipts and cleanup |
 | `DAYNIGHT_DEV_CI_AUTH_ENV_FILE` | Absolute private environment-file path for this run's Compose commands |
+| `DAYNIGHT_DEV_CI_CONFIG_DIRECTORY` | Absolute run-specific public configuration directory for this run's Compose commands |
 | `DAYNIGHT_AUTH_FIXTURE_DESCRIPTOR` | Absolute private fixture descriptor path used by authentication clients |
 
 The runner does not evaluate the command as shell text. Explicit `bash -c` is
@@ -98,9 +99,20 @@ file, regardless of inherited `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME`. Services
 networks and the `postgres-data`, `attachment-data` and `server-logs` named
 volumes have project-scoped names. PostgreSQL has no host port, and no resource uses a fixed
 container name or an external volume/network. Multiple invocations can run
-concurrently. The server receives
-`DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`, mounted from this project's
-attachment volume. Fresh-volume initialization preserves the image directories'
+concurrently. The runner copies only the public `config/config.yml` into a
+run-specific directory outside the private authentication state. Compose selects
+`/var/lib/daynight` as root and mounts that directory read-only at
+`/var/lib/daynight/config`. The file supplies the listener, metrics, fixture database URL and storage
+path. The image sets its three image tool paths and the root-relative staging
+path `storage/.image-validation` through environment variables. Explicit
+environment variables override YAML values. A new run copies the current base
+file; reconfiguration reuses that run's copy. The directory is mode `0755` and
+its public file is `0644`, readable by UID 10001. Cleanup removes the copy after
+its resources have been removed.
+Dynamic credentials remain
+in the private environment file and the fixture directory is never mounted into
+the server. The project's attachment volume mounts at `/var/lib/daynight/storage`.
+Fresh-volume initialization preserves the image directories'
 UID/GID `10001:10001`; the normal nonroot process writes the files and logs. No
 test uses the localhost deployment's persistent volumes.
 

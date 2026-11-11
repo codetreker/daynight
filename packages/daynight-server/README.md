@@ -2149,8 +2149,8 @@ target gate through file and metadata completion; an opened handle remains stabl
 after releasing it. The accepted non-atomicity issue is owned by the
 [attachment requirements](../../docs/spec/daynight-task-attachments.md).
 
-Both Compose deployments mount a project-scoped `attachment-data` volume at
-`DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`. Fresh-volume initialization
+Both Compose deployments select `/var/lib/daynight` as root and mount a
+project-scoped `attachment-data` volume at its `storage` directory. Fresh-volume initialization
 preserves the image directory's UID/GID `10001:10001`, and the normal nonroot
 server writes without a privileged startup process. Normal restart and rebuild
 retain PostgreSQL metadata, attachment bytes and Session archive bodies; dev-ci

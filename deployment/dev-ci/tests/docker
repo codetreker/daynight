@@ -67,6 +67,26 @@ JS
           ;;
         '--no-build --detach --wait --wait-timeout 120 server')
           [[ $(< "$env_file") == *"DAYNIGHT_UNIAUTH_APP_ID='private-fixture-app'"* && $(< "$env_file") == *"DAYNIGHT_UNIAUTH_APP_SECRET='private-fixture-secret'"* ]] || exit 87
+          node - "$directory" "$DAYNIGHT_DEV_CI_CONFIG_DIRECTORY" <<'JS'
+const fs = require('node:fs');
+const path = require('node:path');
+const directory = process.argv[2];
+const compose = fs.readFileSync(path.join(directory, 'compose.yaml'), 'utf8');
+const server = compose.split('\n  server:\n')[1].split('\n  uniauth:\n')[0];
+const configDirectory = process.argv[3];
+if (!configDirectory.includes('/.tmp/dev-ci-config/') || fs.existsSync(path.join(configDirectory, 'config.local.yml'))) process.exit(87);
+const yaml = fs.readFileSync(path.join(configDirectory, 'config.yml'), 'utf8');
+if (yaml !== fs.readFileSync(path.join(directory, 'config/config.yml'), 'utf8')) process.exit(87);
+if ((fs.statSync(configDirectory).mode & 0o777) !== 0o755 || (fs.statSync(path.join(configDirectory, 'config.yml')).mode & 0o777) !== 0o644) process.exit(87);
+for (const value of ['listen_address: "127.0.0.1:8787"', 'metrics_listen_address: "127.0.0.1:8788"',
+  'url: "postgres://daynight:daynight-dev-ci@postgres:5432/daynight?sslmode=disable"', 'root: "storage"']) {
+  if (!yaml.includes(value)) process.exit(87);
+}
+if (!server.includes('command: ["--root", "/var/lib/daynight"]') ||
+    !server.includes('${DAYNIGHT_DEV_CI_CONFIG_DIRECTORY:?Use deployment/dev-ci/run.sh}:/var/lib/daynight/config:ro') ||
+    /DAYNIGHT_(DATABASE_URL|LISTEN_ADDR|METRICS_LISTEN_ADDR|STORAGE_ROOT):/.test(server) ||
+    server.includes('DAYNIGHT_DEV_CI_FIXTURE_DIRECTORY')) process.exit(87);
+JS
           ;;
         *) exit 95 ;;
       esac

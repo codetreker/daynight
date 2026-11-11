@@ -31,6 +31,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.yaml.in/yaml/v4"
 )
 
 type buildReceipt struct {
@@ -284,22 +285,29 @@ func newFixture(t *testing.T) *fixture {
 		}
 		return writeResources()
 	})
-	values := map[string]string{
-		"DAYNIGHT_DATABASE_URL": parsed.String(), "DAYNIGHT_STORAGE_ROOT": filepath.Join(root, "attachments"),
-		"DAYNIGHT_LISTEN_ADDR": address, "DAYNIGHT_PUBLIC_ORIGIN": origin,
-		"DAYNIGHT_UNIAUTH_URL": gateway.Origin, "DAYNIGHT_UNIAUTH_APP_ID": gateway.AppID,
-		"DAYNIGHT_UNIAUTH_APP_SECRET": gateway.AppSecret, "DAYNIGHT_UNIAUTH_CALLBACK_URL": origin + "/api/v1/auth/callback",
-		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
-		"DAYNIGHT_STARTUP_TIMEOUT": "10s", "DAYNIGHT_SHUTDOWN_TIMEOUT": "2s", "DAYNIGHT_TASK_SYNC_OVERLAP": "10s",
+	configuration := map[string]any{
+		"server":    map[string]any{"listen_address": address, "public_origin": origin, "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
+		"database":  map[string]any{"url": parsed.String()},
+		"storage":   map[string]any{"root": "attachments"},
+		"uniauth":   map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
+		"task_sync": map[string]any{"overlap": "10s"},
+	}
+	configDir := filepath.Join(root, "config")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := yaml.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	command := exec.Command(binary, "--root", root)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "DAYNIGHT_") {
 			command.Env = append(command.Env, entry)
 		}
-	}
-	for key, value := range values {
-		command.Env = append(command.Env, key+"="+value)
 	}
 	command.Env = append(command.Env, "DAYNIGHT_INTEGRATION_RUN_ROOT="+runRoot)
 	child := &serverProcess{command: command, exited: make(chan struct{}), logs: &processLog{}}

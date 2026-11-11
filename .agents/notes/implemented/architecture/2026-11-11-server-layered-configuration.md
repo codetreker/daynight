@@ -39,6 +39,9 @@ Deployments can use private overrides without changing the base file, and
 explicit empty or zero values are distinguishable from absent fields. The YAML
 loader must reject invalid earlier layers even when later layers override them.
 Existing relative storage paths change their base and operators must verify their
-actual data directory when migrating. Deployment-owned YAML remains a separate
-delivery unit. The [file logging decision](../feature/2026-11-11-server-file-logging.md)
+actual data directory when migrating. Both Compose deployments mount a public base configuration directory read-only;
+dev-ci copies its base into a run-owned directory so unrelated local overrides
+cannot redirect its database or storage. Dynamic credentials remain in their
+existing environment sources. Native test runners generate private configuration
+under their isolated roots. The [file logging decision](../feature/2026-11-11-server-file-logging.md)
 owns output and process-lifetime rules.
