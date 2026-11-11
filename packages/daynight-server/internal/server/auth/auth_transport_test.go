@@ -1,7 +1,6 @@
-package server
+package auth
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -105,7 +103,7 @@ func newIdentityResultWireCut(t *testing.T, origin string) *identityResultWireCu
 }
 
 func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
-	database, plan := newIdentityHTTPPlan(t)
+	plan := newIdentityHTTPPlan(t)
 	product := httptest.NewUnstartedServer(nil)
 	t.Cleanup(product.Close)
 	origin := "http://" + product.Listener.Addr().String()
@@ -120,29 +118,25 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal("construct direct real UniAuth SDK client failed")
 	}
-	config := configuredTestConfig()
-	config.Server.PublicOrigin, config.UniAuth.URL = origin, cut.server.URL
-	config.UniAuth.AppID, config.UniAuth.AppSecret, config.UniAuth.CallbackURL = gateway.AppID, gateway.AppSecret, origin+callbackPath
-	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
-	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	proxiedTransport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(proxiedTransport.CloseIdleConnections)
+	client, err := uniauth.New(uniauth.Config{BaseURL: cut.server.URL, AppID: gateway.AppID, AppSecret: gateway.AppSecret,
+		AllowLoopbackHTTP: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: proxiedTransport}})
 	if err != nil {
-		t.Fatal("compose the production authenticated handler failed")
+		t.Fatal("construct proxied real UniAuth SDK client failed")
 	}
-	product.Config.Handler = httpx.RequestLogging(logger, handler)
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
+	product.Config.Handler = identityHTTPHandler(t, plan, origin, origin+callbackPath, client, logger)
 	product.Start()
 	integration := &identityIntegration{plan: plan, server: product, gateway: cut.server.URL, logs: logs,
 		sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{gateway.AppSecret}}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := handler.(Handler).Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
+
 		product.Close()
 		cut.server.Close()
 		cut.transport.CloseIdleConnections()
 		directTransport.CloseIdleConnections()
+		proxiedTransport.CloseIdleConnections()
 		gateway.Close(t)
 		for _, secret := range integration.secrets {
 			if secret != "" && logs.contains(secret) {

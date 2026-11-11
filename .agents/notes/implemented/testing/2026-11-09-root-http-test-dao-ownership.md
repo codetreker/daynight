@@ -32,9 +32,10 @@ mutable model database or simulated rollback. Unconfigured access fails, and
 concurrent work uses operation-specific observations and explicit barriers.
 
 Authentication fixtures provide controlled credential facts to the actual
-adapter. Tests of the UniAuth SDK and browser/result binding retain their real
-local gateway, proxy and socket-loss mechanism. Native resources remain real
-when they are the subject: HTTP/TCP, MCP SDK exchanges, WebSockets, Session
+adapter. Authentication adapter tests of the UniAuth SDK and browser/result
+binding retain their real local gateway, proxy and socket-loss mechanism; Root
+retains production constructor and configured callback assembly. Native resources
+remain real when they are the subject: HTTP/TCP, MCP SDK exchanges, WebSockets, Session
 Engine state, local file publication and runtime shutdown all execute their
 production paths. HTTP control and WebSocket traffic share one actual
 application and Engine. Large native content and exact supported capacity
