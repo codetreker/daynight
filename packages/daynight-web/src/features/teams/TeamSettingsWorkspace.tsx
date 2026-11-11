@@ -31,6 +31,7 @@ type Props = {
   readonly setTeamGuard: (id: string, source: "settings" | "members", guarded: boolean) => void;
   readonly onIdentityMismatch: () => void;
   readonly onNameSaved: (id: string) => void;
+  readonly onDeletedResult: (id: string) => void;
   readonly onMemberResult: (id: string, kind: "changed" | "left") => void;
   readonly onMemberStart: (id: string) => void;
 };
@@ -43,7 +44,7 @@ const followSection = (event: MouseEvent<HTMLAnchorElement>) => {
   navigate(event.currentTarget.pathname);
 };
 
-export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identityChecking, workspaceVisible, slot, guardedTeam, setTeamGuard, onIdentityMismatch, onNameSaved, onMemberResult, onMemberStart }: Props) => {
+export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identityChecking, workspaceVisible, slot, guardedTeam, setTeamGuard, onIdentityMismatch, onNameSaved, onDeletedResult, onMemberResult, onMemberStart }: Props) => {
   const teams = useTeams(), confirmedTeam = useCurrentTeamPreference().confirmedTeam, m = useTeamMessages();
   // Stable hosts keep dispatched operations alive when standalone navigation detaches the workspace.
   const owners = useRef<Owner[]>([]);
@@ -82,8 +83,8 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
     if (result === "forgotten") navigate("/projects");
     return result;
   };
-  const departed = (id: string) => {
-    const current = onCurrentTeam(id);
+  const departed = (id: string, finish = true) => {
+    const current = finish && onCurrentTeam(id);
     teams.leaveTeam(id);
     teams.refreshList();
     if (current) navigate(`/teams/${user.personalTeam.id}`);
@@ -101,7 +102,7 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
         <a className="button" href={`/teams/${owner.id}/settings`} onClick={followSection} aria-current={owner.section === "general" ? "page" : undefined}>{m.general}</a>
         <a className="button" href={`/teams/${owner.id}/members`} onClick={followSection} aria-current={owner.section === "members" ? "page" : undefined}>{m.membersAndInvitations}</a>
       </nav>
-      {owner.opened.general && <div hidden={!generalActive} inert={!generalActive}><TeamSettingsPanel teamId={owner.id} active={generalActive} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "general", value)} onDeleted={() => departed(owner.id)} onUnavailable={() => unavailable(owner.id)} onUpdated={team => { onNameSaved(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
+      {owner.opened.general && <div hidden={!generalActive} inert={!generalActive}><TeamSettingsPanel teamId={owner.id} active={generalActive} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "general", value)} onDeleted={finish => { onDeletedResult(owner.id); departed(owner.id, finish); }} onUnavailable={() => unavailable(owner.id)} onUpdated={team => { onNameSaved(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
       {owner.opened.members && <div hidden={!membersActive} inert={!membersActive}><TeamMembersPanel teamId={owner.id} active={membersActive} admissionBlocked={identityChecking} preferenceDenied={denied} onRoute={onRoute} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "members", value)} onUnavailable={() => unavailable(owner.id)} onStart={() => onMemberStart(owner.id)} onChanged={confirmed => { if (confirmed) onMemberResult(owner.id, "changed"); if (onCurrentTeam(owner.id)) teams.refreshDetail(); teams.refreshList(); }} onLeft={() => { onMemberResult(owner.id, "left"); departed(owner.id); }} /></div>}
     </div>, owner.host, owner.id);
   });
