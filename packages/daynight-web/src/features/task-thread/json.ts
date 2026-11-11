@@ -1,3 +1,4 @@
+import { awaitAbortable } from '../../../../daynight/src/api/abort';
 import { decodeThreadJsonSource } from '../../../../daynight/src/api/thread';
 import { ApiError, responseSignal } from '../../api/client';
 
@@ -7,7 +8,10 @@ export const rejectThreadResponse = async (response: Response, signal?: AbortSig
   const lifetime = signal === undefined ? undefined : responseSignal(response, signal);
   lifetime?.throwIfAborted();
   const error = new ApiError('protocol', response.status);
-  try { await response.body?.cancel(error); }
+  try {
+    const cleanup = response.body?.cancel(error);
+    if (cleanup !== undefined) await (lifetime === undefined ? cleanup : awaitAbortable(cleanup, lifetime));
+  }
   catch (cause) { lifetime?.throwIfAborted(); throw new ApiError('protocol', response.status, 'protocol', null, new AggregateError([error, cause], 'The response and its cleanup failed.')); }
   lifetime?.throwIfAborted();
   throw error;
@@ -25,9 +29,11 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const chunks: string[] = [];
   let bytes = 0;
+  let cancellation: Promise<void> | undefined;
+  const cancelOnce = (reason?: unknown): Promise<void> => cancellation ??= reader.cancel(reason);
   const cancel = (): void => {
     // The request's abort remains the outcome even if transport cleanup also fails.
-    void reader.cancel(signal.reason).catch(() => undefined);
+    void cancelOnce(signal.reason).catch(() => undefined);
   };
   signal.addEventListener('abort', cancel, { once: true });
   try {
@@ -37,10 +43,7 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
       signal.throwIfAborted();
       if (item.done) break;
       bytes += item.value.byteLength;
-      if (limit !== undefined && bytes > limit) {
-        await reader.cancel();
-        throw new ApiError('protocol', response.status);
-      }
+      if (limit !== undefined && bytes > limit) throw new ApiError('protocol', response.status);
       chunks.push(decoder.decode(item.value, { stream: true }));
     }
     chunks.push(decoder.decode());
@@ -48,7 +51,7 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
   } catch (error) {
     signal.throwIfAborted();
     let cause = error;
-    try { await reader.cancel(error); }
+    try { await awaitAbortable(cancelOnce(error), signal); }
     catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'The response and its cleanup failed.'); }
     signal.throwIfAborted();
     if (cause instanceof ApiError) throw cause;

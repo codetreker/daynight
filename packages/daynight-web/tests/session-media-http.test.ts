@@ -121,6 +121,9 @@ it('cancels a Session media response while its body is being read', async () => 
   const cancelled = vi.fn();
   let dispatched!: AbortSignal;
   const stream = new ReadableStream<Uint8Array>({ pull() { started(); }, cancel: cancelled }, { highWaterMark: 0 });
+  let cancelReader!: ReturnType<typeof vi.spyOn>;
+  const getReader = stream.getReader.bind(stream);
+  vi.spyOn(stream, 'getReader').mockImplementation(() => { const reader = getReader(); cancelReader = vi.spyOn(reader, 'cancel'); return reader; });
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
     dispatched = init.signal as AbortSignal;
     return new Response(stream, { headers: { 'Daynight-User-ID': userId } });
@@ -132,6 +135,7 @@ it('cancels a Session media response while its body is being read', async () => 
     cancelAuthNetworkRequests();
     await expect(pending).rejects.toBe(dispatched.reason);
     expect(cancelled).toHaveBeenCalledWith(dispatched.reason);
+  expect(cancelReader).toHaveBeenCalledOnce();
   } finally { await client.close(); }
 });
 
@@ -206,4 +210,35 @@ it('preserves network cancellation if archive verification rejects after cancell
     fail(new Error('digest failed'));
     await expect(pending).rejects.toBe(dispatched.reason);
   } finally { digest.mockRestore(); }
+});
+
+
+it('settles the resource read and close when reader cancellation never finishes', async () => {
+  let started!: () => void, failCleanup!: (cause: Error) => void;
+  const reading = new Promise<void>(resolve => { started = resolve; });
+  let dispatched!: AbortSignal, cancelReader!: ReturnType<typeof vi.spyOn>;
+  const stream = new ReadableStream<Uint8Array>({ pull() { started(); } }, { highWaterMark: 0 });
+  const getReader = stream.getReader.bind(stream);
+  vi.spyOn(stream, 'getReader').mockImplementation(() => {
+    const reader = getReader(), actualCancel = reader.cancel.bind(reader);
+    cancelReader = vi.spyOn(reader, 'cancel').mockImplementation(reason => {
+      void actualCancel(reason).catch(() => undefined);
+      return new Promise<void>((_resolve, reject) => { failCleanup = reject; });
+    });
+    return reader;
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    dispatched = init.signal as AbortSignal;
+    return new Response(stream, { headers: { 'Daynight-User-ID': userId } });
+  }));
+  const client = createTestSessionApi(fence.sessionId, userId, vi.fn()).resources(fence, () => true);
+  const pending = client.capabilities(new AbortController().signal);
+  await reading;
+  cancelAuthNetworkRequests();
+  await expect(pending).rejects.toBe(dispatched.reason);
+  await client.close();
+  expect(cancelReader).toHaveBeenCalledOnce();
+  expect(stream.locked).toBe(false);
+  failCleanup(new Error('late cleanup failure'));
+  await Promise.resolve();
 });

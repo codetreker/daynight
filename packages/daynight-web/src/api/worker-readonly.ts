@@ -112,7 +112,8 @@ const boundedJson = async (response: Response, signal: AbortSignal): Promise<unk
   if (reader === undefined) return malformed();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  const abort = (): void => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const abort = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', abort, { once: true });
   try {
     signal.throwIfAborted();
@@ -130,7 +131,7 @@ const boundedJson = async (response: Response, signal: AbortSignal): Promise<unk
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } finally {
     signal.removeEventListener('abort', abort);
-    void reader.cancel().catch(() => undefined);
+    if (!cancelled) void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 };

@@ -236,7 +236,8 @@ const decodeMonitoringJson = async (response: Response, signal: AbortSignal, lim
   }
   const reader = response.body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
@@ -256,7 +257,7 @@ const decodeMonitoringJson = async (response: Response, signal: AbortSignal, lim
     return value;
   } finally {
     signal.removeEventListener('abort', cancel);
-    void reader.cancel().catch(() => undefined);
+    if (!cancelled) void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 };

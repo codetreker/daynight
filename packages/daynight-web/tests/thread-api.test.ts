@@ -108,6 +108,9 @@ describe('bounded Thread transport', () => {
     const cancelled = vi.fn();
     let dispatched!: AbortSignal;
     const stream = new ReadableStream<Uint8Array>({ pull() { started(); }, cancel: cancelled }, { highWaterMark: 0 });
+    let cancelReader!: ReturnType<typeof vi.spyOn>;
+    const getReader = stream.getReader.bind(stream);
+    vi.spyOn(stream, 'getReader').mockImplementation(() => { const reader = getReader(); cancelReader = vi.spyOn(reader, 'cancel'); return reader; });
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       dispatched = init.signal as AbortSignal;
       return new Response(stream, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': scope.userId } });
@@ -117,6 +120,7 @@ describe('bounded Thread transport', () => {
     cancelAuthNetworkRequests();
     await expect(pending).rejects.toBe(dispatched.reason);
     expect(cancelled).toHaveBeenCalledWith(dispatched.reason);
+    expect(cancelReader).toHaveBeenCalledOnce();
   });
 
   it('keeps a confirmed Thread receipt when its callback cancels the network lifetime', async () => {
@@ -127,6 +131,46 @@ describe('bounded Thread transport', () => {
     const error = await pending.catch((value: unknown) => value);
     expect(error).toBe((fetch.mock.calls[0]![1].signal as AbortSignal).reason);
     expect(onConfirmed).toHaveBeenCalledWith(posted);
+  });
+
+  it('retains the abort reason when cancellation overlaps failing cleanup', async () => {
+    let cleanupStarted!: () => void, failCleanup!: (cause: Error) => void;
+    const cleaning = new Promise<void>(resolve => { cleanupStarted = resolve; });
+    const controller = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({ start(body) { body.enqueue(new Uint8Array([0xff])); } }, { highWaterMark: 0 });
+    const getReader = stream.getReader.bind(stream);
+    let cancelReader!: ReturnType<typeof vi.spyOn>;
+    vi.spyOn(stream, 'getReader').mockImplementation(() => {
+      const reader = getReader();
+      cancelReader = vi.spyOn(reader, 'cancel').mockImplementation(() => {
+        cleanupStarted();
+        return new Promise<void>((_resolve, reject) => { failCleanup = reject; });
+      });
+      return reader;
+    });
+    const pending = readThreadJsonSource(new Response(stream, { headers: { 'Content-Type': 'application/json' } }), controller.signal);
+    await cleaning;
+    const reason = new Error('cancelled');
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    expect(cancelReader).toHaveBeenCalledOnce();
+    expect(stream.locked).toBe(false);
+    failCleanup(new Error('cleanup failed'));
+    await Promise.resolve();
+  });
+
+  it('preserves both decoding and cleanup failures when not cancelled', async () => {
+    const cleanupError = new Error('cleanup failed');
+    const stream = new ReadableStream<Uint8Array>({
+      start(body) { body.enqueue(new Uint8Array([0xff])); },
+      cancel() { throw cleanupError; },
+    }, { highWaterMark: 0 });
+    const error = await readThreadJsonSource(new Response(stream, { headers: { 'Content-Type': 'application/json' } }), signal()).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as Error).cause).toBeInstanceOf(AggregateError);
+    const errors = ((error as Error).cause as AggregateError).errors;
+    expect(errors[0]).toBeInstanceOf(TypeError);
+    expect(errors[1]).toBe(cleanupError);
   });
 
   it('rejects overlong or malformed UTF-8 streams and cancels retained responses', async () => {

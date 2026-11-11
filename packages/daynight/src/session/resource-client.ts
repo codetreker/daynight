@@ -1,3 +1,4 @@
+import { awaitAbortable } from "../api/abort.js";
 import {
   assertSessionFence,
   sessionFence,
@@ -61,9 +62,10 @@ export const createSessionResourceClient = (options: Options) => {
   imageId(options.scope.actorUserId);
   imageId(options.scope.fence.sessionId);
   imageDecimal(options.scope.authorizationGeneration, true);
+  type Flight = { signal: AbortSignal; caller: AbortSignal; principalMismatch: boolean };
   const lifetime = new AbortController(),
     flights = new Set<Promise<unknown>>(),
-    flightSignals = new WeakMap<AbortSignal, { signal: AbortSignal }>();
+    flightSignals = new WeakMap<AbortSignal, Flight>();
   const live = (signal: AbortSignal) => {
     signal.throwIfAborted();
     lifetime.signal.throwIfAborted();
@@ -75,7 +77,7 @@ export const createSessionResourceClient = (options: Options) => {
     action: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
     const combined = AbortSignal.any([signal, lifetime.signal]);
-    const flight = { signal: combined };
+    const flight: Flight = { signal: combined, caller: signal, principalMismatch: false };
     flightSignals.set(combined, flight);
     const pending = (async () => {
       try {
@@ -83,7 +85,11 @@ export const createSessionResourceClient = (options: Options) => {
         const value = await action(combined);
         live(flight.signal);
         return value;
-      } catch (error) { flight.signal.throwIfAborted(); throw error; }
+      } catch (error) {
+        if (flight.principalMismatch && flight.signal.reason === lifetime.signal.reason) signal.throwIfAborted();
+        else flight.signal.throwIfAborted();
+        throw error;
+      }
     })();
     flights.add(pending);
     void pending.finally(() => flights.delete(pending)).catch(() => {});
@@ -93,6 +99,7 @@ export const createSessionResourceClient = (options: Options) => {
     path: string,
     signal: AbortSignal,
     init: RequestInit = {},
+    flight?: Flight,
   ): Promise<Response> => {
     live(signal);
     const r = await options.transport(base.href + path, signal, {
@@ -106,10 +113,14 @@ export const createSessionResourceClient = (options: Options) => {
       },
     });
     live(signal);
+    const responseLifetime = options.responseSignal?.(r, signal) ?? signal;
+    if (flight) flight.signal = AbortSignal.any([signal, responseLifetime]);
+    live(flight?.signal ?? responseLifetime);
     if (r.headers.get("Daynight-User-ID") !== options.scope.actorUserId) {
+      if (flight) flight.principalMismatch = true;
       lifetime.abort();
       options.onPrincipalMismatch?.();
-      await r.body?.cancel();
+      if (r.body !== null) await awaitAbortable(r.body.cancel(), flight?.caller ?? signal);
       throw new Error("Session resource principal mismatch.");
     }
     return r;
@@ -124,16 +135,17 @@ export const createSessionResourceClient = (options: Options) => {
   ): Promise<T> => {
     const flight = flightSignals.get(signal);
     const current = flight?.signal ?? signal;
-    const r = await response(path, current, init);
+    const r = await response(path, current, init, flight);
     live(current);
-    const responseLifetime = options.responseSignal?.(r, current) ?? current;
-    if (flight) flight.signal = AbortSignal.any([current, responseLifetime]);
+    const responseLifetime = flight?.signal ?? current;
     live(responseLifetime);
     const reader = r.body?.getReader();
     if (!reader) throw new Error("Session resource response is missing.");
     let length = 0;
     const chunks: Uint8Array<ArrayBuffer>[] = [];
-    const cancel = () => { void reader.cancel(responseLifetime.reason).catch(() => undefined); };
+    let cancellation: Promise<void> | undefined;
+    const cancelOnce = (reason?: unknown) => cancellation ??= reader.cancel(reason);
+    const cancel = () => { void cancelOnce(responseLifetime.reason).catch(() => undefined); };
     responseLifetime.addEventListener("abort", cancel, { once: true });
     try {
       live(responseLifetime);
@@ -164,7 +176,7 @@ export const createSessionResourceClient = (options: Options) => {
       throw error;
     } finally {
       responseLifetime.removeEventListener("abort", cancel);
-      try { await reader.cancel(); } catch (error) { responseLifetime.throwIfAborted(); throw error; }
+      try { await awaitAbortable(cancelOnce(), responseLifetime); } catch (error) { responseLifetime.throwIfAborted(); throw error; }
       finally { reader.releaseLock(); }
       responseLifetime.throwIfAborted();
     }
@@ -314,39 +326,38 @@ export const createSessionResourceClient = (options: Options) => {
         const bytes = new Uint8Array(Number(resource.byteLength));
         let offset = 0;
         const readLifetime = () => flightSignals.get(s)?.signal ?? s;
-        try {
-          // Empty legacy originals still require an authorized read of the saved file.
-          do {
-            live(readLifetime());
-            const chunk = await json(
-              `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
-              s,
-              parseImageReadChunk,
-              {},
-              [200],
-              onProgress,
-            );
-            live(readLifetime());
-            if (
-              chunk.resourceId !== resource.resourceId ||
-              chunk.sha256 !== resource.sha256 ||
-              chunk.byteLength !== resource.byteLength ||
-              chunk.offset !== String(offset)
-            )
-              throw new Error("Session resource chunk identity mismatch.");
-            const raw = atob(chunk.data);
-            bytes.set(
-              Uint8Array.from(raw, (c) => c.charCodeAt(0)),
-              offset,
-            );
-            offset += raw.length;
-          } while (offset < bytes.length);
+        // Empty legacy originals still require an authorized read of the saved file.
+        do {
           live(readLifetime());
-          const digest = hex(await crypto.subtle.digest("SHA-256", bytes));
+          const chunk = await json(
+            `/resources/${imageId(resource.resourceId)}/content?offset=${offset}&limit=${IMAGE_LIMITS.chunkBytes}`,
+            s,
+            parseImageReadChunk,
+            {},
+            [200],
+            onProgress,
+          );
           live(readLifetime());
-          if (digest !== resource.sha256) throw new Error("Saved Session resource is corrupt.");
-          return bytes;
-        } catch (error) { readLifetime().throwIfAborted(); throw error; }
+          if (
+            chunk.resourceId !== resource.resourceId ||
+            chunk.sha256 !== resource.sha256 ||
+            chunk.byteLength !== resource.byteLength ||
+            chunk.offset !== String(offset)
+          )
+            throw new Error("Session resource chunk identity mismatch.");
+          const raw = atob(chunk.data);
+          bytes.set(
+            Uint8Array.from(raw, (c) => c.charCodeAt(0)),
+            offset,
+          );
+          offset += raw.length;
+        } while (offset < bytes.length);
+        live(readLifetime());
+        const digest = hex(await crypto.subtle.digest("SHA-256", bytes));
+        live(readLifetime());
+        if (digest !== resource.sha256) throw new Error("Saved Session resource is corrupt.");
+        return bytes;
+
       }),
     async close(): Promise<void> {
       lifetime.abort();

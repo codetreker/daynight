@@ -1,3 +1,4 @@
+import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { decodeSessionV2Archive } from '../../../daynight/src/session/v2/archive';
 import { assertTerminalBinding, parseSessionV2Message, parseSessionV2Owner, parseTerminalBinding } from '../../../daynight/src/session/v2/protocol';
 import { SESSION_V2_PROTOCOL, SESSION_PROTOCOL_HEADER, SESSION_V2_LIMITS, bool, byteLength, choice, decodeStrictSessionJson, exact, hash, hashSessionBytes, list, literal, nullable, seq, text, unique, uuid } from '../../../daynight/src/session/v2/values';
@@ -76,13 +77,14 @@ async function boundedBytes(response: Response, signal: AbortSignal, max: number
   signal.throwIfAborted();
   if (!response.body) return invalid();
   const length = response.headers.get('Content-Length');
-  if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(max))) { await response.body.cancel().catch(() => undefined); signal.throwIfAborted(); invalid(); }
+  if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(max))) { await awaitAbortable(response.body.cancel().catch(() => undefined), signal); signal.throwIfAborted(); invalid(); }
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try { signal.throwIfAborted(); for (;;) { const r = await reader.read(); signal.throwIfAborted(); if (r.done) break; size += r.value.byteLength; if (size > max) invalid(); chunks.push(r.value); } }
   catch (error) { signal.throwIfAborted(); throw error; }
-  finally { signal.removeEventListener('abort', cancel); void reader.cancel().catch(() => undefined); reader.releaseLock(); }
+  finally { signal.removeEventListener('abort', cancel); if (!cancelled) void reader.cancel().catch(() => undefined); reader.releaseLock(); }
   const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; } return bytes;
 }
 export function createTerminalSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void, serverOrigin = window.location.origin): TerminalSessionApi {

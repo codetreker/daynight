@@ -1,3 +1,4 @@
+import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { id, malformed, record, string, timestamp } from './parse';
@@ -51,12 +52,13 @@ const decodePromptJson = async (response: Response, signal: AbortSignal): Promis
   if (response.body === null) throw new Error('Missing response body');
   const length = response.headers.get('Content-Length');
   if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(PROMPT_RESPONSE_BYTES))) {
-    await response.body.cancel();
+    await awaitAbortable(response.body.cancel(), signal);
     throw new Error('Prompt response exceeds its budget');
   }
   const reader = response.body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
@@ -74,8 +76,8 @@ const decodePromptJson = async (response: Response, signal: AbortSignal): Promis
     return decodeStrictSessionJson(bytes, PROMPT_RESPONSE_BYTES);
   } finally {
     signal.removeEventListener('abort', cancel);
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    try { if (!cancelled) await awaitAbortable(reader.cancel().catch(() => undefined), signal); }
+    finally { reader.releaseLock(); }
   }
 };
 

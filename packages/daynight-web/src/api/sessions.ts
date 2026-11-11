@@ -1,3 +1,4 @@
+import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
 import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
@@ -166,14 +167,15 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       if (response.status !== 200 || !response.body) throw new ApiError('protocol', response.status);
       const lifetime = responseSignal(response, signal);
       const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
-      const cancel = () => { void reader.cancel(lifetime.reason).catch(() => undefined); };
+      let cancelled = false;
+      const cancel = () => { cancelled = true; void reader.cancel(lifetime.reason).catch(() => undefined); };
       lifetime.addEventListener('abort', cancel, { once: true });
       try {
         lifetime.throwIfAborted();
         while (true) { const result = await reader.read(); lifetime.throwIfAborted(); if (result.done) break; size += result.value.byteLength; if (size > RELAY_LIMITS.maxResourceBytes) throw new ApiError('protocol'); chunks.push(new Uint8Array(result.value)); if (result.value.byteLength > 0) onProgress?.(); }
         return new Blob(chunks, { type: response.headers.get('Content-Type') ?? 'application/octet-stream' });
       } catch (error) { lifetime.throwIfAborted(); throw error; }
-      finally { lifetime.removeEventListener('abort', cancel); void reader.cancel().catch(() => undefined); reader.releaseLock(); }
+      finally { lifetime.removeEventListener('abort', cancel); if (!cancelled) void reader.cancel().catch(() => undefined); reader.releaseLock(); }
     },
     resourceUrl: (id, resourceId) => `${sessionRoot(id)}/resources/${requestId(resourceId)}/content`,
     channel: (id, after, onMessage, onClose) => {
@@ -210,9 +212,10 @@ async function boundedArchiveBytes(response: Response, signal: AbortSignal): Pro
   // The content envelope adds a few bytes beyond the bounded archive document.
   const limit = SESSION_ARCHIVE_MAX_BYTES + 1024;
   const length = response.headers.get('Content-Length');
-  if (length !== null && (!/^[0-9]+$/.test(length) || BigInt(length) > BigInt(limit))) { await response.body.cancel().catch(() => undefined); signal.throwIfAborted(); throw new ApiError('protocol'); }
+  if (length !== null && (!/^[0-9]+$/.test(length) || BigInt(length) > BigInt(limit))) { await awaitAbortable(response.body.cancel().catch(() => undefined), signal); signal.throwIfAborted(); throw new ApiError('protocol'); }
   const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
@@ -228,5 +231,5 @@ async function boundedArchiveBytes(response: Response, signal: AbortSignal): Pro
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
     return bytes;
   } catch (error) { signal.throwIfAborted(); throw error; }
-  finally { signal.removeEventListener('abort', cancel); void reader.cancel().catch(() => undefined); reader.releaseLock(); }
+  finally { signal.removeEventListener('abort', cancel); if (!cancelled) void reader.cancel().catch(() => undefined); reader.releaseLock(); }
 }
