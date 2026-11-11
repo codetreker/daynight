@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
-import { ApiError, attachmentPageUrl } from '../src/api/client';
+import { ApiError, attachmentPageUrl, pauseAuthRequests } from '../src/api/client';
 import type { Attachment, AttachmentPage as Page } from '../src/api/types';
 import { useLayoutEffect, useState } from 'react';
 import { navigateTaskDetail, type TaskDetailNavigation } from '../src/app/router';
@@ -56,6 +56,26 @@ beforeEach(async () => {
 afterEach(() => world.dispose());
 
 describe('full-detail attachment surface', () => {
+  it('retains the selected attachment and local draft through the shared pause', async () => {
+    const api = fixture([file('docs/readme.md'), file('other.txt')]);
+    render(page(api));
+    await screen.findByText('Contents of docs/readme.md');
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    fireEvent.change(screen.getByLabelText('目标相对路径'), { target: { value: 'draft.txt' } });
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expect(screen.getByText('Contents of docs/readme.md')).toBeVisible();
+      expect(screen.getByLabelText('目标相对路径')).toHaveValue('draft.txt');
+      expect(screen.getByRole('link', { name: '下载' })).not.toHaveAttribute('href');
+      fireEvent.click(screen.getByRole('button', { name: /^other\.txt/ }));
+      expect(window.location.pathname).toBe(attachmentPageUrl(projectId, taskId, 'other.txt'));
+      expect(api.readText).toHaveBeenCalledTimes(1);
+    } finally { act(() => resume()); }
+    await screen.findByText('Contents of other.txt');
+    expect(screen.getByLabelText('目标相对路径')).toHaveValue('draft.txt');
+  });
+
   it('uses the complete shared file panel and synchronizes explicit selections without duplicate history entries', async () => {
     const special = '资料/设计 %2F #?.txt';
     window.history.replaceState(null, '', attachmentPageUrl(projectId, taskId, 'docs/readme.md'));

@@ -660,8 +660,15 @@ describe('task detail dialog', () => {
     await open();
     await screen.findByRole('heading', { name: '任务 1' });
     const overview = screen.getByRole('tabpanel', { name: '概览' });
-    expect(overview).toContainElement(screen.getByRole('region', { name: '关联 PR' }));
-    expect(overview).toContainElement(screen.getByRole('complementary', { name: '任务关系与元数据' }));
+    const pullRequests = screen.getAllByRole('region', { name: '关联 PR' });
+    const aside = screen.getByRole('complementary', { name: '任务关系与元数据' });
+    const main = overview.querySelector('.task-detail-main')!;
+    const dependencies = within(aside).getByRole('region', { name: '前置依赖' });
+    expect(pullRequests).toHaveLength(1);
+    expect(main).not.toContainElement(pullRequests[0]!);
+    expect(overview).toContainElement(aside);
+    expect(aside).toContainElement(pullRequests[0]!);
+    expect(pullRequests[0]!.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('region', { name: '附件' })).toBeNull();
     const attachments = document.querySelector('[data-task-id]')!;
     expect(attachments).toHaveAttribute('data-project-id', projectId);

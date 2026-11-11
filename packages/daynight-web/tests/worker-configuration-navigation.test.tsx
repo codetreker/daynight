@@ -64,6 +64,7 @@ describe('Worker configuration navigation', () => {
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
     const prompt = screen.getByRole('textbox', { name: 'Prompt text' }) as HTMLTextAreaElement;
     fireEvent.change(prompt, { target: { value: 'preserved prompt' } }); prompt.focus(); prompt.setSelectionRange(2, 7);
     await act(async () => { config.resolve(configurationResponse(configurationResource())); }); await flush();
@@ -88,6 +89,7 @@ describe('Worker configuration navigation', () => {
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
     const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
     fireEvent.change(prompt, { target: { value: 'submitted' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' })); await flush();
@@ -103,16 +105,135 @@ describe('Worker configuration navigation', () => {
 
   it('uses one confirmation for both Worker forms and restores the prompt editor on cancellation', async () => {
     await mount();
-    edit();
+    const configuration = edit();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
     const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
     prompt.focus(); fireEvent.change(prompt, { target: { value: 'Worker instructions' } });
     leave();
     expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(prompt).toHaveFocus(); expect(prompt).toHaveValue('Worker instructions');
-    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('3');
+    expect(configuration).toHaveValue('3');
     leave(); fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(location.pathname).toBe('/projects'); expect(unload()).toBe(false);
+  });
+
+  it('tracks actual draft edits instead of prompt preview controls', async () => {
+    await mount(false, true);
+    await screen.findByRole('heading', { name: 'Project 3' }, { timeout: 5_000 });
+    edit();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
+    prompt.focus(); fireEvent.change(prompt, { target: { value: 'instructions' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: /Remove project/ }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' }));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'resume' } });
+    leave(); fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveFocus();
+    expect(prompt).toHaveValue('instructions');
+  });
+
+  it('does not count an unchanged project selection as a later edit', async () => {
+    await mount(); edit();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
+    prompt.focus(); fireEvent.change(prompt, { target: { value: 'instructions' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
+    leave(); fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByRole('tab', { name: 'Prompts' })).toHaveAttribute('aria-selected', 'true');
+    expect(prompt).toHaveFocus();
+  });
+
+  it('keeps tab relationships and keyboard focus local to the visible Worker', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(workerResponse(workerDetail()))));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const other = workerId(2); browserNavigation().navigate(`/workers/${other}`);
+    const { container } = renderWithLocale(<TaskCacheProvider scope={scope}>
+      <div hidden inert><WorkerDetailPage workerId={target} userId={WORKER_USER} active={false} readEnabled={false} /></div>
+      <WorkerDetailPage workerId={other} userId={WORKER_USER} readEnabled />
+    </TaskCacheProvider>, { locale: 'en' });
+    const tabs = container.querySelectorAll<HTMLButtonElement>('[data-worker-tab="prompt"]');
+    expect(tabs).toHaveLength(2); expect(tabs[0]!.id).not.toBe(tabs[1]!.id);
+    expect(tabs[0]!.getAttribute('aria-controls')).not.toBe(tabs[1]!.getAttribute('aria-controls'));
+    for (const tab of tabs) expect(document.getElementById(tab.getAttribute('aria-controls')!)?.getAttribute('aria-labelledby')).toBe(tab.id);
+    const overview = screen.getByRole('tab', { name: 'Runtime monitoring' });
+    overview.focus(); fireEvent.keyDown(overview, { key: 'ArrowLeft' });
+    expect(tabs[1]).toHaveFocus(); expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('returns to the hidden prompt when it is the only dirty editor', async () => {
+    await mount();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' }) as HTMLTextAreaElement;
+    prompt.focus(); fireEvent.change(prompt, { target: { value: 'draft 🐱' } }); prompt.setSelectionRange(1, 4);
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    leave(); expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('tab', { name: 'Prompts' })).toHaveAttribute('aria-selected', 'true');
+    expect(prompt).toHaveFocus(); expect(prompt).toHaveValue('draft 🐱');
+    expect(prompt.selectionStart).toBe(1); expect(prompt.selectionEnd).toBe(4);
+  });
+
+  it('retains a confirmed configuration result until its hidden panel can publish it', async () => {
+    const put = Promise.withResolvers<Response>();
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${target}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null }));
+      if (url.endsWith('/configuration')) return init.method === 'PUT' ? put.promise : Promise.resolve(configurationResponse(configurationResource()));
+      return Promise.resolve(workerResponse(workerDetail()));
+    }));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const retention = vi.fn(); browserNavigation().navigate(path);
+    renderWithLocale(<TaskCacheProvider scope={scope}><WorkerDetailPage workerId={target} userId={WORKER_USER} readEnabled onRetentionChange={retention} /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush(); edit();
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    put.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }))); await flush();
+    expect(retention).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(retention).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('3');
+  });
+
+  it('retains the page until both independent saves settle', async () => {
+    const configPut = Promise.withResolvers<Response>(), promptPut = Promise.withResolvers<Response>();
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${target}/prompt`) return init.method === 'PUT' ? promptPut.promise : Promise.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null }));
+      if (url.endsWith('/configuration')) return init.method === 'PUT' ? configPut.promise : Promise.resolve(configurationResponse(configurationResource()));
+      return Promise.resolve(workerResponse(workerDetail()));
+    }));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const retention = vi.fn(); browserNavigation().navigate(path);
+    renderWithLocale(<TaskCacheProvider scope={scope}><WorkerDetailPage workerId={target} userId={WORKER_USER} readEnabled onRetentionChange={retention} /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush(); edit();
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Prompt text' }), { target: { value: 'instructions' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' })); await flush();
+    expect(retention).toHaveBeenLastCalledWith(true);
+    configPut.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 })));
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(retention).toHaveBeenLastCalledWith(true);
+    promptPut.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '1', text: 'instructions', updatedAt: '2026-11-09T10:00:00Z' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    expect(retention).toHaveBeenLastCalledWith(false);
+  });
+
+  it('reads prompt independently when it is the first editing tab', async () => {
+    const result = await mount();
+    // Resetting the page ensures configuration has never been opened for this visit.
+    result.unmount(); browserNavigation().navigate('/projects'); browserNavigation().navigate(path);
+    result.fetch.mockClear();
+    renderWithLocale(<TaskCacheProvider scope={result.scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBeVisible();
+    expect(result.fetch.mock.calls.some(([url]) => url.endsWith('/configuration') || url.startsWith('/api/v1/projects?'))).toBe(false);
   });
 
   it('protects invalid raw input, defaults to keep editing and restores the editor after cancel or Escape', async () => {

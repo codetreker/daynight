@@ -1,3 +1,4 @@
+import type { BrowserLocation } from "../../app/navigation";
 import type { TransferNavigationContext } from "./transfer-navigation";
 import { useLayoutEffect } from "react";
 import { ProjectAccessBoundary } from "../projects/ProjectAccess";
@@ -15,7 +16,7 @@ import { ProjectDeletion } from "./ProjectDeletion";
 import { useProjectManagementGuard } from "./ProjectManagementGuard";
 import type { ReactNode } from "react";
 
-type Props = { readonly projectId: string; readonly user: CurrentUser; readonly navigation?: ReactNode; readonly unavailableView?: ReactNode; readonly onTransferred?: ((receipt: ProjectTransferReceipt, context: TransferNavigationContext) => void) | undefined; readonly onDeleted?: ((receipt: ProjectDeletionReceipt, finish: () => Promise<void>) => void) | undefined; readonly onDeletionOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onDeletionRetentionChange?: ((retain: boolean) => void) | undefined; readonly onPromptRetentionChange?: ((retain: boolean) => void) | undefined };
+type Props = { readonly projectId: string; readonly user: CurrentUser; readonly navigation?: ReactNode; readonly unavailableView?: ReactNode; readonly onTransferred?: ((receipt: ProjectTransferReceipt, context: TransferNavigationContext) => void) | undefined; readonly onDeleted?: ((receipt: ProjectDeletionReceipt, finish: (signal?: AbortSignal) => Promise<void | "skipped">, location: BrowserLocation, canFinalize: () => boolean) => void) | undefined; readonly onDeletionOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onDeletionRetentionChange?: ((retain: boolean) => void) | undefined; readonly onPromptRetentionChange?: ((retain: boolean) => void) | undefined };
 
 export const ProjectSettingsPanel = ({ projectId, user, navigation, unavailableView, onTransferred, onDeleted, onDeletionOutcome, active = true, onRoute = true, onRetentionChange, onSettingsRetentionChange, onDeletionRetentionChange, onPromptRetentionChange }: Props) =>
   <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} navigation={navigation} unavailableView={unavailableView} onTransferred={onTransferred} onDeleted={onDeleted} onDeletionOutcome={onDeletionOutcome} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} onSettingsRetentionChange={onSettingsRetentionChange} onDeletionRetentionChange={onDeletionRetentionChange} onPromptRetentionChange={onPromptRetentionChange} /></ProjectAccessBoundary>;
@@ -26,7 +27,7 @@ const ProjectSettingsContent = ({ projectId, user, navigation, unavailableView, 
   const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange, guard);
   const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: active });
   const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, prompt);
-  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.uncertain]);
+  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain]);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
   const showUnavailable = state.unavailable && unavailableView !== undefined && !guard.isBlocked("delete");
   return <div ref={promptNavigation.owner} onFocusCapture={promptNavigation.rememberFocus}>

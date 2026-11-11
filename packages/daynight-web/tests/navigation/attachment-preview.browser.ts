@@ -170,6 +170,47 @@ test('native HTML preview preserves frame ownership and returns focus after Esca
   expect(state.writes).toEqual([]);
 });
 
+test('preserves an interactive HTML document before its pending subresource finishes', async ({ page }) => {
+  const state = await install(page);
+  const imageGate = Promise.withResolvers<void>();
+  const imageStarted = Promise.withResolvers<void>();
+  await page.route('**/preview/slow.png', async route => {
+    imageStarted.resolve();
+    await imageGate.promise;
+    await route.fulfill({ body: svg, headers: { 'Content-Type': 'image/svg+xml' } }).catch(() => undefined);
+  });
+  await page.route('**/preview/interactive.html', route => route.fulfill({
+    body: route.request().method() === 'HEAD' ? '' : '<!doctype html><html><body><label>Draft <input></label><img src="slow.png"></body></html>',
+    headers: { 'Content-Type': 'text/html', 'Daynight-User-ID': TEST_VIEWER_ID },
+  }));
+  const { attachments } = await openDialog(page);
+  const identityGate = Promise.withResolvers<void>();
+  try {
+    await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
+    const frame = attachments.locator('iframe');
+    const input = frame.contentFrame().getByRole('textbox', { name: 'Draft' });
+    await imageStarted.promise;
+    await input.fill('unsaved');
+    expect(await input.evaluate(element => element.ownerDocument.readyState)).not.toBe('complete');
+    const originalDocument = await input.evaluateHandle(element => element.ownerDocument);
+    state.holdIdentity = identityGate.promise;
+    const reads = state.identityReads;
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
+      window.dispatchEvent(new Event('blur')); Reflect.deleteProperty(document, 'hasFocus');
+      window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect.poll(() => state.identityReads).toBeGreaterThan(reads);
+    expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
+    await expect(input).toHaveValue('unsaved');
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/me');
+    state.holdIdentity = null; identityGate.resolve(); await completed;
+    expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
+    await expect(input).toHaveValue('unsaved');
+    await originalDocument.dispose();
+  } finally { identityGate.resolve(); imageGate.resolve(); }
+});
+
 test('a pending same-account check preserves actual text selection and preview scroll', async ({ page }) => {
   const state = await install(page);
   const { dialog, attachments } = await openDialog(page);
