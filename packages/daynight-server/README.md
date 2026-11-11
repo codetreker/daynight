@@ -3110,10 +3110,13 @@ and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
-Task lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
-`compatiblePlatform`, `assignedTo` and UUID `workerId`, once each.
-Both boolean filters accept literal `true` or `false`; compatibility accepts
-`windows`, `linux` or `macos` and includes null requirements and exact matches.
+Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
+`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo` and UUID
+`workerId`, once each. Type defaults to `task` and can select `goal`; parentId
+accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
+cannot select a nonempty parent. The ready, allowAgents and platformSpecific
+filters accept literal `true` or `false`; compatibility accepts `windows`,
+`linux` or `macos` and includes null requirements and exact matches.
 assignedTo accepts a UUID, `me` or `unassigned`; omission means all assignments.
 `me` resolves to the admitted principal before cursor checking, while unassigned
 matches native NULL. A former assignee UUID remains a valid filter.

@@ -404,7 +404,7 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `type`、`parent`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 
