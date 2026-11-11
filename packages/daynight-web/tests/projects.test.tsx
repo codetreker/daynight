@@ -253,14 +253,14 @@ describe('project browsing', () => {
     const userId = '00000000-0000-4000-8000-000000000101';
     const otherId = '00000000-0000-4000-8000-000000000102';
     const mismatch = vi.fn();
-    const admission = createTaskCacheScope({ userId, onIdentityMismatch: mismatch });
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: () => { mismatch(); void admission.invalidateScope(); } });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stringifyWireJson({ items: [project(1)], nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': otherId } })));
     const view = render(<ProjectsProvider admission={admission} scope={{ kind: 'shared' }}><ProjectsPage /></ProjectsProvider>);
     await waitFor(() => expect(mismatch).toHaveBeenCalledTimes(1));
     expect(admission.isInvalidated).toBe(true);
     expect(screen.queryByRole('heading', { name: '项目 1' })).toBeNull();
     view.unmount();
-    admission.dispose();
+    await admission.invalidateScope();
   });
 
   it('holds a late page during identity revalidation and discards it when the identity changes', async () => {
