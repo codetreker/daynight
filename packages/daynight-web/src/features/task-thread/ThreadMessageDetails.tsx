@@ -4,6 +4,7 @@ import { dialogFocusables } from '../task-detail/focus';
 import type { ThreadMessage } from './contract';
 import { authorLabel, providerLabel, ThreadIcon, type DiscussionMessages } from './presentation';
 import { useDraftNavigationDecision } from '../task-detail/TaskDraftNavigation';
+import { isTopOverlay, registerOverlay } from '../../app/overlay';
 
 type MessageDetailsProps = { readonly message: ThreadMessage; readonly messages: DiscussionMessages; readonly owner: RefObject<HTMLElement | null>; readonly fallbackFocus: RefObject<HTMLElement | null>; readonly onClose: () => void; readonly onOpenChange: (open: boolean) => void; readonly canRestoreFocus: () => boolean };
 
@@ -21,12 +22,13 @@ const MessageDetails = ({ message, messages, owner, fallbackFocus, onClose, onOp
   useLayoutEffect(() => {
     const parent = owner.current;
     if (parent === null) throw new Error('The task owner is required for message details.');
-    const opener = document.activeElement, wasInert = parent.hasAttribute('inert');
+    const opener = document.activeElement;
     callbacks.current.onOpenChange(true);
-    parent.setAttribute('inert', '');
     const element = dialog.current!;
+    const releaseOverlay = registerOverlay(element, parent);
     element.showModal(); close.current!.focus();
     const keydown = (event: KeyboardEvent) => {
+      if (!isTopOverlay(element)) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); callbacks.current.onClose(); }
       else if (event.key === 'Tab') {
         event.stopPropagation();
@@ -39,7 +41,7 @@ const MessageDetails = ({ message, messages, owner, fallbackFocus, onClose, onOp
     return () => {
       document.removeEventListener('keydown', keydown, true);
       if (element.open) element.close();
-      if (!wasInert) parent.removeAttribute('inert');
+      releaseOverlay();
       callbacks.current.onOpenChange(false);
       if (!callbacks.current.canRestoreFocus()) return;
       if (opener instanceof HTMLElement && opener.isConnected && !opener.closest('[inert], [hidden]') && !opener.matches(':disabled')) opener.focus({ preventScroll: true });

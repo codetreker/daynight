@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement, ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import type { AttachmentRecordSlots } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
@@ -12,6 +12,8 @@ import { dialogFocusables } from '../src/features/task-detail/focus';
 import { buildGraphIndex } from '../src/features/task-graph/model';
 import { TEST_VIEWER_ID, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { createTaskSessionWorld } from './helpers/taskSessions';
+import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../src/app/overlay';
+import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
 
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
@@ -96,6 +98,62 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('gives a nested task portal keyboard ownership and restores its parent focus and scroll lock', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
+    await world.sync([detail()]);
+    document.body.style.overflow = 'scroll';
+    const parentKey = vi.fn();
+    const Parent = () => {
+      const owner = useRef<HTMLElement>(null);
+      const opener = useRef<HTMLButtonElement>(null);
+      const [openChild, setOpenChild] = useState(false);
+      useBodyScrollLock(true);
+      useLayoutEffect(() => {
+        const element = owner.current!;
+        const release = registerOverlay(element, root);
+        const keydown = (event: KeyboardEvent) => {
+          if (isTopOverlay(element) && (event.key === 'Escape' || event.key === 'Tab')) {
+            parentKey(event.key);
+            event.preventDefault();
+          }
+        };
+        document.addEventListener('keydown', keydown);
+        return () => { document.removeEventListener('keydown', keydown); release(); };
+      }, []);
+      return <OverlayOwnerContext value={owner}>
+        <section ref={owner} aria-label="Parent layer"><button ref={opener} onClick={() => setOpenChild(true)}>Open child</button></section>
+        {openChild && <TaskDetailDialog {...props()} onClose={() => setOpenChild(false)} onRestoreFocus={() => opener.current?.focus()} />}
+      </OverlayOwnerContext>;
+    };
+    const view = renderWithLocale(<Parent />, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    const parent = screen.getByRole('region', { name: 'Parent layer' });
+    const opener = screen.getByRole('button', { name: 'Open child' });
+    opener.focus(); fireEvent.click(opener);
+    await screen.findByRole('heading', { name: '任务 1' });
+    const child = screen.getByRole('dialog');
+    expect(parent).toHaveAttribute('inert');
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    const focusables = dialogFocusables(child);
+    const first = focusables[0]!, last = focusables[focusables.length - 1]!;
+    last.focus(); fireEvent.keyDown(last, { key: 'Tab' });
+    expect(first).toHaveFocus();
+    first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+    expect(parentKey).not.toHaveBeenCalled();
+    fireEvent.keyDown(last, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(parentKey).not.toHaveBeenCalled();
+    expect(parent).not.toHaveAttribute('inert');
+    expect(opener).toHaveFocus();
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(opener, { key: 'Escape' });
+    expect(parentKey).toHaveBeenCalledExactlyOnceWith('Escape');
+    view.unmount();
+    expect(root).not.toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('scroll');
+  });
   it('keeps discard confirmation above the modal detail focus owner', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
       ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
