@@ -1,3 +1,4 @@
+import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import Database from "better-sqlite3";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
@@ -19,6 +20,7 @@ import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
@@ -52,6 +54,7 @@ vi.mock("node:timers/promises", async importOriginal => {
   } };
 });
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
+const unknownStop = async (target: CleanupTarget): Promise<StopObservation> => ({ kind: "unknown", target, error: new Error("Unobserved test backend"), observedAt: Date.now() });
 const origin = "https://daynight.example";
 const workerId = uuid(1);
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 };
@@ -75,6 +78,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const grants = new Map<string, Task>();
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const resources = new Map<string, HerdrOwnedWorkspace>();
+  const stoppedRuns = new Set<string>();
   const events: WorkerEvent[] = []; const order: string[] = []; let clock = 1000; let sequence = 0;
   let blockedStartupInput = false;
   const bind = (owner: ResourceOwner): WorktreeBinding => {
@@ -91,6 +95,12 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {
+    observeExecutionStop: vi.fn(async (target: CleanupTarget): Promise<StopObservation> => {
+      if (target.worktreeId === undefined) return unknownStop(target);
+      const execution = { owner: { ...target, worktreeId: target.worktreeId }, backend: "herdr-legacy" as const, runKey: target.claimId };
+      if (resources.has(target.claimId)) return { kind: "running", execution, observedAt: clock };
+      return stoppedRuns.has(target.claimId) ? { kind: "stopped", execution, observedAt: clock } : unknownStop(target);
+    }),
     pendingStops: vi.fn((): { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] => []),
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
     prepareWorkspace: vi.fn(async (context: HerdrExecutionContext, _title: string) => {
@@ -122,7 +132,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
       else pane.status = "working";
       return { submission: "submitted" as const, observation: before };
     }),
-    stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); }),
+    stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); stoppedRuns.add(owner.claimId); }),
   };
   const herdr = { tasks, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn() } as unknown as WorkerHerdrAdapter;
   const grant = (candidate: Task, descriptor: WorkerClaimDescriptor): Task => {
@@ -143,7 +153,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store;
     return store;
   };
-  return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
+  return { stoppedRuns, root, get store() { return store; }, reopenStore, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
 
 const deletedArchive = async (f: Awaited<ReturnType<typeof fixture>>, explicit = false) => {
@@ -194,6 +204,8 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: f.project.localPath, nativeHome: path.join(f.root, "native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   task = store.updateWebExecution(task, { ticketPath: await writeLaunchTicket(f.root, ticket) }, 6);
   const snapshot: lifecycle.ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) }, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
+  task = store.updateWebExecution(task, { controllerProcess: snapshot.controllerProcess }, 7);
+  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
@@ -314,7 +326,7 @@ describe("minimal worker resource reconciliation", () => {
       await new Promise<void>((resolve) => { operation.signal.addEventListener("abort", () => resolve(), { once: true }); });
       operation.check();
     });
-    f.tasks.stopAndClose.mockImplementation(async () => { pending.splice(0); });
+    f.tasks.stopAndClose.mockImplementation(async () => { pending.splice(0); f.stoppedRuns.add(owner.claimId); });
     await f.coordinator.tick();
     await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
     await expect(f.coordinator.shutdown()).resolves.toBe(true);
@@ -334,7 +346,7 @@ describe("terminal cleanup retry scheduling", () => {
     const f = await fixture(); await f.coordinator.tick();
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const owner = [...f.worktrees.values()][0]!.owner;
-    f.grants.clear(); f.resources.clear(); f.candidates.splice(0);
+    f.grants.clear(); f.resources.clear(); f.stoppedRuns.add(owner.claimId); f.candidates.splice(0);
     vi.mocked(f.git.removeWorktree).mockRejectedValue(new Error("EACCES fixture"));
     await f.coordinator.tick();
     await eventually(() => expect(f.events.some(e => e.kind === "cleanup-error")).toBe(true));
@@ -367,7 +379,7 @@ describe("terminal cleanup retry scheduling", () => {
     await f.coordinator.tick();
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const owner = [...f.worktrees.values()][0]!.owner;
-    f.grants.clear(); f.resources.clear(); f.candidates.splice(0);
+    f.grants.clear(); f.resources.clear(); f.stoppedRuns.add(owner.claimId); f.candidates.splice(0);
     const deleteSchedule = vi.spyOn(f.store, "deleteCleanupSchedule").mockImplementation(() => { throw new Error("Schedule deletion failed after local completion."); });
     await f.coordinator.tick();
     await eventually(() => {
@@ -414,7 +426,7 @@ describe("terminal cleanup retry scheduling", () => {
       await eventually(() => expect(observationEntered).toBe(true));
       expect(f.herdr.ensureInstance).toHaveBeenCalled();
       expect(f.store.getCleanupSchedule(owner)).toEqual(retained);
-      expect(f.remote.claim).not.toHaveBeenCalled();
+      if (mode === "direct shutdown") expect(f.remote.claim).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       releaseObservation.resolve();
       if (mode === "direct shutdown") {
@@ -604,7 +616,7 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     f.grants.set(readWorkerClaim(current.properties)!.claimId, { ...current, version: 17n });
     throw new Error("Summary response lost.");
   }).mockImplementation(update);
-  const options = () => ({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  const options = () => ({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
   let coordinator = createWorkerCoordinator(options());
   const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   try {
@@ -633,4 +645,151 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
+it("releases a stopped execution while its worktree remains held, without admitting the same task", async () => {
+  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  const coordinator = createWorkerCoordinator({ ...f.options, monitoring });
+  await coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => { await held; operation.check(); await remove(project, owner, operation); });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
+    expect(monitoring.capture("1").capacity).toMatchObject({ quality: "current", occupied: 0, available: 1 });
+    await coordinator.tick();
+    await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
+    expect([...f.grants.values()].some(value => value.id === original.taskId)).toBe(false);
+    expect(f.worktrees.has(original.claimId)).toBe(true);
+    expect(f.store.getTask(original)?.status).toBe("active");
+  } finally { release(); await coordinator.shutdown(); }
+});
+
+it("retains unknown execution capacity across file cleanup and a SQLite restart", async () => {
+  const f = await fixture();
+  await f.coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear();
+  f.tasks.observeExecutionStop.mockImplementation(unknownStop);
+  await f.coordinator.tick();
+  await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
+  expect(f.store.getTask(original)?.status).toBe("active");
+  expect(f.store.getCleanupSchedule(original)).not.toBeNull();
+  expect(f.worktrees.has(original.claimId)).toBe(false);
+  f.reopenStore();
+  const restarted = createWorkerCoordinator(f.options);
+  await restarted.tick();
+  expect(f.grants.size).toBe(0);
+  expect(f.store.getTask(original)?.status).toBe("active");
+  expect(f.tasks.observeExecutionStop).toHaveBeenCalled();
+  await restarted.shutdown();
+});
+
+it("settles a retained cleanup schedule through explicit control after restart", async () => {
+  const f = await fixture();
+  await f.coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const owner = [...f.worktrees.values()][0]!.owner;
+  f.store.saveCleanupSchedule(owner, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+  await f.coordinator.shutdown();
+  f.reopenStore();
+  const restarted = createWorkerCoordinator(f.options);
+  await restarted.completeSource(owner);
+  expect(f.store.getTask(owner)?.status).toBe("done");
+  expect(f.store.getCleanupSchedule(owner)).toBeNull();
+  await restarted.shutdown();
+});
+
+it("settles an explicitly controlled Web claim verified as unregistered", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const owner = { projectId: f.project.projectId, taskId: uuid(940), claimId: uuid(941), worktreeId: uuid(942) };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+  f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+  const verifyWebUnregistered = vi.fn(async () => {});
+  const coordinator = createWorkerCoordinator({ ...f.options, webStore, webBackend: { advance: vi.fn(), cleanup: vi.fn(), observeExecutionStop: unknownStop }, verifyWebUnregistered });
+  try {
+    await coordinator.completeSource(owner);
+    expect(verifyWebUnregistered).toHaveBeenCalledOnce();
+    expect(f.store.getTask(owner)?.status).toBe("done");
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+it("uses the stopped original when cleanup finishes after the resource snapshot", async () => {
+  const f = await fixture(), wake = vi.fn();
+  const coordinator = createWorkerCoordinator({ ...f.options, requestReconcile: wake });
+  await coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear();
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observerEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
+    removeEntered.resolve(); await finishRemoval.promise; operation.check(); await remove(project, owner, operation);
+  });
+  const observe = f.tasks.observeExecutionStop.getMockImplementation()!;
+  let holdObservation = false;
+  f.tasks.observeExecutionStop.mockImplementation(async target => {
+    const result = await observe(target);
+    if (holdObservation) { observerEntered.resolve(); await finishObservation.promise; }
+    return result;
+  });
+  try {
+    await coordinator.tick();
+    await removeEntered.promise;
+    expect(wake).toHaveBeenCalled();
+    const notifications = wake.mock.calls.length;
+    holdObservation = true;
+    const nextRound = coordinator.tick();
+    await observerEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
+    await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
+    finishObservation.resolve();
+    await nextRound;
+    await eventually(() => expect([...f.grants.values()].some(task => task.id === uuid(101))).toBe(true));
+    expect(wake).toHaveBeenCalledTimes(notifications);
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
+});
+
+it("does not yield archive maintenance for a stopped reservation left in a stale snapshot", async () => {
+  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  const coordinator = createWorkerCoordinator({ ...f.options, monitoring });
+  await coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const original = f.store.listTasks()[0]!;
+  f.grants.clear(); f.candidates.splice(0);
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observerEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
+    removeEntered.resolve(); await finishRemoval.promise; operation.check(); await remove(project, owner, operation);
+  });
+  const observe = f.tasks.observeExecutionStop.getMockImplementation()!;
+  let holdObservation = false;
+  f.tasks.observeExecutionStop.mockImplementation(async target => {
+    const result = await observe(target);
+    if (holdObservation) { observerEntered.resolve(); await finishObservation.promise; }
+    return result;
+  });
+  try {
+    await coordinator.tick(); await removeEntered.promise;
+    expect(coordinator.archiveYield()).toBe(true);
+    holdObservation = true;
+    const nextRound = coordinator.tick();
+    await observerEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
+    finishObservation.resolve(); await nextRound;
+    expect(monitoring.capture("1").reservations).toContainEqual(expect.objectContaining({ occupied: false, scope: expect.objectContaining({ claimId: original.claimId }) }));
+    expect(coordinator.archiveYield()).toBe(false);
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
 });

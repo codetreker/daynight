@@ -1,6 +1,8 @@
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { readCodexConfiguration } from "./codex-config.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { ExecutionSourceConflictError } from "../execution-stop.js";
+import type { CleanupTarget, StopObservation } from "../execution-stop.js";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { OperationError } from "../../../api/operation.js";
@@ -131,7 +133,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
   const inputTails = new Map<string, Promise<void>>();
-  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number> }>();
+  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number>; originalBindingObserved: boolean }>();
+  const workerRun = randomUUID();
+  const stoppedRuns = new Map<string, HerdrTaskBinding>();
+  const activeBindings = new Map<string, { binding: HerdrTaskBinding; agent: WorkerAgent }>();
+  const runKey = (binding: HerdrTaskBinding): string => JSON.stringify([workerRun, binding.session, binding.workspaceId, binding.paneId, binding.terminalId]);
   const serialized = async <T>(key: string, operation: Operation, action: () => Promise<T>): Promise<T> => {
     operation.check();
     const previous = inputTails.get(key);
@@ -338,6 +344,43 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     }
   };
   return {
+    observeExecutionStop: async (target: CleanupTarget, operation: Operation): Promise<StopObservation> => {
+      try {
+        operation.check();
+        if (target.worktreeId === undefined) throw new Error("The original Herdr worktree identity is missing.");
+        const owner = { ...target, worktreeId: target.worktreeId }, id = resourceOwnerKey(owner);
+        const stoppedBinding = stoppedRuns.get(id);
+        const active = activeBindings.get(id);
+        const binding = stoppedBinding ?? active?.binding;
+        if (binding === undefined) throw new Error("No original legacy Herdr binding exists in this Worker run.");
+        if ([...stoppingProcesses.values()].some(pending => sameResourceOwner(pending.context, owner))) throw new Error("The original Herdr stop has not joined.");
+        const data = await snapshot(operation);
+        if ([...stoppingProcesses.values()].some(pending => sameResourceOwner(pending.context, owner))) throw new Error("The original Herdr stop has not joined.");
+        if (stoppedBinding !== undefined) {
+          if (stoppedRuns.get(id) !== stoppedBinding) throw new ExecutionSourceConflictError("The original Herdr binding changed during observation.");
+          if (data.workspaces.some(workspace => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, owner)) || [...data.panes, ...data.agents].some(value => value.workspace_id === binding.workspaceId || value.pane_id === binding.paneId || value.terminal_id === binding.terminalId)) throw new ExecutionSourceConflictError("The original Herdr binding is still present or conflicts with another resource.");
+          return { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: runKey(binding) }, observedAt: Date.now() };
+        }
+        if (activeBindings.get(id) !== active || stoppedRuns.has(id)) throw new ExecutionSourceConflictError("The original Herdr binding changed during observation.");
+        const workspaces = data.workspaces.filter(workspace => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, owner));
+        const panes = data.panes.filter(pane => pane.pane_id === binding.paneId || pane.terminal_id === binding.terminalId);
+        if (workspaces.length === 0 || panes.length === 0) throw new Error("The original Herdr binding is missing; stop is unconfirmed.");
+        if (workspaces.length !== 1 || workspaces[0]!.workspace_id !== binding.workspaceId || !matchesWorkspaceOwner(workspaces[0]!, owner)
+          || panes.length !== 1 || panes[0]!.pane_id !== binding.paneId || panes[0]!.terminal_id !== binding.terminalId || panes[0]!.workspace_id !== binding.workspaceId)
+          throw new ExecutionSourceConflictError("The original Herdr workspace or pane identity conflicts.");
+        const agents = data.agents.filter(agent => agent.pane_id === binding.paneId || agent.terminal_id === binding.terminalId);
+        if (agents.length > 1 || agents.some(agent => agent.pane_id !== binding.paneId || agent.terminal_id !== binding.terminalId || agent.workspace_id !== binding.workspaceId))
+          throw new ExecutionSourceConflictError("The original Herdr agent identity conflicts.");
+        const info = agents[0] ?? panes[0]!;
+        if (info.agent != null && info.agent !== active!.agent || info.name != null && info.name !== herdrExecutionAgentName(owner))
+          throw new ExecutionSourceConflictError("The original Herdr agent identity conflicts.");
+        if (info.agent == null && info.launch_pending !== true && info.interactive_ready !== true) throw new Error("The original Herdr agent is not known to be running.");
+        return { kind: "running", execution: { owner, backend: "herdr-legacy", runKey: runKey(binding) }, observedAt: Date.now() };
+      } catch (error) {
+        operation.check();
+        return { kind: "unknown", target, error, observedAt: Date.now() };
+      }
+    },
     pendingStops: (): readonly HerdrPendingStop[] => [...stoppingProcesses.values()].map(({ context, binding }) => ({ context: { ...context }, binding: { ...binding } })),
     listResources: async (operation: Operation): Promise<HerdrOwnedWorkspace[]> => {
       const data = await snapshot(operation);
@@ -385,6 +428,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return result;
     },
     prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation, startup?: { shellNonce: string }): Promise<HerdrTaskBinding> => {
+      stoppedRuns.delete(resourceOwnerKey(context));
+      activeBindings.delete(resourceOwnerKey(context));
       if (startup !== undefined && canonicalId(startup.shellNonce) !== startup.shellNonce) throw new TypeError("The managed shell startup nonce must be a canonical UUID.");
       let createPossible = false;
       try {
@@ -399,6 +444,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const pane = panes[0]!;
           const binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
           await readOwned(context, binding, operation);
+          activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
           return binding;
         }
         createPossible = true;
@@ -407,6 +453,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const pane = object(result.root_pane, "Created task pane");
         const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
         await readOwned(context, binding, operation);
+        activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
         return binding;
       } catch (cause) {
         if (cause instanceof HerdrAgentActionError) throw cause;
@@ -473,9 +520,14 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const identity = resourceOwnerKey(context);
       const key = JSON.stringify([binding.session, binding.workspaceId, identity]);
       const matching = before.workspaces.filter((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context));
+      const existing = stoppingProcesses.get(key);
+      if (existing !== undefined && (existing.binding.session !== binding.session || existing.binding.workspaceId !== binding.workspaceId || existing.binding.paneId !== binding.paneId || existing.binding.terminalId !== binding.terminalId)) throw new Error("The pending stop belongs to a different original binding.");
       if (matching.length === 0) {
         if ([...before.panes, ...before.agents].some((resource) => resource.workspace_id === binding.workspaceId || resource.pane_id === binding.paneId || resource.terminal_id === binding.terminalId)) throw new Error("The missing task workspace still has associated resources.");
-        return finishStop(key, operation);
+        const original = stoppingProcesses.get(key);
+        await finishStop(key, operation);
+        if (original?.originalBindingObserved) { activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
+        return;
       }
       if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || !matchesWorkspaceOwner(matching[0]!, context)) throw new Error("The task workspace identity changed before stopping.");
       const currentPanes = before.panes.filter((pane) => pane.workspace_id === binding.workspaceId);
@@ -483,12 +535,14 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       // Retain this process-local responsibility across failed close/wait calls.
       let pending = stoppingProcesses.get(key);
       if (pending === undefined) {
-        pending = { context: { ...context }, binding: { ...binding }, processIds: new Set<number>() };
+        pending = { context: { ...context }, binding: { ...binding }, processIds: new Set<number>(), originalBindingObserved: false };
         stoppingProcesses.set(key, pending);
       }
+      let originalBindingObserved = false;
       for (const pane of currentPanes) {
         const paneId = text(pane.pane_id, "Stop pane ID");
         if (paneId === binding.paneId && pane.terminal_id !== binding.terminalId) throw new Error("The task terminal identity changed before stopping.");
+        if (paneId === binding.paneId && pane.terminal_id === binding.terminalId) originalBindingObserved = true;
         const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: paneId }, operation), "pane_process_info");
         const info = object(result.process_info, "Current stop process observation");
         if (info.pane_id !== paneId) throw new Error("The stop process observation belongs to another pane.");
@@ -496,10 +550,12 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const foreground = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Current foreground processes");
         for (const entry of foreground) pending.processIds.add(pid(object(entry, "Current foreground process").pid));
       }
+      pending.originalBindingObserved ||= originalBindingObserved;
       await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
       const after = await snapshot(operation);
       if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context)) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
       await finishStop(key, operation);
+      if (pending.originalBindingObserved) { activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
     }),
   };
 };

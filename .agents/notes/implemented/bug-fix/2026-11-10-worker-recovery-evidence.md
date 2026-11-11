@@ -58,7 +58,7 @@ repair classification before full archival, restoring ordinary transient retry
 policy if upload fails. Receipt presence and legacy-schema admission do not prove
 that the source was repaired. Clearing classification must succeed durably before
 its in-memory counterpart changes; neither operation releases cleanup responsibility.
-Only successful complete cleanup releases ownership or capacity. This narrows the retry policy described in the immutable
+Only successful complete cleanup releases resource ownership. The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md) separates a confirmed stopped execution from retained cleanup responsibilities. This narrows the retry policy described in the immutable
 [cleanup retry decision](../../archived/bug-fix/2026-11-04-worker-cleanup-retry.md),
 whose bounded retry and per-claim fairness remain appropriate for transient and
 unclassified failures.

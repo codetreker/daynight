@@ -1,3 +1,5 @@
+import { ExecutionSourceConflictError } from "../execution-stop.js";
+import type { CleanupTarget, StopObservation, TerminalCleanupContext } from "../execution-stop.js";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, lstatSync, readdirSync } from "node:fs";
@@ -548,7 +550,28 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     } catch (error) { getInput(owner).suspend(); throw error; }
     finally { release(); }
   };
-  const stop = async (owner: Identity, reason: "shutdown" | "terminal", operation: Operation): Promise<void> => {
+  const observeExecutionStop = async (target: CleanupTarget, operation: Operation): Promise<StopObservation> => {
+    try {
+      operation.check();
+      if (target.worktreeId === undefined) throw new Error("The original Herdr worktree identity is missing.");
+      const record = store.get(target);
+      if (record === null) throw new Error("The original Herdr lifecycle is missing.");
+      if (record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== target.worktreeId) throw new ExecutionSourceConflictError("The original Herdr lifecycle belongs to another execution owner.");
+      const owner = identity(record);
+      if (record.preparation !== null) throw new ExecutionSourceConflictError("A new Herdr preparation changes the execution source.");
+      if (isHerdrNeverStarted(record)) return { kind: "not-started", owner, observedAt: Date.now() };
+      if (record.runs.length === 0) throw new Error("The original Herdr run provenance is missing.");
+      const run = current(record);
+      const execution = { owner, backend: "herdr-native" as const, runKey: JSON.stringify([record.sessionId, run.run.executionGeneration]) };
+      if (run.phase === "stopped_confirmed" && run.run.stopProof !== null) return { kind: "stopped", execution, observedAt: Date.now() };
+      if (run.phase === "active" || run.phase === "prepared") return { kind: "running", execution, observedAt: Date.now() };
+      throw new Error(`Herdr native stop remains unconfirmed (${run.phase}).`);
+    } catch (error) {
+      operation.check();
+      return { kind: "unknown", target, error, observedAt: Date.now() };
+    }
+  };
+  const stop = async (owner: Identity, reason: "shutdown" | "terminal", operation: Operation, scope?: TerminalCleanupContext): Promise<void> => {
     const before = need(owner);
     let input = arbiters.get(before.sessionId);
     let inputJournalError: unknown;
@@ -571,7 +594,13 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     // independent attempt to stop this claim's original native processes.
     const results = await Promise.allSettled([settleSelection(), (async () => {
     let record = need(owner);
-    if (record.runs.length === 0 && record.preparation === null) return false;
+    if (record.runs.length === 0 && record.preparation === null) {
+      if (reason === "terminal" && scope !== undefined) {
+        const observation = await observeExecutionStop(owner, operation);
+        if (observation.kind === "not-started") scope.onExecutionStopped({ attempt: scope.attempt, observation });
+      }
+      return false;
+    }
     let run = current(record);
     if (run.phase !== "stopped_confirmed") {
       if (run.stopOperationId === null && run.daemon !== null && await native.observe(run.daemon) !== "same" && await native.bootIdentity() === run.daemon.bootId) {
@@ -622,6 +651,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         const shell = r.processes[0]!, daemon = r.daemon!;
         r.run.stopProof = preparedStop ? { ...proof, nativeLaunch: "not_submitted", daemon: { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId }, processes: [{ role: "shell", pid: shell.pid, birthToken: shell.birthToken, bootId: shell.bootId }] } : proof;
       });
+    }
+    if (reason === "terminal" && scope !== undefined) {
+      const observation = await observeExecutionStop(owner, operation);
+      if (observation.kind !== "stopped" && observation.kind !== "not-started") throw new Error("The original Herdr execution stop cannot be confirmed.");
+      scope.onExecutionStopped({ attempt: scope.attempt, observation });
     }
     return true;
     })()]);
@@ -864,8 +898,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           && input.target.sessionId === record.sessionId && input.target.claimId === record.claimId
           && input.initialOutcome === "pending" && input.initialDisposition === null && !input.unknownInput ? record.initialPrompt : null;
       },
+      observeExecutionStop,
       isStopped: owner => { const record = store.get(owner); return selectionEpoch === settledSelectionEpoch && record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
-      cleanup: async (owner, prompt, operation) => {
+      cleanup: async (owner, prompt, operation, scope) => {
         let notified = false;
         const record = need(owner);
         try { if (record.runs.at(-1)?.phase === "active" && record.segments.at(-1)?.endedAt === null) {
@@ -878,7 +913,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
             finally { update(owner, draft => { current(draft).admission = null; }); }
           }
         } } catch { notified = false; }
-        await stop(owner, "terminal", operation);
+        await stop(owner, "terminal", operation, scope);
         return notified;
       },
       stop,
