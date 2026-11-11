@@ -21,6 +21,11 @@ A validation gate with its own test deadline can expire before the parent
 observes the failure. Its ready file remains after timeout, so readiness alone
 cannot prove that the run is still active before its final summary.
 
+A synchronously written JSONL failure can become visible before the parent
+consumes the corresponding console pipe data. File visibility alone cannot
+establish that both outputs are readable, even when the child writes to the
+console first.
+
 ## Decision
 
 The macOS ARM64 entry in the ordinary `verify` matrix executes its unchanged
@@ -75,8 +80,10 @@ deadlines and macOS observer.
 Real reporter checks use separate failure and gate modules with two fixture
 workers. The failure module can complete and Vitest can drain its reported
 events while the gate keeps the run active. Only the gate has `timeout: 0`;
-the parent releases it after checking the failure and absence of a final
-summary. Failure tests and hooks retain their ten-second budgets. The parent
+the parent waits for both the JSONL assertion failure and its console text
+within the same twelve-second observation budget, then checks that the child
+is still running without a final summary before releasing the gate.
+Failure tests and hooks retain their ten-second budgets. The parent
 retains its twenty-second process watchdog, twenty-five-second test budget and
 `finally` cleanup, so an unreleased gate remains bounded while its parent runs.
 Releasing the gate must preserve the original failing exit status.
