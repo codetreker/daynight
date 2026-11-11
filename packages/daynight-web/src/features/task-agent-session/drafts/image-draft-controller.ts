@@ -328,6 +328,7 @@ export class ImageDraftController {
   flush = async (): Promise<void> => {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     const invocationEpoch = this.epoch;
+    let committed = false;
     const write = async () => {
       if (!this.current(invocationEpoch)) return;
       if (!this.dirty) return;
@@ -350,9 +351,13 @@ export class ImageDraftController {
       if (!this.current(epoch)) return;
       if (version === this.writeVersion) this.dirty = false;
       this.error = null; this.adopt(snapshot); this.channel?.postMessage({ ownerKey: snapshot.owner.ownerKey, storeVersion: snapshot.editable?.storeVersion });
+      committed = true;
     };
     const flight = this.writes.catch(() => {}).then(write); this.writes = flight;
-    try { await flight; } catch (error) { if (this.current(invocationEpoch)) this.fail(error); throw error; }
+    try {
+      await flight;
+      if (committed && this.current(invocationEpoch)) void this.backgroundWork(this.prepareUploads(), invocationEpoch);
+    } catch (error) { if (this.current(invocationEpoch)) this.fail(error); throw error; }
   };
   retrySave = async (): Promise<void> => {
     this.error = null;
@@ -467,9 +472,15 @@ export class ImageDraftController {
     }
     this.publish();
   }
-  private async reload(ownUpload = false): Promise<void> {
-    if (!this.saved) return;
-    const epoch = this.epoch, snapshot = await this.store.read(this.saved.owner);
+  private reload(): Promise<void> {
+    const epoch = this.epoch;
+    const readback = this.writes.catch(() => {}).then(() => this.adoptReadback(epoch)); this.writes = readback;
+    return readback;
+  }
+  /** Called only while owning the local persistence queue. */
+  private async adoptReadback(epoch: number, ownUpload = false): Promise<void> {
+    if (!this.current(epoch) || !this.saved) return;
+    const snapshot = await this.store.read(this.saved.owner);
     if (!this.current(epoch)) return;
     if (this.dirty && this.saved.editable?.storeVersion !== snapshot.editable?.storeVersion && !(ownUpload && this.saved.editable && snapshot.editable?.storeVersion === this.saved.editable.storeVersion + 1)) { this.conflict = true; this.error = 'image_draft_conflict'; this.publish(); return; }
     this.adopt(snapshot);
@@ -500,23 +511,34 @@ export class ImageDraftController {
   private async prepareUploads(observe = false, retryPrepareId?: string): Promise<void> {
     if (!this.saved || !this.locks || !this.networkAllowed()) return;
     const epoch = this.epoch, c = this.context();
-    if (this.canPrepare()) {
-      for (const item of [...this.local!.items]) {
+    const allocate = async () => {
+      if (!this.current(epoch) || !this.canPrepare()) return;
+      for (const id of this.local!.items.map(item => item.draftImageId)) {
         if (!this.current(epoch) || !this.canPrepare()) return;
-        if (item.uploadId) continue;
+        const item = this.local!.items.find(candidate => candidate.draftImageId === id);
+        if (!item || item.uploadId) continue;
         const original = this.blobs.get(item.blobId!)!;
-        await this.store.createUpload(this.saved.owner, { draftImageId: item.draftImageId, byteRevision: item.byteRevision, blobId: original.blobId, spec: { uploadId: crypto.randomUUID(), imageId: item.imageId, target: c.target, name: item.label, mediaType: original.mediaType, byteLength: String(original.byteLength), sha256: original.sha256 } });
-        if (!this.current(epoch)) return; await this.reload(true);
+        await this.store.createUpload(this.saved!.owner, { draftImageId: item.draftImageId, byteRevision: item.byteRevision, blobId: original.blobId, spec: { uploadId: crypto.randomUUID(), imageId: item.imageId, target: c.target, name: item.label, mediaType: original.mediaType, byteLength: String(original.byteLength), sha256: original.sha256 } });
+        if (!this.current(epoch)) return; await this.adoptReadback(epoch, true);
       }
-    }
-    const uploads = [...this.saved.uploads];
-    for (const upload of uploads) {
+    };
+    // Binding an upload advances the draft CAS version. Adopt it before another
+    // local save or allocation, while keeping network work outside this queue.
+    const allocation = this.writes.catch(() => {}).then(allocate); this.writes = allocation;
+    await allocation;
+    if (!this.current(epoch) || !this.saved) return;
+    const uploads = this.saved.uploads.map(upload => upload.uploadId);
+    for (const uploadId of uploads) {
       if (!this.current(epoch)) return;
+      while (this.uploadFlights.has(uploadId)) {
+        await this.uploadFlights.get(uploadId);
+        if (!this.current(epoch)) return;
+      }
+      const upload = this.saved.uploads.find(candidate => candidate.uploadId === uploadId);
+      if (!upload) continue;
       if (!upload.releaseIntent && !observe && (!this.canPrepare() || upload.receipt?.state === 'complete' || upload.outcomeUnknown || upload.pendingAction)) continue;
       if (!upload.releaseIntent && upload.receipt && ['failed', 'expired', 'released'].includes(upload.receipt.state)) continue;
       if (upload.releaseIntent && upload.receipt?.state === 'released') continue;
-      const existing = this.uploadFlights.get(upload.uploadId);
-      if (existing) { await existing; if (!this.current(epoch)) return; }
       const uploader = new DraftUploader({ store: this.store, locks: this.locks, resources: c.resources, signal: this.network.signal, isCurrent: () => this.current(epoch) && !!this.options.getContext()?.canEdit, canPrepare: () => this.canPrepare(), changed: async () => { if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } });
       const run = uploader.run(this.saved.owner, upload.uploadId, this.blobs.get(upload.blobId) ?? null, observe, retryPrepareId === upload.uploadId).catch(error => { if (this.current(epoch)) this.fail(error); });
       this.uploadFlights.set(upload.uploadId, run);

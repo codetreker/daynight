@@ -41,6 +41,112 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it('allocates each upload once when concurrent selections resume the same validation', async () => {
+    const f = fixture(), controller = f.create(), first = file('first.png');
+    const held = Promise.withResolvers<ArrayBuffer>(), entered = Promise.withResolvers<void>();
+    const original = await first.arrayBuffer();
+    vi.spyOn(first, 'arrayBuffer').mockImplementationOnce(() => { entered.resolve(); return held.promise; });
+    const createUpload = vi.spyOn(f.store, 'createUpload');
+    const firstSelection = controller.addFiles([first], 'ordered selection'); await entered.promise;
+    const secondSelection = controller.addFiles([file('second.png')], 'ordered selection');
+    held.resolve(original); await Promise.all([firstSelection, secondSelection]);
+    expect(controller.getSnapshot().items.map(item => item.label)).toEqual(['first.png', 'second.png']);
+    expect(controller.getSnapshot()).toMatchObject({ error: null, conflict: false, canSend: true });
+    const saved = await f.store.readExisting(identity);
+    expect(saved?.uploads).toHaveLength(2); expect(createUpload).toHaveBeenCalledTimes(2);
+    expect(new Set(saved?.editable?.items.map(item => item.uploadId)).size).toBe(2);
+    expect(f.resources.prepareUpload).toHaveBeenCalledTimes(2); expect(f.commands).toEqual([]);
+  });
+  it.each([1, 2])('resumes %i image uploads after text is saved during allocation', async count => {
+    const f = fixture(), controller = f.create(), committed = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const createUpload = f.store.createUpload.bind(f.store);
+    vi.spyOn(f.store, 'createUpload').mockImplementationOnce(async (...args) => { const upload = await createUpload(...args); committed.resolve(); await release.promise; return upload; });
+    const adding = controller.addFiles(Array.from({ length: count }, (_, index) => file(`${index + 1}.png`)), 'before allocation'); await committed.promise;
+    controller.setText('edited while allocating'); const saved = controller.flush();
+    release.resolve(); await Promise.allSettled([adding, saved]);
+    expect(controller.getSnapshot()).toMatchObject({ error: null, conflict: false, text: 'edited while allocating', saving: false });
+    await vi.waitFor(() => expect(controller.getSnapshot().canSend).toBe(true));
+    const persisted = await f.store.readExisting(identity);
+    expect(persisted?.editable?.text).toBe('edited while allocating');
+    expect(persisted?.uploads).toHaveLength(count);
+    expect(persisted?.editable?.items.every(item => persisted.uploads.some(upload => upload.uploadId === item.uploadId && upload.receipt?.state === 'complete'))).toBe(true);
+    expect(f.resources.prepareUpload).toHaveBeenCalledTimes(count); expect(f.resources.completeUpload).toHaveBeenCalledTimes(count);
+    expect(f.commands).toEqual([]);
+  });
+  it('saves text while the upload network request is still held', async () => {
+    const f = fixture(), controller = f.create(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const prepare = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
+    vi.mocked(f.resources.prepareUpload).mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return prepare(...args); });
+    const adding = controller.addFiles([file()], 'before network'); await entered.promise;
+    try {
+      controller.setText('saved while network held'); let flushed = false;
+      const saving = controller.flush().then(() => { flushed = true; });
+      await vi.waitFor(() => expect(flushed).toBe(true)); await saving;
+      expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved while network held');
+      expect(f.resources.completeUpload).not.toHaveBeenCalled();
+    } finally { release.resolve(); await adding; }
+    await vi.waitFor(() => expect(controller.getSnapshot()).toMatchObject({ canSend: true, conflict: false, error: null }));
+    expect(f.resources.prepareUpload).toHaveBeenCalledOnce(); expect(f.resources.completeUpload).toHaveBeenCalledOnce();
+    expect(f.commands).toEqual([]);
+  });
+  it('orders earlier upload readback after a later allocation and its queued text save', async () => {
+    const f = fixture(), controller = f.create();
+    const firstNetwork = Promise.withResolvers<void>(), releaseNetwork = Promise.withResolvers<void>();
+    const allocated = Promise.withResolvers<void>(), releaseAllocation = Promise.withResolvers<void>(), receiptCommitted = Promise.withResolvers<void>();
+    const prepare = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
+    vi.mocked(f.resources.prepareUpload).mockImplementationOnce(async (...args) => { firstNetwork.resolve(); await releaseNetwork.promise; return prepare(...args); });
+    const observeUpload = f.store.observeUpload.bind(f.store);
+    vi.spyOn(f.store, 'observeUpload').mockImplementationOnce(async (...args) => { const upload = await observeUpload(...args); receiptCommitted.resolve(); return upload; });
+    let sawConflict = false; const unsubscribe = controller.subscribe(() => { sawConflict ||= controller.getSnapshot().conflict; });
+    const first = controller.addFiles([file('first.png')], 'before network'); await firstNetwork.promise;
+    const createUpload = f.store.createUpload.bind(f.store);
+    vi.spyOn(f.store, 'createUpload').mockImplementationOnce(async (...args) => { const upload = await createUpload(...args); allocated.resolve(); await releaseAllocation.promise; return upload; });
+    const second = controller.addFiles([file('second.png')], 'before network'); await allocated.promise;
+    controller.setText('edited across network readback'); const saving = controller.flush();
+    try { releaseNetwork.resolve(); await receiptCommitted.promise; }
+    finally { releaseAllocation.resolve(); await Promise.allSettled([first, second, saving]); unsubscribe(); }
+    expect(sawConflict).toBe(false);
+    await vi.waitFor(() => expect(controller.getSnapshot()).toMatchObject({ canSend: true, conflict: false, error: null }));
+    const stored = await f.store.readExisting(identity);
+    expect(stored?.editable?.text).toBe('edited across network readback');
+    expect(stored?.editable?.items.map(item => item.label)).toEqual(['first.png', 'second.png']);
+    expect(f.resources.prepareUpload).toHaveBeenCalledTimes(2); expect(f.resources.completeUpload).toHaveBeenCalledTimes(2);
+    expect(f.commands).toEqual([]);
+  });
+  it('does not adopt an old upload allocation while another native owner queues its first save', async () => {
+    const f = fixture(null), controller = f.create({ locks: locks() }), committed = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const createUpload = f.store.createUpload.bind(f.store);
+    vi.spyOn(f.store, 'createUpload').mockImplementationOnce(async (...args) => { const upload = await createUpload(...args); committed.resolve(); await release.promise; return upload; });
+    const oldSelection = controller.addFiles([file('old.png')], 'old owner'); await committed.promise;
+    const nextTarget = { ...target, expectedNativeSessionId: 'native-next' }, nextIdentity = { ...identity, target: nextTarget };
+    f.setContext({ ...f.context(), identity: nextIdentity, target: nextTarget, capabilities: { ...capability, expectedNativeSessionId: 'native-next' }, active: false });
+    await controller.sync();
+    const admittedWrite = Promise.withResolvers<void>();
+    const unsubscribe = controller.subscribe(() => { const draft = controller.getSnapshot(); if (draft.draftId && draft.saving && draft.text === 'new owner') admittedWrite.resolve(); });
+    const newSelection = controller.addFiles([file('new.png')], 'new owner');
+    await admittedWrite.promise; unsubscribe();
+    release.resolve(); await Promise.all([oldSelection, newSelection]);
+    expect(controller.getSnapshot()).toMatchObject({ text: 'new owner', error: null, conflict: false });
+    expect(controller.getSnapshot().items.map(item => item.label)).toEqual(['new.png']);
+    const next = await f.store.readExisting(nextIdentity);
+    expect(next?.editable?.text).toBe('new owner'); expect(next?.uploads).toEqual([]);
+    expect((await f.store.readExisting(identity))?.uploads).toHaveLength(1);
+    expect(f.mutations).toEqual([]);
+  });
+  it('drains an upload allocation on close without publishing or starting its network work', async () => {
+    const f = fixture(), controller = f.create(), committed = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const createUpload = f.store.createUpload.bind(f.store);
+    vi.spyOn(f.store, 'createUpload').mockImplementationOnce(async (...args) => { const upload = await createUpload(...args); committed.resolve(); await release.promise; return upload; });
+    const adding = controller.addFiles([file()], 'closing draft'); await committed.promise;
+    const published = controller.getSnapshot(); let closed = false;
+    const closing = controller.close().then(() => { closed = true; });
+    await Promise.resolve(); expect(closed).toBe(false);
+    release.resolve(); await Promise.all([adding, closing]);
+    expect(controller.getSnapshot()).toBe(published); expect(f.mutations).toEqual([]);
+    const saved = await f.store.readExisting(identity);
+    expect(saved?.editable?.text).toBe('closing draft'); expect(saved?.uploads).toHaveLength(1);
+    expect(saved?.uploads[0]?.receipt).toBeNull();
+  });
   it('discards an old execution original read before changing the current submission state', async () => {
     const f = fixture(null), first = await f.store.openOwner(identity);
     const saved = await f.store.saveDraft(first.owner, { draftId: first.editable!.draftId, expectedStoreVersion: first.editable!.storeVersion, text: 'Old frozen text', items: [], rejectedCandidates: [], overflowRejectedCount: 0 });

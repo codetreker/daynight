@@ -107,4 +107,17 @@ export async function openDraft(page: Page) {
 }
 export const saved = (page: Page) => page.evaluate(() => window.sessionDraftHarness.read());
 export const current = (page: Page) => page.evaluate(() => { const { items, frozenItems, ...rest } = window.sessionDraftHarness.controller.getSnapshot(); return { ...rest, items: items.map(({ asset, ...item }) => ({ ...item, asset: asset?.key ?? null })), frozenItems: frozenItems.map(({ asset, ...item }) => ({ ...item, asset: asset?.key ?? null })) }; });
-export const ready = (page: Page, count: number) => expect.poll(async () => { const view = await current(page); return { count: view.items.length, saving: view.saving, canSend: view.canSend, error: view.error }; }).toEqual({ count, saving: false, canSend: true, error: null });
+export const ready = async (page: Page, count: number) => {
+  let observed: unknown;
+  try {
+    await expect.poll(async () => {
+      const view = await current(page);
+      const state = { count: view.items.length, saving: view.saving, canSend: view.canSend, error: view.error };
+      observed = { ...state, disabledReason: view.disabledReason,
+        uploads: view.items.map(item => ({ label: item.label, uploadId: item.uploadId, status: item.status, progress: item.progress })) };
+      return state;
+    }).toEqual({ count, saving: false, canSend: true, error: null });
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nLast observed draft state: ${JSON.stringify(observed)}`, { cause: error });
+  }
+};

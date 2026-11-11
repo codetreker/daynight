@@ -57,6 +57,8 @@ revision 从 `"1"` 起，对文字、附件增删/替换、显式目标重新准
 
 写入使用覆盖相关 stores 的短 readwrite 事务，按 observed storeVersion/accessEpoch 比较；Blob 和引用、草稿内容一起提交。hash/解码和网络在事务外，完成后再核对原 owner、byteRevision 和 observed revision。只以 transaction `complete` 确认保存，不以单次 put request 成功确认；关键冻结和清理请求 strict durability，仍不把浏览器存储当不可被用户删除的备份。[IndexedDB 标准](https://www.w3.org/TR/IndexedDB-3/#transaction-durability-hint)明确其耐久提示和完成语义。
 
+同一草稿 controller 的内容写入、上传身份分配及版本读回共用本地串行队列，包括上传回执触发的草稿读回。排队动作开始后重新核对 owner、附件字节版本和已有 uploadId，避免同时选图或恢复触发重复分配，也避免本地写入或回执读回使用自己刚推进前的旧 storeVersion。成功内容写入在队列外恢复当前草稿的上传准备，避免暂因未保存编辑退出的上传永久停留；等待已有上传后重新核对最新状态，未知请求仍沿原查询和显式恢复规则。网络上传在该队列外运行，用户编辑不等待上传完成；跨标签页竞争仍由实际 IDB CAS 决定。
+
 正文输入立即更新本地显示，按每次 input 排序提交，合并尚未启动的连续文本写（最长 250ms）；IME 组合期间不改选区，保存原 text 值，compositionend 刷新。添加 Blob、Send、切换 owner、正常导航前 flush 已排队写；不依赖 unload/pagehide 最后一刻异步写保证恢复。尚未完成时是“正在保存”，失败时为“草稿未保存，刷新可能丢失”，提供“重试保存”。默认成功不显示常驻说明；只有所有最新内容提交才能撤销失败提示。
 
 QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均保留当前内存和最后成功版本。禁用含图上传/发送，允许编辑、预览、移除及重试保存；不能声称持久成功或悄悄退成纯文字。独立纯文字且未进入新图片草稿时保留旧文字路径；浏览器根本不支持 IndexedDB 时仍提供纯文字输入。具有 IndexedDB 的浏览器恢复失败时，不能证明原 owner 没有图片或未知提交，因此阻止该 owner 发送并保留错误和重试入口，不能把读取失败当成空草稿后发送纯文字。高版本库禁止破坏式降级，versionchange 关闭连接，重新打开迁移后才能继续。

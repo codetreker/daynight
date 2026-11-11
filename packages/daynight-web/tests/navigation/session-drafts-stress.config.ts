@@ -6,6 +6,8 @@ if (process.env.CI) throw new Error('Session draft browser capacity tests are lo
 
 export default defineConfig({
   ...ordinary,
+  // Full-size originals include decoding and chunk uploads, not a five-second latency target.
+  expect: { timeout: 30_000 },
   grep: /@capacity/,
   grepInvert: [],
   outputDir: fileURLToPath(new URL('../../.tmp/session-drafts-capacity/results', import.meta.url)),

@@ -24,6 +24,17 @@ with CAS protect concurrent tabs. Web Locks coordinate network mutations, while
 a durable single transition grants dispatch ownership. Unknown results retain
 the original operation and block another send.
 
+Within one draft controller, content writes and upload identity allocation share
+a local persistence queue through their version readback, including readback
+triggered by network receipts. Each queued allocation
+rechecks the current owner, byte revision and upload identity. This prevents
+overlapping selection or recovery work from conflicting with its own CAS writes.
+Network transfers remain outside that queue so editing does not wait for them;
+successful content writes resume eligible uploads after temporary dirty-state
+admission pauses. Waiting upload work rechecks the latest state before resuming;
+unknown requests retain their explicit recovery rules, and
+cross-tab writes still require the database's version checks.
+
 An explicit successor draft permits local editing without changing the frozen
 submission. Native acceptance settles only the original draft identity and
 revision. Scoped adapters provide verified leases to one preview host per real

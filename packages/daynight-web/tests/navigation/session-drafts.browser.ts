@@ -54,6 +54,60 @@ test('clears the real client send gate after observing acceptance of a lost imag
   await info.attach('client-unknown-receipt-gate', { body: JSON.stringify({ boundary: `${boundary} Actual TaskSessionClient dispatch and 404/acceptance observation.`, observations: api.observations }), contentType: 'application/json' });
 });
 
+test('preserves image drafts and unknown submissions through the actual Session fullscreen control', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setDispatch('lost'); api.setQuery('404');
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('keep across fullscreen'); await page.locator('input[type=file]').setInputFiles(file('Fullscreen.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  const saved = await page.evaluate(() => window.sessionDraftClient.storage.read()), root = page.locator('section.task-agent-session');
+  const blobId = saved!.editable!.items[0]!.blobId!, original = await page.evaluate(id => window.sessionDraftClient.storage.readBlob(id), blobId);
+  const rootHandle = await root.elementHandle();
+  await page.getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click(); await expect(root).toHaveAttribute('data-session-fullscreen', 'true');
+  await expect(page.getByRole('textbox')).toHaveValue('keep across fullscreen');
+  expect(await page.evaluate(() => window.sessionDraftClient.storage.read())).toEqual(saved);
+  await page.getByRole('button', { name: 'View image: Fullscreen.png', exact: true }).click(); await expect(page.locator('dialog img')).toHaveJSProperty('naturalWidth', 3);
+  await page.keyboard.press('Escape'); await expect(page.locator('dialog')).not.toBeVisible(); await expect(root).toHaveAttribute('data-session-fullscreen', 'true');
+  await page.keyboard.press('Escape'); await expect(root).not.toHaveAttribute('data-session-fullscreen');
+  await expect(page.getByRole('button', { name: 'Enter Session fullscreen', exact: true })).toBeFocused();
+  expect(api.observations.commands).toEqual([]);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
+  const frozen = await page.evaluate(() => window.sessionDraftClient.storage.read()), operationId = api.observations.commands[0]!.operationId;
+  await page.getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click(); await expect(root).toHaveAttribute('data-session-fullscreen', 'true');
+  await expect(page.locator('.session-draft-attachments')).toContainText('Awaiting the original message result');
+  await page.getByRole('button', { name: 'Exit Session fullscreen', exact: true }).click(); await expect(root).not.toHaveAttribute('data-session-fullscreen');
+  const retained = await page.evaluate(() => window.sessionDraftClient.storage.read());
+  expect(retained?.submission?.operationId).toBe(operationId); expect(retained?.submission?.state).toBe('unknown'); expect(retained?.frozen).toEqual(frozen?.frozen);
+  expect(await page.evaluate(id => window.sessionDraftClient.storage.readBlob(id), blobId)).toEqual(original);
+  expect(await root.evaluate((node, previous) => node === previous, rootHandle)).toBe(true);
+  expect(api.observations.commands).toHaveLength(1); expect(api.observations.queries.every(id => id === operationId)).toBe(true);
+  expect(await page.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+  await info.attach('client-fullscreen-draft-unknown', { body: JSON.stringify({ boundary: `${boundary} Actual SessionView/useSessionFullscreen controls and preview Escape ownership.`, saved, original, frozen, retained, observations: api.observations }), contentType: 'application/json' });
+});
+
+test('reopens a durably prepared message without claiming or dispatching it until explicit resume', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context);
+  await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('prepared before tab close'); await page.locator('input[type=file]').setInputFiles(file('Prepared.png'));
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
+  await page.evaluate(() => window.sessionDraftClient.storage.holdBeforeDispatchClaim());
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.sessionDraftClient.storage.dispatchClaimArrivals())).toBe(1);
+  const prepared = await page.evaluate(() => window.sessionDraftClient.storage.read());
+  expect(prepared?.submission?.state).toBe('prepared'); expect(prepared?.frozen?.text).toBe('prepared before tab close'); expect(api.observations.commands).toEqual([]);
+  const operationId = prepared!.submission!.operationId;
+  await page.close(); const reopened = await context.newPage(); await reopened.goto('/tests/navigation/session-drafts-client-fixture.html');
+  await expect(reopened.getByRole('button', { name: 'Send this saved message', exact: true })).toBeEnabled();
+  const recovered = await reopened.evaluate(() => window.sessionDraftClient.storage.read());
+  expect(recovered?.submission?.operationId).toBe(operationId); expect(recovered?.submission?.state).toBe('prepared'); expect(recovered?.frozen).toEqual(prepared?.frozen);
+  expect(api.observations.commands).toEqual([]); expect(api.observations.queries).toEqual([]);
+  await reopened.getByRole('button', { name: 'Send this saved message', exact: true }).click();
+  await expect.poll(() => api.observations.commands.length).toBe(1); expect(api.observations.commands[0]!.operationId).toBe(operationId);
+  await expect.poll(() => reopened.evaluate(async () => (await window.sessionDraftClient.storage.read())?.submission)).toBeNull();
+  expect(await reopened.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+  await info.attach('native-prepared-recovery', { body: JSON.stringify({ boundary: `${boundary} A barrier delays entry to claimDispatch after the real freeze transaction commits; the page closes before any claim transaction or command.`, prepared, recovered, observations: api.observations }), contentType: 'application/json' });
+});
+
 test('restores a real client draft after definitive capability rejection and sends under a fresh revision', async ({ page, context }, info) => {
   const api = await installDraftAPI(context); api.setDispatch('capability_changed');
   await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toBeEditable();
@@ -196,6 +250,39 @@ test('migrates a legacy unknown operation without replay and retains its success
   await info.attach('native-legacy-unknown', { body: JSON.stringify({ boundary, imported, settled: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
 });
 
+test('keeps concurrent selections ordered while an earlier original read is delayed', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); await openDraft(page);
+  const encoded = pngImage(3, 2).toString('base64');
+  await page.evaluate(bytes => {
+    const first = new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Slow.png', { type: 'image/png' });
+    const read = first.arrayBuffer.bind(first), held = Promise.withResolvers<void>();
+    const probe: Window['draftSelectionProbe'] = { firstReadStarted: false, secondReadStarted: false, release: () => held.resolve(), first: Promise.resolve(), second: null };
+    window.draftSelectionProbe = probe;
+    first.arrayBuffer = async () => { probe.firstReadStarted = true; await held.promise; return read(); };
+    probe.first = window.sessionDraftHarness.controller.addFiles([first], 'ordered concurrent selection');
+  }, encoded);
+  await expect.poll(() => page.evaluate(() => window.draftSelectionProbe.firstReadStarted)).toBe(true);
+  await page.evaluate(bytes => {
+    const second = new File([Uint8Array.from(atob(bytes), x => x.charCodeAt(0))], 'Later.png', { type: 'image/png' });
+    const read = second.arrayBuffer.bind(second), probe = window.draftSelectionProbe;
+    second.arrayBuffer = async () => { probe.secondReadStarted = true; return read(); };
+    probe.second = window.sessionDraftHarness.controller.addFiles([second], 'ordered concurrent selection');
+  }, encoded);
+  // Activation waits for earlier validation before admitting another selection.
+  expect((await current(page)).items.map(item => item.label)).toEqual(['Slow.png']);
+  expect(await page.evaluate(() => window.draftSelectionProbe.secondReadStarted)).toBe(false); expect(api.observations.prepares).toEqual([]);
+  await page.evaluate(async () => { const probe = window.draftSelectionProbe; probe.release(); await Promise.all([probe.first, probe.second]); });
+  await ready(page, 2); expect(await page.evaluate(() => window.draftSelectionProbe.secondReadStarted)).toBe(true);
+  const ordered = (await current(page)).items.map(item => ({ label: item.label, imageId: item.imageId }));
+  expect(ordered.map(item => item.label)).toEqual(['Slow.png', 'Later.png']);
+  await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+  const command = api.observations.commands[0]!; if (command.kind !== 'send_message') throw new Error('Expected the complete ordered image message.');
+  expect(command.payload.content.filter(part => part.type === 'image').map(part => part.imageId)).toEqual(ordered.map(item => item.imageId));
+  expect(api.observations.completes.map(id => api.uploads.get(id)!.spec.name)).toEqual(['Slow.png', 'Later.png']);
+  expect(await page.evaluate(() => window.sessionDraftHarness.pageErrors)).toEqual([]);
+  await info.attach('concurrent-selection-order', { body: JSON.stringify({ boundary: `${boundary} The first File.arrayBuffer is delayed without changing its bytes; production validation and upload serialize the later selection.`, ordered, observations: api.observations }), contentType: 'application/json' });
+});
+
 test('preserves picker, clipboard and drop order while respecting IME and slash commands', async ({ page, context }) => {
   const api = await installDraftAPI(context); await openDraft(page);
   await page.locator('input[type=file]').setInputFiles([file('Picker A.png'), file('Picker B.png')]); await ready(page, 2);
@@ -321,13 +408,24 @@ for (const count of [8, 9]) test(`${count} selected originals preserve the full 
   }
 });
 
+const smallerProfile = { maxImageBytes: '1024', maxMessageImageBytes: '1536', maxImagesPerMessage: 2 };
 for (const item of [
+  { title: '8 MiB plus one byte', sizes: [8 * 1_048_576 + 1], eligible: true },
+  { title: '10 MiB minus one byte', sizes: [10 * 1_048_576 - 1], eligible: true },
   { title: '10 MiB exactly', sizes: [10 * 1_048_576], eligible: true },
   { title: '10 MiB plus one byte', sizes: [10 * 1_048_576 + 1], eligible: false },
+  { title: '20 MiB minus one byte', sizes: [10 * 1_048_576, 10 * 1_048_576 - 1], eligible: true },
   { title: '20 MiB exactly', sizes: [10 * 1_048_576, 10 * 1_048_576], eligible: true },
-  { title: '20 MiB plus one valid original', sizes: [10 * 1_048_576, 10 * 1_048_576, 128], eligible: false },
+  { title: '20 MiB plus one byte', sizes: [10 * 1_048_576, 10 * 1_048_576 - 127, 128], eligible: false },
+  { title: 'smaller profile image limit minus one byte', sizes: [1023], eligible: true, profile: smallerProfile },
+  { title: 'smaller profile image limit exactly', sizes: [1024], eligible: true, profile: smallerProfile },
+  { title: 'smaller profile image limit plus one byte', sizes: [1025], eligible: false, profile: smallerProfile, issue: 'image_byte_limit' },
+  { title: 'smaller profile message limit minus one byte', sizes: [768, 767], eligible: true, profile: smallerProfile },
+  { title: 'smaller profile message limit exactly', sizes: [768, 768], eligible: true, profile: smallerProfile },
+  { title: 'smaller profile message limit plus one byte', sizes: [768, 769], eligible: false, profile: smallerProfile, issue: 'image_message_limit' },
+  { title: 'smaller profile image count plus one', sizes: [128, 128, 128], eligible: false, profile: smallerProfile, issue: 'image_count_limit' },
 ]) test(`valid PNG originals enforce ${item.title}`, { tag: '@capacity' }, async ({ page, context }, info) => {
-  const api = await installDraftAPI(context); await openDraft(page);
+  const api = await installDraftAPI(context, 'profile' in item ? item.profile : {}); await openDraft(page);
   const files = item.sizes.map((size, index) => file(`${index}.png`, exactPng(size)));
   await page.locator('input[type=file]').setInputFiles(files);
   if (item.eligible) {
@@ -335,10 +433,13 @@ for (const item of [
     expect((await page.evaluate(() => window.sessionDraftHarness.originals())).map(value => value.size)).toEqual(item.sizes);
     expect(api.observations.completes).toHaveLength(files.length);
   } else {
-    await expect.poll(async () => { const view = await current(page); return view.items.length === files.length && (view.error !== null || view.items.some(image => image.error !== null) || view.disabledReason === 'image_message_limit'); }).toBe(true);
+    if ('issue' in item) await expect.poll(async () => (await current(page)).disabledReason).toBe(item.issue);
+    else await expect.poll(async () => { const view = await current(page); return view.items.length === files.length && (view.error !== null || view.items.some(image => image.error !== null) || view.disabledReason === 'image_message_limit'); }).toBe(true);
     expect((await current(page)).canSend).toBe(false); expect(api.observations.prepares).toEqual([]);
   }
-  await info.attach('input-byte-boundary', { body: JSON.stringify({ boundary, title: item.title, sizes: item.sizes, view: await current(page), observations: api.observations }), contentType: 'application/json' });
+  expect((await current(page)).items.map(image => image.label)).toEqual(files.map(image => image.name));
+  expect(api.observations.commands).toEqual([]);
+  await info.attach('input-byte-boundary', { body: JSON.stringify({ boundary, title: item.title, sizes: item.sizes, profile: 'profile' in item ? item.profile : null, view: await current(page), observations: api.observations }), contentType: 'application/json' });
 });
 
 test('keeps a smaller model profile authoritative before any upload', async ({ page, context }) => {
@@ -350,3 +451,5 @@ test('keeps a smaller model profile authoritative before any upload', async ({ p
   await page.getByRole('button', { name: 'Remove image: small B.png', exact: true }).click(); await ready(page, 1);
   expect(api.observations.prepares).toHaveLength(1);
 });
+
+declare global { interface Window { draftSelectionProbe: { firstReadStarted: boolean; secondReadStarted: boolean; release: () => void; first: Promise<void>; second: Promise<void> | null } } }

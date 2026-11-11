@@ -15,6 +15,11 @@
 .session-draft-saving, .session-draft-disabled { display: block; font-size: .85em; }
 .session-composer[data-image-drop=true] .session-composer-surface { outline: 2px solid currentColor; outline-offset: -2px; }
 .session-image-drop-hint { padding: .3rem; }
-.session-add-images { flex-shrink: 0; }
+.session-add-images { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; }
+.session-add-images svg { width: 18px; height: 18px; }
+.session-composer-footer-default:has(.session-add-images) { column-gap: 2px; }
+.session-composer-footer-default .session-controls-toolbar:has(.session-add-images) { flex-wrap: wrap; }
+.session-controls-toolbar:has(.session-add-images) .session-control-trigger { padding-inline: 4px; }
+.session-controls-toolbar:has(.session-add-images) .session-model-trigger { flex-basis: 44px; flex-grow: 1; }
 .session-image-file-input { display: none; }
 @media (prefers-reduced-motion: reduce) { .session-draft-attachments * { transition: none; animation: none; } }

@@ -17,6 +17,8 @@ const transactionDone = (transaction: IDBTransaction): Promise<void> => new Prom
 export function createDraftStorageProbe(identity: () => DraftOwnerIdentity) {
   let fault: Fault | null = null;
   const writes: WriteEvidence[] = [], originalPut = IDBObjectStore.prototype.put, originalAdd = IDBObjectStore.prototype.add;
+  const originalClaimDispatch = SessionDraftStore.prototype.claimDispatch;
+  let claimArrivals = 0, releaseClaim: (() => void) | null = null;
   const scopedIdentity = (actor?: string): DraftOwnerIdentity => {
     const current = identity(); return actor === undefined ? current : { ...current, target: { ...current.target, actorUserId: actor } };
   };
@@ -59,6 +61,17 @@ export function createDraftStorageProbe(identity: () => DraftOwnerIdentity) {
         await requestResult(transaction.objectStore('blobs').delete([draftOwnerKey(identity()), blobId])); await done;
       } finally { database.close(); }
     },
+    holdBeforeDispatchClaim: () => {
+      if (releaseClaim) throw new Error('The dispatch claim barrier is already armed.');
+      claimArrivals = 0;
+      const held = new Promise<void>(resolve => { releaseClaim = resolve; });
+      SessionDraftStore.prototype.claimDispatch = async function (this: SessionDraftStore, ...args) {
+        if (args[0].ownerKey === draftOwnerKey(identity())) { claimArrivals++; await held; }
+        return originalClaimDispatch.apply(this, args);
+      };
+    },
+    dispatchClaimArrivals: () => claimArrivals,
+    releaseDispatchClaim: () => { SessionDraftStore.prototype.claimDispatch = originalClaimDispatch; releaseClaim?.(); releaseClaim = null; },
     armFault: (kind: Fault) => {
       clearFault(); writes.length = 0; fault = kind;
       IDBObjectStore.prototype.put = function (...args) { return intercept(this, originalPut, args); };
