@@ -1864,7 +1864,11 @@ its Tasks dependency still serves ready and dependency reads. The Step lifecycle
 uses a focused Entry host and controlled operations, retaining both protocol
 versions and per-request checks. Thread scenarios use real Service and Core
 with controlled DAO facts and retain completed-response loss. Lower receivers
-retain business and DAO responsibilities. The ordinary test binary clears
+retain business and DAO responsibilities. Attachment and transfer scenarios use
+real services, Core, local files and the SDK through a host registering only
+their adapters, with controlled DAO facts. They retain pagination, deletion,
+upload response loss and download snapshot observations; Root retains the
+assembled authentication and revocation path. The ordinary test binary clears
 `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running;
 the separate stress build retains the database variable for its physical witness.
 
