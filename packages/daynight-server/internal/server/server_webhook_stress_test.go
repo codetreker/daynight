@@ -305,5 +305,14 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	f.stop()
+	confirmedFinal := readRecoveryFacts(t, ctx, restored, confirmed)
+	if !reflect.DeepEqual(confirmedBefore, confirmedFinal) {
+		t.Fatalf("confirmed delivery changed after enabled recovery: before=%+v after=%+v", confirmedBefore, confirmedFinal)
+	}
+	select {
+	case body := <-arrivals:
+		t.Fatalf("unexpected additional delivery after recovery: %s", body)
+	default:
+	}
 	t.Logf("physical archive bytes=%d plaintext_configuration_preserved=true confirmed=%s pending=%s recovered_http=1", len(archive), confirmed, pending)
 }
