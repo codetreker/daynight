@@ -8,6 +8,7 @@ import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import { isNonemptyText } from "../../platform/text.js";
 import type { TaskCommandDependencies } from "./command.js";
+import { parseParent } from "./parent.js";
 
 type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 
@@ -47,7 +48,10 @@ export const runTaskSearchCommand = async (command: Command, context: CliContext
   const status = command.options.get("--status") as TaskFilters["status"];
   const compatiblePlatform = command.options.get("--compatible-platform") as TaskFilters["compatiblePlatform"];
   const allowAgents = command.options.get("--allow-agents") as string | undefined;
+  const type = command.options.get("--type") as "task" | "goal" | undefined;
+  const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
   const filters: TaskFilters = {
+    ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }),
     ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }),
     ...(command.options.has("--ready") ? { ready: true } : {}),
     ...(allowAgents === undefined ? {} : { allowAgents: allowAgents === "true" }),

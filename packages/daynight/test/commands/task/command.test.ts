@@ -620,7 +620,7 @@ describe("task responsibility options", () => {
   it.each([
     ["create", "--title", "Assigned task", "--assigned-to", "me"],
     ["create", "--title", "Assigned task", "--assigned-to", "unassigned"],
-    ["create", "--title", "Assigned task", "--clear-assigned-to"],
+    ["create", "--title", "Assigned task", "--assigned-to", projectId, "--clear-assigned-to"],
     ["create", "--title", "Assigned task", "--assigned-to="],
     ["update", taskId, "--assigned-to", "me"],
     ["update", taskId, "--assigned-to", "unassigned"],

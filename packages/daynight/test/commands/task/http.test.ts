@@ -58,6 +58,77 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it.each([
+    { args: ["--type", "goal"], input: { type: "goal" }, parentId: null, assignedTo: accountId, type: "goal" },
+    { args: ["--type", "goal", "--parent", "none", "--clear-assigned-to"], input: { type: "goal", parentId: null, assignedTo: null }, parentId: null, assignedTo: null, type: "goal" },
+    { args: ["--type", "goal", "--assigned-to", otherId.toUpperCase(), "--status", "in_progress"], input: { type: "goal", assignedTo: otherId, status: "in_progress" }, parentId: null, assignedTo: otherId, type: "goal" },
+    { args: ["--parent", otherId.toUpperCase()], input: { parentId: otherId, assignedTo: accountId }, parentId: otherId, assignedTo: accountId, type: "task" },
+    { args: ["--parent", "none"], input: { parentId: null, assignedTo: accountId }, parentId: null, assignedTo: accountId, type: "task" },
+  ])("sends create presence fields and renders the returned $type", async ({ args, input, parentId, assignedTo, type }) => {
+    const goal = type === "goal";
+    const status = input.status ?? (goal ? "todo" : "proposed");
+    const created = { ...task, type, parentId, assignedTo, status, ready: false,
+      startedAt: status === "in_progress" ? time : null,
+      ...(goal ? { progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } } : {}) };
+    const f = await fixture((_request, response) => { response.setHeader("Daynight-User-ID", accountId); respond(response, created, 201); });
+    await f.run(["create", "--title", "Title", ...args]);
+    const writes = f.requests.filter(({ method }) => method === "POST");
+    expect(writes).toHaveLength(1);
+    expect(parseApiJson(writes[0]!.body)).toEqual({ title: "Title", ...input });
+    expect(f.requests.some(({ path }) => path === "/api/v1/me")).toBe(!goal);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain(`Type: ${type}`);
+  });
+
+  it.each([
+    ["--type", "goal", "--parent", otherId],
+    ["--type", "goal", "--status", "proposed"],
+    ["--status", "done"],
+    ["--parent", "invalid"],
+    ["--assigned-to", otherId, "--clear-assigned-to"],
+  ])("rejects invalid create options before sending a request: %s", async (...args) => {
+    const f = await fixture(() => { throw new Error("Unexpected request"); });
+    await expect(f.run(["create", "--title", "Title", ...args])).rejects.toThrow();
+    expect(f.requests).toEqual([]);
+  });
+
+  it.each([
+    { args: ["--parent", otherId.toUpperCase()], parent: otherId },
+    { args: ["--parent", "none"], parent: null },
+  ])("sends parent-only update with the caller's exact version: $parent", async ({ args, parent }) => {
+    const f = await fixture((_request, response) => respond(response, { ...task, parentId: parent }));
+    await f.run(["update", taskId, ...args, "--if-version", "9223372036854775807"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PATCH"]);
+    expect(parseApiJson(f.requests[1]!.body)).toEqual({ version: 9_223_372_036_854_775_807n, parentId: parent });
+  });
+
+  it("preserves parent and dependency classifications when parent is omitted from an update", async () => {
+    const current = { ...task, parentId: otherId, dependsOn: [claimId], externalDependsOn: [claimId], ready: false, blockedBy: [claimId] };
+    const f = await fixture((request, response) => respond(response, request.method === "GET" ? current : { ...current, title: "Changed" }));
+    await f.run(["update", taskId, "--title", "Changed"]);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, title: "Changed" });
+  });
+
+  it.each(["none", otherId.toUpperCase()])("carries type and parent %s across list pages and the ready request", async parent => {
+    const cursor = "next page+/=?";
+    const parentId = parent === "none" ? null : otherId;
+    const f = await fixture((request, response) => respond(response, request.query.has("ready") ? { items: [], nextCursor: null } : request.query.has("cursor") ? { items: [{ ...task, id: claimId, parentId }], nextCursor: null } : { items: [{ ...task, parentId }], nextCursor: cursor }));
+    await f.run(["list", "--type", "task", "--parent", parent, "--json"]);
+    const selection = parent === "none" ? "none" : otherId;
+    expect(f.requests.slice(1).map(({ query }) => Object.fromEntries(query))).toEqual([
+      { type: "task", parentId: selection, limit: "100", include: "session" },
+      { type: "task", parentId: selection, limit: "100", include: "session", cursor },
+    ]);
+    f.requests.length = 0;
+    await f.run(["ready", "--parent", parent, "--allow-agents", "true", "--limit", "1", "--json"]);
+    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ parentId: selection, ready: "true", allowAgents: "true", limit: "1" });
+  });
+
+  it("sends an explicit Goal list filter", async () => {
+    const f = await fixture((_request, response) => respond(response, { items: [], nextCursor: null }));
+    await f.run(["list", "--type", "goal", "--json"]);
+    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ type: "goal", limit: "100", include: "session" });
+  });
+
   it("keeps assigned responsibility and complete active worker ownership through a same-assignee update", async () => {
     const active = { ...task, status: "in_progress", ready: false, startedAt: time, allowAgents: true, assignedTo: accountId, properties: { worker: { ...worker, userId: accountId }, pullRequests: [] } } as const;
     const f = await fixture((_request, response) => respond(response, active));

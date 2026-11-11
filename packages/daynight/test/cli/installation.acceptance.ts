@@ -19,6 +19,9 @@ it("shares one real installation while retaining private mutable package bytes, 
     expect(await realpath(first.receipt.entryPath)).not.toBe(await realpath(canonical.entryPath));
     const manual = (entry: string): string => path.join(path.dirname(entry), "commands/skill/usage.md");
     const contents = await readFile(manual(canonical.entryPath));
+    const taskManual = await readFile(path.join(path.dirname(canonical.entryPath), "commands/skill/skills/using-daynight/references/tasks.md"), "utf8");
+    expect(taskManual).toContain("task create --type goal");
+    expect(taskManual).toContain("task update <task-id> --parent none");
     await writeFile(manual(first.receipt.entryPath), "private package contents\n");
     expect(await readFile(manual(second.receipt.entryPath))).toEqual(contents);
     expect(await readFile(manual(canonical.entryPath))).toEqual(contents);
@@ -29,6 +32,10 @@ it("shares one real installation while retaining private mutable package bytes, 
         if (result.error) throw result.error;
         expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
         expect(result.stdout).toBe(`${canonical.packageVersion}\n`);
+        const help = crossSpawn.sync(launcher, ["task", "create", "--help"], { cwd: fixture.receipt.root, env: { ...process.env, HOME: fixture.receipt.root, USERPROFILE: fixture.receipt.root }, encoding: "utf8", timeout: 10_000, windowsHide: true });
+        if (help.error) throw help.error;
+        expect({ status: help.status, stderr: help.stderr }).toEqual({ status: 0, stderr: "" });
+        expect(help.stdout).toContain("--type"); expect(help.stdout).toContain("--parent"); expect(help.stdout).toContain("--force");
       }
     }
     await rm(manual(first.receipt.entryPath));
