@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestRotationAppendAndIdenticalJSON(t *testing.T) {
@@ -582,5 +584,63 @@ func TestRootSymlinkParentTraversalUsesSameProcessLock(t *testing.T) {
 	got, err := os.ReadFile(actual)
 	if err != nil || string(got) != "before\nafter\n" {
 		t.Fatalf("owner did not continue: %q %v", got, err)
+	}
+}
+
+type failedLockFile struct {
+	fd       uintptr
+	closeErr error
+	closed   int
+}
+
+func (f *failedLockFile) Fd() uintptr  { return f.fd }
+func (f *failedLockFile) Close() error { f.closed++; return f.closeErr }
+
+func TestReleaseLockRetainsBothFailures(t *testing.T) {
+	unlockErr := errors.New("unlock failure private path")
+	closeErr := errors.New("close failure private path")
+	lock := &failedLockFile{fd: 42, closeErr: closeErr}
+	called := 0
+	err := releaseLock(lock, func(fd, op int) error {
+		called++
+		if fd != 42 || op != unix.LOCK_UN {
+			t.Fatalf("unexpected unlock: %d %d", fd, op)
+		}
+		return unlockErr
+	})
+	if called != 1 || lock.closed != 1 || !errors.Is(err, unlockErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("release lost a cleanup operation or cause: unlock=%d close=%d error=%v", called, lock.closed, err)
+	}
+	var detail *Error
+	if !errors.As(err, &detail) || detail.Phase != "close" || detail.Sink != "lock" || detail.Resource != lockName || strings.Contains(err.Error(), "private") {
+		t.Fatalf("unsafe or incorrect lock diagnostic: %v", err)
+	}
+}
+
+func TestFailureSafeCategoriesAndCauseChain(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cause    error
+		category string
+	}{
+		{"short write", io.ErrShortWrite, "short_write"},
+		{"busy", unix.EWOULDBLOCK, "busy"},
+		{"permission", os.ErrPermission, "permission"},
+		{"not found", os.ErrNotExist, "not_found"},
+		{"no space", unix.ENOSPC, "no_space"},
+		{"I/O", unix.EIO, "io"},
+		{"other", errors.New("private secret"), "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := &os.PathError{Op: "open", Path: "/private/secret", Err: tc.cause}
+			err := failure("open", "file", logName, cause)
+			var detail *Error
+			if !errors.As(err, &detail) || detail.Cause != tc.category || !errors.Is(err, tc.cause) || !errors.Is(err, cause) {
+				t.Fatalf("classification or cause lost: %#v %v", detail, err)
+			}
+			if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("error leaks path: %v", err)
+			}
+		})
 	}
 }

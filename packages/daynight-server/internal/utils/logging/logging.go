@@ -107,20 +107,26 @@ func open(root string, stderr io.Writer, cancel context.CancelCauseFunc, config 
 	path := configvalue.ResolvePath(dir, logName)
 	active, err := ops.open(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		return nil, errors.Join(failure("open", "file", logName, err), releaseLock(lock))
+		return nil, errors.Join(failure("open", "file", logName, err), releaseLock(lock, unix.Flock))
 	}
 	return &Output{stderr: stderr, cancel: cancel, config: config, path: path, lock: lock, active: active, ops: ops}, nil
 }
 
-func closeLockFile(lock *os.File) error {
+func closeLockFile(lock io.Closer) error {
 	if err := lock.Close(); err != nil {
 		return failure("close", "lock", lockName, err)
 	}
 	return nil
 }
-func releaseLock(lock *os.File) error {
+
+type lockFile interface {
+	io.Closer
+	Fd() uintptr
+}
+
+func releaseLock(lock lockFile, flock func(int, int) error) error {
 	var unlockErr error
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
+	if err := flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
 		unlockErr = failure("close", "lock", lockName, err)
 	}
 	return errors.Join(unlockErr, closeLockFile(lock))
@@ -235,7 +241,7 @@ func (o *Output) Close() error {
 		}
 		o.active = nil
 	}
-	lockErr := releaseLock(o.lock)
+	lockErr := releaseLock(o.lock, unix.Flock)
 	err := errors.Join(fileErr, lockErr)
 	o.latch(err)
 	return err
