@@ -34,6 +34,8 @@ jobs:
           package-manager-cache: false
       - name: Test module selection and job gates
         run: node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts
+      - name: Test Ubuntu network diagnostics
+        run: python3 -m unittest discover -s .github/scripts -p 'ubuntu_network_diagnostics_test.py'
       - name: Select modules from the complete PR diff
         id: modules
         env:
@@ -243,8 +245,38 @@ jobs:
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
       - name: Select official Ubuntu package archives
         run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
+      - name: Observe Ubuntu network before shell installation
+        id: shell-network-before
+        timeout-minutes: 1
+        run: python3 .github/scripts/ubuntu-network-diagnostics.py --output .tmp/ubuntu-network/shell-before.json
+      - name: Upload Ubuntu network before shell installation
+        if: ${{ always() && steps.shell-network-before.outcome != 'skipped' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-ubuntu-network-shell-before
+          path: .tmp/ubuntu-network/shell-before.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: Prepare isolated Bash 4.2 and zsh toolchains
+        id: completion-toolchains
         run: bash packages/daynight/scripts/prepare-completion-shells.sh
+      - name: Observe Ubuntu network after shell installation failure
+        if: ${{ always() && steps.completion-toolchains.outcome == 'failure' }}
+        id: shell-network-after
+        timeout-minutes: 1
+        run: python3 .github/scripts/ubuntu-network-diagnostics.py --output .tmp/ubuntu-network/shell-after.json
+      - name: Upload Ubuntu network after shell installation failure
+        if: ${{ always() && steps.shell-network-after.outcome != 'skipped' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-ubuntu-network-shell-after
+          path: .tmp/ubuntu-network/shell-after.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: Verify completion behavior in all supported shells
         run: |
           pnpm build
@@ -560,8 +592,38 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Observe Ubuntu network before browser installation
+        id: browser-network-before
+        timeout-minutes: 1
+        run: python3 .github/scripts/ubuntu-network-diagnostics.py --output .tmp/ubuntu-network/browser-before.json
+      - name: Upload Ubuntu network before browser installation
+        if: ${{ always() && steps.browser-network-before.outcome != 'skipped' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-ubuntu-network-browser-before
+          path: .tmp/ubuntu-network/browser-before.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: Install the locked Playwright Chromium browser
+        id: browser-install
         run: pnpm --filter @codetreker/daynight-web exec playwright install --with-deps chromium
+      - name: Observe Ubuntu network after browser installation failure
+        if: ${{ always() && steps.browser-install.outcome == 'failure' }}
+        id: browser-network-after
+        timeout-minutes: 1
+        run: python3 .github/scripts/ubuntu-network-diagnostics.py --output .tmp/ubuntu-network/browser-after.json
+      - name: Upload Ubuntu network after browser installation failure
+        if: ${{ always() && steps.browser-network-after.outcome != 'skipped' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-ubuntu-network-browser-after
+          path: .tmp/ubuntu-network/browser-after.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: Verify frontend assistant browser regressions
         id: web-browser
         env:

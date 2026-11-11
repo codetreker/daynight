@@ -254,10 +254,10 @@ test("Web browser owns frontend Playwright regressions and evidence without capa
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
   const drafts = steps.find((step) => step.includes("id: session-drafts-browser"))!;
   const uploads = uploadSteps(webBrowser);
-  const upload = uploads[0]!;
-  const draftUpload = uploads[1]!;
+  const upload = uploads.find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
+  const draftUpload = uploads.find((step) => artifactName(step) === "daynight-web-session-drafts-browser")!;
   assert.ok(install); assert.ok(browser); assert.ok(drafts); assert.ok(upload); assert.ok(draftUpload);
-  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser", "daynight-web-session-drafts-browser"]);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-ubuntu-network-browser-before", "daynight-ubuntu-network-browser-after", "daynight-web-assistant-browser", "daynight-web-session-drafts-browser"]);
   assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
   assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
   assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
@@ -567,3 +567,33 @@ for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
     assert.equal(result.status === 0, outcome === "success");
   });
 }
+
+
+test("Ubuntu diagnostics retain installation failures and publish before tests can be skipped", () => {
+  for (const [job, name, installation] of [
+    ["verify-completion", "shell", "completion-toolchains"],
+    ["verify-web-browser", "browser", "browser-install"],
+  ] as const) {
+    const stage = jobs.get(job)!;
+    const steps = stepsOf(stage);
+    const before = steps.find((step) => step.includes(`id: ${name}-network-before\n`))!;
+    const install = steps.find((step) => step.includes(`id: ${installation}\n`))!;
+    const after = steps.find((step) => step.includes(`id: ${name}-network-after\n`))!;
+    const beforeUpload = uploadSteps(stage).find((step) => artifactName(step) === `daynight-ubuntu-network-${name}-before`)!;
+    const afterUpload = uploadSteps(stage).find((step) => artifactName(step) === `daynight-ubuntu-network-${name}-after`)!;
+    for (const step of [before, install, after, beforeUpload, afterUpload]) assert.ok(step);
+    assert.doesNotMatch(install, /if:|continue-on-error|\|\| true/);
+    assert.doesNotMatch(before, /if:|continue-on-error/);
+    assert.match(after, new RegExp(`always\\(\\) && steps\\.${installation}\\.outcome == 'failure'`));
+    for (const [phase, probe, upload] of [["before", before, beforeUpload], ["after", after, afterUpload]]) {
+      assert.match(probe!, /^        timeout-minutes: 1$/m);
+      assert.match(upload!, /^        timeout-minutes: 1$/m);
+      assert.deepEqual(artifactPaths(upload!), [`.tmp/ubuntu-network/${name}-${phase}.json`]);
+      assert.ok(upload!.includes(`always() && steps.${name}-network-${phase}.outcome != 'skipped'`));
+    }
+    assert.ok(steps.indexOf(before) < steps.indexOf(beforeUpload));
+    assert.ok(steps.indexOf(beforeUpload) < steps.indexOf(install));
+    assert.ok(steps.indexOf(install) < steps.indexOf(after));
+    assert.ok(steps.indexOf(after) < steps.indexOf(afterUpload));
+  }
+});
