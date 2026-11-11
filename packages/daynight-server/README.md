@@ -1757,11 +1757,12 @@ Domain packages own their HTTP adapters. Project and Team organization scenarios
 use their real registrars, authentication parser, Service and Core with narrow
 controlled DAO facts. Root retains actual `New` fallback, health and cross-route
 projection proofs; supplied query results and completion do not prove persistence.
-Task and Session HTTP unit tests
-control directly called service/use-case results while retaining actual
-credential middleware, HTTP encoding, response loss and socket/resource
-handling. Their [Task](#business-rules-and-dao-mocks) and
-[Session](#session-http-tests) guides identify those boundaries. Attachment
+Task HTTP tests use real Task components or controlled operations as each
+scenario requires; Session HTTP tests control directly called service/use-case
+results. Both retain actual credential middleware, HTTP encoding, response loss
+and socket/resource handling where those mechanisms are under test. Their
+[Task](#business-rules-and-dao-mocks) and [Session](#session-http-tests) guides
+identify those boundaries. Attachment
 fixtures retain their own [protocol and native-resource scope](#attachment-http-tests).
 Normal assembled API flows run separately in `cmd/integration_tests`, including
 `TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`.
