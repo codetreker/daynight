@@ -22,7 +22,7 @@ import { openBotExecutionStore } from "../../../src/commands/worker/bots/executi
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import { controllerExecutionDirectory, controllerTicketPath } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
-import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation, readWindowsJobSource } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { openControllerStop } from "../../../src/commands/controller/controller-stop.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
@@ -130,7 +130,7 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
-  const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
+  const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), guardianExitLog = path.join(home, "guardian-exits.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
   // The copied fixture runs outside this package's dependency tree.
   const nativeSource = (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8"))
@@ -139,20 +139,42 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   await writeFile(nativeFixture, nativeSource);
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;
+  const proofURL = pathToFileURL(path.join(dist, "commands/controller/process-proof.js")).href;
   const wrapper = path.join(packageDirectory, "provider.mjs"), wrapperURL = pathToFileURL(wrapper).href;
   await writeFile(wrapper, `import { openCodexProvider as open } from ${JSON.stringify(providerURL)};\nexport const openCodexProvider = options => open({ ...options, executable: ${JSON.stringify(nativeFixture)} });\n`);
   await writeFile(path.join(packageDirectory, "package.json"), JSON.stringify({ type: "module" }));
   await writeFile(path.join(packageDirectory, "dist/main.js"), `
 import { registerHooks } from 'node:module';
+import { syncBuiltinESMExports } from 'node:module';
 import { appendFileSync } from 'node:fs';
+import childProcess from 'node:child_process';
+const originalSpawn = childProcess.spawn;
+let guardianExit;
+childProcess.spawn = (...args) => {
+  const child = originalSpawn(...args);
+  if (typeof args[1]?.[0] === 'string' && args[1][0].endsWith('windows-job-guardian-child.js')) {
+    guardianExit = new Promise(resolve => child.once('exit', (code, signal) => {
+      appendFileSync(${JSON.stringify(guardianExitLog)}, JSON.stringify({ launchId: process.argv[5], pid: child.pid, code, signal }) + '\\n');
+      resolve();
+    }));
+  }
+  return child;
+};
+syncBuiltinESMExports();
 registerHooks({ resolve(specifier, context, next) {
   const result = next(specifier, context);
   if (result.url === ${JSON.stringify(providerURL)} && context.parentURL !== ${JSON.stringify(wrapperURL)}) return { url: ${JSON.stringify(wrapperURL)}, shortCircuit: true };
   return result;
 } });
-appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, argv: process.argv.slice(2) }) + '\\n');
+const { captureProcessProof } = await import(${JSON.stringify(proofURL)});
+const proof = await captureProcessProof(process.pid);
+appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, proof, argv: process.argv.slice(2) }) + '\\n');
 const { runController } = await import(${JSON.stringify(runtimeURL)});
-await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] });
+try { await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] }); }
+catch (error) {
+  if (guardianExit) await Promise.race([guardianExit, new Promise(resolve => setTimeout(resolve, 2000))]);
+  throw error;
+}
 `);
   const http = options.hosted ? createServer() : null;
   const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
@@ -225,6 +247,19 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     });
   });
   const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
+  const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number; proof: ProcessProof; argv: string[] }) : [];
+  const guardianExitFailure = async (): Promise<Error | null> => {
+    const record = current(), intent = record.intent, saved = journal();
+    if (intent === null || saved?.controllerProcess != null || !saved?.error || !["Original Windows guardian exited before its startup was confirmed.", "Windows guardian startup failed:"].some(value => saved.error!.startsWith(value)) || saved.nativeProcesses.length !== 0) return null;
+    const launch = (await launches()).find(value => value.argv[3] === intent.launchId);
+    if (!launch || launch.pid !== launch.proof?.pid || await inspectProcessProof(launch.proof) === "running") return null;
+    const ticket = await botProcess.readTicket(record);
+    if (readWindowsJobSource(intent.journalPath, ticket) !== null) return null;
+    const exits = existsSync(guardianExitLog) ? (await readFile(guardianExitLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { launchId: string; pid: number }) : [];
+    if (!exits.some(value => value.launchId === intent.launchId && Number.isSafeInteger(value.pid) && value.pid > 0)) return null;
+    const log = await readEvidence(path.join(path.dirname(intent.journalPath), `guardian-${intent.launchId}.log`));
+    return new Error(`Original fixture Controller exited after guardian startup failed; source remains unknown. ${log.exists ? log.text : "Guardian log unavailable."}`);
+  };
   const collectEvidence = async () => {
     const record = current(), intent = record.intent;
     const saved = journal();
@@ -254,12 +289,17 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         const evidenceStarted = Date.now();
         let saved = journal();
         try {
-          saved = await vi.waitFor(() => {
-            const latest = journal();
-            if (latest?.controllerProcess == null) throw new Error("Original fixture process proof is not durable yet.");
-            return latest;
-          }, { timeout: 30_000, interval: 100 });
-        } catch (error) { diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error); }
+          while (saved?.controllerProcess == null && Date.now() - evidenceStarted < 30_000) {
+            const failure = await guardianExitFailure();
+            if (failure) throw failure;
+            await delay(100);
+            saved = journal();
+          }
+          if (saved?.controllerProcess == null) throw new Error("Original fixture process proof is not durable yet.");
+        } catch (error) {
+          if (await guardianExitFailure()) throw error;
+          diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error);
+        }
         saved = journal() ?? saved;
         const proof = saved?.controllerProcess ?? execution.controllerProcess;
         if (proof !== null) {
@@ -295,8 +335,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     }
   });
   const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
-  const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, guardianExitFailure, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -311,9 +350,29 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
   // An interrupted parent can return before the child acquires its own proof,
   // creates the Windows Job and captures native ownership. Reconciliation waits
   // for that sequence through the original authenticated ticket.
-  await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
+  await waitForFixture(f, async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), 60_000);
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
+
+const waitForFixture = async (f: Awaited<ReturnType<typeof fixture>>, check: () => void | Promise<void>, timeoutMs: number): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  let failure: unknown;
+  for (;;) {
+    const exited = await f.guardianExitFailure();
+    if (exited) throw exited;
+    try { await check(); return; } catch (error) { failure = error; }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw failure;
+    await delay(Math.min(100, remaining));
+  }
+};
+
+test("reports a confirmed guardian startup exit without retrying readiness", async () => {
+  const failure = new Error("Original fixture guardian exited"), check = vi.fn();
+  const f = { guardianExitFailure: async () => failure } as Awaited<ReturnType<typeof fixture>>;
+  await expect(waitForFixture(f, check, 60_000)).rejects.toBe(failure);
+  expect(check).not.toHaveBeenCalled();
+});
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
   const f = await fixture(), signal = AbortSignal.timeout(60_000);
@@ -343,7 +402,7 @@ test.each([false, true])("launches one real Controller with no user turn after u
 test("retains a native protocol role rejection without another writer or an initialization user turn", async () => {
   const f = await fixture({ rejectRole: true }), signal = AbortSignal.timeout(30_000);
   await f.process.advance(f.current(), signal).catch(() => {});
-  await vi.waitFor(() => expect(f.journal()).toMatchObject({ startup: { state: "failed", reasonCode: "native_rejected" }, nativeSessionId: null, initialInputState: "not_required" }), { timeout: 20_000, interval: 100 });
+  await waitForFixture(f, () => { expect(f.journal()).toMatchObject({ startup: { state: "failed", reasonCode: "native_rejected" }, nativeSessionId: null, initialInputState: "not_required" }); }, 20_000);
   const before = await f.launches(); expect(before).toHaveLength(1);
   await f.create().advance(f.current(), signal).catch(() => {});
   expect(await f.launches()).toEqual(before);
@@ -384,7 +443,7 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
     }
     expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
     await f.create().advance(f.current(), signal);
-    await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId }), { timeout: 20_000, interval: 100 });
+    await waitForFixture(f, async () => { expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId }); }, 20_000);
     expect(f.current().intent).toMatchObject({ executionGeneration: String(generation + 1), sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, roleConfiguration: original.roleConfiguration, initialOperationId: original.initialOperationId });
     expect(readControllerOperation(original.journalPath, operationId)).toMatchObject({ operationId, state: "unknown" });
     expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
@@ -430,7 +489,7 @@ test("deletes every private generation after real Controller stop while preservi
   for (let generation = 1; generation <= 2; generation++) {
     await f.process.shutdown(f.current(), signal);
     await f.process.advance(f.current(), signal);
-    await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: String(generation + 1) }), { timeout: 20_000, interval: 100 });
+    await waitForFixture(f, async () => { expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: String(generation + 1) }); }, 20_000);
     tickets.push(await f.process.readTicket(f.current()));
   }
   const original = f.current(), execution = f.executions.get(original)!, finalWriter = await f.process.observe(original, signal);
@@ -535,7 +594,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   const stop = async () => { cancellation.abort(); try { await host.shutdown(); await running; } finally { host.close(); } };
   // This cleanup runs before the fixture's original-process cleanup, even on failure.
   cleanups.push(stop);
-  await vi.waitFor(() => expect(f.getBot().startupResult.state, errors.join("\n")).toBe("ready"), { timeout: 60_000, interval: 100 });
+  await waitForFixture(f, () => { expect(f.getBot().startupResult.state, errors.join("\n")).toBe("ready"); }, 60_000);
   const first = f.current().intent!;
   const sentinel = path.join(f.cwd, "keep.txt"); await writeFile(sentinel, "user data");
   expect(await f.launches()).toHaveLength(1);
@@ -543,7 +602,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   expect(f.journal()).toMatchObject({ nativeStopped: true, nativeSessionId: f.nativeId });
   host = makeHost(); cancellation = new AbortController(); running = host.run(cancellation.signal);
   void running.catch(error => errors.push(String(error)));
-  await vi.waitFor(() => expect(f.journal()).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }), { timeout: 60_000, interval: 100 });
+  await waitForFixture(f, () => { expect(f.journal()).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }); }, 60_000);
   expect(f.current().intent).toMatchObject({ sessionId: first.sessionId, executionId: first.executionId, roleConfiguration: first.roleConfiguration });
   expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
   const current = f.getBot();
