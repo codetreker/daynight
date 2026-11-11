@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, isAbortError } from "../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { canonicalId } from "../../api/validation";
 import { previewProjectTransfer, transferProject, type ProjectTransferPreview, type ProjectTransferReceipt } from "../../api/project-transfer";
 import type { TeamRef } from "../../api/auth-types";
@@ -7,10 +7,11 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { browserNavigation } from "../../app/navigation";
 import { useProjectAccess } from "../projects/ProjectAccess";
 import { useTeams } from "../teams/TeamsProvider";
-import { useOperation } from "../teams/TeamManagement";
+import { OperationPublicationError, useOperation } from "../teams/TeamManagement";
 import { ManagementDialog } from "./ManagementDialog";
 import type { TransferNavigationContext } from "./transfer-navigation";
 import type { ProjectManagementGuard } from "./ProjectManagementGuard";
+import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
 
 export const parseTransferTarget = (value: string, origin: string): string | null => {
   const trimmed = value.trim(), direct = canonicalId(trimmed);
@@ -52,10 +53,18 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const revokingEditor = useRef<{ editor: number; revision: number; generation: string } | null>(null);
   const preserveRevokedDraft = useRef(false), retainedPresentation = useRef(false);
   const gate = useRef<AbortController | null>(null);
+  const cleanupController = useRef<AbortController | null>(null);
+  const transferOwner = useRef<symbol | null>(null);
+  const releaseTransfer = (owner: symbol) => {
+    if (transferOwner.current !== owner) return;
+    transferOwner.current = null; guard?.release("transfer");
+  };
   const [waiting, setWaiting] = useState(false);
   const [reading, setReading] = useState(false), [readError, setReadError] = useState<unknown>(null), [invalid, setInvalid] = useState(false), [conflict, setConflict] = useState(false);
   const [observed, setObserved] = useState(false), [cleanupError, setCleanupError] = useState<unknown>(null);
+  const [cleanupPaused, setCleanupPaused] = useState(false);
   const read = useRef<AbortController | null>(null), cleanup = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => subscribeAuthPause(() => { if (cleanup.current !== null) setCleanupPaused(true); }), []);
   const retirePrivatePreview = (preserveDraft = false) => {
     read.current?.abort(); read.current = null; gate.current?.abort();
     setSubject(null);
@@ -67,7 +76,13 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       if (retainedPresentation.current) { retainedPresentation.current = false; onRetentionChange?.(false); }
     }
   };
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; read.current?.abort(); gate.current?.abort(); }; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false; read.current?.abort(); gate.current?.abort(); cleanupController.current?.abort();
+      const owner = transferOwner.current; if (owner !== null) releaseTransfer(owner);
+    };
+  }, [scope, projectId, guard]);
   useEffect(() => { if (!onRoute) { read.current?.abort(); gate.current?.abort(); } }, [onRoute]);
   useEffect(() => scope.subscribe((event) => {
     if (event.projectId === projectId && event.accessRevoked) {
@@ -79,7 +94,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   useEffect(() => { if (unavailable) retirePrivatePreview(preserveRevokedDraft.current); else preserveRevokedDraft.current = false; }, [unavailable]);
   const unknown = op.result?.kind === "unknown";
   const open = () => { if (!active) return; preserveRevokedDraft.current = false; editor.current++; revision.current++; setSubject(projectName); setDialog(true); setTarget(""); setPreview(null); setReadError(null); setInvalid(false); setConflict(false); setObserved(false); op.clear(); void access.session.revalidate(); };
-  const close = () => { if (!op.pending && gate.current === null && cleanup.current === null) { read.current?.abort(); read.current = null; setReading(false); editor.current++; setDialog(false); if (op.result?.kind !== "unknown") { if (op.result?.kind === "rejected") op.clear(); retainedPresentation.current = false; onRetentionChange?.(false); } } };
+  const close = () => { if (!op.pending && gate.current === null && (cleanup.current === null || cleanupPaused)) { read.current?.abort(); read.current = null; setReading(false); editor.current++; setDialog(false); if (op.result?.kind !== "unknown") { if (op.result?.kind === "rejected") op.clear(); retainedPresentation.current = cleanup.current !== null || op.publishing(); if (!retainedPresentation.current) onRetentionChange?.(false); } } };
   const change = (value: string) => { revision.current++; read.current?.abort(); read.current = null; setReading(false); setTarget(value); setPreview(null); setInvalid(false); setReadError(null); setConflict(false); };
   const inspect = async () => {
     if (!active || op.guarded()) return;
@@ -114,6 +129,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
     const snapshot = access.session.snapshot();
     if (!active || gate.current !== null || cleanup.current !== null || op.guarded() || preview === null || reading || snapshot.status !== "ready" || !snapshot.access?.canTransfer || snapshot.access.ownership.teamId !== preview.ownership.teamId || snapshot.access.ownership.version !== preview.ownership.version) return;
     if (guard !== undefined && !guard.tryAcquire("transfer")) return;
+    const transfer = Symbol(); transferOwner.current = transfer;
     const selected = preview, originalTarget = target, originalEditor = editor.current, originalRevision = revision.current;
     const navigation = browserNavigation(), location = navigation.snapshot();
     const submissionLocation = location.pathname === `/projects/${projectId}/settings` &&
@@ -123,7 +139,8 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       window.location.pathname + window.location.search + window.location.hash === submissionLocation.pathname + submissionLocation.search + submissionLocation.hash;
     const finishPresentation = (withdrawn = false) => {
       const closeOriginal = ownsPresentation();
-      const release = closeOriginal || withdrawn && ownsEditor();
+      const closedOriginal = !current.current.dialog && editor.current === originalEditor + 1;
+      const release = closeOriginal || withdrawn && ownsEditor() || closedOriginal;
       retainedPresentation.current = !release;
       if (closeOriginal) setDialog(false);
       return release;
@@ -131,10 +148,49 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
     const controller = new AbortController(); gate.current = controller; setWaiting(true);
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     const stillCurrent = (fresh: typeof access.access) => !signal.aborted && !scope.isInvalidated && current.current.active && current.current.onRoute && current.current.dialog && current.current.preview === selected && current.current.target === originalTarget && fresh?.canTransfer === true && fresh.ownership.teamId === selected.ownership.teamId && fresh.ownership.version === selected.ownership.version;
-    let started = false;
+    // Observe the access session without awaiting its shared read, which may
+    // outlive this transfer's cancelled preparation.
+    const readyForTransfer = async (target: AbortSignal) => {
+      while (true) {
+        await waitForAuthRequests(target);
+        const pauseRevision = authRequestsPauseRevision();
+        try { await scope.ready(target); }
+        catch (error) {
+          if (error instanceof TaskCacheLifecycleChanged && !target.aborted && !scope.isInvalidated && (authRequestsPaused() || authRequestsPauseRevision() !== pauseRevision)) continue;
+          throw error;
+        }
+        target.throwIfAborted();
+        if (!authRequestsPaused()) return;
+      }
+    };
+    const waitForAccess = async (target: AbortSignal) => {
+      while (true) {
+        await readyForTransfer(target);
+        target.throwIfAborted();
+        const snapshot = access.session.snapshot();
+        if (!snapshot.refreshing) return snapshot.status === "ready" ? snapshot.access : null;
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => { unsubscribe(); target.removeEventListener("abort", abort); };
+          const resume = () => { cleanup(); resolve(); };
+          const abort = () => { cleanup(); reject(target.reason); };
+          const unsubscribe = access.session.subscribe(resume);
+          target.addEventListener("abort", abort, { once: true });
+          if (target.aborted) abort(); else if (!access.session.snapshot().refreshing) resume();
+        });
+      }
+    };
+    const waitForRead = <T,>(read: Promise<T>, target: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+      const abort = () => { target.removeEventListener("abort", abort); reject(target.reason); };
+      read.then((value) => { target.removeEventListener("abort", abort); resolve(value); }, (error: unknown) => { target.removeEventListener("abort", abort); reject(error); });
+      if (target.aborted) abort(); else target.addEventListener("abort", abort, { once: true });
+    });
+    let started = false, dispatched = false;
+    const cancelPreparation = () => { if (!dispatched) controller.abort(); };
+    const unsubscribePause = subscribeAuthPause(cancelPreparation);
+    if (authRequestsPaused()) cancelPreparation();
     onRetentionChange?.(true);
     void (async () => { try {
-      const fresh = await access.session.waitForFreshAccess(signal, true);
+      const fresh = await waitForAccess(signal);
       if (!stillCurrent(fresh)) {
         if (!signal.aborted && !scope.isInvalidated && current.current.active && current.current.dialog && current.current.preview === selected) {
           if (fresh !== null && (fresh.ownership.teamId !== selected.ownership.teamId || fresh.ownership.version !== selected.ownership.version)) setConflict(true);
@@ -143,54 +199,60 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
         return;
       }
       started = true;
-      await op.run(async (signal, dispatched) => {
-      const ticket = await scope.beginSync(projectId, signal);
-      const fresh = await access.session.waitForFreshAccess(signal, true);
+      await op.run(async (signal, dispatchedCallback) => {
+      const ticket = await waitForRead(scope.beginSync(projectId, signal), signal);
+      const fresh = await waitForAccess(signal);
       if (signal.aborted || !stillCurrent(fresh)) throw new Error("Project transfer authorization changed");
-      const receipt = await transferProject(projectId, selected, scope.userId, signal, scope.principalMismatch, dispatched);
+      const receipt = await transferProject(projectId, selected, scope.userId, signal, scope.principalMismatch, () => { dispatched = true; dispatchedCallback(); });
       return { receipt, ticket };
     }, ({ receipt, ticket }) => {
+      const cleanupOwner = new AbortController(); cleanupController.current = cleanupOwner;
+      const cleanupSignal = AbortSignal.any([cleanupOwner.signal, scope.signal]);
+      const cleanupReady = async () => {
+        await readyForTransfer(cleanupSignal);
+        cleanupSignal.throwIfAborted();
+        if (mounted.current) setCleanupPaused(false);
+      };
       const finish = async () => {
         let withdrawn = false;
         setCleanupError(null);
         try {
-          await scope.ready(scope.signal);
+          await cleanupReady();
           if (receipt.actorAccess === null) {
             revokingEditor.current = { editor: originalEditor, revision: originalRevision, generation: ticket.cacheGeneration };
             let revoked: boolean;
-            try { revoked = await scope.revokeProject(ticket, scope.signal); }
+            try { revoked = await scope.revokeProject(ticket, cleanupSignal); }
             finally { revokingEditor.current = null; }
             withdrawn = revoked;
-            await scope.ready(scope.signal);
+            await cleanupReady();
             if (!revoked) {
-              await access.session.revalidateAfterMutation();
-              const latest = await access.session.waitForFreshAccess(scope.signal);
+              await waitForRead(access.session.revalidateAfterMutation(), cleanupSignal);
+              const latest = await waitForAccess(cleanupSignal);
               if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
-              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; const closed = finishPresentation(); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); guard?.release("transfer"); if (mounted.current && closed) onRetentionChange?.(false); return; }
+              if (latest !== null) { await cleanupReady(); if (cleanupSignal.aborted || scope.isInvalidated) return; const closed = finishPresentation(); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); cleanup.current = null; releaseTransfer(transfer); if (mounted.current && closed) onRetentionChange?.(false); return; }
             }
           }
-          await scope.ready(scope.signal);
+          await cleanupReady();
           if (receipt.actorAccess === null) { access.session.publishMutation(null); withdrawn = true; }
           else {
-            await access.session.revalidateAfterMutation();
-            const latest = await access.session.waitForFreshAccess(scope.signal);
+            await waitForRead(access.session.revalidateAfterMutation(), cleanupSignal);
+            const latest = await waitForAccess(cleanupSignal);
             if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
           }
-          await scope.ready(scope.signal);
-          if (scope.isInvalidated) return;
-          cleanup.current = null; const closed = finishPresentation(withdrawn); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); guard?.release("transfer"); if (mounted.current && closed) onRetentionChange?.(false);
+          await cleanupReady();
+          if (cleanupSignal.aborted || scope.isInvalidated) return;
+          const closed = finishPresentation(withdrawn); onTransferred?.(receipt, { location: submissionLocation, ownsEditor }); cleanup.current = null; releaseTransfer(transfer); if (mounted.current && closed) onRetentionChange?.(false);
         } catch (error) {
-          if (scope.signal.aborted) return;
-          try { await scope.ready(scope.signal); } catch { return; }
+          if (cleanupSignal.aborted) return;
           if (!scope.isInvalidated) setCleanupError(error);
         }
       };
       cleanup.current = finish; void finish();
     }, (error) => {
-      guard?.release("transfer");
+      releaseTransfer(transfer);
       if (error instanceof ApiError && (error.code === "version_conflict" || error.status === 403 || error.status === 404)) { setPreview(null); setConflict(error.code === "version_conflict"); void access.session.revalidate(); }
       });
-    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { if (!started || !op.guarded() && cleanup.current === null) { guard?.release("transfer"); if (!started && mounted.current && !retainedPresentation.current) onRetentionChange?.(false); } if (gate.current === controller) { gate.current = null; setWaiting(false); } } })();
+    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { unsubscribePause(); if (!started || !op.guarded() && !op.publishing() && cleanup.current === null) { releaseTransfer(transfer); if (!dispatched && mounted.current && !retainedPresentation.current) onRetentionChange?.(false); } if (gate.current === controller) { gate.current = null; if (mounted.current) setWaiting(false); } } })();
   };
   const check = () => { setObserved(false); setReading(true); void access.session.revalidateAfterMutation().then(() => setObserved(true)).finally(() => setReading(false)); };
   const describeError = (error: unknown) => access.status === "unavailable" ? m.sourceMissing : access.status === "error" && access.error instanceof ApiError && access.error.kind === "network" ? m.network : access.ready && !access.access?.canTransfer ? m.sourceDenied : error instanceof ApiError && error.kind === "network" ? m.network : error instanceof ApiError && error.status === 404 ? m.targetMissing : m.failed;
@@ -199,11 +261,14 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   // Operation results and confirmed cleanup failures remain actionable without
   // showing the Project or Team data that a revocation has withdrawn.
   const safeResult = !scope.isInvalidated && (op.result !== null || cleanupError !== null);
+  const cleanupBusy = cleanup.current !== null && cleanupError === null && !cleanupPaused;
   const changedOwner = preview !== null && access.ready && (access.access!.ownership.teamId !== preview.ownership.teamId || access.access!.ownership.version !== preview.ownership.version);
   return <>
+    {!dialog && <OperationPublicationError operation={op} zh={locale === "zh-CN"} />}
     {owner && <section className="panel project-ownership-panel" aria-labelledby="project-ownership-title"><div className="panel-heading"><div><h2 id="project-ownership-title">{m.title}</h2><p>{m.description}</p></div></div><div className="panel-body"><p><strong>{teamName(owner, m.personal)}</strong> <code>{owner.id}</code></p>{access.access?.canTransfer ? <button className="button" type="button" disabled={access.status !== "ready" || unknown || (op.pending || waiting)} onClick={open}>{m.transfer}</button> : <p className="hint">{m.restricted}</p>}</div></section>}
     {!scope.isInvalidated && unknown && !dialog && <div className="notice warning" role="alert"><p>{m.unknown}</p><button className="button" type="button" onClick={() => setDialog(true)}>{m.check}</button></div>}
-    {dialog && <ManagementDialog title={m.transfer} suspended={!active || scope.isInvalidated || !privateAvailable && !safeResult} busy={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClose={close} footer={<><button className="button" type="button" disabled={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClick={close}>{unknown ? m.close : m.cancel}</button>{cleanupError !== null ? <button className="button primary" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button> : unknown ? <button className="button" type="button" disabled={reading} onClick={check}>{m.check}</button> : <button className="button danger" type="button" disabled={(op.pending || waiting) || reading || preview === null || guard?.isBlocked("transfer") || access.status !== "ready" || !access.access?.canTransfer || access.access.ownership.teamId !== preview.ownership.teamId || access.access.ownership.version !== preview.ownership.version} onClick={submit}>{(op.pending || waiting) ? m.busy : m.confirm}</button>}</>}>
+    {dialog && <ManagementDialog title={m.transfer} suspended={!active || scope.isInvalidated || !privateAvailable && !safeResult} busy={(op.pending || waiting) || cleanupBusy} onClose={close} footer={<><button className="button" type="button" disabled={(op.pending || waiting) || cleanupBusy} onClick={close}>{unknown ? m.close : m.cancel}</button>{cleanupError !== null ? <button className="button primary" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button> : unknown ? <button className="button" type="button" disabled={reading} onClick={check}>{m.check}</button> : <button className="button danger" type="button" disabled={(op.pending || waiting) || cleanup.current !== null || op.publicationError !== null || reading || preview === null || guard?.isBlocked("transfer") || access.status !== "ready" || !access.access?.canTransfer || access.access.ownership.teamId !== preview.ownership.teamId || access.access.ownership.version !== preview.ownership.version} onClick={submit}>{(op.pending || waiting) ? m.busy : m.confirm}</button>}</>}>
+      <OperationPublicationError operation={op} zh={locale === "zh-CN"} />
       {privateAvailable && !unknown && cleanupError === null && <>{subject !== null && <p><strong style={{ overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{subject}</strong></p>}<div className="field"><label htmlFor="transfer-target">{m.target}</label><input id="transfer-target" value={target} disabled={(op.pending || waiting)} onChange={(event) => change(event.target.value)} autoComplete="off" /><p className="hint">{m.hint}</p>{invalid && <p className="hint error" role="alert">{parseTransferTarget(target, window.location.origin) === access.access?.ownership.teamId ? m.same : m.invalid}</p>}</div><TeamChoices value={target} onChange={change} disabled={(op.pending || waiting)} /><button className="button" type="button" disabled={(op.pending || waiting) || reading || access.status !== "ready" || !access.access?.canTransfer} onClick={() => { void inspect(); }}>{reading ? m.loading : m.preview}</button>{preview && <div><h3>{m.changes}</h3><p><strong>{teamName(preview.sourceTeam, m.personal)}</strong> <code>{preview.sourceTeam.id}</code> → <strong>{teamName(preview.targetTeam, m.personal)}</strong> <code>{preview.targetTeam.id}</code></p><p>{m.grants}</p><p>{preview.actorRole === null ? m.noAccess : `${m.role}: ${roles[preview.actorRole]}`}</p></div>}{(conflict || changedOwner) && <p className="notice warning" role="alert">{m.conflict}</p>}{readError !== null && <p className="notice error" role="alert">{describeError(readError)} {readError instanceof ApiError && readError.requestId && <>{m.requestId}<code>{readError.requestId}</code></>}</p>}</>}
       {op.result !== null && <div className="notice error" role="alert"><p>{unknown ? m.unknown : conflict ? m.conflict : describeError(op.result.error)}</p>{op.result.error instanceof ApiError && op.result.error.requestId && <p>{m.requestId}<code>{op.result.error.requestId}</code></p>}</div>}
       {unknown && observed && <p>{privateAvailable && access.access ? <>{m.current}: {teamName(access.access.ownerTeam, m.personal)} <code>{access.access.ownerTeam.id}</code></> : !privateAvailable ? m.unavailable : m.failed}</p>}

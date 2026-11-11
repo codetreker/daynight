@@ -19,8 +19,9 @@ lost, the matching Task cache generation is revoked before navigation. Submissio
 captures the editor instance, in-memory draft revision and navigation context.
 Closing the dialog, resetting its draft and automatic navigation require those
 owners still to match; a late receipt cannot replace a newer editor or route.
-The receipt and resource facts retain their original admission rules, and the
-shared operation's pending and promise timing is unchanged. The source Team is
+The receipt and resource facts retain their original admission rules. The
+[shared operation settlement decision](../bug-fix/2026-11-12-team-operation-local-settlement.md)
+separates local completion from publication. The source Team is
 checked by ID; only a confirmed 404 chooses Personal. A failed check
 retains the successful result and permits retrying navigation. Unknown writes
 retain a read-only check and are never automatically replayed. Confirmed Project
