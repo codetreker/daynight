@@ -50,6 +50,6 @@ export const useWorkerConfigurationNavigation = ({ workerId, dirty, unavailable,
   const confirmation = !confirming ? null : <TaskConfirmation title={shared.title} question={m.leaveQuestion} explanation={m.leaveExplanation}
     taskTitle={workerId} confirmLabel={shared.discard} cancelLabel={shared.keep} closeLabel={shared.close} destructive
     owner={owner} fallbackFocus={editor} onRestoreFocus={() => { restoreFocus.current = true; }}
-    onCancel={() => { navigation.cancel(); onContinueEditing?.(); }} onConfirm={navigation.confirm} />;
+    onCancel={() => { navigation.cancelAndRestore(onContinueEditing); }} onConfirm={navigation.confirm} />;
   return { owner, rememberFocus, confirming, confirmation };
 };

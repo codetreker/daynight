@@ -15,7 +15,10 @@ identity-bound page selection with the history marker. Account consumes its
 admitted selection; an active controlled entry is initialized by replacement,
 and a changed selection is pushed through the existing draft admission gate.
 Same-URL entries publish distinct snapshots. The account page retains its
-credential and prompt owners independently of the entry identity. Invalid
+credential and prompt owners independently of the entry identity. Worker detail
+uses the same mechanism with a Worker-bound selection; its configuration owner
+remains mounted after opening and cancellation restores that tab only after the
+original history position is admitted. Invalid
 recognized state is exposed rather than interpreted as another target.
 
 The [Web design](../../../../docs/design/daynight-web.md) owns the current

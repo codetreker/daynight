@@ -19,7 +19,7 @@ afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useR
 const Workspace = ({ enabled }: { readonly enabled: boolean }) => {
   const owner = browserNavigation(), location = useSyncExternalStore(owner.subscribe, owner.snapshot);
   return <><a href="/projects" onClick={event => { event.preventDefault(); navigate('/projects'); }}>Projects</a>
-    {location.pathname === path ? <WorkerDetailPage workerId={target} readEnabled={enabled} /> : <button onClick={() => navigate(path)}>Open Worker</button>}</>;
+    {location.pathname === path ? <WorkerDetailPage userId={WORKER_USER} workerId={target} readEnabled={enabled} /> : <button onClick={() => navigate(path)}>Open Worker</button>}</>;
 };
 const mount = async (strict = false, withProject = false) => {
   const projects = withProject ? [{ id: workerId(3), name: 'Project 3', repoUrl: 'https://example.test/project.git', settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: workerId(90), version: 1n }, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z' }] : [];
@@ -224,7 +224,7 @@ describe('Worker configuration navigation', () => {
     const go = vi.spyOn(history, 'go').mockImplementation(() => {});
     arrival(initialState, initial.pathname);
     expect(browserNavigation().snapshot().pathname).toBe(path); expect(input).toBeVisible();
-    fireEvent.keyDown(document, { key: 'Escape' }); expect(go).toHaveBeenCalledWith(1);
+    fireEvent.keyDown(document, { key: 'Escape' }); expect(go).toHaveBeenCalledWith(2);
     arrival(workerState, path); expect(input).toHaveValue('3'); expect(input).toHaveFocus();
     arrival(initialState, initial.pathname);
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
@@ -237,6 +237,11 @@ describe('Worker configuration navigation', () => {
     result.failReads(); response.reject(new Error('connection lost')); await flush();
     expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeVisible();
     expect(result.writes).toHaveLength(1);
+    const configurationState = history.state;
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
+    act(() => { history.replaceState(configurationState, '', path); window.dispatchEvent(new PopStateEvent('popstate', { state: configurationState })); });
+    expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeVisible();
+    expect(result.writes).toHaveLength(1);
     leave(); fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('3');
     expect(screen.getByText('The save result is not yet confirmed. Your draft has been kept.')).toBeVisible();
@@ -247,6 +252,11 @@ describe('Worker configuration navigation', () => {
   it('does not let a leave choice settle or replay a pending save', async () => {
     const result = await mount(), response = Promise.withResolvers<Response>(); result.blockWrite(response.promise);
     const input = edit(); fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
+    const configurationState = history.state;
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
+    act(() => { history.replaceState(configurationState, '', path); window.dispatchEvent(new PopStateEvent('popstate', { state: configurationState })); });
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled(); expect(result.writes).toHaveLength(1);
     leave(); fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(input).toHaveValue('3'); expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled(); expect(result.writes).toHaveLength(1);
     leave(); fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
