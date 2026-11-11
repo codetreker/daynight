@@ -629,3 +629,42 @@ for (const state of ['in_progress', 'done'] as const) {
     expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]);
   });
 }
+
+test('linked PRs remain readable in the overview sidebar across detail presentations', async ({ page }) => {
+  const url = `https://example.com/${'long-path'.repeat(25)}`;
+  const pullRequests = Array.from({ length: 101 }, (_, index) => ({ title: `PR ${index + 1} ${'long-title'.repeat(15)}`, url }));
+  await install(page, false, false, false, false, false, undefined, { description: 'Task description', properties: { pullRequests } });
+  const dialog = await openDialog(page);
+  for (const width of [1440, 800, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const aside = dialog.getByRole('complementary', { name: 'Task relationships and metadata' });
+    const prs = aside.getByRole('region', { name: 'Linked PRs' });
+    const prerequisites = aside.getByRole('region', { name: 'Prerequisites', exact: true });
+    await expect(prs.getByRole('heading')).toHaveText('Linked PRs · 101');
+    await expect(dialog.locator('.task-detail-main').getByRole('region', { name: 'Linked PRs' })).toHaveCount(0);
+    expect(await prs.evaluate((element, other) => Boolean(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await prerequisites.elementHandle())).toBe(true);
+    expect(await prs.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const mainBox = await dialog.locator('.task-detail-main').boundingBox();
+    const asideBox = await aside.boundingBox();
+    expect(mainBox && asideBox).not.toBeNull();
+    if (width <= 600) expect(asideBox!.y).toBeGreaterThan(mainBox!.y);
+    else expect(asideBox!.x).toBeGreaterThan(mainBox!.x);
+  }
+  const prs = dialog.getByRole('region', { name: 'Linked PRs' });
+  const link = prs.getByRole('link').first();
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  await link.focus(); await expect(link).toBeFocused();
+  const next = prs.getByRole('button', { name: 'Next page' });
+  await next.focus(); await page.keyboard.press('Enter');
+  await expect(prs).toContainText('Items 101–101 of 101');
+  await expect(prs).toContainText('PR 101');
+  await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+  await expect(dialog.getByRole('region', { name: 'Linked PRs' })).toContainText('PR 101');
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const direct = page.locator('.task-detail-page');
+  await expect(direct.getByRole('complementary', { name: 'Task relationships and metadata' }).getByRole('region', { name: 'Linked PRs' })).toBeVisible();
+  await direct.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+  await expect(direct.getByRole('region', { name: 'Linked PRs' })).toBeVisible();
+});
