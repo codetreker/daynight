@@ -1440,10 +1440,11 @@ transaction completion separately selects `committed`, `not_committed` or
 facts; recording a write does not automatically change those responses.
 
 Bot registration checks its complete inserted identity, registration bytes and
-durable initial Snapshot independently from the returned initial Snapshot. Root
-Bot expiry HTTP tests supply direct operation outcomes while retaining routing,
-authentication, request parsing, response encoding and blocked-operation
-barriers. They do not prove a database lock or rollback. The
+durable initial Snapshot independently from the returned initial Snapshot. The
+Bot package's expiry HTTP tests supply direct operation outcomes while retaining
+routing, authentication, request parsing, response encoding and blocked-operation
+barriers. They do not prove a database lock or rollback; the former Root fixture
+also registered routes locally without calling `New`. The
 [Bot expiry HTTP decision](../../.agents/notes/implemented/testing/2026-11-10-bot-expiry-http-test-owners.md)
 records the proof allocation.
 
@@ -1833,8 +1834,12 @@ physical persistence.
 schemas and tool response encoding. Most use controlled direct service/use-case
 operations; Project, Team and Invitation organization scenarios also execute
 real Service and Core with controlled DAO facts through a host registering only
-their adapters. Principals and domain results are explicit facts; operations verify
-arguments, context, authority and calls. Unconfigured calls fail independently
+their adapters. Bot's completed-response loss test also uses real Service and
+Core, the SDK and socket through a Bot-only host; its later reads use explicitly
+supplied DAO facts, not persisted readback. The Root MCP and REST Bot lifecycle
+retains shared application construction. Principals and domain results are
+explicit facts; operations verify arguments, context, authority and calls.
+Unconfigured calls fail independently
 of the tool's error response. No Task state or database persistence is simulated.
 Task query registration accepts controlled list and graph observation operations;
 its Tasks dependency still serves ready and dependency reads. The Root Step

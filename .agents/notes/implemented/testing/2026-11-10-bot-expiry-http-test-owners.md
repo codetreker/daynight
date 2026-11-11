@@ -12,12 +12,13 @@ constructor path, so replacing the fixture alone would lose distinct evidence.
 
 ## Decision
 
-The Runtime and deletion HTTP matrices register the real Bot routes, request
-authentication, logging, parser and response encoder with strict direct
+The Bot package's Runtime and deletion HTTP matrices register the real Bot
+routes, request authentication, logging, parser and response encoder with strict direct
 operation callbacks. Each request supplies an independent result or refusal.
 The blocked callbacks establish that the handler entered and waited for the
 operation; they do not represent a database lock or rollback. The original
-credential kinds, inputs, response projections and replay sequences remain.
+credential kinds, inputs, response projections and replay sequences remain. The
+former Root fixture also registered routes locally and did not call `New`.
 
 Core Session registration checks the complete inserted registration identity,
 bytes and durable initial Snapshot, and independently checks the returned
