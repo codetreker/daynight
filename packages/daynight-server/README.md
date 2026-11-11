@@ -1936,19 +1936,19 @@ separate API integration entry.
 ### Session HTTP tests
 
 The regular `internal/server/session` suite executes actual routes and
-`RequestAuthentication` with controlled credential results and direct typed
-Session use-case callbacks. The private `serviceCalls` binding projects existing
-production service methods; test-only aliases supply the same calls without
-starting the service, engine, DAO or gateway. Tests supply valid principals,
-snapshots, events and returned bytes and verify context, canonical addresses,
-fences, inputs, outputs and call counts.
+`RequestAuthentication`. Adapter cases use direct typed Session use-case
+callbacks, supplied through the private `serviceCalls` binding. Protocol
+component cases assemble the real Session service, engine and identity service
+with controlled DAO facts; they retain channel fences, serialization, startup
+evidence and terminal recovery. Tests verify context, canonical addresses,
+fences, inputs, outputs and call counts without a database or gateway.
 
 Configured calls are required, and unknown, extra or missing calls fail.
 Foreground operations have finite expected counts; repeated channel polling is
 scenario-declared. Callback barriers and cancellation observe each operation's
-lifetime without a global goroutine order. Supplied replies remain independent
-of captured requests. A mock result does not implement lower business rules,
-query behavior or transaction persistence.
+lifetime without a global goroutine order. Supplied DAO facts and replies remain
+independent of captured requests. A mock result does not establish physical
+transaction persistence.
 
 Run the regular suite from this module without database or UniAuth fixtures:
 

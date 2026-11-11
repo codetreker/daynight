@@ -43,8 +43,9 @@ application. Cleanup drained the relay and stopped its engine before the outer
 fixture released its borrowed Store and files.
 
 The [Session HTTP use-case decision](2026-11-09-session-http-use-cases.md)
-replaces that fixture allocation. Regular HTTP units execute actual routes and
-credential middleware with direct operation callbacks. Test-local ping
+replaces that fixture allocation. Adapter tests execute actual routes and credential middleware with direct
+operation callbacks. The [protocol component decision](2026-11-11-session-protocol-component-ownership.md)
+retains real services and the engine where protocol proofs require their cooperation. Test-local ping
 construction still exercises Ping/Pong and subsequent published frames on the
 same live connection. Callback cancellation, route draining and expected-call
 validation retain separate lifecycle observations. The normal Session API flow
