@@ -60,7 +60,8 @@ func assertSessionArchiveAfterDeletion(t *testing.T, database *postgres.Store, t
 }
 
 func TestSessionArchiveWaitsForDeletionAndReadsCommittedState(t *testing.T) {
-	database, task, id := sessionArchiveLockFixture(t)
+	database := isolatedStore(t)
+	task, id := prepareArchiveSession(t, database)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	deletion, err := database.Pool.Begin(ctx)
@@ -110,7 +111,8 @@ func TestSessionArchiveWaitsForDeletionAndReadsCommittedState(t *testing.T) {
 }
 
 func TestSessionDeletionWaitsForArchiveAndRetainsReceipt(t *testing.T) {
-	database, task, id := sessionArchiveLockFixture(t)
+	database := isolatedStore(t)
+	task, id := prepareArchiveSession(t, database)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	archive, err := database.Pool.Begin(ctx)
@@ -285,9 +287,8 @@ func TestSessionBotArchiveAndCleanupSerializeOnBotLock(t *testing.T) {
 	}
 }
 
-func TestSessionDAOLedgerAndArchive(t *testing.T) {
+func testSessionDAOLedgerAndArchive(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	db := isolatedStore(t)
 	_, principal, _ := testAuthRecords(t, db)
 	id, execution, registration := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	fence := sp.Fence{SessionID: id, TestExecutionID: execution, ExecutionGeneration: "1"}
@@ -369,8 +370,7 @@ func TestSessionDAOLedgerAndArchive(t *testing.T) {
 	})
 }
 
-func TestBotSessionCleanupIsTransactional(t *testing.T) {
-	db := isolatedStore(t)
+func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	_, actor, _ := testAuthRecords(t, db)
 	bot, worker, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -551,7 +551,7 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(context.Background())
+		defer rollbackSessionTestTransaction(t, tx)
 		dao := pgsession.New(tx)
 		if err := dao.DeleteBotSession(ctx, id, bot); err != nil {
 			t.Fatal(err)
@@ -597,8 +597,8 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 	}
 }
 
-func TestNativeSessionLedgerDoesNotCreateLegacyContentRows(t *testing.T) {
-	database := isolatedStore(t)
+func testNativeSessionLedgerDoesNotCreateLegacyContentRows(t *testing.T, db *postgres.Store) {
+	database := db
 	_, owner, _ := testAuthRecords(t, database)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 2, model.TaskInProgress)
@@ -660,8 +660,8 @@ func TestNativeSessionLedgerDoesNotCreateLegacyContentRows(t *testing.T) {
 	}
 }
 
-func TestSessionOperationPreservesStoredHashBytes(t *testing.T) {
-	database := isolatedStore(t)
+func testSessionOperationPreservesStoredHashBytes(t *testing.T, db *postgres.Store) {
+	database := db
 	_, actor, _ := testAuthRecords(t, database)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 2, model.TaskInProgress)

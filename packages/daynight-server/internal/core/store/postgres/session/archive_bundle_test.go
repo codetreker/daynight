@@ -14,12 +14,36 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
-func TestActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func TestSessionArchiveStore(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	suite.run(t, "ActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts", testActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts)
+	suite.run(t, "ArchiveBundleDurableIdentityChunksAndMigrationPhases", testArchiveBundleDurableIdentityChunksAndMigrationPhases)
+	suite.run(t, "SessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive", testSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive)
+	suite.run(t, "ArchiveFileInventoryAndImmutableWrites", testArchiveFileInventoryAndImmutableWrites)
+	suite.run(t, "SourceAcknowledgementLedgerCountAndCanceledStorageCalls", testSourceAcknowledgementLedgerCountAndCanceledStorageCalls)
+	suite.run(t, "UnifiedArchiveNativeIdentityAndReadyCommitTogether", testUnifiedArchiveNativeIdentityAndReadyCommitTogether)
+	suite.run(t, "StoppedSourceNativeCheckpointPreservesUnknownOperation", testStoppedSourceNativeCheckpointPreservesUnknownOperation)
+	suite.run(t, "ArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity/null_migration", func(t *testing.T, db *postgres.Store) {
+		testArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity(t, db, "")
+	})
+	suite.run(t, "ArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity/existing_migration", func(t *testing.T, db *postgres.Store) {
+		testArchiveResourceMigrationMapsOriginalNullAndExplicitMigrationIdentity(t, db, uuid.NewString())
+	})
+	suite.run(t, "ArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy", testArchiveInlineMigrationComparesOriginalAndRemovesInlineCopy)
+	suite.run(t, "ArchiveConnectionEpochAndConsumedGrantCommitTogether", testArchiveConnectionEpochAndConsumedGrantCommitTogether)
+	suite.run(t, "ArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow", testArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow)
+	suite.run(t, "ArchiveUnavailableInlinePresenceIsMetadataOnly", testArchiveUnavailableInlinePresenceIsMetadataOnly)
+	suite.run(t, "SessionDAOTerminalLedgerEvidenceAndHistory", testSessionDAOTerminalLedgerEvidenceAndHistory)
+}
+
+func testActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	previous, next := json.RawMessage(`{"controller":"generation-one"}`), json.RawMessage(`{"controller":"generation-two"}`)
 	fileID := uuid.NewString()
@@ -86,8 +110,9 @@ func TestActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts(t
 	})
 }
 
-func TestArchiveBundleDurableIdentityChunksAndMigrationPhases(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveBundleDurableIdentityChunksAndMigrationPhases(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	prepare, fileID, migration := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	bundle := store.ArchiveBundle{SessionID: id, PrepareID: prepare, Phase: "settling", Revision: 1, Identity: json.RawMessage(`{"controller":"original"}`), Resources: json.RawMessage(`[]`), Ledger: json.RawMessage(`{"sourceThrough":"7"}`)}
@@ -188,8 +213,9 @@ func archiveHashOf(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveFileInventoryAndImmutableWrites(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	first, second := uuid.NewString(), uuid.NewString()
 	if first > second {
@@ -250,7 +276,8 @@ func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
 }
 
 func TestArchiveReadyDoesNotReportSuccessWhenStorageDeclinesWrite(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+	database := isolatedStore(t)
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	// This database belongs to the test. A declining trigger supplies PostgreSQL's
 	// successful-command/zero-written-row outcome without replacing the real DAO.
@@ -269,8 +296,9 @@ func TestArchiveReadyDoesNotReportSuccessWhenStorageDeclinesWrite(t *testing.T) 
 	}
 }
 
-func TestUnifiedArchiveNativeIdentityAndReadyCommitTogether(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testUnifiedArchiveNativeIdentityAndReadyCommitTogether(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	native, digest, path := "native-created-after-last-ack", archiveHashOf("manifest"), "original/manifest"
 	bundle := store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "sealed", Revision: 7, Identity: json.RawMessage(`{"controller":"original"}`), Resources: json.RawMessage(`[]`), Ledger: json.RawMessage(`{}`), ManifestHash: digest, ManifestPath: path, ManifestLength: "8"}
@@ -340,8 +368,9 @@ func TestUnifiedArchiveNativeIdentityAndReadyCommitTogether(t *testing.T) {
 	}
 }
 
-func TestStoppedSourceNativeCheckpointPreservesUnknownOperation(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testStoppedSourceNativeCheckpointPreservesUnknownOperation(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	epoch, operationID, batchID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	native := "native-created-after-last-ack"
@@ -438,8 +467,9 @@ func TestStoppedSourceNativeCheckpointPreservesUnknownOperation(t *testing.T) {
 	}
 }
 
-func TestArchiveConnectionEpochAndConsumedGrantCommitTogether(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveConnectionEpochAndConsumedGrantCommitTogether(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	fileID := uuid.NewString()
 	bundle := store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "active", Revision: 9, Identity: json.RawMessage(`{"controller":"original"}`), Resources: json.RawMessage(`[]`), Ledger: json.RawMessage(`{"HistoryEpoch":"original","HistoryID":"` + fileID + `","Entries":[]}`), HistoryID: fileID}
@@ -456,7 +486,7 @@ func TestArchiveConnectionEpochAndConsumedGrantCommitTogether(t *testing.T) {
 			t.Fatal(e)
 		}
 		func() {
-			defer tx.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, tx)
 			dao := pgsession.New(tx)
 			r, e := dao.LockSession(ctx, id)
 			if e != nil {
@@ -503,8 +533,9 @@ func TestArchiveConnectionEpochAndConsumedGrantCommitTogether(t *testing.T) {
 	}
 }
 
-func TestArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	reason := "Original bytes were never captured."
 	descriptor := sp.Resource{ResourceID: uuid.NewString(), Status: "unavailable", Name: "legacy-missing", Error: &reason}
@@ -658,8 +689,9 @@ func TestArchiveResetRetainsUnavailableResourceAndReusesItsUniqueRow(t *testing.
 	}
 }
 
-func TestArchiveUnavailableInlinePresenceIsMetadataOnly(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testArchiveUnavailableInlinePresenceIsMetadataOnly(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, database)
 	ctx := t.Context()
 	descriptor := sp.Resource{ResourceID: uuid.NewString(), Status: "unavailable", Name: "legacy-missing"}
 	raw, e := json.Marshal(descriptor)

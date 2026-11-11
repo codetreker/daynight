@@ -12,13 +12,51 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestExternalCaptureWritesCompareExactObservedState(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func TestSessionImageStore(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	suite.run(t, "ExternalCaptureWritesCompareExactObservedState", testExternalCaptureWritesCompareExactObservedState)
+	suite.run(t, "FailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement", testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement)
+	suite.run(t, "ExternalSourceHashPrunesExplicitBoundaryAndOldEpoch", testExternalSourceHashPrunesExplicitBoundaryAndOldEpoch)
+	suite.run(t, "ExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies", testExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies)
+	suite.run(t, "PendingMediaOffersRejectCorruptCandidateWithoutPartialResults", testPendingMediaOffersRejectCorruptCandidateWithoutPartialResults)
+	suite.run(t, "PendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows/task", func(t *testing.T, db *postgres.Store) {
+		testPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t, db, "task")
+	})
+	suite.run(t, "PendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows/test_execution", func(t *testing.T, db *postgres.Store) {
+		testPendingMediaOffersFilterCurrentFenceBeforeLimitAndRetainOriginalRows(t, db, "test execution")
+	})
+	suite.run(t, "MediaPayloadRepresentationRewriteUsesExactObservedState", testMediaPayloadRepresentationRewriteUsesExactObservedState)
+	suite.run(t, "CompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult", testCompletedReadPayloadRewritePersistsBoundedReceiptAndRejectsChangedResult)
+	suite.run(t, "UnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists", testUnpublishedUploadMediaLeaseUsesWildcardUntilResourceExists)
+	suite.run(t, "MediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors", testMediaPayloadRewriteAndInventoryPreserveClosedTransactionErrors)
+	suite.run(t, "MediaRateStatePersistsIndependentOwnersAndCategories", testMediaRateStatePersistsIndependentOwnersAndCategories)
+	suite.run(t, "ResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts", testResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts)
+	suite.run(t, "ResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults", testResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults)
+	suite.run(t, "MediaRequestReadRejectsCorruptPersistedTypedMetadata", testMediaRequestReadRejectsCorruptPersistedTypedMetadata)
+	suite.run(t, "ResourceCancelledObservationDoesNotCreateState", testResourceCancelledObservationDoesNotCreateState)
+	suite.run(t, "UnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls", testUnsettledResourceBarrierPreservesUnknownEffectsWithoutBlockingReadOnlyControls)
+	suite.run(t, "UploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory/spec", func(t *testing.T, db *postgres.Store) {
+		testUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t, db, "spec")
+	})
+	suite.run(t, "UploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory/receipt", func(t *testing.T, db *postgres.Store) {
+		testUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t, db, "receipt")
+	})
+	suite.run(t, "UploadSettlementPreservesClosedTransactionAndCancellationErrors", testUploadSettlementPreservesClosedTransactionAndCancellationErrors)
+	suite.run(t, "ResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion", testResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion)
+	suite.run(t, "UploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup", testUploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup)
+	suite.run(t, "SavedResourceVisibilityRequiresActorOrPublishedReference", testSavedResourceVisibilityRequiresActorOrPublishedReference)
+	suite.run(t, "ExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion", testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion)
+	suite.run(t, "ExternalMediaLedgerReconnectCaptureAndAdmission", testExternalMediaLedgerReconnectCaptureAndAdmission)
+}
+
+func testExternalCaptureWritesCompareExactObservedState(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	request := sp.ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "content", SourceKey: uuid.NewString()}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
 	resource := uuid.NewString()
 	initial := store.SessionCaptureRecord{SessionID: id, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: uuid.NewString(), Revision: "3", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resource}}
@@ -135,8 +173,8 @@ func TestExternalCaptureWritesCompareExactObservedState(t *testing.T) {
 	}
 }
 
-func TestExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
 		return d.(store.SessionArchiveDAO).SaveSessionArchiveBundle(t.Context(), store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "active", Revision: 1, Identity: []byte(`{}`), Resources: []byte(`[]`), Ledger: []byte(`{}`)})
 	})
@@ -178,8 +216,8 @@ func TestExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies(t *test
 	})
 }
 
-func TestResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	ctx := t.Context()
 	resource := uuid.NewString()
 	upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: resource, Spec: sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), Name: "original.png", MediaType: "image/png", ByteLength: "8", SHA256: archiveHashOf("original")}, ExpiresAt: time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour), Receipt: sp.ImageUploadReceipt{State: "receiving", AcceptedOffset: "0"}}
@@ -258,8 +296,8 @@ func TestResourceLedgerReadsPresenceAndRetainsImmutableWriteConflicts(t *testing
 	})
 }
 
-func TestResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	tx, e := db.Pool.Begin(t.Context())
 	if e != nil {
 		t.Fatal(e)
@@ -305,8 +343,8 @@ func TestResourceDAOClosedTransactionsPreserveErrorsWithoutSuccessfulResults(t *
 	}
 }
 
-func TestMediaRequestReadRejectsCorruptPersistedTypedMetadata(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testMediaRequestReadRejectsCorruptPersistedTypedMetadata(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	ctx := t.Context()
 	request := uuid.NewString()
 	for _, kind := range []string{"fence", "error"} {
@@ -330,8 +368,8 @@ func TestMediaRequestReadRejectsCorruptPersistedTypedMetadata(t *testing.T) {
 	}
 }
 
-func TestResourceCancelledObservationDoesNotCreateState(t *testing.T) {
-	db, _, _ := imageLedgerSession(t)
+func testResourceCancelledObservationDoesNotCreateState(t *testing.T, db *postgres.Store) {
+	_, _ = prepareImageSession(t, db)
 	missing := uuid.NewString()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -339,7 +377,7 @@ func TestResourceCancelledObservationDoesNotCreateState(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer tx.Rollback(context.Background())
+	defer rollbackSessionTestTransaction(t, tx)
 	if _, e = pgsession.New(tx).(store.SessionResourceDAO).SessionResourceUsage(ctx, missing); !errors.Is(e, context.Canceled) {
 		t.Fatal("cancelled admission was reported successful", e)
 	}
@@ -349,8 +387,7 @@ func TestResourceCancelledObservationDoesNotCreateState(t *testing.T) {
 	}
 }
 
-func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.T) {
-	db := isolatedStore(t)
+func testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.T, db *postgres.Store) {
 	_, actor, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -514,8 +551,7 @@ func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.
 	})
 }
 
-func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
-	db := isolatedStore(t)
+func testExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T, db *postgres.Store) {
 	_, actor, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)

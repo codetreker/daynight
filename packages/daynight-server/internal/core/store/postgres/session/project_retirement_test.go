@@ -5,12 +5,12 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
-func TestProjectRetirementBatchesAndRollback(t *testing.T) {
-	db := isolatedStore(t)
+func testProjectRetirementBatchesAndRollback(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -46,6 +46,7 @@ func TestProjectRetirementBatchesAndRollback(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rollbackSessionTestTransaction(t, tx)
 		if err = sessioncore.RetireProject(ctx, pgsession.NewProjectRetirementDAO(tx, project.ID), project.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -80,6 +81,7 @@ func TestProjectRetirementBatchesAndRollback(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		i := 0
 		for rows.Next() {
 			var got string

@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
@@ -17,8 +18,7 @@ func sameStoredMediaRate(a, b store.SessionMediaRate) bool {
 	return a.Tokens == b.Tokens && a.UpdatedAt.Equal(b.UpdatedAt)
 }
 
-func TestMediaRateStatePersistsIndependentOwnersAndCategories(t *testing.T) {
-	db := isolatedStore(t)
+func testMediaRateStatePersistsIndependentOwnersAndCategories(t *testing.T, db *postgres.Store) {
 	_, actor, _ := testAuthRecords(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	initial := store.SessionMediaRate{Tokens: 8_000_000, UpdatedAt: now}
@@ -56,6 +56,7 @@ func TestMediaRateStatePersistsIndependentOwnersAndCategories(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	defer rollbackSessionTestTransaction(t, tx)
 	rate := pgsession.New(tx).(store.SessionMediaRateDAO)
 	if _, e = rate.LockSessionMediaRate(t.Context(), actor.UserID, "prepare", initial); e != nil {
 		t.Fatal(e)

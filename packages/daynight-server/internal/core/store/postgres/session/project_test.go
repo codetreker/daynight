@@ -10,13 +10,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestProjectSessionStartupAndDrain(t *testing.T) {
-	db := isolatedStore(t)
+func testProjectSessionStartupAndDrain(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -37,7 +37,7 @@ func TestProjectSessionStartupAndDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	defer rollbackSessionTestTransaction(t, tx)
 	dao := pgsession.NewProjectDAO(tx, project.ID)
 	matched, err := dao.MatchSessionStartup(ctx, task.ID, &worker, report)
 	if err != nil || !matched {
@@ -117,8 +117,7 @@ func TestProjectSessionStartupAndDrain(t *testing.T) {
 	})
 }
 
-func TestSessionStartupIdentityMatchesOnlyCurrentBinding(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionStartupIdentityMatchesOnlyCurrentBinding(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -133,7 +132,7 @@ func TestSessionStartupIdentityMatchesOnlyCurrentBinding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(context.Background())
+		defer rollbackSessionTestTransaction(t, tx)
 		return pgsession.NewProjectDAO(tx, project.ID).MatchSessionStartup(ctx, task.ID, &w, r)
 	}
 	if matched, err := check(worker, report); err != nil || !matched {
@@ -166,9 +165,9 @@ func TestSessionStartupIdentityMatchesOnlyCurrentBinding(t *testing.T) {
 	}
 }
 
-func TestDrainTaskSessionsPreservesActiveClaim(t *testing.T) {
+func testDrainTaskSessionsPreservesActiveClaim(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	s := isolatedStore(t)
+	s := db
 	project := queryProject(t, s, 1)
 	task := queryTask(t, s, project.ID, 2, model.TaskInProgress)
 	activeClaim, staleClaim := uuid.NewString(), uuid.NewString()

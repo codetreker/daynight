@@ -11,54 +11,51 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t *testing.T) {
-	for _, field := range []string{"spec", "receipt"} {
-		t.Run(field, func(t *testing.T) {
-			db, id, actor := imageLedgerSession(t)
-			now := time.Now().UTC().Truncate(time.Microsecond)
-			ids := []string{uuid.NewString(), uuid.NewString()}
-			sort.Strings(ids)
-			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-				for _, uploadID := range ids {
-					upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: uuid.NewString(), Spec: sp.ImageUploadSpec{UploadID: uploadID, ImageID: uuid.NewString(), ByteLength: "8", SHA256: archiveHashOf("original")}, ExpiresAt: now, Receipt: sp.ImageUploadReceipt{State: "receiving", AcceptedOffset: "0"}}
-					if err := base.(store.SessionResourceDAO).SaveSessionUpload(t.Context(), upload); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-			// These values are valid JSONB but cannot be decoded into the stored
-			// model. Keep the second row selected after a valid first result.
-			if field == "spec" {
-				mustQueryExec(t, db, `UPDATE session_image_uploads SET spec='[]'::jsonb WHERE session_id=$1 AND upload_id=$2`, id, ids[1])
-			} else {
-				mustQueryExec(t, db, `UPDATE session_image_uploads SET receipt='{"state":"receiving","acceptedOffset":17}'::jsonb WHERE session_id=$1 AND upload_id=$2`, id, ids[1])
+func testUploadSettlementRejectsCorruptPersistedJSONWithoutPartialInventory(t *testing.T, db *postgres.Store, field string) {
+	id, actor := prepareImageSession(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ids := []string{uuid.NewString(), uuid.NewString()}
+	sort.Strings(ids)
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		for _, uploadID := range ids {
+			upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: uuid.NewString(), Spec: sp.ImageUploadSpec{UploadID: uploadID, ImageID: uuid.NewString(), ByteLength: "8", SHA256: archiveHashOf("original")}, ExpiresAt: now, Receipt: sp.ImageUploadReceipt{State: "receiving", AcceptedOffset: "0"}}
+			if err := base.(store.SessionResourceDAO).SaveSessionUpload(t.Context(), upload); err != nil {
+				return err
 			}
-			sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-				rows, err := base.(store.SessionResourceSettlementDAO).ListSessionUploadsForSettlement(t.Context(), id, now)
-				var invalid *json.UnmarshalTypeError
-				if !errors.As(err, &invalid) || rows != nil {
-					t.Fatal("corrupt persisted upload became a partial successful inventory", rows, err)
-				}
-				// Decoding failure must remain observable without deleting or
-				// repairing the original persistence record.
-				_, err = base.(store.SessionResourceDAO).SessionUpload(t.Context(), id, ids[1])
-				if !errors.As(err, &invalid) {
-					t.Fatal("inventory silently repaired corrupt persisted JSON", err)
-				}
-				return nil
-			})
-		})
+		}
+		return nil
+	})
+	// These values are valid JSONB but cannot be decoded into the stored
+	// model. Keep the second row selected after a valid first result.
+	if field == "spec" {
+		mustQueryExec(t, db, `UPDATE session_image_uploads SET spec='[]'::jsonb WHERE session_id=$1 AND upload_id=$2`, id, ids[1])
+	} else {
+		mustQueryExec(t, db, `UPDATE session_image_uploads SET receipt='{"state":"receiving","acceptedOffset":17}'::jsonb WHERE session_id=$1 AND upload_id=$2`, id, ids[1])
 	}
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		rows, err := base.(store.SessionResourceSettlementDAO).ListSessionUploadsForSettlement(t.Context(), id, now)
+		var invalid *json.UnmarshalTypeError
+		if !errors.As(err, &invalid) || rows != nil {
+			t.Fatal("corrupt persisted upload became a partial successful inventory", rows, err)
+		}
+		// Decoding failure must remain observable without deleting or
+		// repairing the original persistence record.
+		_, err = base.(store.SessionResourceDAO).SessionUpload(t.Context(), id, ids[1])
+		if !errors.As(err, &invalid) {
+			t.Fatal("inventory silently repaired corrupt persisted JSON", err)
+		}
+		return nil
+	})
 }
 
-func TestUploadSettlementPreservesClosedTransactionAndCancellationErrors(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testUploadSettlementPreservesClosedTransactionAndCancellationErrors(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	for _, kind := range []string{"closed transaction", "cancelled context"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -67,7 +64,7 @@ func TestUploadSettlementPreservesClosedTransactionAndCancellationErrors(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, tx)
 			want := error(context.Canceled)
 			if kind == "closed transaction" {
 				if err = tx.Rollback(ctx); err != nil {
@@ -86,8 +83,8 @@ func TestUploadSettlementPreservesClosedTransactionAndCancellationErrors(t *test
 	}
 }
 
-func TestResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	ctx := t.Context()
 	resource := uuid.NewString()
 	size := "8"
@@ -180,7 +177,7 @@ func TestResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion(t *testin
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer tx.Rollback(context.Background())
+	defer rollbackSessionTestTransaction(t, tx)
 	d := pgsession.New(tx)
 	if _, e = d.LockSession(ctx, id); e != nil {
 		t.Fatal(e)
@@ -224,8 +221,8 @@ func TestResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion(t *testin
 	})
 }
 
-func TestUploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup(t *testing.T) {
-	db, id, actor := imageLedgerSession(t)
+func testUploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	want := map[string]bool{}
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
@@ -263,7 +260,8 @@ func TestUploadSettlementSelectsFixedExpiryAndUnconfirmedCleanup(t *testing.T) {
 }
 
 func TestResourceReclamationWaitsForSessionPinTransaction(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+	db := isolatedStore(t)
+	id, _ := prepareImageSession(t, db)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	resource := uuid.NewString()

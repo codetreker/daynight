@@ -13,12 +13,13 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
-func TestSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive(t *testing.T) {
-	database := isolatedStore(t)
+func testSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive(t *testing.T, db *postgres.Store) {
+	database := db
 	_, owner, _ := testAuthRecords(t, database)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 2, model.TaskDone)
@@ -144,9 +145,8 @@ func TestSessionTerminalWritersReadCommittedPredecessor(t *testing.T) {
 	}
 }
 
-func TestSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T) {
+func testSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	db := isolatedStore(t)
 	_, principal, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)

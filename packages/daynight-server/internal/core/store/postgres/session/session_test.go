@@ -19,15 +19,54 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestSessionProjectAccessUsesCallerTransaction(t *testing.T) {
-	db, _, principal, project := membershipFixture(t)
+func TestSessionStore(t *testing.T) {
+	suite := newSessionStoreSuite(t)
+	suite.run(t, "SessionProjectAccessUsesCallerTransaction", testSessionProjectAccessUsesCallerTransaction)
+	suite.run(t, "SessionProjectAccessDoesNotHoldGrantUntilCommit", testSessionProjectAccessDoesNotHoldGrantUntilCommit)
+	suite.run(t, "InheritedSessionAccessDoesNotHoldOwnershipOrTeamSources", testInheritedSessionAccessDoesNotHoldOwnershipOrTeamSources)
+	suite.run(t, "SessionDAORegistrationGrantAndList", testSessionDAORegistrationGrantAndList)
+	suite.run(t, "SessionDAOLedgerAndArchive", testSessionDAOLedgerAndArchive)
+	suite.run(t, "SessionDAOClosedTransactionDoesNotReportSuccess", testSessionDAOClosedTransactionDoesNotReportSuccess)
+	suite.run(t, "SessionDAOTaskArchiveLocksAndWorkerDecodeFailure", testSessionDAOTaskArchiveLocksAndWorkerDecodeFailure)
+	suite.run(t, "BotSessionCleanupIsTransactional", testBotSessionCleanupIsTransactional)
+	suite.run(t, "SessionCredentialKindsAndMissingIdentity", testSessionCredentialKindsAndMissingIdentity)
+	suite.run(t, "SessionReadsRejectCorruptPersistedJSON", testSessionReadsRejectCorruptPersistedJSON)
+	suite.run(t, "TestSessionListFiltersCredentialAndPaginates", testTestSessionListFiltersCredentialAndPaginates)
+	suite.run(t, "SessionListOnlineFiltersBeforePagination", testSessionListOnlineFiltersBeforePagination)
+	suite.run(t, "SessionListParentOwnershipAndTiedCursor", testSessionListParentOwnershipAndTiedCursor)
+	suite.run(t, "SessionListExcludesBotSessionsBeforePagination", testSessionListExcludesBotSessionsBeforePagination)
+	suite.run(t, "TaskOAuthCredentialRechecksGrantAndToken", testTaskOAuthCredentialRechecksGrantAndToken)
+	suite.run(t, "SessionOperationRetainsOriginalOAuthActorAfterRevocation", testSessionOperationRetainsOriginalOAuthActorAfterRevocation)
+	suite.run(t, "ObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites/pat", func(t *testing.T, db *postgres.Store) {
+		testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t, db, model.PATCredential)
+	})
+	suite.run(t, "ObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites/oauth", func(t *testing.T, db *postgres.Store) {
+		testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t, db, model.OAuthCredential)
+	})
+	suite.run(t, "ObservationReaderSelectsTaskIDsAndHistoricalSession", testObservationReaderSelectsTaskIDsAndHistoricalSession)
+	suite.run(t, "ObservationReaderBoundsBatchBeforeQuery", testObservationReaderBoundsBatchBeforeQuery)
+	suite.run(t, "ObservationReaderProjectsHerdrWithoutFrames", testObservationReaderProjectsHerdrWithoutFrames)
+	suite.run(t, "NativeSessionLedgerDoesNotCreateLegacyContentRows", testNativeSessionLedgerDoesNotCreateLegacyContentRows)
+	suite.run(t, "SessionOperationPreservesStoredHashBytes", testSessionOperationPreservesStoredHashBytes)
+	suite.run(t, "ProjectSessionStartupAndDrain", testProjectSessionStartupAndDrain)
+	suite.run(t, "SessionStartupIdentityMatchesOnlyCurrentBinding", testSessionStartupIdentityMatchesOnlyCurrentBinding)
+	suite.run(t, "DrainTaskSessionsPreservesActiveClaim", testDrainTaskSessionsPreservesActiveClaim)
+	suite.run(t, "ProjectRetirementBatchesAndRollback", testProjectRetirementBatchesAndRollback)
+	suite.run(t, "SessionReaderCurrentProjectBindingsAndNarrowMetadata", testSessionReaderCurrentProjectBindingsAndNarrowMetadata)
+	suite.run(t, "SessionReaderPropagatesWorkerDecodeErrors", testSessionReaderPropagatesWorkerDecodeErrors)
+	suite.run(t, "SessionReaderPreservesMetadataDecodeErrorsAndIndependentIdentity", testSessionReaderPreservesMetadataDecodeErrorsAndIndependentIdentity)
+	suite.run(t, "SessionReaderUsesOneReadOnlyProjectQuery", testSessionReaderUsesOneReadOnlyProjectQuery)
+}
+
+func testSessionProjectAccessUsesCallerTransaction(t *testing.T, db *postgres.Store) {
+	_, principal, project := prepareMembership(t, db)
 	ctx := context.Background()
 	mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, principal.UserID)
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackSessionTestTransaction(t, tx)
 	if _, err = tx.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +84,8 @@ func TestSessionProjectAccessUsesCallerTransaction(t *testing.T) {
 	}
 }
 
-func TestSessionProjectAccessDoesNotHoldGrantUntilCommit(t *testing.T) {
-	db, _, principal, project := membershipFixture(t)
+func testSessionProjectAccessDoesNotHoldGrantUntilCommit(t *testing.T, db *postgres.Store) {
+	_, principal, project := prepareMembership(t, db)
 	mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, principal.UserID)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -54,7 +93,7 @@ func TestSessionProjectAccessDoesNotHoldGrantUntilCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	defer rollbackSessionTestTransaction(t, tx)
 	dao := pgsession.New(tx)
 	access, err := dao.ProjectAccess(ctx, principal.UserID, project.ID)
 	if err != nil || access.Role != model.ProjectAdmin {
@@ -69,8 +108,8 @@ func TestSessionProjectAccessDoesNotHoldGrantUntilCommit(t *testing.T) {
 	}
 }
 
-func TestInheritedSessionAccessDoesNotHoldOwnershipOrTeamSources(t *testing.T) {
-	db, principal, _, project := membershipFixture(t)
+func testInheritedSessionAccessDoesNotHoldOwnershipOrTeamSources(t *testing.T, db *postgres.Store) {
+	principal, _, project := prepareMembership(t, db)
 	mustQueryExec(t, db, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
 	teamID := uuid.NewString()
 	mustQueryExec(t, db, `INSERT INTO teams(id,name) VALUES($1,'Other owner')`, teamID)
@@ -80,7 +119,7 @@ func TestInheritedSessionAccessDoesNotHoldOwnershipOrTeamSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	defer rollbackSessionTestTransaction(t, tx)
 	dao := pgsession.New(tx)
 	access, err := dao.ProjectAccess(ctx, principal.UserID, project.ID)
 	if err != nil || access.Role != model.ProjectAdmin {
@@ -95,9 +134,8 @@ func TestInheritedSessionAccessDoesNotHoldOwnershipOrTeamSources(t *testing.T) {
 	}
 }
 
-func TestSessionDAORegistrationGrantAndList(t *testing.T) {
+func testSessionDAORegistrationGrantAndList(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	db := isolatedStore(t)
 	_, principal, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
@@ -234,9 +272,8 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 	})
 }
 
-func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
+func testSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	db := isolatedStore(t)
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -323,9 +360,8 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-func TestSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T) {
+func testSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T, db *postgres.Store) {
 	ctx := context.Background()
-	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
 	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, task.ID)
@@ -363,8 +399,7 @@ func TestSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T) {
 	})
 }
 
-func TestSessionCredentialKindsAndMissingIdentity(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionCredentialKindsAndMissingIdentity(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	_, actor, _ := testAuthRecords(t, db)
 	now := time.Now().UTC()
@@ -393,8 +428,7 @@ func TestSessionCredentialKindsAndMissingIdentity(t *testing.T) {
 	})
 }
 
-func TestSessionReadsRejectCorruptPersistedJSON(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionReadsRejectCorruptPersistedJSON(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	_, actor, _ := testAuthRecords(t, db)
 	id, operation := uuid.NewString(), uuid.NewString()
@@ -440,8 +474,7 @@ func TestSessionReadsRejectCorruptPersistedJSON(t *testing.T) {
 	})
 }
 
-func TestTestSessionListFiltersCredentialAndPaginates(t *testing.T) {
-	db := isolatedStore(t)
+func testTestSessionListFiltersCredentialAndPaginates(t *testing.T, db *postgres.Store) {
 	ctx := t.Context()
 	_, actor, _ := testAuthRecords(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -506,8 +539,8 @@ func insertSessionListFilterRow(t *testing.T, database *postgres.Store, row sess
  VALUES($1,$2,$1,'{}',$3,'test',$4,$5,$6,$7,$8,$9,$10,$11)`, row.id, row.owner, snapshot, execution, row.created, row.parent, row.connectionParent, row.seen, row.expiry, row.drain, row.bot)
 }
 
-func TestSessionListOnlineFiltersBeforePagination(t *testing.T) {
-	database := isolatedStore(t)
+func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Store) {
+	database := db
 	_, actor, _ := testAuthRecords(t, database)
 	_, foreign, _ := testAuthRecords(t, database)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -574,8 +607,8 @@ func TestSessionListOnlineFiltersBeforePagination(t *testing.T) {
 	})
 }
 
-func TestSessionListParentOwnershipAndTiedCursor(t *testing.T) {
-	database := isolatedStore(t)
+func testSessionListParentOwnershipAndTiedCursor(t *testing.T, db *postgres.Store) {
+	database := db
 	_, actor, _ := testAuthRecords(t, database)
 	_, foreign, _ := testAuthRecords(t, database)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -612,8 +645,8 @@ func TestSessionListParentOwnershipAndTiedCursor(t *testing.T) {
 	})
 }
 
-func TestSessionListExcludesBotSessionsBeforePagination(t *testing.T) {
-	database := isolatedStore(t)
+func testSessionListExcludesBotSessionsBeforePagination(t *testing.T, db *postgres.Store) {
+	database := db
 	bot, actor := storedBotCandidate(t, database)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	parent := uuid.NewString()

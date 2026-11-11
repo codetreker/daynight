@@ -14,74 +14,69 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t *testing.T) {
-	for _, kind := range []model.CredentialKind{model.PATCredential, model.OAuthCredential} {
-		t.Run(string(kind), func(t *testing.T) {
-			db, _, member, project := membershipFixture(t)
-			mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID)
-			task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
-			worker, raw := readerWorker(t, queryID(100))
-			mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, raw)
-			seen := time.Now().UTC()
-			insertReaderSession(t, db, queryID(111), project.ID, task.ID, worker, readerSnapshot(t, queryID(111), project.ID, task.ID, worker, "active"), &seen, nil)
-			actor := model.Principal{Kind: kind, UserID: member.UserID, CredentialID: queryID(201)}
-			hash := sha256.Sum256([]byte(actor.CredentialID))
-			table := "personal_access_tokens"
-			if kind == model.PATCredential {
-				mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
-			} else {
-				table = "oauth_access_tokens"
-				mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, actor.CredentialID, queryID(202), actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
+func testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t *testing.T, db *postgres.Store, kind model.CredentialKind) {
+	_, member, project := prepareMembership(t, db)
+	mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID)
+	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
+	worker, raw := readerWorker(t, queryID(100))
+	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, task.ID, raw)
+	seen := time.Now().UTC()
+	insertReaderSession(t, db, queryID(111), project.ID, task.ID, worker, readerSnapshot(t, queryID(111), project.ID, task.ID, worker, "active"), &seen, nil)
+	actor := model.Principal{Kind: kind, UserID: member.UserID, CredentialID: queryID(201)}
+	hash := sha256.Sum256([]byte(actor.CredentialID))
+	table := "personal_access_tokens"
+	if kind == model.PATCredential {
+		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
+	} else {
+		table = "oauth_access_tokens"
+		mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, actor.CredentialID, queryID(202), actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
+	}
+	read := func(wantCredential, wantMember bool) {
+		t.Helper()
+		if err := db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
+			_, credentialErr := snapshot.CredentialDAO().Credential(t.Context(), actor)
+			if wantCredential && credentialErr != nil || !wantCredential && !errors.Is(credentialErr, model.ErrNotFound) {
+				t.Fatalf("credential: %v", credentialErr)
 			}
-			read := func(wantCredential, wantMember bool) {
-				t.Helper()
-				if err := db.ReadSnapshot(t.Context(), func(snapshot store.SnapshotScope) error {
-					_, credentialErr := snapshot.CredentialDAO().Credential(t.Context(), actor)
-					if wantCredential && credentialErr != nil || !wantCredential && !errors.Is(credentialErr, model.ErrNotFound) {
-						t.Fatalf("credential: %v", credentialErr)
-					}
-					_, memberErr := snapshot.ProjectDAO().ProjectAccess(t.Context(), actor, project.ID)
-					if wantMember && memberErr != nil || !wantMember && !errors.Is(memberErr, model.ErrNotFound) {
-						t.Fatalf("membership: %v", memberErr)
-					}
-					if !wantCredential || !wantMember {
-						return nil
-					}
-					sources, err := snapshot.SessionDAO().TaskSessionSources(t.Context(), project.ID, []string{task.ID})
-					if err != nil {
-						return err
-					}
-					if len(sources) != 1 || sources[0].Session == nil || sources[0].Session.SessionID != queryID(111) {
-						t.Fatalf("observation sources: %#v", sources)
-					}
-					_, err = snapshot.SessionDAO().TaskSessionInspectionSource(t.Context(), project.ID, task.ID, queryID(111))
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
+			_, memberErr := snapshot.ProjectDAO().ProjectAccess(t.Context(), actor, project.ID)
+			if wantMember && memberErr != nil || !wantMember && !errors.Is(memberErr, model.ErrNotFound) {
+				t.Fatalf("membership: %v", memberErr)
 			}
-			read(true, true)
-			mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID)
-			read(false, true)
-			mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '10 minutes' WHERE id=$1`, actor.CredentialID)
-			read(true, true)
-			mustQueryExec(t, db, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID)
-			read(true, false)
-			mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID)
-			read(true, true)
-			mustQueryExec(t, db, `DELETE FROM `+table+` WHERE id=$1`, actor.CredentialID)
-			read(false, true)
-			var version int64
-			var operations int
-			if err := db.Pool.QueryRow(t.Context(), `SELECT version,(SELECT count(*) FROM session_operations WHERE session_id=$2) FROM tasks WHERE id=$1`, task.ID, queryID(111)).Scan(&version, &operations); err != nil || version != task.Version || operations != 0 {
-				t.Fatalf("read changed durable state: version=%d operations=%d err=%v", version, operations, err)
+			if !wantCredential || !wantMember {
+				return nil
 			}
-		})
+			sources, err := snapshot.SessionDAO().TaskSessionSources(t.Context(), project.ID, []string{task.ID})
+			if err != nil {
+				return err
+			}
+			if len(sources) != 1 || sources[0].Session == nil || sources[0].Session.SessionID != queryID(111) {
+				t.Fatalf("observation sources: %#v", sources)
+			}
+			_, err = snapshot.SessionDAO().TaskSessionInspectionSource(t.Context(), project.ID, task.ID, queryID(111))
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read(true, true)
+	mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID)
+	read(false, true)
+	mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '10 minutes' WHERE id=$1`, actor.CredentialID)
+	read(true, true)
+	mustQueryExec(t, db, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID)
+	read(true, false)
+	mustQueryExec(t, db, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID)
+	read(true, true)
+	mustQueryExec(t, db, `DELETE FROM `+table+` WHERE id=$1`, actor.CredentialID)
+	read(false, true)
+	var version int64
+	var operations int
+	if err := db.Pool.QueryRow(t.Context(), `SELECT version,(SELECT count(*) FROM session_operations WHERE session_id=$2) FROM tasks WHERE id=$1`, task.ID, queryID(111)).Scan(&version, &operations); err != nil || version != task.Version || operations != 0 {
+		t.Fatalf("read changed durable state: version=%d operations=%d err=%v", version, operations, err)
 	}
 }
 
-func TestObservationReaderSelectsTaskIDsAndHistoricalSession(t *testing.T) {
-	db := isolatedStore(t)
+func testObservationReaderSelectsTaskIDsAndHistoricalSession(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	other := queryProject(t, db, 2)
 	worker, raw := readerWorker(t, queryID(100))
@@ -131,8 +126,7 @@ func TestObservationReaderSelectsTaskIDsAndHistoricalSession(t *testing.T) {
 	}
 }
 
-func TestObservationReaderBoundsBatchBeforeQuery(t *testing.T) {
-	db := isolatedStore(t)
+func testObservationReaderBoundsBatchBeforeQuery(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	if err := postgres.ReadOnlySnapshot(t.Context(), db.Pool, func(tx pgx.Tx) error {
 		counted := &countedReaderTx{Tx: tx}
@@ -157,8 +151,7 @@ func TestObservationReaderBoundsBatchBeforeQuery(t *testing.T) {
 	}
 }
 
-func TestObservationReaderProjectsHerdrWithoutFrames(t *testing.T) {
-	db := isolatedStore(t)
+func testObservationReaderProjectsHerdrWithoutFrames(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
 	worker, raw := readerWorker(t, queryID(100))

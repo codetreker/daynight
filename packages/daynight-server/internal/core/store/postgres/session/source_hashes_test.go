@@ -9,12 +9,14 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestSourceAcknowledgementLedgerCountAndCanceledStorageCalls(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
+func testSourceAcknowledgementLedgerCountAndCanceledStorageCalls(t *testing.T, db *postgres.Store) {
+	database := db
+	_, id := prepareArchiveSession(t, db)
 	ctx := t.Context()
 	epoch := uuid.NewString()
 	if _, e := database.Pool.Exec(ctx, `INSERT INTO session_source_hashes(session_id,source_epoch,kind,identity,digest,source_seq) SELECT $1,$2,'event',n::text,decode(repeat('ab',32),'hex'),1 FROM generate_series(1,8192) n`, id, epoch); e != nil {
@@ -62,7 +64,8 @@ func TestSourceAcknowledgementDoesNotAcceptFailedInsert(t *testing.T) {
 		{"error", "BEGIN RAISE EXCEPTION 'source acknowledgement storage failure'; END"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			database, _, id := sessionArchiveLockFixture(t)
+			database := isolatedStore(t)
+			_, id := prepareArchiveSession(t, database)
 			ctx := t.Context()
 			// Each test owns its database. The trigger preserves real PostgreSQL
 			// command and transaction outcomes while refusing acknowledgement storage.
@@ -95,8 +98,8 @@ func TestSourceAcknowledgementDoesNotAcceptFailedInsert(t *testing.T) {
 	}
 }
 
-func TestExternalSourceHashPrunesExplicitBoundaryAndOldEpoch(t *testing.T) {
-	db, id, _ := imageLedgerSession(t)
+func testExternalSourceHashPrunesExplicitBoundaryAndOldEpoch(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
 	epoch := uuid.NewString()
 	digest := bytes.Repeat([]byte{7}, 32)
 	h := store.SessionSourceHash{SessionID: id, SourceEpoch: epoch, Kind: "event", Digest: digest}

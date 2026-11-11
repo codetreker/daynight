@@ -66,8 +66,7 @@ func readSessionSources(t *testing.T, db *postgres.Store, project string) []stor
 	return sources
 }
 
-func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T, db *postgres.Store) {
 	project, other := queryProject(t, db, 1), queryProject(t, db, 2)
 	worker, raw := readerWorker(t, queryID(100))
 	lastSeen := time.Date(2026, 11, 8, 1, 2, 4, 123456000, time.UTC)
@@ -146,8 +145,7 @@ func TestSessionReaderCurrentProjectBindingsAndNarrowMetadata(t *testing.T) {
 	}
 }
 
-func TestSessionReaderPropagatesWorkerDecodeErrors(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionReaderPropagatesWorkerDecodeErrors(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
 	_, valid := readerWorker(t, queryID(100))
@@ -182,8 +180,7 @@ func TestSessionReaderPropagatesWorkerDecodeErrors(t *testing.T) {
 	}
 }
 
-func TestSessionReaderPreservesMetadataDecodeErrorsAndIndependentIdentity(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionReaderPreservesMetadataDecodeErrorsAndIndependentIdentity(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 11, model.TaskInProgress)
 	worker, raw := readerWorker(t, queryID(100))
@@ -234,8 +231,7 @@ func (tx *countedReaderTx) Query(ctx context.Context, sql string, args ...any) (
 	return rows, err
 }
 
-func TestSessionReaderUsesOneReadOnlyProjectQuery(t *testing.T) {
-	db := isolatedStore(t)
+func testSessionReaderUsesOneReadOnlyProjectQuery(t *testing.T, db *postgres.Store) {
 	project := queryProject(t, db, 1)
 	worker, raw := readerWorker(t, queryID(100))
 	for _, number := range []int{11, 12, 13} {
