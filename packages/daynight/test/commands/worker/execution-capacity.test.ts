@@ -63,6 +63,23 @@ describe("runtime execution capacity facts", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
+  it("revokes the exact attempt's stopped fact on a synchronous source conflict", () => {
+    const wake = vi.fn(), view = createExecutionCapacity(wake);
+    view.beginAttempt(attempt); view.notify({ attempt, observation: stopped() });
+    const pending = view.beginObservation(owner)!;
+    const error = new ExecutionSourceConflictError("Commit identified another source");
+    expect(view.notifyConflict({ attempt: { ...attempt, attemptId: "old" }, execution, error, observedAt: 3 })).toBe(false);
+    expect(view.notifyConflict({ attempt, execution: { ...execution, runKey: "other" }, error, observedAt: 3 })).toBe(false);
+    expect(view.isStopped(owner)).toBe(true);
+    expect(view.notifyConflict({ attempt, execution, error, observedAt: 3 })).toBe(true);
+    expect(view.isStopped(owner)).toBe(false);
+    expect(view.getDiagnostic(owner)).toMatchObject({ error });
+    expect(view.commitObservation(pending, stopped())).toBe(false);
+    expect(view.commitObservation(view.beginObservation(owner)!, unknown())).toBe(true);
+    expect(view.getDiagnostic(owner)).toMatchObject({ error });
+    expect(wake).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["running", "stopped", "not-started"] as const)("treats a conflicting %s source as unknown until explicit invalidation", kind => {
     const wake = vi.fn(), view = createExecutionCapacity(wake);
     view.beginAttempt(attempt); view.notify({ attempt, observation: stopped() });

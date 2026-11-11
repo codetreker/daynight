@@ -14,6 +14,7 @@ import type { WorkerPromptTuple } from "../../../src/commands/worker/prompt-sour
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
@@ -1042,6 +1043,12 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
   });
   const inspect = vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("running");
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockResolvedValue(snapshot);
+  const openStop = vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ journalPath, ticket, controller, native }) => ({
+    confirm: () => processProof.confirmControllerProcessesStopped(controller, native),
+    stop: deadline => processProof.stopControllerProcesses(controller, native, deadline),
+    commit: () => lifecycle.recordStoppedControllerGeneration(journalPath, ticket),
+    close: async () => {},
+  }));
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
   if (mode === "resume") f.store.blockOrchestration(current, { source: "worktree", code: "branch_mismatch", message: "Temporary branch deviation." }, 7);
@@ -1051,6 +1058,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
     expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
     expect(f.store.getTask(task)?.webExecution?.controllerProcess).toEqual(cached);
     expect(launcher.launch).not.toHaveBeenCalled();
+    expect(openStop).not.toHaveBeenCalled();
     if (mode === "resume") expect(f.store.getOrchestrationBlocker(task)).not.toBeNull();
     return;
   }
@@ -1062,6 +1070,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
     expect(f.store.getOrchestrationBlocker(task)).toBeNull();
     expect(inspect.mock.calls.map(([proof]) => proof)).toEqual([controller, native]);
   } else {
+    expect(openStop).toHaveBeenCalledWith(expect.objectContaining({ ticket: source.ticket, controller, native: [native] }));
     expect(source.stopped).toHaveBeenCalledWith(controller, [native]);
     expect(stop).toHaveBeenCalledWith(controller, [native], expect.any(Number));
   }

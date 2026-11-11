@@ -3,22 +3,13 @@ import type { Operation } from "../../../api/operation.js";
 import { controllerExecutionDirectory, LaunchTicketIdentityError, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
-import { ControllerStopIdentityError, openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
-import { WindowsJobEvidenceConflictError } from "../../controller/windows-job-evidence.js";
+import { isControllerStopIdentityConflict, openControllerStop, recoverWindowsControllerProof } from "../../controller/controller-stop.js";
 import { withControllerStop } from "../../controller/controller-stop-scope.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { preservesControllerProcessProof, preservesNativeProcessPrefix } from "./orchestration.js";
 import type { LocalTask } from "./web-types.js";
 import { ExecutionSourceConflictError } from "../execution-stop.js";
 import type { CleanupTarget, StopObservation } from "../execution-stop.js";
-
-const hasIdentityConflict = (error: unknown, seen = new Set<unknown>()): boolean => {
-  if (typeof error !== "object" || error === null || seen.has(error)) return false;
-  seen.add(error);
-  if (error instanceof ControllerStopIdentityError || error instanceof WindowsJobEvidenceConflictError) return true;
-  if (error instanceof AggregateError && error.errors.some(item => hasIdentityConflict(item, seen))) return true;
-  return error instanceof Error && hasIdentityConflict(error.cause, seen);
-};
 
 /** Recover the ticket bound to a previous Windows generation from its stored proof. */
 export const previousWebTicket = async (home: string, snapshot: ControllerSnapshot): Promise<ControllerLaunchTicket> => {
@@ -106,6 +97,6 @@ export const observeWebExecutionStop = async (target: CleanupTarget, task: Local
     return { kind: stopped ? "stopped" : "running", execution: webExecutionRef(task), observedAt: now() };
   } catch (error) {
     operation.check();
-    return { kind: "unknown", target, error: hasIdentityConflict(error) ? new ExecutionSourceConflictError("The original Windows stop evidence conflicts with its recorded source.", { cause: error }) : error, observedAt: now() };
+    return { kind: "unknown", target, error: isControllerStopIdentityConflict(error) ? new ExecutionSourceConflictError("The original Windows stop evidence conflicts with its recorded source.", { cause: error }) : error, observedAt: now() };
   }
 };

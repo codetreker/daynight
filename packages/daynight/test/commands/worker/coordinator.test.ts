@@ -5,6 +5,7 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -2358,6 +2359,48 @@ it("keeps stopped capacity on a read failure but reserves it again for conflicti
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(f.worktrees.has(owner.claimId)).toBe(true);
   } finally { finish.resolve(); await coordinator.shutdown(); webStore.close(); }
+});
+
+it.each(["conflict", "io"] as const)("handles %s during Web stop commit without losing attempt fencing", async failure => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const f = await fixture(1), webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const original = f.candidates[0]!, next = f.candidates[1]!;
+  const remote = f.grant(original, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }); f.store.activateTask(owner);
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
+  record = webStore.initializeWebExecution(record, 3);
+  record = webStore.updateWebExecution(record, { sessionId: uuid(812), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
+  const stopped = await stoppedWebExecution(f, webStore, record);
+  webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
+  f.grants.clear(); f.candidates.splice(0);
+  const monitor = createMonitoringObserver({ now: f.options.now }), completed = Promise.withResolvers<void>();
+  const occupied: boolean[] = [], conflict = new controllerStop.ControllerStopIdentityError("Job source changed");
+  vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async () => ({
+    confirm: async () => true, stop: async () => {}, close: async () => {},
+    commit: async hooks => {
+      hooks!.onVerified();
+      occupied.push(monitor.capture("before").reservations.find(value => "claimId" in value.scope && value.scope.claimId === owner.claimId)!.occupied);
+      if (failure === "conflict") hooks!.onConflict(conflict);
+      occupied.push(monitor.capture("after").reservations.find(value => "claimId" in value.scope && value.scope.claimId === owner.claimId)!.occupied);
+      completed.resolve(); throw failure === "conflict" ? conflict : new Error("Temporary journal I/O failure");
+    },
+  }));
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive: vi.fn(), request: stopped.request });
+  const observeExecutionStop: typeof backend.observeExecutionStop = async target => ({ kind: "unknown", target, error: new Error("temporarily unavailable"), observedAt: 1000 });
+  const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: { ...backend, observeExecutionStop }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  try {
+    await coordinator.tick(); await completed.promise;
+    expect(occupied).toEqual(failure === "conflict" ? [false, true] : [false, false]);
+    f.candidates.push(next); await coordinator.tick();
+    if (failure === "conflict") expect(f.remote.claim).not.toHaveBeenCalled();
+    else expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.store.getTask(owner)?.status).toBe("active");
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it.each(["same", "different"] as const)("handles a %s worktree reservation while the next inventory is pending", async match => {

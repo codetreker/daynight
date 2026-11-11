@@ -15,6 +15,7 @@ import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLat
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
 import type { CleanupRequest, CleanupTarget } from "../execution-stop.js";
+import { ExecutionSourceConflictError } from "../execution-stop.js";
 import type { Operation } from "../../../api/operation.js";
 import { assertWebTicketIdentity, confirmWebStop, observeWebExecutionStop, previousWebTicket, settleWebStop, webExecutionRef } from "./web-stop.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
@@ -128,8 +129,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const current = (task: LocalTask): LocalTask => { const latest = options.store.getTask(task); if (latest === null || taskAgentControlMode(latest) !== "web") throw new Error("The frozen Web execution disappeared."); return latest; };
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
   const confirmSaved = async (task: LocalTask, saved: ControllerSnapshot): Promise<boolean> => {
-    if (!saved.controllerProcess) throw new Error("The original controller process identity is missing.");
-    if (process.platform !== "win32" && saved.controllerProcess.processGroupId !== null && saved.controllerProcess.jobObjectName === undefined) return confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
+    const proof = saved.controllerProcess ?? task.webExecution?.controllerProcess ?? null;
+    if (process.platform !== "win32" && proof !== null && proof.processGroupId !== null && proof.jobObjectName === undefined) return confirmControllerProcessesStopped(proof, saved.nativeProcesses);
     const ticket = saved.executionGeneration === task.webExecution!.executionGeneration
       ? await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId)
       : await previousWebTicket(options.homeDirectory, saved);
@@ -521,8 +522,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 stopped = await stop.confirm();
               }
               if (!stopped) throw new Error("The original controller or its native processes still exist.");
-              if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
-              if (saved !== null) await stop.commit();
+              const notifyStopped = () => {
+                if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionStopped({ attempt: cleanupRequest.scope.attempt, observation: { kind: "stopped", execution: webExecutionRef(task), observedAt: options.now() } });
+              };
+              if (saved !== null) await stop.commit({
+                onVerified: notifyStopped,
+                onConflict: error => {
+                  if (cleanupRequest.kind === "terminal") cleanupRequest.scope.onExecutionConflict?.({ attempt: cleanupRequest.scope.attempt, execution: webExecutionRef(task), error: new ExecutionSourceConflictError("The original Windows stop evidence conflicts with its recorded source.", { cause: error }), observedAt: options.now() });
+                },
+              });
+              else notifyStopped();
               return true;
             });
             if (!completedStop) return { task, complete: false };

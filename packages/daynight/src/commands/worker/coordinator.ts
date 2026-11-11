@@ -36,7 +36,7 @@ import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, W
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 import { createExecutionCapacity } from "./execution-capacity.js";
-import type { CleanupAttempt, CleanupTarget, ExecutionStoppedNotice, TerminalCleanupContext } from "./execution-stop.js";
+import type { CleanupAttempt, CleanupTarget, ExecutionStopConflictNotice, ExecutionStoppedNotice, TerminalCleanupContext } from "./execution-stop.js";
 import { encodeWorktree } from "./monitoring/worktree.js";
 import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
@@ -211,6 +211,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (current && hasWorktreeIdentity(current) && sameOwner(current, owner) && capacityFacts.notify(notice)) {
         observe(m => m.updateReservationOccupancy(owner, !stoppedForCapacity(owner)));
         if (capacityFacts.isStopped(owner)) recoverStopObservation(key(owner));
+      }
+    }, onExecutionConflict: (notice: ExecutionStopConflictNotice) => {
+      const current = ending.get(key(owner));
+      if (current && hasWorktreeIdentity(current) && sameOwner(current, owner) && capacityFacts.notifyConflict(notice)) {
+        observe(m => m.updateReservationOccupancy(owner, !stoppedForCapacity(owner)));
       }
     } };
   };

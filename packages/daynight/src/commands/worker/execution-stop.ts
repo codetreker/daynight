@@ -18,7 +18,8 @@ export type ExecutionStoppedNotice = {
   attempt: CleanupAttempt;
   observation: Extract<StopObservation, { kind: "stopped" | "not-started" }>;
 };
-export type TerminalCleanupContext = { attempt: CleanupAttempt; onExecutionStopped(notice: ExecutionStoppedNotice): void };
+export type ExecutionStopConflictNotice = { attempt: CleanupAttempt; execution: ExecutionRef; error: ExecutionSourceConflictError; observedAt: number };
+export type TerminalCleanupContext = { attempt: CleanupAttempt; onExecutionStopped(notice: ExecutionStoppedNotice): void; onExecutionConflict?(notice: ExecutionStopConflictNotice): void };
 export type CleanupRequest =
   | { kind: "terminal"; deadline: number; immediateStop: boolean; scope: TerminalCleanupContext; signal?: AbortSignal }
   | { kind: "shutdown"; deadline: number; immediateStop: true; signal?: AbortSignal };

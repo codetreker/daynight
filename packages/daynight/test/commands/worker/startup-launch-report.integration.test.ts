@@ -8,6 +8,8 @@ import type { Task } from "../../../src/api/types.js";
 import { readSessionStartupReport, readWorkerClaim } from "../../../src/api/task-properties.js";
 import { openControllerLifecycleStore, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import * as controllerStop from "../../../src/commands/controller/controller-stop.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
@@ -33,7 +35,7 @@ vi.mock("node:child_process", async importOriginal => {
 vi.mock("../../../src/commands/controller/process-proof.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/commands/controller/process-proof.js")>();
   return { ...actual,
-    captureProcessProof: async (pid: number) => ({ pid, parentPid: process.pid, processGroupId: null, startedAt: "fixture", commandHash: "a".repeat(64) }),
+    captureProcessProof: async (pid: number) => ({ pid, parentPid: process.pid, processGroupId: process.platform === "win32" ? null : pid, startedAt: "fixture", commandHash: "a".repeat(64) }),
     confirmControllerProcessesStopped: async (controller: Parameters<typeof actual.confirmControllerProcessesStopped>[0], descendants: Parameters<typeof actual.confirmControllerProcessesStopped>[1]) => {
       expect(controller.pid).toBe(native.children.at(-1)?.pid);
       expect(native.children.at(-1)?.exitCode).toBe(1);
@@ -51,6 +53,18 @@ afterEach(async () => {
 });
 
 const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "executionId" | "claimId" | "sessionId" | "executionGeneration" | "controllerInstanceId">> = {}) => {
+  if (process.platform === "win32") {
+    vi.spyOn(controllerStop, "recoverWindowsControllerProof").mockImplementation(() => {
+      const pid = native.children.at(-1)?.pid;
+      return pid === undefined ? null : { pid, parentPid: process.pid, processGroupId: null, startedAt: "fixture", commandHash: "a".repeat(64) };
+    });
+    vi.spyOn(controllerStop, "openControllerStop").mockImplementation(async ({ controller, native: descendants }) => ({
+      confirm: () => processProof.confirmControllerProcessesStopped(controller, descendants),
+      stop: async () => { throw new Error("Unexpected stop in startup observation."); },
+      commit: async () => { throw new Error("Unexpected commit in startup observation."); },
+      close: async () => {},
+    }));
+  }
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/startup-launch-report");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-"));

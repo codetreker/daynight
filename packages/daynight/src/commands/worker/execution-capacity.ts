@@ -1,5 +1,5 @@
 import { ExecutionSourceConflictError } from "./execution-stop.js";
-import type { CleanupAttempt, ExecutionRef, ExecutionStoppedNotice, StopObservation } from "./execution-stop.js";
+import type { CleanupAttempt, ExecutionRef, ExecutionStopConflictNotice, ExecutionStoppedNotice, StopObservation } from "./execution-stop.js";
 import type { ResourceOwner } from "./types.js";
 
 type ObservationTicket = { owner: ResourceOwner; sequence: bigint };
@@ -55,7 +55,7 @@ export const createExecutionCapacity = (onChange: () => void) => {
     if (observation.kind === "unknown" ? !matchesTarget(owner, observation.target) : !sameOwner(owner, ownerOf(observation))) return false;
     const wasStopped = stopped(entry);
     if (observation.kind === "unknown") {
-      entry.diagnostic = copyObservation(observation) as typeof observation;
+      if (!entry.conflict || observation.error instanceof ExecutionSourceConflictError) entry.diagnostic = copyObservation(observation) as typeof observation;
       if (observation.error instanceof ExecutionSourceConflictError) entry.conflict = true;
       if (entry.observation === null && !entry.conflict) entry.observation = copyObservation(observation);
     } else if (!entry.conflict) {
@@ -92,6 +92,15 @@ export const createExecutionCapacity = (onChange: () => void) => {
     return apply(entry, owner, notice.observation);
   };
 
+  const notifyConflict = (notice: ExecutionStopConflictNotice): boolean => {
+    const owner = notice.attempt.owner, entry = entries.get(ownerKey(owner));
+    if (!entry || entry.attempt.attemptId !== notice.attempt.attemptId || !sameOwner(entry.attempt.owner, owner) || !sameOwner(owner, notice.execution.owner)) return false;
+    const previous = entry.observation;
+    if (!previous || previous.kind !== "stopped" || !sameExecution(previous.execution, notice.execution)) return false;
+    entry.sequence = next();
+    return apply(entry, owner, { kind: "unknown", target: owner, error: notice.error, observedAt: notice.observedAt });
+  };
+
   const invalidate = (owner: ResourceOwner): void => {
     const key = ownerKey(owner), entry = entries.get(key);
     if (!entry) return;
@@ -101,7 +110,7 @@ export const createExecutionCapacity = (onChange: () => void) => {
   };
 
   return {
-    beginAttempt, beginObservation, commitObservation, notify, invalidate,
+    beginAttempt, beginObservation, commitObservation, notify, notifyConflict, invalidate,
     isStopped: (owner: ResourceOwner): boolean => { const entry = entries.get(ownerKey(owner)); return entry !== undefined && stopped(entry); },
     getObservation: (owner: ResourceOwner): StopObservation | null => {
       const entry = entries.get(ownerKey(owner));

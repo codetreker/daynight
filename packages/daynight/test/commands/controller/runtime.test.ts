@@ -1,11 +1,11 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import path from "node:path";
-const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
+const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), previousSnapshot: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
-vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
-vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => fixture.journal() }));
+vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async (_home: string, launchId: string) => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: launchId === "launch" ? "2" : "1", sessionId: "session", claimId: "claim", launchId, nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
+vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => fixture.journal(...args), readControllerSnapshot: (...args: unknown[]) => fixture.previousSnapshot(...args) }));
 const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
 vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
 vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: async () => {}, invalidate: () => {} }; } }));
@@ -22,6 +22,7 @@ vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases
 import { runController } from "../../../src/commands/controller/runtime.js";
 afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.close.mockReset(); externalRuntime.close.mockResolvedValue(); vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
+  fixture.previousSnapshot.mockImplementation(() => process.platform === "win32" ? { controllerProcess: { processGroupId: null, jobObjectName: "Local\\Daynight-00000000-0000-4000-8000-000000000001" } } : null);
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
   fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; } });
@@ -293,4 +294,19 @@ test("an external producer close failure cannot skip provider and journal cleanu
   try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); process.emit("SIGTERM", "SIGTERM"); await running; }
   finally { log.mockRestore(); }
   expect(fixture.close).toHaveBeenCalledOnce(); expect(fixture.relayClose).toHaveBeenCalledOnce(); expect(fixture.closed).toBe(true);
+});
+
+test("passes the original Windows ticket to journal recovery before starting a successor", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    expect(fixture.previousSnapshot).toHaveBeenCalledWith(path.join("/private/controller", "journal.sqlite"));
+    expect(fixture.journal).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ launchId: "launch", executionGeneration: "2" }), expect.objectContaining({ previousWindowsTicket: expect.objectContaining({ launchId: "00000000-0000-4000-8000-000000000001", executionGeneration: "1" }) }));
+  } finally {
+    try { process.emit("SIGTERM", "SIGTERM"); await running; }
+    finally { Object.defineProperty(process, "platform", platform); }
+  }
 });
