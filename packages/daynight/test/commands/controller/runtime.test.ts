@@ -76,7 +76,7 @@ test("dispatches Copilot with its frozen profile and closes that provider", asyn
     await vi.waitFor(() => { if (failure) throw failure; expect(fixture.open).toHaveBeenCalledOnce(); });
     expect((fixture.options as { env: NodeJS.ProcessEnv }).env.COPILOT_HOME).toBe("/private/native");
     expect((fixture.options as { toolLaunch: unknown }).toolLaunch).toBe(toolLaunch);
-    expect((fixture.options as { toolRuntimeRoot: string }).toolRuntimeRoot).toBe(path.join("/private/worker-state", "worker", "tool-runtimes"));
+    expect((fixture.options as { toolRuntimeRoot: string }).toolRuntimeRoot).toBe(path.resolve("/private/worker-state", "worker", "tool-runtimes"));
     expect(process.env.COPILOT_HOME).toBe("/changed/after/launch");
   } finally { if (!failure) process.emit("SIGTERM", "SIGTERM"); await running.catch(() => {}); }
   expect(fixture.close).toHaveBeenCalledOnce();

@@ -54,7 +54,8 @@ test.skipIf(process.platform === "win32")("runtime metadata refuses public modes
   await expect(f.read()).rejects.toMatchObject({ code: "not_executable" });
 });
 
-test("runtime metadata rejects replacement after reading the original descriptor", async () => {
+// Windows rejects replacement of the open file itself; POSIX permits it.
+test.skipIf(process.platform === "win32")("runtime metadata rejects replacement after reading the original descriptor", async () => {
   const f = await fixture(), replacement = path.join(f.root, "replacement");
   await writeFile(f.file, "original", { mode: 0o600 }); await writeFile(replacement, "replaced", { mode: 0o600 });
   barrier.afterRead = async () => { await rename(replacement, f.file); };

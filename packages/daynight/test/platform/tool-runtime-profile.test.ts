@@ -30,7 +30,8 @@ test("runtime manifest covers every file and empty directory and rejects mutatio
     await writeFile(path.join(root, "manifest.json"), JSON.stringify(manifest));
     await writeFile(entry, "hello"); await writeFile(path.join(distribution, "extra"), "extra");
     await expect(readRuntimeManifest(root, key, operation)).rejects.toThrow(); await rm(path.join(distribution, "extra"));
-    await chmod(entry, 0o700); await expect(readRuntimeManifest(root, key, operation)).rejects.toThrow();
+    // Windows chmod does not expose POSIX permission bits.
+    if (process.platform !== "win32") { await chmod(entry, 0o700); await expect(readRuntimeManifest(root, key, operation)).rejects.toThrow(); }
     await rm(entry); await symlink(path.join(root, "manifest.json"), entry); await expect(captureRuntimeTree(distribution, operation)).rejects.toThrow();
   } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); }
 });
@@ -42,7 +43,7 @@ test("runtime admission rejects self-declared roots and symlink/private-director
     const child = path.join(root, "a".repeat(64)); await mkdir(child, { mode: 0o700 });
     await verifyPrivateRuntimeDirectory(child, root, operation);
     await expect(verifyPrivateRuntimeDirectory(child, path.join(root, "other"), operation)).rejects.toThrow();
-    await chmod(child, 0o755); await expect(verifyPrivateRuntimeDirectory(child, root, operation)).rejects.toThrow();
+    if (process.platform !== "win32") { await chmod(child, 0o755); await expect(verifyPrivateRuntimeDirectory(child, root, operation)).rejects.toThrow(); }
     await rm(child, { recursive: true }); await symlink(root, child); await expect(verifyPrivateRuntimeDirectory(child, root, operation)).rejects.toThrow();
   } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); }
 });
