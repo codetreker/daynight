@@ -2071,6 +2071,25 @@ Each raw profile passes an exact statement comparison strictly greater than
 90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
 coverage blocks without loading the complete profile into one string.
 
+Each coverage invocation also retains the original `go test -json` bytes under
+`.tmp/go-test-evidence/module/run-*/` or
+`.tmp/go-test-evidence/startup-shutdown/run-*/`. Inspect `go-test.jsonl` when the
+coverage summary omits a test's failure detail. `go-test.complete.json` records
+the captured byte count and the Go process's exit code or signal; it confirms
+complete capture, including a failed test run, rather than a passing result.
+A missing marker means the log may be partial. `go-test.failed.json` records a
+capture failure and prevents success even if another invocation publishes a
+completion marker afterward. Later invocations use new
+directories, preserving earlier evidence. The corresponding CI artifacts include
+these files even when validation fails.
+
+Capture preserves the same Go invocation, parameters and coverage calculation.
+File or forwarding errors fail validation. The existing command supervisor owns
+the coverage process group, with a 30-minute module bound and the existing
+12-minute lifecycle bound; per-package test and CI job limits still apply.
+The [failure evidence decision](../../.agents/notes/implemented/testing/2026-11-11-go-test-failure-evidence.md)
+records why the raw stream is retained separately from the coverage summary.
+
 Production packages have disjoint coverage owners:
 
 | Entry | Tests and production coverage | Profile |

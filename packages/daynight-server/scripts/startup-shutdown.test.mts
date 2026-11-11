@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { readFile, readdir } from 'node:fs/promises';
 import { runValidation } from './testdata/validation-fixture.mts';
 
 test('startup and shutdown runner owns only command coverage and the process recovery probe', async (t) => {
   const { result, trace, fixture } = await runValidation(t, 'startup-shutdown', undefined);
   assert.equal(result.status, 0, result.stderr);
+  assert.ok(trace.includes('go-cov-capture.mts startup-shutdown '));
+  const base = join(fixture, '.tmp/go-test-evidence/startup-shutdown');
+  const [run] = await readdir(base);
+  assert.ok(run);
+  const raw = await readFile(join(base, run, 'go-test.jsonl'));
+  assert.ok(raw.length > 0);
+  assert.deepEqual(JSON.parse(await readFile(join(base, run, 'go-test.complete.json'), 'utf8')),
+    { version: 1, bytes: raw.length, exitCode: 0, signal: null });
   const coverage = trace.split('\n').find(line => line.startsWith('go-cov '))!;
   assert.ok(coverage.includes(`--config=${join(fixture, '.go-cov.toml')}`));
   assert.match(coverage, /--race=true --tags=startupshutdown/);

@@ -26,5 +26,6 @@ go clean -testcache
 export CI=true
 cd -- "$DAYNIGHT_MODULE_ROOT/cmd/daynight-server"
 node "$DAYNIGHT_MODULE_ROOT/scripts/command-timeout.mts" 720000 5000 env GOFLAGS="$lifecycle_go_flags -coverpkg=$command_package" \
+  node "$DAYNIGHT_MODULE_ROOT/scripts/go-cov-capture.mts" startup-shutdown "$(command -v go)" \
   "$GOBIN/go-cov" --config="$DAYNIGHT_MODULE_ROOT/.go-cov.toml" --race="$race" --tags=startupshutdown --coverprofile="$profile"
 node "$DAYNIGHT_MODULE_ROOT/scripts/coverage.mts" "$profile"
