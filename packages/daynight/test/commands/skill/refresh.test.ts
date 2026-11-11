@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CliContext } from "../../../src/cli/context.js";
 import { findSkillProjectRoot, refreshInstalledSkills } from "../../../src/commands/skill/refresh.js";
+import { manualTopicFiles } from "../../../src/commands/skill/manual.js";
+import { writeManualTopics } from "../../fixtures/manual-topics.js";
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true }))); });
@@ -25,7 +27,7 @@ const fixture = async () => {
   await fs.mkdir(path.join(source, "references"), { recursive: true });
   const entrypoint = "---\nname: using-daynight\ndescription: Current guidance\n---\nNew bundle\n";
   await fs.writeFile(path.join(source, "SKILL.md"), entrypoint);
-  await fs.writeFile(path.join(source, "references/manual.md"), "New manual\n");
+  await writeManualTopics(source);
   const output: string[] = [];
   const errors: string[] = [];
   const context: CliContext = {
@@ -37,6 +39,8 @@ const fixture = async () => {
     await fs.mkdir(target, { recursive: true });
     await fs.writeFile(path.join(target, "SKILL.md"), "Local edits\n");
     await fs.writeFile(path.join(target, "obsolete"), "old resource");
+    await fs.mkdir(path.join(target, "references"));
+    await fs.writeFile(path.join(target, "references/manual.md"), "old monolithic manual");
     return target;
   };
   return { directory, home, project, source, context, output, errors, entrypoint, seed };
@@ -53,7 +57,8 @@ describe("refresh existing agent skills", () => {
     for (const target of [user, project]) {
       expect((await fs.readdir(target)).sort()).toEqual(["SKILL.md", "references"]);
       expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe(f.entrypoint);
-      expect(await fs.readFile(path.join(target, "references/manual.md"), "utf8")).toBe("New manual\n");
+      for (const filename of manualTopicFiles) expect(await fs.readFile(path.join(target, filename))).toEqual(await fs.readFile(path.join(f.source, filename)));
+      await expect(fs.lstat(path.join(target, "references/manual.md"))).rejects.toMatchObject({ code: "ENOENT" });
     }
     await expect(fs.lstat(path.join(f.home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.lstat(path.join(f.project, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -109,7 +114,6 @@ describe("refresh existing agent skills", () => {
   it("ignores a nested candidate that has no installed skill", async () => {
     const f = await fixture();
     const user = await f.seed(f.home, ".agents");
-    await fs.mkdir(path.join(user, "references"));
     await fs.mkdir(path.join(f.home, ".claude"));
     await link(path.join(user, "references"), path.join(f.home, ".claude/skills"));
     await refreshInstalledSkills(f.context, signal());
@@ -149,15 +153,14 @@ describe("refresh existing agent skills", () => {
     expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("Local edits\n");
   });
 
-  it.each(["missing", "directory", "whitespace", "unicode whitespace", "invalid UTF-8"])("keeps every existing copy when the source manual is %s", async (damage) => {
+  it.each(["missing", "directory", "whitespace", "unicode whitespace", "invalid UTF-8"])("keeps every existing copy when a source topic is %s", async (damage) => {
     const f = await fixture();
     const user = await f.seed(f.home, ".agents");
     const project = await f.seed(f.project, ".claude");
     for (const target of [user, project]) {
-      await fs.mkdir(path.join(target, "references"));
       await fs.writeFile(path.join(target, "references/autopilot-managed-task.md"), "old workflow\n");
     }
-    const manual = path.join(f.source, "references/manual.md");
+    const manual = path.join(f.source, manualTopicFiles[4]);
     if (damage === "missing" || damage === "directory") {
       await fs.rm(manual);
       if (damage === "directory") await fs.mkdir(manual);

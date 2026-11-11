@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { manualTopicFiles } from "../../src/commands/skill/manual.js";
 
-const requiredSkillResources = ["SKILL.md", "references/manual.md"] as const;
+const requiredSkillResources = ["SKILL.md", ...manualTopicFiles] as const;
 
 type Resource = { readonly path: string; readonly sha256: string; readonly localReferences: readonly string[] };
 export type InstalledSkillContract = {
@@ -66,7 +67,7 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   await visit(root);
   resources.sort((left, right) => left.path.localeCompare(right.path));
   for (const resource of requiredSkillResources) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
-  assert.deepEqual(resources.map((resource) => resource.path).sort(), [...requiredSkillResources].sort(), "The bundle contains only the entrypoint and manual.");
+  assert.deepEqual(resources.map((resource) => resource.path).sort(), [...requiredSkillResources].sort(), "The bundle contains only the entrypoint and topic references.");
   const entrypoint = documents.get("SKILL.md");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(entrypoint!);
   assert.notEqual(frontmatter, null, "The installed skill has YAML frontmatter.");

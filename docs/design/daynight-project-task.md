@@ -140,8 +140,8 @@ Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受�
 单响应与 256 MiB 总读取预算，并保留取消。它校验主体、项目、响应字段、总数、
 重复 ID 和 cursor，全部页面成功后才输出；`search_changed` 不自动重放。
 
-文本与JSON来源相同精简搜索结果；JSON显式保留id/projectId/title/status/cancelledAt/context/match，文本保持状态与命中呈现，避免服务端
-新增字段自动泄入输出。标题和链代表标题完整保留，文本使用终端可见转义；描述
+文本与JSON来源相同精简搜索结果；JSON显式保留id/type/parentId/projectId/title/status/cancelledAt/context/match，文本保持类型、parent、状态与命中呈现，避免服务端
+新增字段自动泄入输出。任务标题和实际父 Goal 标题完整保留，文本使用终端可见转义；描述
 只使用服务端提供的正向命中摘要。搜索不是完整 Task 读取，也不复用普通列表的
 默认状态过滤或重排。[搜索需求](../spec/daynight-project-task.md#项目任务搜索)拥有
 CLI 的行为与错误，服务端机制由[搜索设计](daynight-task-search.md)拥有。

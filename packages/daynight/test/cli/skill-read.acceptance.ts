@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { createSkillFixture, skillPipe } from "../fixtures/skill-terminal.js";
+import { assembleManual } from "../../src/commands/skill/manual-assembly.js";
+import { manualTopicFiles } from "../../src/commands/skill/manual.js";
 
 let installed: Awaited<ReturnType<typeof createAcceptanceCli>>;
 beforeAll(async () => { installed = await createAcceptanceCli(); });
@@ -12,10 +14,12 @@ const manual = (): string => path.join(path.dirname(installed.receipt.entryPath)
 
 it("reads the packed standalone manual through both aliases without configuration, Git, installed skills or agent execution", async () => {
   const fixture = await createSkillFixture(path.join(installed.receipt.root, "CLI usage reading 中文"), []);
-  const source = path.resolve(import.meta.dirname, "../../src/commands/skill/skills/using-daynight/references/manual.md");
-  const contents = await readFile(source);
+  const source = path.resolve(import.meta.dirname, "../../src/commands/skill/skills/using-daynight");
+  const sources = new Map(await Promise.all(manualTopicFiles.map(async (filename) => [filename, await readFile(path.join(source, filename))] as const)));
+  const contents = Buffer.from(assembleManual(sources));
   expect(await readFile(manual())).toEqual(contents);
-  expect(await readFile(path.join(path.dirname(installed.receipt.entryPath), "commands/skill/skills/using-daynight/references/manual.md"))).toEqual(contents);
+  const bundle = path.join(path.dirname(installed.receipt.entryPath), "commands/skill/skills/using-daynight");
+  for (const [filename, original] of sources) expect(await readFile(path.join(bundle, filename))).toEqual(original);
   expect(contents.toString("utf8")).toContain("--assigned-to");
   expect(contents.toString("utf8")).toContain("--clear-assigned-to");
   const alias = path.join(path.dirname(installed.receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");

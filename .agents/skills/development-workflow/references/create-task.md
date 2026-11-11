@@ -1,14 +1,14 @@
 # Create task
 
 Prepare and register authorized work, then return without automatic execution.
-Apply [authorization and scope](authorization.md) first, find commands in the [CLI handbook](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#setup), and prepare content under the [task content standard](task-content.md).
+Apply [authorization and scope](authorization.md) first, find commands in the [CLI handbook](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/setup-and-projects.md#setup), and prepare content under the [task content standard](task-content.md).
 
 ## Select and check for duplicates
 
 Use one task per independently tracked result under the [task content standard](task-content.md). For multi-stage objectives, follow the [Goal protocol](goal.md) and register only the currently permitted stage.
 See [final acceptance](final-acceptance.md) for the scope and results of independent acceptance tasks. Do not register routine execution steps as separate tasks.
 
-Confirm the [target project](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#teams-and-projects) and search for existing work on the same problem and scope, including completed tasks.
+Confirm the [target project](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/setup-and-projects.md#project-discovery) and search for existing work on the same problem and scope, including completed tasks.
 Read full descriptions, actual sources, dependencies, and acceptance criteria before deciding to reuse a task; similar titles do not establish identity.
 After an interruption, verify existing resources before creating anything again.
 
@@ -32,8 +32,8 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 
 ## Register and read back
 
-1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#tasks-and-queries). Creation defaults to proposed; explicitly pass `--status todo` for already-confirmed work, including internal multi-step tasks.
-2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/manual.md#writes-and-outcomes) for all writes.
+1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/tasks.md#queries). Creation defaults to proposed; explicitly pass `--status todo` for already-confirmed work, including internal multi-step tasks.
+2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md) for all writes.
 3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources. For delivery tasks, check the selected solution, detailed design, implementation steps and acceptance against the content standard; report concrete gaps before handoff.
    Check dependencies through [post-change verification](dependencies.md#verify-dependency-changes).
    For Goal delivery items, verify the [four-part brief](goal.md#delivery-task-brief) against the confirmed Goal and accepted solution, and apply the [whole-breakdown checks and architecture source index](goal.md#register-the-delivery-breakdown).
