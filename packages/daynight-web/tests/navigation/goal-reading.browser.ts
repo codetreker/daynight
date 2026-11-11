@@ -31,7 +31,9 @@ async function install(page: Page) {
   const statusWrites: { status: string; version: number }[] = [];
   const creates: unknown[] = [];
   const edits: unknown[] = [];
-  let editMode: 'pending' | 'conflict' | 'unknown' = 'pending';
+  let editMode: 'pending' | 'conflict' | 'pending-conflict' | 'unknown' | 'unknown-read-failure' = 'pending';
+  let failGoalRead = false;
+  let failedGoalReads = 0;
   let rejectGoalWrites = false;
   let releaseEdit: (() => void) | null = null;
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
@@ -61,20 +63,22 @@ async function install(page: Page) {
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}` && route.request().method() === 'PATCH') {
       edits.push(route.request().postDataJSON());
       if (rejectGoalWrites) return send({ error: { code: 'invalid_input', message: 'secret SQL detail', requestId: 'goal-write-3' } }, 400);
-      if (editMode === 'unknown') return route.abort('failed');
-      if (editMode === 'pending') await new Promise<void>(resolve => { releaseEdit = resolve; });
-      if (editMode === 'conflict') {
+      if (editMode === 'unknown' || editMode === 'unknown-read-failure') { failGoalRead = editMode === 'unknown-read-failure'; return route.abort('failed'); }
+      if (editMode === 'pending' || editMode === 'pending-conflict') await new Promise<void>(resolve => { releaseEdit = resolve; });
+      if (editMode === 'conflict' || editMode === 'pending-conflict') {
         const updated = { ...details.find(item => item.id === goalId)!, version: 2n, title: 'Changed elsewhere', updatedAt: '2026-10-22T10:00:01Z' };
         details = details.map(item => item.id === goalId ? updated : item);
         currentGraph = { ...graphFixture(details), observedAt: updated.updatedAt };
       }
-      return send({ error: { code: editMode === 'conflict' ? 'version_conflict' : 'invalid_input', message: 'secret SQL detail', requestId: 'goal-write-1' } }, editMode === 'conflict' ? 409 : 422);
+      const conflict = editMode === 'conflict' || editMode === 'pending-conflict';
+      return send({ error: { code: conflict ? 'version_conflict' : 'invalid_input', message: 'secret SQL detail', requestId: 'goal-write-1' } }, conflict ? 409 : 422);
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}` && route.request().method() === 'DELETE' && rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-4' } }, 403);
     const detail = details.find(item => path === `/api/v1/projects/${projectId}/tasks/${item.id}`);
     if (detail !== undefined) {
       if (detail.id === goalId) {
         goalReads++;
+        if (failGoalRead) { failedGoalReads++; return route.abort('failed'); }
         if (forbiddenGoal) return send({ error: { code: 'forbidden', message: 'Forbidden', requestId: '00000000-0000-4000-8000-000000000099' } }, 403);
       }
       return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -86,7 +90,7 @@ async function install(page: Page) {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), addActiveChain: () => {
+  return { statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, addActiveChain: () => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
@@ -163,6 +167,63 @@ for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editi
   }
   await expect(title).toHaveValue('Unsaved goal');
   await expect(description).toHaveValue('Keep this draft');
+  expect(fixture.edits()).toHaveLength(1);
+});
+
+test('a closed Goal editor retains an unknown draft and exposes read-only recovery after the automatic read fails', async ({ page }) => {
+  const fixture = await install(page); fixture.setEditMode('unknown-read-failure');
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  await editor.getByRole('textbox', { name: 'Name' }).fill('Retained goal');
+  await editor.getByRole('textbox', { name: 'Description' }).fill('Retained description');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(fixture.failedGoalReads).toBeGreaterThan(0);
+  await expect(editor.getByRole('button', { name: 'Check state' })).toBeEnabled();
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  await expect(goalDialog.getByText(/draft is retained; checking state will not resend/i)).toBeVisible();
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  fixture.restoreGoalReads();
+  await goalDialog.getByRole('button', { name: 'Check state' }).click();
+  await expect(goalDialog.getByText(/draft is retained; checking state will not resend/i)).toHaveCount(0);
+  await expect(goalDialog.getByText(/original save outcome remains unknown/i)).toBeVisible();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  expect(fixture.edits()).toHaveLength(1);
+});
+
+for (const mode of ['pending', 'pending-conflict'] as const) test(`a closed Goal editor retains its draft and shows a delayed ${mode} refusal`, async ({ page }) => {
+  const fixture = await install(page); fixture.setEditMode(mode);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-${goalId}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
+  await editor.getByRole('textbox', { name: 'Name' }).fill('Retained goal');
+  await editor.getByRole('textbox', { name: 'Description' }).fill('Retained description');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => fixture.edits().length).toBe(1);
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  fixture.releaseEdit();
+  await expect(goalDialog.getByText(mode === 'pending' ? /invalid_input/ : /version_conflict/)).toBeVisible();
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(editor.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained goal');
+  await expect(editor.getByRole('textbox', { name: 'Description' })).toHaveValue('Retained description');
+  if (mode === 'pending-conflict') await expect(editor.getByRole('button', { name: 'Use latest version' })).toBeVisible();
   expect(fixture.edits()).toHaveLength(1);
 });
 

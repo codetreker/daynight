@@ -1076,7 +1076,7 @@ export class TaskCacheScope {
     this.fenceGoalEpoch(projectId);
   }
   private fenceGoalEpoch(projectId: string): void {
-    if (this.isInvalidated || this.histories.get(projectId)?.epoch == null) return;
+    if (this.isInvalidated) return;
     this.uncertainHistories.add(projectId);
     this.historyVersions.set(projectId, (this.historyVersions.get(projectId) ?? 0) + 1);
     this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
@@ -1086,7 +1086,8 @@ export class TaskCacheScope {
   }
   private retireKnownEpoch(projectId: string, epoch: string): void {
     const old = this.histories.get(projectId);
-    if (this.isInvalidated || old?.epoch == null) return;
+    if (this.isInvalidated) return;
+    if (old?.epoch == null) { this.fenceGoalEpoch(projectId); return; }
     if (old.epoch !== epoch) { this.fenceGoalEpoch(projectId); return; }
     let retired = this.retiredEpochs.get(projectId);
     if (retired === undefined) { retired = new Set(); this.retiredEpochs.set(projectId, retired); }

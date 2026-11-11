@@ -163,7 +163,7 @@ const sameSteps = (before: StepsResource, after: StepsResource): boolean => befo
 
 export class TaskDetailSessions {
   private readonly entries = new Map<string, Entry>();
-  private readonly retiredMutations = new Map<TaskMutationOperation, { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null; phase: "pending" | "confirmed" | "unknown" | "conflict" | "refused"; error: unknown; reconciling: boolean; committedVersion: bigint | null; historyRetries: number; historyConfirmRetries: number }>();
+  private readonly retiredMutations = new Map<TaskMutationOperation, { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null; readonly goalDeleteEpoch: string | null; phase: "pending" | "confirmed" | "unknown" | "conflict" | "refused"; error: unknown; reconciling: boolean; committedVersion: bigint | null; historyRetries: number; historyConfirmRetries: number }>();
   private readonly projects = new Map<string, Set<() => void>>();
   private readonly committedTasks = new Map<string, ReadonlyMap<string, CommittedTaskProjection>>();
   private readonly committedListeners = new Map<string, Set<() => void>>();
@@ -1144,7 +1144,8 @@ export class TaskDetailSessions {
     const mutation = entry.state.mutation;
     if (mutation.operation === null || mutation.phase !== "pending" && mutation.phase !== "unknown" && mutation.phase !== "conflict" && !(mutation.phase === "confirmed" && entry.state.requiresFreshRead)) return;
     if (!this.retiredMutations.has(mutation.operation)) this.retiredMutations.set(mutation.operation, { projectId: entry.steps.projectId, taskId: entry.steps.taskId,
-      fence: entry.operationFence, phase: mutation.phase, error: mutation.error, reconciling: false, committedVersion: entry.committedVersion, historyRetries: 0, historyConfirmRetries: 0 });
+      fence: entry.operationFence, goalDeleteEpoch: mutation.operation.action === "delete" && entry.state.detail?.type === "goal" ? entry.receipt?.epoch ?? null : null,
+      phase: mutation.phase, error: mutation.error, reconciling: false, committedVersion: entry.committedVersion, historyRetries: 0, historyConfirmRetries: 0 });
     // The retired owner now exclusively tracks this operation, including when
     // it settles while no view is subscribed and the entry is later reopened.
     entry.state = { ...entry.state, mutation: idleMutation() };
@@ -1158,6 +1159,10 @@ export class TaskDetailSessions {
       ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
     retired.error = error;
     if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
+    if (error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted" &&
+      retired.goalDeleteEpoch !== null && retired.fence !== null && this.scope.isTaskReadCurrent(retired.fence, true)) {
+      this.scope.fenceGoalHistory(retired.projectId, retired.goalDeleteEpoch);
+    }
     if (isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404) {
       retired.reconciling = true;
       void this.verifyRetiredStepParent(operation, retired);
@@ -1186,11 +1191,13 @@ export class TaskDetailSessions {
     retired.reconciling = true;
     // A retired owner reconciles independently and cannot publish into a later opening.
     void (async () => {
+      let observedFence: TaskReadFence | null = null;
       try {
         const signal = this.scope.signal;
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch };
         for (let attempt = 0; ; attempt++) {
           const fence = await this.scope.beginTaskRead(retired.projectId, retired.taskId, -1, -1, signal);
+          observedFence = fence;
           const observation = await getTaskObservation(retired.projectId, retired.taskId, signal, admission);
           const history = await this.scope.observeHistory(fence, observation.epoch, signal);
           if (history !== "current") {
@@ -1209,6 +1216,9 @@ export class TaskDetailSessions {
         this.notifyRetiredSettlement(retired, true);
       } catch (failure) {
         if (failure instanceof ApiError && failure.kind === "server" && (failure.status === 404 || failure.status === 410)) {
+          if (failure.status === 410 && failure.code === "task_deleted" && retired.goalDeleteEpoch !== null && observedFence !== null && this.scope.isTaskReadCurrent(observedFence, true)) {
+            this.scope.fenceGoalHistory(retired.projectId, retired.goalDeleteEpoch);
+          }
           this.retiredMutations.delete(operation); this.notifyRetiredSettlement(retired, true);
         } else { retired.error = failure; retired.reconciling = false; }
       }

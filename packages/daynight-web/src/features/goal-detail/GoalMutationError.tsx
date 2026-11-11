@@ -1,7 +1,7 @@
 import { ApiError } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 
-export const GoalMutationError = ({ error, action }: { readonly error: ApiError; readonly action: 'create' | 'editGoal' | 'status' | 'assignedTo' | 'delete' }) => {
+export const GoalMutationError = ({ error, action, outcomeUnknown = false }: { readonly error: ApiError; readonly action: 'create' | 'editGoal' | 'status' | 'assignedTo' | 'delete'; readonly outcomeUnknown?: boolean }) => {
   const { locale } = useI18n();
   const zh = locale === 'zh-CN';
   const invalid = action === 'editGoal'
@@ -19,7 +19,8 @@ export const GoalMutationError = ({ error, action }: { readonly error: ApiError;
     invalid_transition: zh ? '当前状态不允许此操作。' : 'This action is unavailable in the current state.',
     write_outcome_unknown: zh ? '操作结果尚未确认，请核对当前状态。' : 'The operation outcome is unknown. Check the current state.',
   };
-  const text = error.kind === 'network' ? (zh ? '无法连接服务器，请核对操作结果。' : 'Unable to connect to the server. Check the operation outcome.')
+  const text = outcomeUnknown ? (zh ? '操作结果尚未确认，请核对当前状态。' : 'The operation outcome is unknown. Check the current state.')
+    : error.kind === 'network' ? (zh ? '无法连接服务器，请核对操作结果。' : 'Unable to connect to the server. Check the operation outcome.')
     : error.kind === 'protocol' ? (zh ? '服务器响应无法确认，请核对操作结果。' : 'The server response could not be confirmed. Check the operation outcome.')
       : messages[error.code] ?? (zh ? '操作失败。' : 'The operation failed.');
   return <p role="alert">{text} ({error.code}){error.requestId !== null && <> · <code>{error.requestId}</code></>}</p>;
