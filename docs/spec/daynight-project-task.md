@@ -403,10 +403,10 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 拒绝，stdout 保持为空。正常的候选选择使用此有界操作，完整依赖关系可按需使用
 `graph` 查看。
 
-`set-status <task-id> <status>` 接受五状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。proposed/todo/in_progress/done 可直接互相设置，无需经过固定阶段；cancelled可由非active任务进入且不可恢复；当前版本同状态 +0，实际改变 +1，
+`set-status <task-id> <status>` 接受五状态目标、可选 project、精确 `--if-version`、Goal 提示专用 `--force` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。普通 Task 的 proposed/todo/in_progress/done 可直接互相设置，无需经过固定阶段；cancelled 可由非active任务进入且不可恢复；当前版本同状态 +0，实际改变 +1，
 过期同状态先冲突。实际进入 in_progress/done 检查全部直接前置；done 退回要求没有进行中或已完成直接后继。
 拒绝返回原错误及稳定排序的阻塞 ID，不级联。成员与管理员均可设置，状态不授予执行或交付权限。
-显式版本不预读；省略时提交前只读一次。基于已审阅资料的决策必须带其版本，不能用临时 GET 替代。
+提交前读取真实类型和身份；显式版本原样提交，省略时使用预读版本。Goal 设为 done 或 cancelled 时在 stderr 提示子 Task 状态保留、后续自动领取被排除；交互确认或 `--force` 才提交，非交互无 force 不提交。force 只跳过 Goal 提示，不绕过服务端业务或版本检查。基于已审阅资料的决策必须带其版本，不能用临时 GET 替代。
 不自动重试写入；不确定结果先 GET 核对，不将取消解释为回滚。输出完整 Task 并保留所有非状态资料。
 [状态要求](daynight-task-status.md)拥有时间、迁移、依赖和版本细节。旧四动作删除且无别名。
 

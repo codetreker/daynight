@@ -72,7 +72,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   const frozen = { agent: "codex" as const, agentControlMode: "web" as const, model: "original-frozen-model", args: [] as string[], recoveryLimit: 2 };
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite")); stores.add(webStore);
   const original = webStore.register({ projectId, taskId, claimId, worktreeId, project, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
-  const task: Task = {
+  const task: Task = { type: "task", parentId: null,
     id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,

@@ -9,6 +9,8 @@ const identifiers = (values: readonly string[]): string => values.length === 0 ?
 const taskIdentity = (task: Task): readonly string[] => [
   `ID: ${terminalText(task.id)}`,
   `Project: ${terminalText(task.projectId)}`,
+  `Type: ${task.type}`,
+  `Parent: ${task.parentId === null ? "none" : terminalText(task.parentId)}`,
   `Title: ${terminalText(task.title)}`,
 ];
 
@@ -37,6 +39,7 @@ export const renderTask = (task: Task | ObservedTask): string => [
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   `Version: ${task.version}`,
   ...taskDependencies(task),
+  ...(task.progress === undefined ? [] : [`Progress: total=${task.progress.total}, done=${task.progress.done}, cancelled=${task.progress.cancelled}, unfinished=${task.progress.unfinished}`]),
   `Created: ${terminalText(task.createdAt)}`,
   `Updated: ${terminalText(task.updatedAt)}`,
   ...(task.cancelledAt === null ? [] : [`Cancelled at: ${terminalText(task.cancelledAt)}`]),
@@ -59,6 +62,8 @@ export const renderTaskSummaryList = (tasks: readonly (Task | ObservedTask)[]): 
 
 const renderGraphTask = (task: GraphTask | ObservedGraphTask, projectId: string): string => [
   `ID: ${terminalText(task.id)}`,
+  `Type: ${task.type}`,
+  `Parent: ${task.parentId === null ? "none" : terminalText(task.parentId)}`,
   `Title preview: ${terminalText(task.titlePreview)}`,
   `Title truncated: ${task.titleTruncated}`,
   `Status: ${terminalText(task.status)}`,

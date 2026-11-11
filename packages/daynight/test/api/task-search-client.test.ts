@@ -27,7 +27,7 @@ describe("task search HTTP contract", () => {
     const page = (value: any) => ({ ...value, items: value.items.map((item: any) => ({ ...item, status: "done", assignedTo: userId, futureField: "not projected" })) });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(page(first))).mockResolvedValueOnce(json(page(next)));
     const result = await api(fetch).searchTasks(projectId.toUpperCase(), { query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux" });
-    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, projectId, title, cancelledAt, context, match }: any) => ({ id, projectId, title, status: "done", cancelledAt, context, match })));
+    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, type, parentId, projectId, title, cancelledAt, context, match }: any) => ({ id, type, parentId, projectId, title, status: "done", cancelledAt, context, match })));
     const requests = fetch.mock.calls.map(([url, init]) => ({ url: String(url), method: init!.method, cache: init!.cache, body: JSON.parse(String(init!.body)) }));
     expect(requests).toEqual([first, next].map((_, index) => ({ url: `http://localhost:8787/api/v1/projects/${projectId}/tasks/search`, method: "POST", cache: "no-store", body: { query, assignedTo: "me", status: "done", ready: true, allowAgents: false, compatiblePlatform: "linux", limit: 100, ...(index === 0 ? {} : { cursor: first.nextCursor }) } })));
   });
@@ -41,7 +41,7 @@ describe("task search HTTP contract", () => {
     const item = { ...first.items[0], status: "cancelled", cancelledAt };
     const page = { ...first, total: 1, items: [item], nextCursor: null };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
-    expect(await api(fetch).searchTasks(projectId, { query: "cache", status: "cancelled" })).toEqual([{ id: item.id, projectId, title: item.title, status: "cancelled", cancelledAt, context: item.context, match: item.match }]);
+    expect(await api(fetch).searchTasks(projectId, { query: "cache", status: "cancelled" })).toEqual([{ id: item.id, type: item.type, parentId: item.parentId, projectId, title: item.title, status: "cancelled", cancelledAt, context: item.context, match: item.match }]);
     for (const invalid of [null, undefined, "invalid"]) {
       const broken = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...page, items: [{ ...item, cancelledAt: invalid }] }));
       await expect(api(broken).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ phase: "protocol" });
