@@ -1,6 +1,15 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { boundary, current, exactPng, file, installDraftAPI, openDraft, ready, saved, seedLegacyDraft, sha256 } from './session-drafts-api';
 import { pngImage } from '../helpers/pngImage';
+
+const clientFixture = '/tests/navigation/session-drafts-client-fixture.html';
+const clientSaved = (page: Page) => page.evaluate(() => window.sessionDraftClient.storage.read());
+const clientView = (page: Page) => page.evaluate(() => {
+  const { active, loading, text, conflict, error, canSend, items } = window.sessionDraftClient.client.imageDrafts.getSnapshot();
+  return { active, loading, text, conflict, error, canSend, items: items.map(({ asset, ...item }) => ({ ...item, asset: asset?.key ?? null })) };
+});
+const clientReady = (page: Page) => expect.poll(async () => { const view = await clientView(page); return { loading: view.loading, canSend: view.canSend, error: view.error }; }).toEqual({ loading: false, canSend: true, error: null });
+const legacyEntries = (page: Page) => page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('daynight:session-draft:')).map(key => ({ key, value: JSON.parse(sessionStorage.getItem(key)!) })));
 
 test.afterEach(async ({ context }, info) => {
   if (info.status === info.expectedStatus) return;
@@ -434,6 +443,110 @@ test('isolates two account owners in the same native database and browser contex
   await info.attach('native-account-isolation', { body: JSON.stringify({ boundary, accountA: a, accountB: b, refreshedA: await saved(page) }), contentType: 'application/json' });
 });
 
+for (const state of ['failed', 'expired', 'released'] as const) test(`retries a ${state} upload with a fresh wire image identity while retaining its original draft bytes`, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), original = file('Retained.png'); api.completeNextAs(state);
+  try {
+    await page.goto(clientFixture); await expect(page.getByRole('textbox')).toBeEditable();
+    await page.getByRole('textbox').fill('Retain this caption'); await page.locator('input[type=file]').setInputFiles(original);
+    await expect.poll(async () => (await clientSaved(page))?.uploads[0]?.receipt?.state).toBe(state);
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    const before = (await clientSaved(page))!, item = before.editable!.items[0]!, firstSpec = api.observations.prepareSpecs[0]!;
+    const originals = await page.evaluate(() => window.sessionDraftClient.storage.inventory());
+    expect(api.observations.commands).toEqual([]); expect(api.observations.prepares).toHaveLength(1);
+    await page.locator('.session-draft-item').getByRole('button', { name: 'Retry', exact: true }).click(); await clientReady(page);
+    const after = (await clientSaved(page))!, next = after.editable!.items[0]!, secondSpec = api.observations.prepareSpecs[1]!;
+    expect(next).toMatchObject({ draftImageId: item.draftImageId, blobId: item.blobId, byteRevision: item.byteRevision, label: item.label, validation: 'valid' });
+    expect(after.editable!.text).toBe('Retain this caption'); expect(after.editable!.items).toHaveLength(1);
+    expect(next.imageId).not.toBe(item.imageId); expect(next.uploadId).not.toBe(item.uploadId);
+    expect(secondSpec).toEqual({ ...firstSpec, uploadId: next.uploadId, imageId: next.imageId });
+    expect(api.observations.prepares).toHaveLength(2); expect(api.observations.identityConflicts).toEqual([]);
+    expect(api.uploads.get(item.uploadId!)!.spec).toEqual(firstSpec); expect(api.observations.commands).toEqual([]);
+    expect((await page.evaluate(() => window.sessionDraftClient.storage.inventory())).blobs).toEqual(originals.blobs);
+    expect(Buffer.concat(api.uploads.get(next.uploadId!)!.chunks)).toEqual(original.buffer);
+    await page.reload(); await clientReady(page);
+    expect((await clientSaved(page))!.editable!.items[0]).toEqual(next); expect(api.observations.prepares).toHaveLength(2);
+    await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+    const command = api.observations.commands[0]!; if (command.kind !== 'send_message') throw new Error('Expected the explicitly retried image message.');
+    expect(command.payload.content.filter(part => part.type === 'image').map(part => ({ imageId: part.imageId, uploadId: part.uploadId }))).toEqual([{ imageId: next.imageId, uploadId: next.uploadId }]);
+    await info.attach('terminal-upload-originals', { body: JSON.stringify({ boundary: `${boundary} Terminal receipts are controlled; the fixture enforces the service's retained (sessionId, imageId) identity and immutable upload retry contract.`, state, before, after, originals }), contentType: 'application/json' });
+  } finally {
+    await info.attach('terminal-upload-observations', { body: JSON.stringify({ state, view: await clientView(page).catch(() => null), saved: await clientSaved(page).catch(() => null), observations: api.observations }), contentType: 'application/json' });
+  }
+});
+
+test('keeps an unknown prepare on its original upload and image identities through 404 and explicit retry', async ({ page, context }, info) => {
+  const api = await installDraftAPI(context); api.setPrepare('lost_before_create');
+  try {
+    await page.goto(clientFixture); await expect(page.getByRole('textbox')).toBeEditable(); await page.locator('input[type=file]').setInputFiles(file('Unknown.png'));
+    await expect(page.getByRole('button', { name: 'Retry the original upload', exact: true })).toBeEnabled();
+    const before = (await clientSaved(page))!, item = before.editable!.items[0]!, spec = api.observations.prepareSpecs[0]!;
+    await expect.poll(() => api.observations.uploadQueries.length).toBeGreaterThan(0);
+    expect(api.observations.uploadQueries.every(id => id === item.uploadId)).toBe(true); expect(api.observations.prepares).toEqual([item.uploadId]);
+    expect(api.observations.commands).toEqual([]); expect(api.uploads.size).toBe(0);
+    api.setPrepare('normal'); await page.reload();
+    await expect(page.getByRole('button', { name: 'Retry the original upload', exact: true })).toBeEnabled();
+    expect((await clientSaved(page))!.editable!.items[0]).toEqual(item); expect(api.observations.prepares).toEqual([item.uploadId]);
+    await page.getByRole('button', { name: 'Retry the original upload', exact: true }).click(); await clientReady(page);
+    const after = (await clientSaved(page))!;
+    expect(after.editable!.items[0]).toEqual(item); expect(api.observations.prepareSpecs).toEqual([spec, spec]); expect(api.observations.prepares).toEqual([item.uploadId, item.uploadId]);
+    expect(api.uploads.size).toBe(1); expect(api.observations.identityConflicts).toEqual([]); expect(api.observations.commands).toEqual([]);
+    await info.attach('unknown-prepare-original-identity', { body: JSON.stringify({ boundary, before, after }), contentType: 'application/json' });
+  } finally {
+    await info.attach('unknown-prepare-observations', { body: JSON.stringify({ observations: api.observations, saved: await clientSaved(page).catch(() => null) }), contentType: 'application/json' });
+  }
+});
+
+for (const scenario of [
+  { trigger: 'restore', choice: 'local', sameText: false },
+  { trigger: 'send preflight', choice: 'saved', sameText: false },
+  { trigger: 'send preflight', choice: 'local', sameText: true },
+] as const) test(`preserves an unimported legacy draft at first ${scenario.trigger} before choosing ${scenario.choice}${scenario.sameText ? ' with equal text and unseen remote images' : ''}`, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), localText = 'A unsent local text', remoteText = scenario.sameText ? localText : 'B saved image caption';
+  const url = `${clientFixture}?hold-draft-notifications`, peer = await context.newPage();
+  let sendFailure: string | null = null;
+  try {
+    await page.goto(url); await expect(page.getByRole('textbox')).toBeEditable(); await page.getByRole('textbox').fill(localText);
+    const legacy = await legacyEntries(page); expect(legacy).toHaveLength(1); expect(legacy[0]!.value.text).toBe(localText);
+    expect((await clientView(page)).active).toBe(false); expect(await clientSaved(page)).toBeNull();
+    if (scenario.trigger === 'restore') await page.goto('about:blank');
+    else await page.evaluate(() => window.sessionDraftClient.notifications.hold());
+    await peer.goto(clientFixture); await expect(peer.getByRole('textbox')).toBeEditable(); await peer.getByRole('textbox').fill(remoteText);
+    await peer.locator('input[type=file]').setInputFiles(file('B original.png')); await clientReady(peer);
+    const remote = (await clientSaved(peer))!, remoteBytes = await peer.evaluate(() => window.sessionDraftClient.storage.inventory());
+    if (scenario.trigger === 'restore') await page.goto(url);
+    else {
+      await expect.poll(() => page.evaluate(() => window.sessionDraftClient.notifications.pending())).toBeGreaterThan(0);
+      expect((await clientView(page)).active).toBe(false); await expect(page.getByRole('textbox')).toHaveValue(localText);
+      // Calling the public client entry avoids a focus-driven refresh winning
+      // the race before send's own preflight reads the other tab's real commit.
+      sendFailure = await page.evaluate(async text => { try { await window.sessionDraftClient.client.send(text); return null; } catch (error) { return String(error); } }, localText);
+      expect(sendFailure).not.toBeNull();
+    }
+    await expect.poll(async () => (await clientView(page)).conflict).toBe(true);
+    await expect(page.getByRole('textbox')).toHaveValue(localText); expect((await clientView(page)).items).toEqual([]);
+    expect(await legacyEntries(page)).toEqual(legacy); expect((await clientSaved(page))!.editable).toEqual(remote.editable);
+    expect((await page.evaluate(() => window.sessionDraftClient.storage.inventory())).blobs).toEqual(remoteBytes.blobs);
+    expect(api.observations.commands).toEqual([]); await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    await peer.close();
+    await page.getByRole('button', { name: scenario.choice === 'local' ? 'Replace with this window’s draft' : 'Use saved draft', exact: true }).click();
+    await clientReady(page); await expect.poll(() => legacyEntries(page)).toEqual([]);
+    const chosen = (await clientSaved(page))!, expectedText = scenario.choice === 'local' ? localText : remoteText;
+    expect(chosen.editable!.text).toBe(expectedText);
+    expect(chosen.editable!.items).toEqual(scenario.choice === 'local' ? [] : remote.editable!.items);
+    await page.evaluate(() => window.sessionDraftClient.notifications.release()); await page.reload(); await clientReady(page);
+    expect((await clientView(page)).conflict).toBe(false); await expect(page.getByRole('textbox')).toHaveValue(expectedText);
+    expect((await clientSaved(page))!.editable!.items).toEqual(chosen.editable!.items); expect(await legacyEntries(page)).toEqual([]); expect(api.observations.commands).toEqual([]);
+    await page.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+    const command = api.observations.commands[0]!; if (command.kind !== 'send_message') throw new Error('Expected only the explicitly chosen draft.');
+    expect(command.payload.content.filter(part => part.type === 'text')).toEqual([{ type: 'text', text: expectedText }]);
+    expect(command.payload.content.filter(part => part.type === 'image').map(part => part.imageId)).toEqual(chosen.editable!.items.map(item => item.imageId));
+    await info.attach('legacy-first-adopt-choice', { body: JSON.stringify({ boundary: `${boundary} Two real tabs keep independent sessionStorage. The send cases delay delivery of real native BroadcastChannel events; committed IndexedDB and production send/restore are unchanged.`, scenario, legacy, remote, remoteBytes, chosen, sendFailure }), contentType: 'application/json' });
+  } finally {
+    await info.attach('legacy-first-adopt-observations', { body: JSON.stringify({ scenario, sendFailure, view: await clientView(page).catch(() => null), legacy: await legacyEntries(page).catch(() => null), observations: api.observations }), contentType: 'application/json' });
+    if (!peer.isClosed()) await peer.close();
+  }
+});
+
 test('imports a legacy text draft only after the native migration transaction commits', async ({ page, context }, info) => {
   const api = await installDraftAPI(context), legacy = await seedLegacyDraft(page, 'legacy text retained', 'old-draft-revision');
   await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toHaveValue('legacy text retained');
@@ -441,7 +554,9 @@ test('imports a legacy text draft only after the native migration transaction co
   await page.evaluate(() => window.sessionDraftClient.storage.armFault('abort')); await page.locator('input[type=file]').setInputFiles(file('Migrated.png'));
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().error)).toBe('image_draft_unavailable');
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.storage.writes().filter(write => write.aborted).length)).toBeGreaterThan(0);
-  expect(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)!), legacy.draftKey)).toEqual({ text: 'legacy text retained', revision: 'old-draft-revision', submission: null });
+  const retainedLegacy = await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)!), legacy.draftKey);
+  expect(retainedLegacy).toMatchObject({ text: 'legacy text retained', revision: 'old-draft-revision', submission: null });
+  expect(typeof retainedLegacy.ownerKey).toBe('string');
   expect(await page.evaluate(() => window.sessionDraftClient.storage.counts())).toEqual({ owners: 0, drafts: 0, blobs: 0, uploads: 0, submissions: 0 });
   const writes = await page.evaluate(() => window.sessionDraftClient.storage.writes()); expect(writes.every(write => write.requestSucceeded && write.aborted && !write.completed)).toBe(true);
   expect(api.observations.prepares).toEqual([]); expect(api.observations.commands).toEqual([]);
@@ -449,12 +564,13 @@ test('imports a legacy text draft only after the native migration transaction co
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
   const imported = (await page.evaluate(() => window.sessionDraftClient.storage.read()))!;
   expect(imported.owner.legacyImported).toBe(true); expect(imported.editable?.text).toBe('legacy text retained'); expect(imported.editable?.items).toHaveLength(1);
+  expect(retainedLegacy).toEqual({ text: 'legacy text retained', revision: 'old-draft-revision', submission: null, ownerKey: imported.owner.ownerKey });
   expect(await page.evaluate(key => sessionStorage.getItem(key), legacy.draftKey)).toBeNull();
   await page.reload(); await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().canSend)).toBe(true);
   await expect(page.getByRole('textbox')).toHaveValue('legacy text retained');
   expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.editable?.draftId).toBe(imported.editable?.draftId);
   expect(await page.evaluate(() => window.sessionDraftClient.storage.counts())).toMatchObject({ owners: 1, drafts: 1, blobs: 1 });
-  await info.attach('native-legacy-migration-commit', { body: JSON.stringify({ boundary, writes, imported, restored: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
+  await info.attach('native-legacy-migration-commit', { body: JSON.stringify({ boundary, writes, retainedLegacy, imported, restored: await page.evaluate(() => window.sessionDraftClient.storage.read()), observations: api.observations }), contentType: 'application/json' });
 });
 
 test('migrates a legacy unknown operation without replay and retains its successor after late acceptance', async ({ page, context }, info) => {

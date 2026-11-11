@@ -51,7 +51,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 | `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent。没有公共 receipt revision，自有顺序不写回服务。 |
 | `submissions` | ownerKey+operationId → 完整不可变 command intent、原 ImageTarget、draftId/revision、提交文本/有序附件快照、相关 blob/upload 引用、dispatch 状态、最后观察 operation。草稿清除不能删除 unresolved 操作。 |
 
-每项附件有稳定本地 `draftImageId`、本地字节版本、label、blobId 或显式 null、校验状态、uploadId 或 null。wire imageId 是该条待发送图片出现身份，重新准备同一次未发送附件可保留 imageId、更换 uploadId；已发送后的新消息必须新 imageId。选择相同 bytes 两次也是两个有序项，按两份长度计入消息限制。
+每项附件有稳定本地 `draftImageId`、本地字节版本、label、blobId 或显式 null、校验状态、uploadId 或 null。wire imageId 是该次上传和待发送图片的出现身份；服务在同一 Session 内保留它与原 uploadId 的关联，终态或释放不会让该 imageId 可供另一次上传使用。精确重试原上传保持两项 wire 标识和原 spec；确认原上传为 failed、expired 或 released 后，显式重新准备必须同时建立新的 imageId 和 uploadId。稳定的本地 draftImageId 与原件不因此改变；已发送后的新消息也必须使用新 imageId。选择相同 bytes 两次仍是两个有序项，按两份长度计入消息限制。
 
 接纳的新候选在开始异步校验前分配稳定 blobId，并把原 File 的字节和 pending 项作为同一内容提交。原件持有与图片验证资格分开：刷新、关闭重开或切换 native 目标不会只留下无字节的 pending 名称。校验仍在事务外完成；结果只能提升原 owner、访问代次、草稿项及同一 blobId/byteRevision 对应的原件，不能复活已移除或替换的项。未校验记录不能用于上传身份分配或冻结发送。恢复时从原件重新校验；切换目标不要求旧身份继续后台解码，回到有权访问的原 owner 或明确移动到当前草稿后再恢复校验。显式移动保持 pending 状态并清除旧上传资格，由新目标完整验证后重新准备。
 
@@ -73,11 +73,15 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 ### 旧文字草稿兼容
 
-在同账户、真实 SessionFence 已确认且新 owner 无记录时，一次性导入当前 tab 可读的旧 sessionStorage text；旧 UUID revision 映射为新 draftId/Decimal `"1"`，不发送旧 UUID 到公共协议。若有旧 submission，先保存原 operationId、旧 fence 与 legacy correlation 为只查模式；未结算前不能把它变成新的图片发送。导入标记与新草稿在同事务提交后才删除对应旧 key。并发导入只能一份成功，另一 tab 本地未保存文字进入显式冲突恢复，不覆写。原 old-generation key 不被盲目全删；失效数据由下面归属清理路径处理。旧纯文字操作保持旧 wire/hash 和原恢复语义。
+在同账户、真实 SessionFence 已确认且新 owner 无记录时，一次性导入当前 tab 可读的旧 sessionStorage text；旧 UUID revision 映射为新 draftId/Decimal `"1"`，不发送旧 UUID 到公共协议。若有旧 submission，先保存原 operationId、旧 fence 与 legacy correlation 为只查模式；未结算前不能把它变成新的图片发送。导入标记与新草稿在同事务提交后才删除对应旧 key。原 old-generation key 不被盲目全删；失效数据由下面归属清理路径处理。旧纯文字操作保持旧 wire/hash 和原恢复语义。
+
+当前 tab 尚未接管持久草稿时，client 明确提供原 owner 的旧文字来源；图片 controller 已投影的文字不再冒充 legacy 输入。新写入的旧文字草稿按完整 ownerKey 使用独立存储槽，记录也保留该 ownerKey；native 目标变化先撤销原输入投影，不共享写入位置。既有 fence 级旧 key 只作兼容来源，首次有权绑定时补充 ownerKey 而保留正文、revision 与 submission correlation。来源位置与原值随对应 owner 保留，消费时再次核对归属和内容；另一目标的编辑、清空、发送结算或导入均不得覆盖或删除它。首次读取发现已有 owner，或另一 tab 赢得导入事务，都必须在发布任何持久内容前捕获本页完整旧稿及其 revision。非空旧稿与持久完整内容不同便显示冲突，保留原旧 key 和本页内容；比较包括附件，文字相同但另一页有图片也不算同一份稿。本地选择代表原纯文字稿，不自动附上另一页的图片；已保存选择保留另一页完整图文。明确选择以当前权限和竞争版本核对，失败继续保留两份内容，成功后才消费相应旧 key。发送前复核沿相同接管路径，不能先覆盖输入再以阻止发送代替恢复。
+
+旧 unknown operation 碰到已有持久 owner 时，使用独立的内部恢复命名空间，按规范 owner key 与原 operationId 结构化编码；它保留真实 identity、fence、kind 和 legacy correlation，不更换原生目标。只查恢复记录与其执行屏障在事务中保存，不修改当前 editable/frozen，不持有正文、Blob 或可派发 command，也不能变成可编辑 owner。相同原操作的导入必须核对完整身份与 correlation 后幂等复用；终态记录保留去重所需 metadata，正常重开不能复活已接受内容，权限清理仍按既有私有内容和最小恢复身份规则执行。legacy revision 与原 submission revision 相同的文字属于已提交内容，未知期间不能通过本地选择重新发送；原操作接受只消费仍未再编辑的对应文字。revision 不同或后来编辑形成的后继保持冲突恢复，不受旧接受清理。选择已保存内容不能移除原操作屏障；所有未知观察仍只使用原 operationId。
 
 ## 跨标签页并发与资源预算
 
-同源 tabs 通过 IndexedDB 事务 CAS 共同拥有事实，BroadcastChannel 只发 ownerKey/storeVersion 失效通知，不传正文、Blob、凭证或授权。通知丢失时 focus/visibility 恢复和每次写前重新读；不依赖广播正确性。尚未激活图片草稿的 tab 在发送文字或执行命令前也复核原 owner 和执行屏障；首次读取仍未完成时禁止发送，新发现持久草稿时先展示并要求用户检查，不能将当前文字直接附在另一 tab 的图片后发出。两个 tab 基于相同版本编辑，第一份提交成功，另一份保留本地未保存内容并显示“草稿已在另一窗口更新”。提供“使用已保存版本”或“用本窗口内容替换”；后者重新读当前版本后显式 CAS，竞争再发生则继续保留冲突，不静默 last-writer-wins，不自动合并文字或附件。第二项只替换 editable，不能覆盖 frozen/operation。替换前仍需当前有效权限。
+同源 tabs 通过 IndexedDB 事务 CAS 共同拥有事实，BroadcastChannel 只发 ownerKey/storeVersion 失效通知，不传正文、Blob、凭证或授权。通知丢失时 focus/visibility 恢复和每次写前重新读；不依赖广播正确性。尚未激活图片草稿的 tab 在发送文字或执行命令前也复核原 owner 和执行屏障；首次读取仍未完成时禁止发送；新发现持久草稿时按首次接管规则保留本页旧稿，展示完整冲突选择，不能将当前文字直接附在另一 tab 的图片后发出。两个 tab 基于相同版本编辑，第一份提交成功，另一份保留本地未保存内容并显示“草稿已在另一窗口更新”。提供“使用已保存版本”或“用本窗口内容替换”；后者重新读当前版本后显式 CAS，竞争再发生则继续保留冲突，不静默 last-writer-wins，不自动合并文字或附件。第二项只替换 editable，不能覆盖 frozen/operation。替换前仍需当前有效权限。
 
 每个 upload 的网络变更由一个 `navigator.locks` exclusive 锁持有者运行，同 owner 的发送冻结另有锁；它们配合 IDB 持久 intent，不能以锁取代持久事实。锁名仅用 ownerKey 的本地摘要和 uploadId。禁止 steal/超时强抢；冻结 tab 仍持锁时其他 tab显示“另一窗口正在处理”，允许其他本地编辑。锁释放/页面关闭后接手者先查持久状态和原服务身份。Web Locks 不可用时图片网络变更禁用，保留文字与本地草稿，不能用不安全的 localStorage 心跳模拟互斥。[Web Locks 标准](https://www.w3.org/TR/web-locks/#introduction)规定同源 exclusive 访问及生命周期；跨进程服务去重仍由公共协议与服务存储承担。
 
@@ -114,8 +118,10 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 | verifying | 块已齐全，显示校验忙碌状态；100% 不能使 Send 可用。 |
 | complete | 严格匹配 uploadId/imageId/target、spec 名称/MIME/长度/hash、available resource 元数据及 offset，且当前资格未过期，才用于发送集合。 |
 | upload_outcome_unknown | 查询原 uploadId；不重造 ID、不用 timeout 当 failed，不允许发送。 |
-| failed/expired/released | 按公共协议code/retry 显示修复、重新选择或显式重新准备；failed 不原地重开，新的准备有新 uploadId。 |
+| failed/expired/released | 按公共协议code/retry 显示修复、重新选择或显式重新准备；failed 不原地重开，新的准备同时使用新 imageId 和 uploadId。 |
 | disconnected/target_detached/access_blocked | 暂停新写；离线保留本地编辑，目标脱离需显式重新准备，确认撤权立即清敏感显示。 |
+
+显式终态重试在一个 IDB 事务中复核 owner 的访问代次、当前 editable、附件 incarnation/原件、原上传版本、已确认终态以及不存在 pending action 或 unknown，再同时替换附件的 wire imageId、uploadId 和新上传记录，登记旧上传的释放意图。事务失败保持旧绑定；竞争标签页不能各自分配一份替换。该操作保留本地附件身份、Blob、字节版本、顺序、正文和内容 revision，仅推进存储版本。本地编辑和退休稿的读回须一起吸收两项 wire 标识，避免后续文字保存写回旧 imageId。旧请求仍只影响原上传账本，不重新绑定当前附件。
 
 创建身份/spec、当前块边界/摘要及 complete/release intent 均先持久保存再请求。每 upload 一个变更请求，最多两个不同图片的数据块在途，并与预览模块读取共享服务图片存储的 Session 两块额度；消费者不能各给两个。每次请求的本地 sequence、owner accessEpoch、target、imageId/byteRevision 匹配后才发布。GET 迟到不能回退 offset 或用 receiving 覆盖 complete/released；已知 complete 后服务可能因到期/显式释放变为 expired/released，只有后发起且仍匹配的权威观察能收敛该终态，不能一概把 complete 当永远不变。
 

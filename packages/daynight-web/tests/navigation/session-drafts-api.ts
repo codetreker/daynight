@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { expect, type BrowserContext, type Page, type Route } from '@playwright/test';
 import type { ImageCapabilities, ImageUploadReceipt, ImageUploadSpec, SessionCommand, SessionOperation, SessionSnapshot } from '../../../daynight/src/session/protocol';
 import { sessionFence, sessionFenceKey } from '../../../daynight/src/session/protocol';
@@ -39,9 +40,12 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   const capability: ImageCapabilities = { revision: '2', providerRevision: '1', expectedNativeSessionId: 'native-thread-1', modelId: 'vision', controlsRevision: '3', send: 'supported', steer: 'unsupported', reasonCode: null, inputMediaTypes: ['image/png', 'image/jpeg', 'image/webp'], maxImageBytes: '10485760', maxMessageImageBytes: '20971520', maxImagesPerMessage: 8, geometry: { version: 1, known: true, maxWidth: 16384, maxHeight: 16384, maxPixels: 33554432, maxFrames: 256 }, ...overrides };
   await context.addInitScript(capabilities => { window.sessionDraftOptions = { capabilities }; }, overrides);
   const uploads = new Map<string, { spec: ImageUploadSpec; receipt: ImageUploadReceipt; chunks: Buffer[] }>();
+  const imageUploads = new Map<string, string>();
   const originalOperations = new Map<string, SessionOperation>();
-  const observations = { prepares: [] as string[], chunks: [] as { uploadId: string; offset: string; length: number }[], completes: [] as string[], releases: [] as string[], commands: [] as SessionCommand[], queries: [] as string[], errors: [] as string[] };
+  const observations = { prepares: [] as string[], prepareSpecs: [] as ImageUploadSpec[], uploadQueries: [] as string[], identityConflicts: [] as { uploadId: string; imageId: string; originalUploadId: string }[], chunks: [] as { uploadId: string; offset: string; length: number }[], completes: [] as string[], releases: [] as string[], commands: [] as SessionCommand[], queries: [] as string[], errors: [] as string[] };
   let dispatchMode: 'confirmed' | 'held' | 'lost' | 'capability_changed' = 'confirmed', queryState: SessionOperation['state'] | '404' = 'unknown';
+  let prepareMode: 'normal' | 'lost_before_create' = 'normal';
+  let nextCompletion: 'failed' | 'expired' | 'released' | null = null;
   const held: Route[] = [];
   const budget = { revision: '1', maxBytes: '1073741824', committedBytes: '0', reservedBytes: '0', maxResources: 1000, committedResources: 0, reservedResources: 0 };
   const { claimId: _claimId, identity, ...independent } = snapshotJson;
@@ -81,10 +85,25 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
     if (!match) { observations.errors.push(`${request.method()} ${path}`); return send({ error: 'unexpected request' }, 404); }
     const id = match[1]!, action = match[2];
     if (request.method() === 'PUT' && !action) {
-      const spec = request.postDataJSON() as ImageUploadSpec; observations.prepares.push(id);
+      const spec = request.postDataJSON() as ImageUploadSpec; observations.prepares.push(id); observations.prepareSpecs.push(spec);
+      expect(spec.uploadId).toBe(id);
+      if (prepareMode === 'lost_before_create') return route.abort('failed');
+      const existing = uploads.get(id);
+      if (existing) {
+        if (!isDeepStrictEqual(existing.spec, spec)) return send({ error: { code: 'resource_conflict', message: 'Upload identity already has different content.', requestId: randomUUID() } }, 409);
+        return send(existing.receipt);
+      }
+      // The service retains (sessionId, imageId) even after a terminal receipt
+      // or release. Only an identical original upload is an idempotent retry.
+      const imageKey = JSON.stringify([spec.target.fence.sessionId, spec.imageId]), originalUploadId = imageUploads.get(imageKey);
+      if (originalUploadId) {
+        observations.identityConflicts.push({ uploadId: id, imageId: spec.imageId, originalUploadId });
+        return send({ error: { code: 'resource_conflict', message: 'The image identity already has an original upload.', requestId: randomUUID() } }, 409);
+      }
       const receipt: ImageUploadReceipt = { uploadId: id, imageId: spec.imageId, target: spec.target, state: 'receiving', acceptedOffset: '0', spec: { name: spec.name, mediaType: spec.mediaType, byteLength: spec.byteLength, sha256: spec.sha256 }, resource: null, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), error: null };
-      uploads.set(id, { spec, receipt, chunks: [] }); return send(receipt, 201);
+      uploads.set(id, { spec, receipt, chunks: [] }); imageUploads.set(imageKey, id); return send(receipt, 201);
     }
+    if (request.method() === 'GET' && !action) observations.uploadQueries.push(id);
     const upload = uploads.get(id);
     if (!upload) return send({ error: 'unknown upload' }, 404);
     if (action === 'chunks') {
@@ -96,15 +115,22 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
     if (action === 'complete') {
       const bytes = Buffer.concat(upload.chunks), container = verifyImageContainer(new Uint8Array(bytes), upload.spec.mediaType);
       expect(bytes.length).toBe(Number(upload.spec.byteLength)); expect(sha256(bytes)).toBe(upload.spec.sha256); expect(container.canvas).not.toBeNull();
-      observations.completes.push(id); upload.receipt = { ...upload.receipt, state: 'complete', resource: { resourceId: randomUUID(), revision: '1', name: upload.spec.name, status: 'available', mediaType: upload.spec.mediaType, byteLength: upload.spec.byteLength, sha256: upload.spec.sha256, width: container.canvas!.width, height: container.canvas!.height, frameCount: container.frameCount!, error: null } }; return send(upload.receipt);
+      observations.completes.push(id);
+      if (nextCompletion) {
+        const state = nextCompletion; nextCompletion = null;
+        upload.receipt = { ...upload.receipt, state, resource: null, error: state === 'released' ? null : { code: state === 'expired' ? 'upload_expired' : 'image_decode_failed', message: `Controlled ${state} upload receipt.` } };
+      } else upload.receipt = { ...upload.receipt, state: 'complete', resource: { resourceId: randomUUID(), revision: '1', name: upload.spec.name, status: 'available', mediaType: upload.spec.mediaType, byteLength: upload.spec.byteLength, sha256: upload.spec.sha256, width: container.canvas!.width, height: container.canvas!.height, frameCount: container.frameCount!, error: null } };
+      return send(upload.receipt);
     }
-    if (request.method() === 'DELETE') { observations.releases.push(id); upload.receipt = { ...upload.receipt, state: 'released', resource: null }; }
+    if (request.method() === 'DELETE') { observations.releases.push(id); upload.receipt = { ...upload.receipt, state: 'released', resource: null, error: null }; }
     return send(upload.receipt);
   };
   await context.route('**/draft-fixture-api/**', handle);
   await context.route('**/api/v1/projects/**/sessions/**', handle);
   if (options.testSession) await context.route('**/api/v1/test-sessions/**', handle);
   return { observations, uploads, capability,
+    setPrepare: (mode: typeof prepareMode) => { prepareMode = mode; },
+    completeNextAs: (state: NonNullable<typeof nextCompletion>) => { nextCompletion = state; },
     changeCommandCatalog: (available: boolean) => {
       if (!snapshot.controls) throw new Error('This fixture has no native command catalog.');
       const revision = String(BigInt(snapshot.controls.revision) + 1n);

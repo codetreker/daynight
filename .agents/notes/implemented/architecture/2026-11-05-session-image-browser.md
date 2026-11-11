@@ -76,6 +76,16 @@ move into an empty current draft binds both displayed versions, changes ownershi
 in one transaction, and revalidates the bytes with new image and upload identities.
 It neither rewrites an old operation nor overwrites current input.
 
+A terminal upload replacement changes both wire identities in one storage
+transaction. The service retains the Session/image identity even after failure,
+expiry or release; a new upload ID alone cannot reuse it. The transaction verifies
+the original terminal receipt, absence of an unknown or pending request, current
+owner access and exact attachment/upload versions before binding the replacement.
+The local attachment ID, original bytes and user content revision remain stable.
+Queued edits and retained drafts adopt both new wire IDs without changing their
+content. Unknown uploads keep the original IDs and specification for observation
+and permitted exact retries.
+
 Remote upload release bookkeeping does not pin local originals. Once editable,
 frozen and unresolved submission references end, collection removes the local
 Blob and its quota charge while preserving the original release identity. Old
@@ -91,8 +101,29 @@ Pane lifetime retains its existing cache ownership; the
 records that choice. The image design adds persistent Blob ownership outside that
 cache; evicting a pane does not authorize deleting a draft. Untouched text-only
 drafts retain their existing path. Activating an image draft imports its current
-text and any unresolved operation once, without replaying the old input. Removing
-all images keeps the persistent draft and its submission barrier.
+text and any unresolved operation once, without replaying the old input. First
+adoption also preserves this tab's legacy input when another tab has already
+created the persistent owner. The client distinguishes that input from its own
+projected persistent view. New legacy writes use a separate slot for each exact owner, so editing at a
+different native target cannot overwrite the original text or unknown-submission
+correlation. Fence-only records remain compatible sources: their first authorized
+binding adds owner metadata without changing their content, and later consumption
+checks the original source and value. Before publishing saved content, the controller retains
+the complete local text draft and requires an explicit choice when the complete
+contents differ, including equal text with different attachments. Choosing local
+content does not combine it with another tab's images. The old storage key remains
+until the matching import, explicit choice or accepted original is settled.
+
+A colliding legacy unknown operation enters an internal query-only recovery
+namespace with its original real owner identity, fence, kind and correlation. It
+uses the existing execution barrier without replacing the current draft or
+adding a dispatchable command. Repeated imports validate the same operation
+identity and retain terminal deduplication metadata through normal reopening.
+Text at the submitted legacy revision remains submitted content; acceptance
+consumes it only if the tab has not edited it again. A later text revision remains
+a separate conflict choice. Neither content choice drops an unresolved original
+operation, and recovery access never becomes editable. Removing all images keeps
+the persistent draft and its submission barrier.
 
 Account cleanup first commits an access tombstone, then removes sensitive draft
 content. Unknown operations retain only the original identity needed for later
@@ -168,6 +199,14 @@ submitted content and later editing without introducing an automatic queue.
 lose text or dispatch duplicate input. CAS exposes conflicts; Web Locks never
 steal a suspended tab's ownership, and persistent dispatch facts survive closure.
 
+**Treat an existing persistent owner as proof that this tab migrated.** Tabs
+have separate legacy text storage. Another tab can create the owner first while
+this tab still has unsent text or an unknown operation. Adopting that owner
+silently loses the local input and can omit its execution barrier. First adoption
+must compare complete content and preserve each original operation independently;
+copying the local text onto the saved attachments would create an unintended
+combined draft.
+
 **Discover retained drafts only through pending operations.** Acceptance and
 failure resolution can remove the last recovery entry while later edits still
 exist on disk. Independent discovery plus an explicit, version-bound move keeps
@@ -189,6 +228,18 @@ not an exceptional result from reading the current draft.
 can ignore a new flag or reinterpret a blocked marker through their existing
 reauthorization path. The database version barrier prevents those clients from
 rewriting an owner under obsolete access rules while preserving stored content.
+
+**Mark the owner inside a shared legacy storage slot.** The marker prevents a
+reader from adopting another native target's text, but a new target still writes
+the same slot and destroys the original. Each exact owner needs a separate write
+location; compatible fence-only sources retain their ownership and conditional
+consumption independently.
+
+**Keep the wire image ID when replacing a terminal upload.** Treating it as the
+local attachment identity preserves the visible item, but conflicts with the
+service ledger: terminal and released uploads still reserve that image ID. A
+separate stable local attachment ID preserves the UI and original bytes while
+atomic replacement gives the new upload a new wire image identity.
 
 **Retain local bytes until remote upload release completes.** A detached target
 may no longer have release permission, pinning accepted images against the browser

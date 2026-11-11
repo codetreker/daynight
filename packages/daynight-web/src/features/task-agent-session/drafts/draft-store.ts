@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction } from '
 import type { ImageUploadReceipt, SessionOperation } from '../../../../../daynight/src/session/protocol';
 import { canonicalDraftOrigin, draftAccountKey, draftExecutionKey, draftOwnerKey, sameDraftFence, sameDraftRecoveryScope, sameDraftTarget } from './draft-store-identity';
 import { isValidatedDraftBlob } from './draft-types';
-import type { DraftBlob, DraftBlobInput, DraftBlobValidationRef, DraftImageMetadata, DraftDetachedRef, DraftDetachedSnapshot, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
+import type { DraftBlob, DraftBlobInput, DraftBlobValidationRef, DraftImageMetadata, DraftDetachedRef, DraftDetachedSnapshot, DraftDispatchAuthority, DraftDispatchClaim, DraftFreeze, DraftHandle, DraftImageItem, DraftOwner, DraftOwnerIdentity, DraftRecord, DraftRecoveryRef, DraftRecoverySnapshot, DraftSettlement, DraftSnapshot, DraftStoreErrorCode, DraftSubmission, DraftUpload, DraftUploadAction, DraftUploadReplacement, DraftWrite, LegacyDraftImport, NewDraftUpload } from './draft-types';
 export { draftExecutionKey, draftOwnerKey } from './draft-store-identity';
 export const SESSION_DRAFT_DATABASE = 'daynight-session-drafts';
 // Older clients cannot safely interpret recovery-only owners or unvalidated originals.
@@ -334,19 +334,41 @@ export class SessionDraftStore {
         if (JSON.stringify(existing.spec) !== JSON.stringify(value.spec) || existing.draftImageId !== value.draftImageId || existing.byteRevision !== value.byteRevision || existing.blobId !== value.blobId) return fail('conflict', 'An upload identity already owns different bytes.');
         return existing;
       }
+      if ((await tx.objectStore('uploads').index('owner').getAll(owner.ownerKey)).some(upload => upload.spec.imageId === value.spec.imageId)) return fail('conflict', 'The image identity already belongs to its original upload.');
       const draft = owner.editableDraftId ? await tx.objectStore('drafts').get([owner.ownerKey, owner.editableDraftId]) : undefined;
       const item = draft?.items.find((candidate) => candidate.draftImageId === value.draftImageId);
       const blob = await tx.objectStore('blobs').get([owner.ownerKey, value.blobId]);
       if (!draft || !item || item.byteRevision !== value.byteRevision || item.blobId !== value.blobId || item.imageId !== value.spec.imageId || item.label !== value.spec.name || !blob || !isValidatedDraftBlob(blob) || item.validation !== 'valid' || value.spec.byteLength !== String(blob.byteLength) || value.spec.sha256 !== blob.sha256 || value.spec.mediaType !== blob.mediaType) return fail('conflict', 'The image changed before upload preparation.');
       if (item.uploadId) {
         const previous = await tx.objectStore('uploads').get([owner.ownerKey, item.uploadId]);
-        if (previous && (previous.outcomeUnknown || previous.pendingAction || !['failed', 'expired', 'released'].includes(previous.receipt?.state ?? ''))) return fail('conflict', 'The original upload must be reconciled before replacement.');
+        if (previous) return fail('conflict', 'Use terminal replacement to allocate a new image and upload identity.');
       }
       const upload: DraftUpload = { ...value, ownerKey: owner.ownerKey, uploadId: value.spec.uploadId, storeVersion: 1, requestSequence: 0, observedSequence: 0, receipt: null, pendingAction: null, outcomeUnknown: false, releaseIntent: false };
       await tx.objectStore('uploads').add(upload);
       await tx.objectStore('drafts').put({ ...draft, storeVersion: increment(draft.storeVersion), items: draft.items.map((candidate) => candidate.draftImageId === item.draftImageId ? { ...candidate, uploadId: upload.uploadId } : candidate) });
       return upload;
     });
+  }
+  /** A terminal retry owns a new server image identity as well as a new upload. */
+  async replaceTerminalUpload(handle: DraftHandle, input: DraftUploadReplacement, admitted: () => boolean = () => true): Promise<DraftSnapshot> {
+    const value = immutable(input);
+    return this.transaction('readwrite', async tx => {
+      const owner = await this.owner(tx, handle);
+      const draft = await tx.objectStore('drafts').get([owner.ownerKey, value.draftId]);
+      const item = draft?.items.find(candidate => candidate.draftImageId === value.draftImageId);
+      const previous = await tx.objectStore('uploads').get([owner.ownerKey, value.uploadId]);
+      if (!draft || owner.editableDraftId !== draft.draftId || draft.state !== 'editable' || draft.storeVersion !== value.expectedStoreVersion || !item || !value.itemIncarnation || item.incarnation !== value.itemIncarnation || item.uploadId !== value.uploadId || !previous || previous.storeVersion !== value.uploadStoreVersion || previous.outcomeUnknown || previous.pendingAction || !['failed', 'expired', 'released'].includes(previous.receipt?.state ?? '')) return fail('conflict', 'The original upload must be confirmed terminal before replacement.');
+      const blob = item.blobId ? await tx.objectStore('blobs').get([owner.ownerKey, item.blobId]) : undefined;
+      if (!blob || !isValidatedDraftBlob(blob) || item.validation !== 'valid' || item.byteRevision !== blob.byteRevision || previous.blobId !== item.blobId || previous.byteRevision !== item.byteRevision || previous.spec.imageId !== item.imageId) return fail('conflict', 'The original image changed before upload replacement.');
+      const uploadId = crypto.randomUUID(), imageId = crypto.randomUUID();
+      const upload: DraftUpload = { ownerKey: owner.ownerKey, draftImageId: item.draftImageId, byteRevision: item.byteRevision, blobId: blob.blobId, uploadId,
+        spec: { uploadId, imageId, target: owner.identity.target, name: item.label, mediaType: blob.mediaType, byteLength: String(blob.byteLength), sha256: blob.sha256 },
+        storeVersion: 1, requestSequence: 0, observedSequence: 0, receipt: null, pendingAction: null, outcomeUnknown: false, releaseIntent: false };
+      await tx.objectStore('uploads').add(upload);
+      if (!previous.releaseIntent) await tx.objectStore('uploads').put({ ...previous, releaseIntent: true, storeVersion: increment(previous.storeVersion) });
+      await tx.objectStore('drafts').put({ ...draft, storeVersion: increment(draft.storeVersion), items: draft.items.map(candidate => candidate === item ? { ...candidate, imageId, uploadId } : candidate) });
+      return this.snapshot(tx, owner);
+    }, true, admitted);
   }
   async beginUploadRequest(handle: DraftHandle, uploadId: string, expectedStoreVersion: number, action: DraftUploadAction): Promise<DraftUpload> {
     return this.transaction('readwrite', async (tx) => {
@@ -393,13 +415,34 @@ export class SessionDraftStore {
       const next = { ...upload, releaseIntent: true, storeVersion: increment(upload.storeVersion) }; await tx.objectStore('uploads').put(next); return next;
     }, true);
   }
-  async importLegacy(identity: DraftOwnerIdentity, input: LegacyDraftImport): Promise<{ readonly snapshot: DraftSnapshot; readonly imported: boolean }> {
+  async importLegacy(identity: DraftOwnerIdentity, input: LegacyDraftImport, admitted: () => boolean = () => true): Promise<{ readonly snapshot: DraftSnapshot; readonly imported: boolean; readonly legacySubmission?: DraftSubmission | null }> {
     const normalized = immutable({ ...identity, target: { ...identity.target, serverOrigin: canonicalDraftOrigin(identity.target.serverOrigin) } });
     const legacy = immutable(input); const key = draftOwnerKey(normalized);
     return this.transaction('readwrite', async (tx) => {
       await this.assertIdentityAvailable(tx, normalized);
       const existing = await this.readOwner(tx, key);
-      if (existing) return { snapshot: await this.snapshot(tx, await this.owner(tx, existing)), imported: false };
+      if (existing) {
+        const owner = await this.owner(tx, existing);
+        let legacySubmission: DraftSubmission | null = null;
+        if (legacy.submission) {
+          const original = legacy.submission;
+          const candidates = (await tx.objectStore('submissions').index('execution').getAll(owner.executionKey)).filter(candidate => candidate.operationId === original.operationId);
+          for (const candidate of candidates) {
+            const originalOwner = await this.readOwner(tx, candidate.ownerKey);
+            if (!originalOwner || draftOwnerKey(originalOwner.identity) !== key || !sameDraftTarget(candidate.target, normalized.target) || !sameDraftFence(candidate.fence, normalized.target.fence) || candidate.kind !== (original.kind ?? 'send_message') || candidate.legacy?.revision !== original.revision) return fail('conflict', 'The legacy operation does not match its saved original identity.');
+            legacySubmission = candidate;
+          }
+          if (!legacySubmission) {
+            // This internal namespace never grants editable ownership. The real
+            // target and original operation remain unchanged and query-only.
+            const recoveryKey = JSON.stringify(['daynight-draft-legacy-operation', 1, key, original.operationId]);
+            const recovery: DraftOwner = { ownerKey: recoveryKey, identity: normalized, executionKey: owner.executionKey, accountKey: owner.accountKey, accessEpoch: 1, storeVersion: 1, editableDraftId: null, unresolvedSubmissionId: original.operationId, recoveryOnly: true, blocked: 'recovery_only', cleanupPending: false, allocatedBytes: 0, legacyImported: true };
+            legacySubmission = { ownerKey: recoveryKey, operationId: original.operationId, kind: original.kind ?? 'send_message', executionKey: owner.executionKey, target: normalized.target, fence: normalized.target.fence, draftId: crypto.randomUUID(), draftRevision: '1', command: null, snapshot: null, blobIds: [], uploadIds: [], state: 'unknown', lastOperation: null, legacy: { revision: original.revision, kind: original.kind ?? 'send_message' }, sensitiveCleared: true };
+            await tx.objectStore('owners').add(recovery); await tx.objectStore('submissions').add(legacySubmission);
+          }
+        }
+        return { snapshot: await this.snapshot(tx, owner), imported: false, legacySubmission };
+      }
       if (this.revoked.has(key)) return fail('blocked', 'Draft access has been revoked.');
       const frozenLegacy = legacy.submission !== null && legacy.revision === legacy.submission.revision;
       const draft: DraftRecord = { ...newDraft(key), text: legacy.text, state: frozenLegacy ? 'frozen' : 'editable' };
@@ -407,7 +450,7 @@ export class SessionDraftStore {
       await tx.objectStore('owners').add(owner); await tx.objectStore('drafts').add(draft);
       if (legacy.submission) await tx.objectStore('submissions').add({ ownerKey: key, operationId: legacy.submission.operationId, kind: legacy.submission.kind ?? 'send_message', executionKey: owner.executionKey, target: normalized.target, fence: normalized.target.fence, draftId: frozenLegacy ? draft.draftId : crypto.randomUUID(), draftRevision: draft.revision, command: null, snapshot: frozenLegacy ? draft : null, blobIds: [], uploadIds: [], state: 'unknown', lastOperation: null, legacy: { revision: legacy.submission.revision, kind: legacy.submission.kind ?? 'send_message' }, sensitiveCleared: false });
       return { snapshot: await this.snapshot(tx, owner), imported: true };
-    }, true);
+    }, true, admitted);
   }
   async freeze(handle: DraftHandle, input: DraftFreeze): Promise<DraftSnapshot> {
     const frozenInput = immutable(input);
@@ -533,6 +576,12 @@ export class SessionDraftStore {
     for (const name of ['drafts', 'blobs', 'uploads'] as const) for (const key of await tx.objectStore(name).index('owner').getAllKeys(owner.ownerKey)) await tx.objectStore(name).delete(key);
     let unresolvedSubmissionId = owner.unresolvedSubmissionId;
     for (const submission of await tx.objectStore('submissions').index('owner').getAll(owner.ownerKey)) {
+      if (owner.blocked !== 'deleted' && owner.recoveryOnly && owner.legacyImported && submission.legacy) {
+        // Correlation contains no message content. Keep terminal identities so a
+        // stale legacy key cannot recreate an already settled original operation.
+        await tx.objectStore('submissions').put({ ...submission, command: null, snapshot: null, blobIds: [], uploadIds: [], lastOperation: null, sensitiveCleared: true });
+        continue;
+      }
       if (owner.blocked === 'deleted' || !pending(submission)) {
         await tx.objectStore('submissions').delete([owner.ownerKey, submission.operationId]);
         if (unresolvedSubmissionId === submission.operationId) unresolvedSubmissionId = null;

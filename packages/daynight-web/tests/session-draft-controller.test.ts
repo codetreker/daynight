@@ -1,6 +1,6 @@
 import { File } from 'node:buffer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SESSION_PROTOCOL, type ImageCapabilities, type ImageTarget, type ImageUploadReceipt, type ImageUploadSpec, type SessionCommand, type SessionOperation } from '../../daynight/src/session/protocol';
+import { SESSION_PROTOCOL, parseSessionCommand, type ImageCapabilities, type ImageTarget, type ImageUploadReceipt, type ImageUploadSpec, type SessionCommand, type SessionOperation } from '../../daynight/src/session/protocol';
 import type { SessionResourceClient } from '../../daynight/src/session/resource-client';
 import { ApiError } from '../src/api/client';
 import { imageCommandNotDispatched } from '../src/features/task-agent-session/operation-error';
@@ -41,6 +41,120 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it('sends a durable text-only draft through the actual wire parser without image markers', async () => {
+    const f = fixture(null); await f.store.importLegacy(identity, { text: 'text-only input', revision: 'local', submission: null });
+    const dispatch = vi.fn(async (command: SessionCommand) => { parseSessionCommand(command); return f.operation(command, 'provider_accepted'); });
+    const controller = f.create({ dispatch }); await controller.sync(); await controller.send();
+    expect(dispatch).toHaveBeenCalledOnce(); expect(dispatch.mock.calls[0]![0]).not.toHaveProperty('contentRevision');
+    expect(controller.getSnapshot()).toMatchObject({ text: '', submission: null, executionBlocked: false });
+  });
+  it.each(['failed', 'expired', 'released'] as const)('replaces both wire identities after a confirmed %s upload without changing the local attachment', async state => {
+    const f = fixture(), controller = f.create();
+    const prepare = vi.mocked(f.resources.prepareUpload).getMockImplementation()!;
+    const imageIds = new Set<string>();
+    vi.spyOn(f.resources, 'prepareUpload').mockImplementation(async (spec, signal) => {
+      if (imageIds.has(spec.imageId) && !f.uploads.has(spec.uploadId)) throw new ApiError('server', 409, 'resource_conflict');
+      imageIds.add(spec.imageId); return prepare(spec, signal);
+    });
+    await controller.addFiles([file()], 'keep text');
+    const before = (await f.store.readExisting(identity))!, item = before.editable!.items[0]!, old = before.uploads[0]!;
+    f.uploads.set(old.uploadId, { ...old.receipt!, state, resource: null });
+    await controller.checkStatus(); await controller.retryUpload(item.draftImageId);
+    const after = (await f.store.readExisting(identity))!, next = after.editable!.items[0]!;
+    expect(next.imageId).not.toBe(item.imageId); expect(next.uploadId).not.toBe(item.uploadId);
+    expect(next).toMatchObject({ draftImageId: item.draftImageId, incarnation: item.incarnation, blobId: item.blobId, byteRevision: item.byteRevision });
+    expect(after.editable).toMatchObject({ text: before.editable!.text, revision: before.editable!.revision });
+    expect(after.uploads.find(upload => upload.uploadId === next.uploadId)?.receipt?.state).toBe('complete');
+    expect(controller.getSnapshot().canSend).toBe(true);
+  });
+  it.each(['local', 'saved'] as const)('preserves both whole drafts until the explicit %s choice at first durable adoption', async choice => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'saved text'); await first.close();
+    const original = (await f.store.readExisting(identity))!;
+    const removed = vi.fn(), controller = f.create({ legacy: () => ({ text: 'local text', revision: 'local', submission: null, onImported: removed }) });
+    const visible: string[] = []; controller.subscribe(() => { if (controller.getSnapshot().active) visible.push(controller.getSnapshot().text); });
+    await controller.sync();
+    expect(controller.getSnapshot()).toMatchObject({ text: 'local text', conflict: true, canSend: false, items: [] });
+    expect(visible).not.toContain('saved text'); expect(removed).not.toHaveBeenCalled();
+    expect((await f.store.readExisting(identity))!.editable).toEqual(original.editable);
+    await controller.resolveConflict(choice);
+    expect(controller.getSnapshot()).toMatchObject({ text: choice === 'local' ? 'local text' : 'saved text', conflict: false });
+    expect(controller.getSnapshot().items).toHaveLength(choice === 'local' ? 0 : 1);
+    expect(removed).toHaveBeenCalledOnce(); expect(f.commands).toEqual([]);
+  });
+  it('requires a choice for matching legacy text when the durable draft contains unseen images', async () => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'same text'); await first.close();
+    const controller = f.create({ legacy: () => ({ text: 'same text', revision: 'local', submission: null, onImported() {} }) });
+    await controller.refreshForSend().catch(() => {});
+    expect(controller.getSnapshot()).toMatchObject({ text: 'same text', items: [], conflict: true, canSend: false });
+    expect(f.commands).toEqual([]);
+  });
+  it.each([false, true])('keeps new upload bindings when text is edited during replacement (close=%s)', async close => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'original');
+    const before = (await f.store.readExisting(identity))!, item = before.editable!.items[0]!, upload = before.uploads[0]!;
+    f.uploads.set(upload.uploadId, { ...upload.receipt!, state: 'expired', resource: null }); await controller.checkStatus();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), replace = f.store.replaceTerminalUpload.bind(f.store);
+    vi.spyOn(f.store, 'replaceTerminalUpload').mockImplementationOnce(async (...args) => { const result = await replace(...args); entered.resolve(); await release.promise; return result; });
+    const retry = controller.retryUpload(item.draftImageId); await entered.promise;
+    controller.setText('later edit'); const closing = close ? controller.close() : null;
+    release.resolve(); await retry; await closing; if (!close) await controller.flush();
+    const saved = (await f.store.readExisting(identity))!, next = saved.editable!.items[0]!;
+    expect(saved.editable!.text).toBe('later edit'); expect(next.imageId).not.toBe(item.imageId); expect(next.uploadId).not.toBe(item.uploadId);
+    expect(saved.uploads.find(candidate => candidate.uploadId === next.uploadId)?.spec.imageId).toBe(next.imageId);
+  });
+  it.each(['same', 'successor', 'edited'] as const)('correlates a collided legacy original acceptance with its %s revision', async correlation => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'saved text'); await first.close();
+    const operationId = crypto.randomUUID(), removed = vi.fn();
+    const original: SessionOperation = { protocol: SESSION_PROTOCOL, ...target.fence, operationId, kind: 'send_message', state: 'unknown', providerResult: null, error: null };
+    f.query.mockResolvedValue(original);
+    const source = { text: 'local text', revision: correlation === 'successor' ? 'successor' : 'submitted', submission: { operationId, revision: 'submitted' }, onImported: removed };
+    const controller = f.create({ legacy: () => source }); await controller.sync();
+    expect(controller.getSnapshot()).toMatchObject({ text: 'local text', items: [], conflict: true, executionBlocked: true });
+    expect(f.query).toHaveBeenCalledWith(target.fence, operationId, expect.any(AbortSignal)); expect(f.commands).toEqual([]);
+    if (correlation === 'same') await expect(controller.resolveConflict('local')).rejects.toThrow('image_submission_pending');
+    if (correlation === 'edited') controller.setText('new edit');
+    f.query.mockResolvedValue({ ...original, state: 'provider_accepted' }); await controller.checkStatus();
+    if (correlation === 'same') {
+      expect(controller.getSnapshot()).toMatchObject({ text: 'saved text', conflict: false, executionBlocked: false }); expect(removed).toHaveBeenCalledOnce();
+      await controller.close(); const reopened = f.create({ legacy: () => source }); await reopened.sync();
+      expect(reopened.getSnapshot()).toMatchObject({ text: 'saved text', conflict: false, executionBlocked: false });
+    } else {
+      expect(controller.getSnapshot()).toMatchObject({ text: correlation === 'edited' ? 'new edit' : 'local text', conflict: true, executionBlocked: false });
+      expect(removed).not.toHaveBeenCalled(); await controller.resolveConflict('local');
+      expect(controller.getSnapshot().items).toEqual([]); expect(removed).toHaveBeenCalledOnce();
+    }
+    expect(f.commands).toEqual([]);
+  });
+  it.each(['saved', 'local'] as const)('keeps the original unknown barrier after choosing the %s draft', async choice => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'saved text'); await first.close();
+    const operationId = crypto.randomUUID(), removed = vi.fn();
+    f.query.mockResolvedValue({ protocol: SESSION_PROTOCOL, ...target.fence, operationId, kind: 'send_message', state: 'unknown', providerResult: null, error: null });
+    const controller = f.create({ legacy: () => ({ text: 'later text', revision: 'later', submission: { operationId, revision: 'submitted' }, onImported: removed }) });
+    await controller.sync(); await controller.resolveConflict(choice);
+    expect(controller.getSnapshot()).toMatchObject({ text: choice === 'local' ? 'later text' : 'saved text', conflict: false, executionBlocked: true, canSend: false });
+    expect((await f.store.readRecoverableSubmissions(identity)).map(entry => entry.submission.operationId)).toEqual([operationId]);
+    expect(removed).toHaveBeenCalledOnce(); expect(f.commands).toEqual([]);
+  });
+  it('retains a newer legacy input that appears after migration commits but before adoption', async () => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'saved text'); await first.close();
+    const removed = vi.fn(); let text = 'initial local text', revision = 'first';
+    const controller = f.create({ legacy: () => ({ text, revision, submission: null, onImported: removed }) });
+    const migrate = f.store.importLegacy.bind(f.store);
+    vi.spyOn(f.store, 'importLegacy').mockImplementationOnce(async (...args) => { const result = await migrate(...args); text = 'later local text'; revision = 'second'; return result; });
+    await controller.sync();
+    expect(controller.getSnapshot().text).toBe('later local text'); expect(removed).not.toHaveBeenCalled();
+    await controller.retrySave();
+    expect(controller.getSnapshot()).toMatchObject({ text: 'later local text', items: [], conflict: true, canSend: false });
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved text'); expect(f.commands).toEqual([]);
+  });
+  it('consumes the chosen legacy source only after a failed local choice is durably retried', async () => {
+    const f = fixture(null), first = f.create(); await first.addFiles([file()], 'saved text'); await first.close();
+    const removed = vi.fn(), controller = f.create({ legacy: () => ({ text: 'local text', revision: 'local', submission: null, onImported: removed }) });
+    await controller.sync(); vi.spyOn(f.store, 'saveDraft').mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(controller.resolveConflict('local')).rejects.toThrow('storage unavailable'); expect(removed).not.toHaveBeenCalled();
+    expect((await f.store.readExisting(identity))?.editable?.text).toBe('saved text');
+    await controller.retrySave(); expect(removed).toHaveBeenCalledOnce();
+    expect((await f.store.readExisting(identity))?.editable).toMatchObject({ text: 'local text', items: [] });
+  });
   it.each(['absent', 'readable'] as const)('reconciles an authorized scope after another Session cleared the account marker with a %s current owner', async current => {
     const f = fixture(null), controller = f.create();
     await f.store.importLegacy(identity, { text: 'original message', revision: '1', submission: null });

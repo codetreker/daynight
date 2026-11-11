@@ -57,7 +57,7 @@ export type ImageDraftOptions = {
   readonly isDefinitiveNotDispatched?: (error: unknown) => boolean;
   readonly commandIssue?: (payload: ImageDraftCommandPayload) => string | null;
   readonly store?: SessionDraftStore; readonly locks?: LockManager | null;
-  readonly legacy?: () => (LegacyDraftImport & { readonly onImported: () => void }) | null;
+  readonly legacy?: () => (LegacyDraftImport & { readonly ownerKey?: string; readonly onImported: () => void }) | null;
 };
 const emptyView = (): ImageDraftView => ({ active: false, loading: false, text: '', revision: '1', draftId: null, items: [], frozenItems: [], rejectedCandidates: [], overflowRejectedCount: 0, saving: false, error: null, conflict: false, frozen: false, readOnly: false, failureChoice: false, submission: null, recoveries: [], detachedDrafts: [], executionBlocked: false, canSend: false, canResumePrepared: false, canCancelPrepared: false, disabledReason: null, checking: false });
 const message = (error: unknown): string => {
@@ -67,6 +67,8 @@ const message = (error: unknown): string => {
 };
 const recoveryKey = (ref: Pick<ImageDraftRecoveryRef, 'ownerKey' | 'operationId'>): string => JSON.stringify([ref.ownerKey, ref.operationId]);
 const itemKey = (item: Pick<DraftImageItem, 'draftImageId' | 'byteRevision'>): string => JSON.stringify([item.draftImageId, item.byteRevision]);
+const mergeUploadBinding = (item: DraftImageItem, saved: DraftImageItem | undefined): DraftImageItem => saved && saved.draftImageId === item.draftImageId && saved.byteRevision === item.byteRevision && saved.blobId === item.blobId && (item.incarnation ? item.incarnation === saved.incarnation : item.imageId === saved.imageId)
+  ? { ...item, ...(saved.incarnation ? { incarnation: saved.incarnation } : {}), imageId: saved.imageId, uploadId: saved.uploadId } : item;
 const sameProfile = (a: ImageCapabilities | null, b: ImageCapabilities | null): boolean => !!a && !!b && a.expectedNativeSessionId === b.expectedNativeSessionId && a.modelId === b.modelId && a.controlsRevision === b.controlsRevision;
 type PendingDraftWrite = { readonly writeId: string; readonly owner: DraftOwner; readonly base: DraftRecord; readonly draft: DraftRecord; readonly blobs: readonly StoredDraftBlobInput[]; readonly preceding: Promise<void>; readonly conflicted: boolean; observed: DraftSnapshot };
 
@@ -95,7 +97,10 @@ export class ImageDraftController {
   private restoreComplete = false;
   private loadFailed = false;
   private activating: Promise<void> | null = null;
-  private pendingLegacy: (LegacyDraftImport & { readonly onImported: () => void }) | null = null;
+  private pendingLegacy: NonNullable<ReturnType<NonNullable<ImageDraftOptions['legacy']>>> | null = null;
+  private legacyAdopted = false;
+  private legacyWriteVersion = 0;
+  private legacySubmission: DraftSubmission | null = null;
   private writes: Promise<void> = Promise.resolve();
   private validations: Promise<void> = Promise.resolve();
   private writeVersion = 0;
@@ -270,7 +275,7 @@ export class ImageDraftController {
   private adopt(snapshot: DraftSnapshot): void {
     this.saved = snapshot;
     if (!this.dirty) this.local = snapshot.editable;
-    else if (this.local && snapshot.editable?.draftId === this.local.draftId) this.local = { ...this.local, storeVersion: snapshot.editable.storeVersion, revision: snapshot.editable.revision, items: this.local.items.map(item => ({ ...item, uploadId: snapshot.editable!.items.find(saved => saved.draftImageId === item.draftImageId)?.uploadId ?? item.uploadId })) };
+    else if (this.local && snapshot.editable?.draftId === this.local.draftId) this.local = { ...this.local, storeVersion: snapshot.editable.storeVersion, revision: snapshot.editable.revision, items: this.local.items.map(item => mergeUploadBinding(item, snapshot.editable!.items.find(saved => saved.draftImageId === item.draftImageId))) };
     const retained = new Set([...(snapshot.editable?.items ?? []), ...(snapshot.frozen?.items ?? []), ...(this.local?.items ?? [])].map(itemKey));
     for (const [key, asset] of this.assets) if (!retained.has(key)) { asset.release(); this.assets.delete(key); }
     const referencedBlobs = new Set([...(snapshot.editable?.items ?? []), ...(snapshot.frozen?.items ?? []), ...(this.local?.items ?? [])].map(item => item.blobId));
@@ -315,7 +320,7 @@ export class ImageDraftController {
       if (!current || current.draftId !== captured.draft.draftId || current.revision !== known.revision) throw new DraftStoreError('conflict', 'The saved draft changed before the final local write.');
       const items = captured.draft.items.map(item => {
         const stored = current.items.find(candidate => candidate.draftImageId === item.draftImageId && candidate.byteRevision === item.byteRevision);
-        return stored && item.uploadId === captured.base.items.find(candidate => candidate.draftImageId === item.draftImageId)?.uploadId ? { ...item, uploadId: stored.uploadId } : item;
+        return item.uploadId === captured.base.items.find(candidate => candidate.draftImageId === item.draftImageId)?.uploadId ? mergeUploadBinding(item, stored) : item;
       });
       const committedSnapshot = await this.store.saveDraft(captured.owner, { draftId: current.draftId, expectedStoreVersion: current.storeVersion, text: captured.draft.text, items, rejectedCandidates: captured.draft.rejectedCandidates, overflowRejectedCount: captured.draft.overflowRejectedCount, blobs: captured.blobs });
       if (committedSnapshot.editable) this.contentCommits.set(captured.owner.ownerKey, committedSnapshot.editable);
@@ -341,6 +346,40 @@ export class ImageDraftController {
     void this.backgroundWork(previous, this.epoch);
   }
 
+  private captureLegacy(): ImageDraftController['pendingLegacy'] {
+    if (this.legacyAdopted || this.view.active) return this.pendingLegacy;
+    const current = this.options.legacy?.() ?? null;
+    if (current && (!current.ownerKey || current.ownerKey === this.scopeKey)) this.pendingLegacy = current;
+    return this.pendingLegacy;
+  }
+  private consumeLegacy(): void {
+    const legacy = this.pendingLegacy; this.pendingLegacy = null; this.legacySubmission = null; this.legacyAdopted = true;
+    legacy?.onImported();
+  }
+  private legacyAdmission(c: ImageDraftContext, epoch: number, legacy: NonNullable<ImageDraftController['pendingLegacy']>): boolean {
+    if (!this.current(epoch) || !this.sameActionOwner(c)) return false;
+    const current = this.legacyAdopted || this.view.active ? null : this.options.legacy?.();
+    return !current || (!current.ownerKey || current.ownerKey === this.scopeKey) && current.text === legacy.text && current.revision === legacy.revision && JSON.stringify(current.submission) === JSON.stringify(legacy.submission);
+  }
+  /** Keep the local alternative before publishing any durable projection. */
+  private adoptInitial(snapshot: DraftSnapshot, legacy: ImageDraftController['pendingLegacy'], migration?: Awaited<ReturnType<SessionDraftStore['importLegacy']>>): void {
+    if (this.legacyAdopted) { this.adoptObserved(snapshot); return; }
+    this.legacyAdopted = true;
+    if (!legacy) { this.adoptObserved(snapshot); return; }
+    this.pendingLegacy = legacy; this.legacySubmission = migration?.legacySubmission ?? snapshot.submission;
+    const submitted = !!legacy.submission && legacy.revision === legacy.submission.revision;
+    const acceptedOriginal = submitted && this.legacySubmission?.state === 'accepted';
+    const sameSubmission = !legacy.submission ? !snapshot.submission : snapshot.submission?.operationId === legacy.submission.operationId && snapshot.submission.legacy?.revision === legacy.submission.revision;
+    const content = snapshot.editable ?? snapshot.frozen;
+    const sameContent = !!content && content.text === legacy.text && !content.items.length && !content.rejectedCandidates.length && !content.overflowRejectedCount && sameSubmission;
+    if (migration?.imported || acceptedOriginal || !legacy.text && !legacy.submission || sameContent) {
+      this.consumeLegacy(); this.adoptObserved(snapshot); return;
+    }
+    const base = snapshot.editable ?? snapshot.frozen;
+    this.local = { ownerKey: snapshot.owner.ownerKey, draftId: base?.draftId ?? crypto.randomUUID(), revision: base?.revision ?? '1', storeVersion: base?.storeVersion ?? 0, text: legacy.text, items: [], rejectedCandidates: [], overflowRejectedCount: 0, state: 'editable', savedAt: 0 };
+    this.dirty = true; this.conflict = true; this.error = 'image_draft_conflict'; this.legacyWriteVersion = this.writeVersion;
+    this.adopt(snapshot);
+  }
   /** Repeated calls from the host are inert unless its authenticated admission changes. */
   sync = (): Promise<void> => this.backgroundWork(this.syncOwner());
   private syncOwner = async (): Promise<void> => {
@@ -352,10 +391,11 @@ export class ImageDraftController {
     if (fingerprint === this.fingerprint && (this.restoreComplete || this.loadFailed || this.loading || !c.canEdit)) { if (this.loading) await this.loading; await this.resumeValidation(); this.publish(); return; }
     this.fingerprint = fingerprint;
     if (key !== this.scopeKey) {
-      const legacy = this.options.legacy?.() ?? null;
+      const candidate = this.options.legacy?.() ?? null;
+      const legacy = candidate && (!candidate.ownerKey || candidate.ownerKey === key) ? candidate : null;
       void this.retireWrite(this.capturePendingWrite()); this.resetWrites();
       this.epoch++; this.lifetime.abort(); this.network.abort(); this.lifetime = new AbortController(); this.network = new AbortController(); this.clearAssets();
-      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = legacy; this.view = emptyView();
+      this.scopeKey = key; this.authGeneration = c.authorizationGeneration; this.saved = null; this.local = null; this.dirty = false; this.error = null; this.conflict = false; this.freezing = false; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.freshCapability = null; this.pendingLegacy = legacy; this.legacyAdopted = false; this.legacySubmission = null; this.view = emptyView();
       this.restoreComplete = false; this.loadFailed = false;
       if (typeof indexedDB === 'undefined') { this.restoreComplete = true; this.loading = null; this.publish(); return; }
       await this.startLoad(c, this.epoch);
@@ -384,7 +424,7 @@ export class ImageDraftController {
       if (this.current(epoch)) this.restoreComplete = restored;
     }).catch(error => {
       if (!this.current(epoch)) return;
-      this.loadFailed = true; this.view = { ...this.view, active: true, text: this.options.legacy?.()?.text ?? this.view.text }; this.fail(error);
+      this.loadFailed = true; const legacy = this.captureLegacy(); this.view = { ...this.view, active: true, text: legacy?.text ?? this.view.text }; this.fail(error);
     }).finally(() => { if (this.loading === loading) { this.loading = null; this.publish(); } });
     this.loading = loading; this.publish(); return loading;
   }
@@ -404,24 +444,26 @@ export class ImageDraftController {
       if (!this.current(epoch)) return;
       this.detached = detached;
       const retained = [...this.retiringDrafts.values()].some(pending => sameDraftRecoveryScope(pending.owner.identity, c.identity));
-      let migration: { readonly legacy: NonNullable<ImageDraftController['pendingLegacy']>; readonly imported: boolean } | null = null;
-      if (!snapshot && (this.originals.length || this.detached.length || retained)) {
+      const legacy = this.captureLegacy();
+      let migration: Awaited<ReturnType<SessionDraftStore['importLegacy']>> | undefined;
+      if (!this.legacyAdopted && legacy && (snapshot || this.originals.length || this.detached.length || retained)) {
         if (!this.options.getContext()?.canEdit) { deferred = true; return; }
-        const legacy = this.pendingLegacy ?? this.options.legacy?.() ?? null;
-        if (legacy && (legacy.text || legacy.submission)) {
-          this.pendingLegacy = legacy;
-          const result = await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission });
-          snapshot = result.snapshot; migration = { legacy, imported: result.imported };
-        } else snapshot = await this.store.openOwner(c.identity);
+        migration = await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }, () => this.legacyAdmission(c, epoch, legacy));
+        snapshot = migration.snapshot;
+      } else if (!snapshot && (this.originals.length || this.detached.length || retained)) {
+        if (!this.options.getContext()?.canEdit) { deferred = true; return; }
+        snapshot = await this.store.openOwner(c.identity);
       }
       if (!this.current(epoch)) return;
-      if (!snapshot) { this.pendingLegacy = null; this.view = { ...emptyView(), text: this.view.text }; this.error = null; this.publish(); return; }
-      if (!migration) this.pendingLegacy = null;
-      this.adoptObserved(snapshot);
-      if (migration?.imported) { this.pendingLegacy = null; migration.legacy.onImported(); }
-      else if (migration && snapshot.editable?.text !== migration.legacy.text) {
-        this.local = { ...(snapshot.editable ?? snapshot.frozen)!, text: migration.legacy.text }; this.dirty = true; this.conflict = true; this.error = 'image_draft_conflict'; this.publish();
+      if (migration && legacy && !this.legacyAdmission(c, epoch, legacy)) throw new DraftStoreError('conflict', 'The local text changed during draft restoration.');
+      if (!snapshot) { this.view = { ...emptyView(), text: legacy?.text ?? this.view.text }; this.error = null; this.publish(); return; }
+      if (migration?.legacySubmission) {
+        const originals = await this.store.readRecoverableSubmissions(c.identity);
+        if (!this.current(epoch)) return;
+        this.originals = originals.filter(entry => entry.owner.ownerKey !== this.scopeKey);
+        if (legacy && !this.legacyAdmission(c, epoch, legacy)) throw new DraftStoreError('conflict', 'The local text changed during draft restoration.');
       }
+      this.adoptInitial(snapshot, legacy, migration);
       const retired = this.retiringDrafts.get(snapshot.owner.ownerKey);
       if (retired) {
         this.local = retired.draft; for (const blob of retired.blobs) { if (isValidatedDraftBlob(blob)) this.blobs.set(blob.blobId, blob); else this.pendingOriginals.set(blob.blobId, blob); }
@@ -445,16 +487,14 @@ export class ImageDraftController {
     if (this.loadFailed) throw new Error('image_draft_unavailable'); if (this.saved) return this.epoch;
     if (this.activating) { const epoch = this.epoch; await this.activating; return this.current(epoch) ? epoch : null; }
     const c = this.context(), epoch = this.epoch;
-    const legacy = this.pendingLegacy ?? this.options.legacy?.() ?? null; this.pendingLegacy = legacy;
+    const legacy = this.captureLegacy();
     this.view = { ...this.view, active: true, text }; this.publish();
     const activate = (async () => {
-      const imported = legacy ? await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }) : null;
+      const imported = legacy ? await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }, () => this.legacyAdmission(c, epoch, legacy)) : null;
       const saved = imported?.snapshot ?? await this.store.openOwner(c.identity);
       if (!this.current(epoch)) return;
-      this.adopt(saved);
-      if (imported?.imported) { this.pendingLegacy = null; legacy?.onImported(); }
+      this.adoptInitial(saved, legacy, imported ?? undefined);
       if (!imported && this.local && this.local.text !== text) { this.edit({ ...this.local, text }); await this.flush().catch(() => {}); }
-      if (imported && !imported.imported && legacy && saved.editable?.text !== legacy.text) { this.local = { ...saved.editable!, text: legacy.text }; this.dirty = true; this.conflict = true; this.error = 'image_draft_conflict'; this.publish(); }
     })();
     this.activating = activate;
     try { await activate; } catch (error) {
@@ -507,6 +547,7 @@ export class ImageDraftController {
     } catch (error) { if (this.current(invocationEpoch)) this.fail(error); throw error; }
   };
   retrySave = async (): Promise<void> => {
+    const retryEpoch = this.epoch;
     this.error = null;
     if (this.loadFailed) {
       await this.startLoad(this.context(), this.epoch);
@@ -514,19 +555,23 @@ export class ImageDraftController {
     }
     if (!this.saved && this.local) {
       const c = this.context(), epoch = this.epoch, legacy = this.pendingLegacy;
-      const migrated = legacy ? await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }) : null;
+      const migrated = legacy ? await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }, () => this.legacyAdmission(c, epoch, legacy)) : null;
       if (!this.current(epoch)) return;
-      if (migrated?.imported) { this.pendingLegacy = null; legacy?.onImported(); }
+      if (migrated?.imported) this.consumeLegacy();
       const existing = migrated ? null : await this.store.readExisting(c.identity);
       if (!this.current(epoch)) return;
       if (existing) { this.saved = existing; this.conflict = true; this.error = 'image_draft_conflict'; this.publish(); return; }
       const saved = migrated?.snapshot ?? await this.store.openOwner(c.identity);
       if (!this.current(epoch)) return;
       this.saved = saved;
+      if (migrated && !migrated.imported) { this.legacyAdopted = true; this.legacySubmission = migrated.legacySubmission ?? null; this.legacyWriteVersion = this.writeVersion; this.conflict = true; this.error = 'image_draft_conflict'; this.publish(); return; }
       if (!saved.editable) { this.conflict = true; this.error = 'image_submission_pending'; this.publish(); return; }
       this.local = { ...this.local, draftId: saved.editable.draftId, storeVersion: saved.editable.storeVersion };
     }
-    await this.flush(); await this.restore(this.epoch); await this.prepareUploads();
+    await this.flush();
+    if (!this.current(retryEpoch)) return;
+    if (this.pendingLegacy && this.legacyAdopted && !this.conflict && !this.dirty) this.consumeLegacy();
+    await this.restore(retryEpoch); await this.prepareUploads();
   };
 
   addFiles = async (files: readonly File[], text: string): Promise<void> => {
@@ -700,12 +745,21 @@ export class ImageDraftController {
   };
   discardRejected = async (): Promise<void> => { this.context(); if (!this.local) return; const epoch = this.epoch; this.edit({ ...this.local, rejectedCandidates: [], overflowRejectedCount: 0 }); await this.flush(); if (this.current(epoch)) await this.prepareUploads(); };
   retryUpload = async (id: string): Promise<void> => {
-    this.context(); const item = this.local?.items.find(item => item.draftImageId === id); if (!item) return;
-    const upload = this.saved?.uploads.find(upload => upload.uploadId === item.uploadId);
-    if (!upload || upload.outcomeUnknown || upload.pendingAction || !upload.receipt || !['failed', 'expired', 'released'].includes(upload.receipt.state)) { await this.prepareUploads(true, upload?.pendingAction?.kind === 'prepare' && !upload.receipt ? upload.uploadId : undefined); return; }
-    const epoch = this.epoch;
-    this.edit({ ...this.local!, items: this.local!.items.map(candidate => candidate === item ? { ...candidate, uploadId: null } : candidate) });
-    await this.flush(); if (this.current(epoch)) await this.prepareUploads();
+    const c = this.context(), epoch = this.epoch;
+    await this.flush();
+    const replace = async () => {
+      if (!this.current(epoch)) return;
+      const item = this.local?.items.find(candidate => candidate.draftImageId === id), upload = this.saved?.uploads.find(candidate => candidate.uploadId === item?.uploadId);
+      if (!item || !upload || !this.saved?.editable || upload.outcomeUnknown || upload.pendingAction || !['failed', 'expired', 'released'].includes(upload.receipt?.state ?? '')) return;
+      if (this.conflict || this.dirty) throw new DraftStoreError('conflict', 'Save the current draft before retrying its upload.');
+      const snapshot = await this.store.replaceTerminalUpload(this.saved.owner, { draftId: this.saved.editable.draftId, expectedStoreVersion: this.saved.editable.storeVersion, draftImageId: id, itemIncarnation: item.incarnation ?? '', uploadId: upload.uploadId, uploadStoreVersion: upload.storeVersion }, () => this.current(epoch) && this.sameActionOwner(c));
+      if (this.current(epoch)) { this.adopt(snapshot); this.channel?.postMessage({ ownerKey: snapshot.owner.ownerKey }); }
+    };
+    const replacement = this.writes.catch(() => {}).then(replace); this.writes = replacement;
+    try { await replacement; } catch (error) { if (this.current(epoch)) this.fail(error); throw error; }
+    if (!this.current(epoch)) return;
+    const item = this.local?.items.find(candidate => candidate.draftImageId === id), upload = this.saved?.uploads.find(candidate => candidate.uploadId === item?.uploadId);
+    await this.prepareUploads(true, upload?.pendingAction?.kind === 'prepare' && !upload.receipt ? upload.uploadId : undefined);
   };
   private sender(epoch: number, owner = this.saved?.owner, nativeCommand?: ImageDraftNativeCommand): DraftSender {
     return new DraftSender({ store: this.store, locks: this.locks, isCurrent: () => this.current(epoch) && this.networkAllowed(), admit: (snapshot, prepared) => this.gate(snapshot, prepared, nativeCommand),
@@ -713,7 +767,7 @@ export class ImageDraftController {
       command: snapshot => {
         const c = this.context(), draft = snapshot.editable!;
         if (nativeCommand) return { protocol: SESSION_PROTOCOL, ...c.target.fence, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'execute_command', payload: { commandId: nativeCommand.commandId, arguments: nativeCommand.arguments, expectedControlsRevision: nativeCommand.expectedControlsRevision, expectedTurnId: nativeCommand.expectedTurnId } };
-        return { protocol: SESSION_PROTOCOL, ...c.target.fence, contentRevision: 2, requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: {
+        return { protocol: SESSION_PROTOCOL, ...c.target.fence, ...(draft.items.length ? { contentRevision: 2 as const } : {}), requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), kind: 'send_message', payload: {
           content: [...(draft.text.trim() ? [{ type: 'text' as const, text: draft.text }] : []), ...draft.items.map(item => { const upload = snapshot.uploads.find(upload => upload.uploadId === item.uploadId)!; return { type: 'image' as const, imageId: item.imageId, uploadId: upload.uploadId, resourceId: upload.receipt!.resource!.resourceId, sha256: upload.spec.sha256, byteLength: upload.spec.byteLength }; })], expectedTurnId: c.expectedTurnId,
           ...(draft.items.length ? { target: c.target, expectedImageCapabilityRevision: this.capability(c)!.revision, draftId: draft.draftId, draftRevision: draft.revision } : {}) } };
       }, dispatch: this.options.dispatch, query: this.options.query, signal: this.network.signal,
@@ -842,6 +896,17 @@ export class ImageDraftController {
       await this.refreshRecoveries(epoch); await this.reload();
     } catch (error) { await this.recoveryFailed(ref, epoch, error); throw error; }
   };
+  private async reconcileLegacySubmission(epoch: number): Promise<void> {
+    const legacy = this.pendingLegacy;
+    if (!legacy?.submission || !this.saved || !this.current(epoch)) return;
+    const c = this.context();
+    const result = await this.store.importLegacy(c.identity, { text: legacy.text, revision: legacy.revision, submission: legacy.submission }, () => this.current(epoch) && this.sameActionOwner(c));
+    if (!this.current(epoch) || this.pendingLegacy !== legacy) return;
+    this.legacySubmission = result.legacySubmission ?? result.snapshot.submission;
+    if (this.legacySubmission?.state === 'accepted' && legacy.revision === legacy.submission.revision && this.writeVersion === this.legacyWriteVersion && this.local?.text === legacy.text) {
+      this.dirty = false; this.conflict = false; this.error = null; this.local = result.snapshot.editable; this.consumeLegacy(); this.adopt(result.snapshot);
+    }
+  }
   private async checkSubmissions(ref?: ImageDraftRecoveryRef): Promise<void> {
     if (!this.saved || !this.networkAllowed()) return;
     const epoch = this.epoch;
@@ -856,6 +921,7 @@ export class ImageDraftController {
       } catch (error) { if (this.current(epoch)) this.recoveryErrors.set(recoveryKey(entry.submission), message(error)); }
       if (!this.current(epoch) || !this.networkAllowed()) return;
     }
+    await this.reconcileLegacySubmission(epoch);
     await this.refreshRecoveries(epoch); await this.reload();
   }
   checkStatus = async (ref?: ImageDraftRecoveryRef): Promise<void> => {
@@ -891,17 +957,25 @@ export class ImageDraftController {
     if (this.current(epoch)) { await this.restore(epoch); await this.prepareUploads(); }
   };
   resolveConflict = async (choice: 'saved' | 'local'): Promise<void> => {
-    this.context(); if (!this.saved) return;
-    const epoch = this.epoch, latest = await this.store.read(this.saved.owner); if (!this.current(epoch)) return; this.saved = latest;
+    this.context(); if (!this.saved || !this.conflict) return;
+    const epoch = this.epoch;
+    await this.reconcileLegacySubmission(epoch);
+    if (!this.current(epoch) || !this.conflict) return;
+    const latest = await this.store.read(this.saved.owner); if (!this.current(epoch)) return;
+    const legacy = this.pendingLegacy;
+    if (choice === 'local' && legacy?.submission && legacy.revision === legacy.submission.revision && this.writeVersion === this.legacyWriteVersion && this.legacySubmission && ['prepared', 'dispatch_claimed', 'unknown'].includes(this.legacySubmission.state)) throw new Error('image_submission_pending');
+    this.saved = latest;
     if (choice === 'saved') { this.dirty = false; this.local = latest.editable; }
     else if (!this.local || !latest.editable) throw new Error('image_submission_pending');
     else this.local = { ...this.local, draftId: latest.editable.draftId, storeVersion: latest.editable.storeVersion };
     this.conflict = false; this.error = null;
-    if (choice === 'local') await this.flush(); else { await this.restore(this.epoch); this.publish(); }
-    await this.prepareUploads();
+    if (choice === 'local') await this.flush();
+    if (!this.current(epoch)) return;
+    if (legacy && this.pendingLegacy === legacy) this.consumeLegacy();
+    await this.restore(epoch); this.publish(); await this.prepareUploads();
   };
   revoke = async (reason: 'revoked' | 'account_changed' | 'deleted' = 'revoked'): Promise<void> => {
-    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.retiringDrafts.clear(); this.saved = null; this.local = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.detachedErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
+    const owner = this.saved?.owner; this.epoch++; this.lifetime.abort(); this.network.abort(); this.stopObserving(); this.clearAssets(); this.retiringDrafts.clear(); this.pendingLegacy = null; this.legacySubmission = null; this.legacyAdopted = false; this.saved = null; this.local = null; this.originals = []; this.detached = []; this.recoveryErrors.clear(); this.detachedErrors.clear(); this.dirty = false; this.view = emptyView(); this.scopeKey = null; this.fingerprint = '';
     for (const listener of this.listeners) listener();
     if (owner) try { await this.store.blockOwner(owner, reason); } catch (error) { this.fail(error); }
   };

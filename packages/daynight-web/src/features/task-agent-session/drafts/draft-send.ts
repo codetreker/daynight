@@ -1,4 +1,4 @@
-import { assertSessionFence, parseSessionOperation, type SessionCommand, type SessionFence, type SessionOperation } from '../../../../../daynight/src/session/protocol';
+import { assertSessionFence, parseSessionCommand, parseSessionOperation, type SessionCommand, type SessionFence, type SessionOperation } from '../../../../../daynight/src/session/protocol';
 import type { SessionDraftStore } from './draft-store';
 import type { DraftFreeze, DraftHandle, DraftSnapshot, DraftSubmission } from './draft-types';
 
@@ -60,9 +60,20 @@ export class DraftSender {
         }
         throw new Error(issue);
       }
+      let command: SessionCommand;
+      try { command = parseSessionCommand(submission ? submission.command : o.command(snapshot)); }
+      catch (error) {
+        // Only this pre-dispatch validation proves a local refusal. Parsing a
+        // response after the dispatch call still has an unknown send outcome.
+        if (submission) {
+          this.live(); const restored = await o.store.refusePrepared(handle, submission.operationId);
+          this.live(); await o.changed(restored);
+        }
+        throw error;
+      }
       if (!submission) {
         const draft = snapshot.editable!;
-        snapshot = await o.store.freeze(handle, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, command: o.command(snapshot), ...(o.commandDraft ? { commandDraft: o.commandDraft } : {}) });
+        snapshot = await o.store.freeze(handle, { draftId: draft.draftId, expectedStoreVersion: draft.storeVersion, command, ...(o.commandDraft ? { commandDraft: o.commandDraft } : {}) });
         this.live(); await o.changed(snapshot); submission = snapshot.submission!;
       }
       const claim = await o.store.claimDispatch(handle, submission.operationId);

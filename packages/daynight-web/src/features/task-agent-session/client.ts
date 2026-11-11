@@ -15,6 +15,13 @@ import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/sess
 import { applySessionEvent, emptySessionState, hydrateSession, mergeTimeline, hasPendingResponse, sessionCancelGate, sessionRespondGate, sessionSendGate, sessionControlGate, type SessionState } from './state';
 
 export type SessionDraft = { readonly text: string; readonly revision: string; readonly submission: { readonly operationId: string; readonly revision: string; readonly kind?: 'send_message' | 'execute_command' } | null };
+type LegacyDraftSource = { readonly key: string; readonly value: string };
+const parseStoredDraft = (stored: unknown): SessionDraft | null => {
+  if (!stored || typeof stored !== 'object' || !('text' in stored) || typeof stored.text !== 'string' || !('revision' in stored) || typeof stored.revision !== 'string' || !('submission' in stored)) return null;
+  const submission = stored.submission;
+  if (submission !== null && (typeof submission !== 'object' || !('operationId' in submission) || typeof submission.operationId !== 'string' || !('revision' in submission) || typeof submission.revision !== 'string')) return null;
+  return { text: stored.text, revision: stored.revision, submission: submission === null ? null : { operationId: submission.operationId as string, revision: submission.revision as string, ...('kind' in submission && (submission.kind === 'execute_command' || submission.kind === 'send_message') ? { kind: submission.kind } : {}) } };
+};
 const emptyDraft = (): SessionDraft => ({ text: '', revision: crypto.randomUUID(), submission: null });
 const draftPrefix = (userId: string) => `daynight:session-draft:${userId}:`;
 export function clearSessionDrafts(userId: string): void {
@@ -124,6 +131,10 @@ export class TaskSessionClient {
   private retries = 0;
   private draftKey: string | null = null;
   private imageDraftProjected = false;
+  private legacyOwnerKey: string | null = null;
+  private legacySource: LegacyDraftSource | null = null;
+  private readonly legacyBindings = new Map<string, string>();
+  private readonly legacyCopies = new Map<string, { readonly draft: SessionDraft; readonly source: LegacyDraftSource | null; readonly unsaved: boolean }>();
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
   private draftAdmission = { active: false, current: false };
@@ -146,8 +157,14 @@ export class TaskSessionClient {
         return !this.canInteract() || !this.live() || !this.view.actionAdmitted || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== payload.expectedControlsRevision || s.currentTurnId !== payload.expectedTurnId || !command?.available ? 'image_command_unavailable' : null;
       },
       legacy: () => {
-        const key = this.draftKey, draft = this.view.draft;
-        return key ? { ...draft, onImported: () => { this.options.storage?.removeItem(key); } } : null;
+        const key = this.draftKey, draft = this.view.draft, ownerKey = this.legacyOwnerKey, source = this.legacySource;
+        return key && !this.imageDraftProjected && ownerKey ? { ...draft, ownerKey, onImported: () => {
+          const storage = this.options.storage, raw = storage?.getItem(key), stored: unknown = JSON.parse(raw ?? 'null');
+          if (stored && typeof stored === 'object' && 'ownerKey' in stored && stored.ownerKey === ownerKey && JSON.stringify(parseStoredDraft(stored)) === JSON.stringify(draft)) storage?.removeItem(key);
+          if (source && this.legacyBindings.get(source.key) === ownerKey && storage?.getItem(source.key) === source.value) storage.removeItem(source.key);
+          this.legacyCopies.delete(key);
+          if (this.draftKey === key) this.legacySource = null;
+        } } : null;
       },
     });
     this.imageDrafts.subscribe(() => {
@@ -346,7 +363,7 @@ export class TaskSessionClient {
       void this.images?.scope.invalidate(); this.images = null;
       // The visible text belongs to the same exact owner as its image items.
       // Retire that projection before publishing a different native target.
-      if (this.imageDraftProjected) { this.imageDraftProjected = false; change = { ...change, draft: emptyDraft() }; }
+      this.imageDraftProjected = false; this.legacyOwnerKey = null; change = { ...change, draft: emptyDraft() };
     }
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
@@ -397,33 +414,68 @@ export class TaskSessionClient {
     return `${draftPrefix(this.options.userId)}${this.options.bot ? `bot:${this.options.bot.botId}:${this.options.bot.sessionId}` : this.options.testSessionId !== undefined ? `test:${this.options.testSessionId}` : `task:${this.options.projectId}:${this.options.taskId}`}:`;
   }
   private bindDraft(snapshot: SessionSnapshot) {
-    const prefix = this.draftScopePrefix();
-    const key = `${prefix}${sessionFenceKey(snapshot)}`;
-    if (key === this.draftKey) return;
-    this.draftKey = key;
+    const baseKey = `${this.draftScopePrefix()}${sessionFenceKey(snapshot)}`;
+    const context = this.imageDraftContext(), ownerKey = context ? draftOwnerKey(context.identity) : null;
+    const key = ownerKey ? `${baseKey}:owner:${encodeURIComponent(ownerKey)}` : baseKey;
+    if (key === this.draftKey && ownerKey === this.legacyOwnerKey) return;
+    this.draftKey = key; this.legacyOwnerKey = ownerKey; this.legacySource = null;
     this.imageDraftProjected = false;
     this.view = { ...this.view, settingIntents: new Map() };
-    let draft = emptyDraft();
+    const retained = this.legacyCopies.get(key);
+    let draft = retained?.draft ?? emptyDraft(); this.legacySource = retained?.source ?? null;
     try {
       const storage = this.options.storage;
-      // Older targets remain isolated under their original keys. Their unknown
-      // operations must survive until an authorized original-target query settles them.
       const stored: unknown = JSON.parse(storage?.getItem(key) ?? 'null');
-      if (stored && typeof stored === 'object' && 'text' in stored && typeof stored.text === 'string' && 'revision' in stored && typeof stored.revision === 'string' && 'submission' in stored) {
-        const submission = stored.submission;
-        if (submission === null || typeof submission === 'object' && 'operationId' in submission && typeof submission.operationId === 'string' && 'revision' in submission && typeof submission.revision === 'string') draft = { text: stored.text, revision: stored.revision, submission: submission === null ? null : { operationId: submission.operationId as string, revision: submission.revision as string, ...('kind' in submission && submission.kind === 'execute_command' ? { kind: 'execute_command' as const } : {}) } };
+      const exact = parseStoredDraft(stored);
+      if (!retained?.unsaved && exact && stored && typeof stored === 'object' && 'ownerKey' in stored && stored.ownerKey === ownerKey) {
+        draft = exact;
+        const source = 'legacySource' in stored ? stored.legacySource : null;
+        if (source && typeof source === 'object' && 'key' in source && source.key === baseKey && 'value' in source && typeof source.value === 'string') {
+          this.legacySource = { key: baseKey, value: source.value }; this.legacyBindings.set(baseKey, ownerKey!);
+        }
+      } else if (!retained && ownerKey) {
+        const raw = storage?.getItem(baseKey), legacy: unknown = JSON.parse(raw ?? 'null'), original = parseStoredDraft(legacy);
+        let marker = legacy && typeof legacy === 'object' && 'ownerKey' in legacy ? legacy.ownerKey : this.legacyBindings.get(baseKey);
+        if (!marker && storage) for (let index = 0; index < storage.length; index++) {
+          const slot = storage.key(index); if (!slot?.startsWith(`${baseKey}:owner:`)) continue;
+          const saved: unknown = JSON.parse(storage.getItem(slot) ?? 'null');
+          if (saved && typeof saved === 'object' && 'ownerKey' in saved && typeof saved.ownerKey === 'string' && 'legacySource' in saved && saved.legacySource && typeof saved.legacySource === 'object' && 'key' in saved.legacySource && saved.legacySource.key === baseKey && 'value' in saved.legacySource && saved.legacySource.value === raw) { marker = saved.ownerKey; break; }
+        }
+        if (original && raw && (!marker || marker === ownerKey)) {
+          // Bind old fence-only records without changing their content or send
+          // correlation. New edits always use the exact owner's separate slot.
+          this.legacyBindings.set(baseKey, ownerKey); draft = original;
+          this.legacySource = { key: baseKey, value: raw };
+          if (!marker && context?.canEdit) {
+            const bound = JSON.stringify({ ...legacy as object, ownerKey });
+            try { storage!.setItem(baseKey, bound); this.legacySource = { key: baseKey, value: bound }; }
+            catch {
+              // A separate exact-owner copy can retain attribution when updating
+              // the old key fails. Neither path removes the original source.
+              try { storage!.setItem(key, JSON.stringify({ ...original, ownerKey, legacySource: this.legacySource })); }
+              catch { /* No durable attribution was possible; retain it in this page. */ }
+            }
+          }
+        }
       }
-    } catch { /* A missing or malformed saved draft never authorizes a send. */ }
+    } catch { /* Keep the original in memory when legacy storage is unavailable. */ }
+    if (ownerKey) this.legacyCopies.set(key, { draft, source: this.legacySource, unsaved: retained?.unsaved ?? false });
     this.view = { ...this.view, draft };
   }
   private persistDraft() {
-    if (this.imageDrafts.getSnapshot().active || !this.draftKey) return;
-    try { if (this.view.draft.text || this.view.draft.submission) this.options.storage?.setItem(this.draftKey, JSON.stringify(this.view.draft)); else this.options.storage?.removeItem(this.draftKey); } catch { /* Keep editable text in memory if storage is unavailable. */ }
+    if (this.imageDrafts.getSnapshot().active || !this.draftKey || !this.legacyOwnerKey) return;
+    this.legacyCopies.set(this.draftKey, { draft: this.view.draft, source: this.legacySource, unsaved: true });
+    try {
+      if (this.view.draft.text || this.view.draft.submission || this.legacySource) this.options.storage?.setItem(this.draftKey, JSON.stringify({ ...this.view.draft, ownerKey: this.legacyOwnerKey, ...(this.legacySource ? { legacySource: this.legacySource } : {}) }));
+      else this.options.storage?.removeItem(this.draftKey);
+      if (this.options.storage) this.legacyCopies.set(this.draftKey, { draft: this.view.draft, source: this.legacySource, unsaved: false });
+    } catch { /* Keep editable text and its source when storage is unavailable. */ }
   }
   setDraft = (text: string): void => {
     if (this.imageDrafts.getSnapshot().loading) return;
     if (this.imageDrafts.getSnapshot().active) { this.imageDrafts.setText(text); return; }
     if (!this.canInteract() || this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
+    const context = this.imageDraftContext(); this.legacyOwnerKey = context ? draftOwnerKey(context.identity) : null;
     this.publish({ draft: { ...this.view.draft, text, revision: crypto.randomUUID() } }); this.persistDraft();
   };
   private matches(s: SessionSnapshot): boolean {
@@ -1019,7 +1071,9 @@ export class TaskSessionClient {
       if (operation.state === 'unknown') this.endOperationProgress(id);
       this.putOperation(operation);
     } catch (error) {
-      const missingDraftReceipt = error instanceof ApiError && error.status === 404 && this.view.draft.submission?.operationId === id;
+      const original = this.view.state.operations.get(id);
+      const knownInput = this.view.draft.submission?.operationId === id || [...this.legacyCopies.values()].some(entry => entry.draft.submission?.operationId === id) || original && uncertain(original) && ['send_message', 'execute_command'].includes(original.kind);
+      const missingDraftReceipt = error instanceof ApiError && error.status === 404 && knownInput;
       if (!missingDraftReceipt && this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       await this.admit();
       throw error;
@@ -1083,6 +1137,7 @@ export class TaskSessionClient {
         if (key && (operationPrefix !== null && key.startsWith(operationPrefix) || key.startsWith(this.draftScopePrefix()))) storage.removeItem(key);
       }
     } catch { /* Identity isolation remains enforced in memory. */ }
+    this.legacyCopies.clear(); this.legacyBindings.clear(); this.legacySource = null; this.legacyOwnerKey = null;
     this.draftKey = null; this.view = { ...this.view, draft: emptyDraft(), error: error === undefined ? null : message(error), errorCode: error === undefined ? null : errorCode(error) };
     this.close();
     this.options.onInvalidate?.();

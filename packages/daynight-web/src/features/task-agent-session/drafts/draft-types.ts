@@ -70,6 +70,14 @@ export type NewDraftUpload = {
   readonly blobId: string;
   readonly spec: ImageUploadSpec;
 };
+export type DraftUploadReplacement = {
+  readonly draftId: string;
+  readonly expectedStoreVersion: number;
+  readonly draftImageId: string;
+  readonly itemIncarnation: string;
+  readonly uploadId: string;
+  readonly uploadStoreVersion: number;
+};
 export type DraftUpload = NewDraftUpload & {
   readonly ownerKey: string;
   readonly uploadId: string;
