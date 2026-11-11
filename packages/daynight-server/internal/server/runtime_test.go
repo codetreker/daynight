@@ -31,7 +31,7 @@ import (
 func testConfig(t *testing.T) configpkg.Config {
 	t.Helper()
 	config := configuredTestConfig()
-	config.StorageRoot = testStorageRoot(t)
+	config.Storage.Root = testStorageRoot(t)
 	return config
 }
 
@@ -184,7 +184,7 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 
 func TestForcedDrainCancelsAdmittedSnapshot(t *testing.T) {
 	config := testConfig(t)
-	config.ShutdownTimeout = 30 * time.Millisecond
+	config.Server.ShutdownTimeout = 30 * time.Millisecond
 	entered := make(chan struct{})
 	queryResult := make(chan error, 1)
 	runtime, _ := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
@@ -252,9 +252,9 @@ func TestRuntimeDrainCompletesOrCancelsAdmittedTaskWrite(t *testing.T) {
 	for _, forced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "graceful", true: "deadline"}[forced], func(t *testing.T) {
 			config := testConfig(t)
-			config.ShutdownTimeout = 5 * time.Second
+			config.Server.ShutdownTimeout = 5 * time.Second
 			if forced {
-				config.ShutdownTimeout = 250 * time.Millisecond
+				config.Server.ShutdownTimeout = 250 * time.Millisecond
 			}
 			entered, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
@@ -482,14 +482,14 @@ type runtimeTestResources struct {
 
 func startRuntimeTest(t *testing.T, config configpkg.Config, handler func(*runtimeTestResources) http.Handler) (*Runtime, *runtimeTestResources) {
 	t.Helper()
-	files, err := local.New(config.StorageRoot)
+	files, err := local.New(config.Storage.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := &runtimeTestStore{httpTestStore: newHTTPTestStore(t)}
 	resources := &runtimeTestResources{Store: database, Files: files}
 	closeApp := func(context.Context) error { database.Close(); return files.Close() }
-	runtime, err := Start(context.Background(), config.ListenAddress, config.StartupTimeout, config.ShutdownTimeout, testLogger(), handler(resources), nil, nil, nil, closeApp)
+	runtime, err := Start(context.Background(), config.Server.ListenAddress, config.Server.StartupTimeout, config.Server.ShutdownTimeout, testLogger(), handler(resources), nil, nil, nil, closeApp)
 	if err != nil {
 		_ = closeApp(context.Background())
 		t.Fatal(err)

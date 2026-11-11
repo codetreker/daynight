@@ -37,7 +37,7 @@ func (b *monitoringAppBackend) Close() error {
 
 func TestAppMonitoringReadinessAndResourceLifetime(t *testing.T) {
 	c := appTestConfig(t)
-	c.RedisURL = "redis://unavailable.example:6379"
+	c.Monitoring.Redis.RedisURL = "redis://unavailable.example:6379"
 	persistence := newAppBackend(t)
 	openers := appTestOpeners(t, c, persistence)
 	monitor := &monitoringAppBackend{started: make(chan struct{}), release: make(chan struct{}), err: errors.New("close monitoring")}
@@ -45,7 +45,7 @@ func TestAppMonitoringReadinessAndResourceLifetime(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(monitor.release) }) }
 	t.Cleanup(release)
 	openers.monitoring = func(url string) (monitoringBackend, error) {
-		if url != c.RedisURL {
+		if url != c.Monitoring.Redis.RedisURL {
 			t.Fatal("incorrect Redis URL")
 		}
 		return monitor, nil
@@ -106,7 +106,7 @@ func TestAppMonitoringReadinessAndResourceLifetime(t *testing.T) {
 
 func TestAppMonitoringOpenFailureCleansOtherResources(t *testing.T) {
 	c := appTestConfig(t)
-	c.RedisURL = "redis://redis.example"
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
 	persistence := newAppBackend(t)
 	openers := appTestOpeners(t, c, persistence)
 	failure := errors.New("store open failed")
@@ -121,7 +121,7 @@ type monitoringNonTransferFiles struct{ appStorage }
 
 func TestAppMonitoringClosesAfterLaterStartupFailure(t *testing.T) {
 	c := appTestConfig(t)
-	c.RedisURL = "redis://redis.example"
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
 	persistence := newAppBackend(t)
 	openers := appTestOpeners(t, c, persistence)
 	openFiles := openers.files
@@ -145,8 +145,8 @@ func TestAppMonitoringAndMetricsAssembly(t *testing.T) {
 	for _, failMetrics := range []bool{false, true} {
 		t.Run(map[bool]string{false: "both enabled", true: "metrics failure"}[failMetrics], func(t *testing.T) {
 			c := appTestConfig(t)
-			c.RedisURL = "redis://redis.example"
-			c.MetricsListenAddress = "127.0.0.1:0"
+			c.Monitoring.Redis.RedisURL = "redis://redis.example"
+			c.Monitoring.Metrics.MetricsListenAddress = "127.0.0.1:0"
 			backend := newAppBackend(t)
 			open := appTestOpeners(t, c, backend)
 			monitor := &monitoringAppBackend{started: make(chan struct{}), release: make(chan struct{})}

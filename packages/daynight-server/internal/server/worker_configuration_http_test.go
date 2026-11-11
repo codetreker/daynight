@@ -311,7 +311,7 @@ func TestWorkerConfigurationHTTPResourceAdmission(t *testing.T) {
 func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	var logs bytes.Buffer
 	f := newConfigurationHTTPFixture(t, &logs)
-	origin := configuredTestConfig().PublicOrigin
+	origin := configuredTestConfig().Server.PublicOrigin
 	value := configurationHTTPModel(t, configurationHTTPValue())
 	putBody := func(revision string) string {
 		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPLegacyValue(t, value)})

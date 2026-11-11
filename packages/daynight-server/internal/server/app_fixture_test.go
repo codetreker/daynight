@@ -21,7 +21,7 @@ func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	client, err := service.NewIdentityClient(c)
+	client, err := service.NewIdentityClient(c.UniAuth)
 	if err != nil {
 		return nil, err
 	}

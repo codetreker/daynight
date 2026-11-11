@@ -10,8 +10,9 @@ import (
 	"reflect"
 	"testing"
 
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	monitoring "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -112,7 +113,7 @@ func newCapacityReportOperationFixtureWithOutput(t *testing.T, worker string, ou
 			return model.Principal{}, authhttp.Failure()
 		}
 		return f.handler.principal, nil
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

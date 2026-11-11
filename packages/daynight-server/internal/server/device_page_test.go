@@ -26,7 +26,7 @@ func TestDevicePageRoutingAndCallbackProtection(t *testing.T) {
 	}
 	for _, path := range []string{"/device", "/device/callback", "/api/v1/auth/device/code", "/api/v1/auth/device/token"} {
 		config := configuredTestConfig()
-		config.UniAuthCallbackURL = config.PublicOrigin + path
+		config.UniAuth.CallbackURL = config.Server.PublicOrigin + path
 		if err := config.Validate(); err == nil {
 			t.Fatalf("device route accepted as callback: %s", path)
 		}

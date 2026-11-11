@@ -19,7 +19,7 @@
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
-提供事务内授权、私有创建和邀请。`internal/config` 负责读取和验证中立配置；`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
+提供事务内授权、私有创建和邀请。`internal/config` 组合各模块拥有的强类型启动配置并协调环境变量加载和跨模块验证；各模块拥有自身字段、默认值和纯校验，通用配置错误和标量解析归 `utils/configvalue`。`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表

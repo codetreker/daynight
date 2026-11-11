@@ -94,7 +94,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	actor = &alice
 	origin = "https://foreign.example"
 	assertProjectError(t, f.send(http.MethodPost, path+"/report", jsonBody(t, body)), http.StatusForbidden, "forbidden")
-	origin = configuredTestConfig().PublicOrigin
+	origin = configuredTestConfig().Server.PublicOrigin
 	snapshot := model.WorkerSnapshot{UserID: alice.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}}
 	f.handler.principal = alice
 	f.report(t, id, body, nil, nil, snapshot)
@@ -131,7 +131,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	items := []model.WorkerObservedTask{{ProjectID: projectID, TaskID: taskID, ClaimID: claimID, Title: task.Title, ProjectName: "Private project", Status: model.TaskInProgress, Phase: model.WorkerPreparing, Agent: model.AgentCodex}}
 	active := model.WorkerSnapshot{UserID: alice.UserID, WorkerID: id, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, body), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: workerInventoryTime(), Items: items}}
 	actor = &alice
-	origin = configuredTestConfig().PublicOrigin
+	origin = configuredTestConfig().Server.PublicOrigin
 	f.handler.principal = alice
 	f.report(t, id, body, []store.WorkerTaskSource{{Task: task, ProjectName: "Private project"}}, items, active)
 	detail := f.detail(t, id, active)

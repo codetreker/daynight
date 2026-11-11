@@ -104,8 +104,8 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 	c := appTestConfig(t)
 	// The public-origin validator accepts a Unicode host, but the OAuth profile
 	// requires the canonical URL string and rejects the escaped form.
-	c.PublicOrigin = "https://例子.测试"
-	c.UniAuthCallbackURL = c.PublicOrigin + "/api/v1/auth/callback"
+	c.Server.PublicOrigin = "https://例子.测试"
+	c.UniAuth.CallbackURL = c.Server.PublicOrigin + "/api/v1/auth/callback"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("fixture did not reach composition: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 		t.Fatalf("OAuth composition failure: app=%v err=%v", app, err)
 	}
 	// Failed composition must leave the storage root reusable by a new backend.
-	c.PublicOrigin = "https://daynight.example"
-	c.UniAuthCallbackURL = c.PublicOrigin + "/api/v1/auth/callback"
+	c.Server.PublicOrigin = "https://daynight.example"
+	c.UniAuth.CallbackURL = c.Server.PublicOrigin + "/api/v1/auth/callback"
 	app, corrected, err := openTestApp(t, ctx, c, nil)
 	if err != nil {
 		t.Fatalf("retry after cleanup: %v", err)

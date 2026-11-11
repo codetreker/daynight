@@ -12,7 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -231,7 +232,7 @@ func TestPromptPutPreservesDraftIdentityAcrossCookieSwitch(t *testing.T) {
 			return model.Principal{}, authhttp.Failure()
 		}
 		return principal, nil
-	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

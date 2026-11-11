@@ -15,7 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -105,7 +106,7 @@ func newWithManualSource(auth Authenticator, publicOrigin string, allowedOrigins
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
 	}
-	if err := config.ValidateMCPOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
+	if err := mcpconfig.ValidateOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
 		return nil, err
 	}
 	manuals, err := loadProductManuals(source)

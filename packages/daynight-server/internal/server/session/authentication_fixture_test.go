@@ -9,7 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -34,7 +35,7 @@ type routeAuthentication struct {
 func newRouteAuthentication(t *testing.T, origin string) *routeAuthentication {
 	t.Helper()
 	fixture := &routeAuthentication{t: t}
-	authentication, err := authhttp.NewRequestAuthentication(fixture.authenticate, configpkg.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: strings.HasPrefix(origin, "http://")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	authentication, err := authhttp.NewRequestAuthentication(fixture.authenticate, authconfig.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: strings.HasPrefix(origin, "http://")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

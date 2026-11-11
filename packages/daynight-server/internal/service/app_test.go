@@ -12,6 +12,14 @@ import (
 	"testing"
 	"time"
 
+	storageconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local/config"
+	databaseconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/config"
+	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
+	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
+	oauthconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth/config"
+	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
@@ -22,9 +30,9 @@ import (
 type compositionOnlyStore struct{ store.Transactions }
 
 func TestOAuthProfileComposition(t *testing.T) {
-	c := config.Config{PublicOrigin: "https://daynight.example", OAuthClients: map[string][]byte{
+	c := config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{
 		"known": []byte(`{"client_id":"known","redirect_uris":["https://client.example/callback"]}`),
-	}}
+	}}}
 	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
 	if app.OAuthError != nil || app.OAuthProfile == nil {
 		t.Fatalf("valid OAuth profile: %v", app.OAuthError)
@@ -37,8 +45,8 @@ func TestOAuthProfileComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, invalid := range []config.Config{
-		{PublicOrigin: "https://daynight.example", OAuthClients: map[string][]byte{"bad": []byte(`{}`)}},
-		{PublicOrigin: "https://daynight.example/path"},
+		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{"bad": []byte(`{}`)}}},
+		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example/path"}},
 	} {
 		app := NewModules(invalid, compositionOnlyStore{}, nil, nil, nil)
 		if app.OAuthProfile != nil || app.OAuthError == nil {
@@ -80,12 +88,11 @@ func appTestConfig(t *testing.T) config.Config {
 		}
 	})
 	return config.Config{
-		DatabaseURL: "postgres://app:app@database.invalid/app?sslmode=disable", StorageRoot: filepath.Join(root, "storage"),
-		ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second,
-		ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
-		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
-		UniAuthAppID: "app", UniAuthAppSecret: "secret",
-		UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback",
+		Database: databaseconfig.Config{URL: "postgres://app:app@database.invalid/app?sslmode=disable"},
+		Storage:  storageconfig.Config{Root: filepath.Join(root, "storage")},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
+		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
+		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "app", AppSecret: "secret", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 }
 
@@ -143,13 +150,13 @@ func TestAppCloseRetainsResourcesUntilOperationFinishes(t *testing.T) {
 
 func TestOpenAppValidatesBeforeOpeningStorage(t *testing.T) {
 	c := appTestConfig(t)
-	c.UniAuthAppID = "invalid:app"
+	c.UniAuth.AppID = "invalid:app"
 	app, err := OpenApp(context.Background(), c)
-	var failure *config.ConfigurationError
+	var failure *configvalue.ConfigurationError
 	if app != nil || !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
 		t.Fatalf("invalid credentials not rejected: app=%v, error=%v", app, err)
 	}
-	if _, err := os.Stat(c.StorageRoot); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(c.Storage.Root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid credentials touched storage: %v", err)
 	}
 }
@@ -159,10 +166,10 @@ func TestOpenAppClosesStorageWhenDatabaseOpenFails(t *testing.T) {
 		t.Skip("storage descriptor inspection requires procfs")
 	}
 	c := appTestConfig(t)
-	if err := os.MkdirAll(c.StorageRoot, 0o755); err != nil {
+	if err := os.MkdirAll(c.Storage.Root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, err := filepath.Abs(c.StorageRoot)
+	root, err := filepath.Abs(c.Storage.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +192,7 @@ func TestOpenAppClosesStorageWhenDatabaseOpenFails(t *testing.T) {
 		return count
 	}
 	before := countOpenRoots()
-	c.DatabaseURL = "postgres://user:secret@bad%host/database"
+	c.Database.URL = "postgres://user:secret@bad%host/database"
 	app, err := OpenApp(context.Background(), c)
 	if app != nil || err == nil {
 		t.Fatalf("invalid database accepted: app=%v, error=%v", app, err)
@@ -230,14 +237,14 @@ func TestConcurrentCloseHonorsCallerDeadline(t *testing.T) {
 
 func TestIdentityClientPreservesSafeSDKFailure(t *testing.T) {
 	c := appTestConfig(t)
-	c.UniAuthAppID = "invalid:private-id"
-	c.UniAuthAppSecret = "private-secret"
-	client, err := NewIdentityClient(c)
-	var failure *config.ConfigurationError
+	c.UniAuth.AppID = "invalid:private-id"
+	c.UniAuth.AppSecret = "private-secret"
+	client, err := NewIdentityClient(c.UniAuth)
+	var failure *configvalue.ConfigurationError
 	if client != nil || !errors.As(err, &failure) || errors.Unwrap(failure) == nil {
 		t.Fatalf("SDK failure lost configuration context or cause: %v", err)
 	}
-	if strings.Contains(err.Error(), c.UniAuthAppID) || strings.Contains(err.Error(), c.UniAuthAppSecret) || strings.Contains(errors.Unwrap(failure).Error(), c.UniAuthAppSecret) {
+	if strings.Contains(err.Error(), c.UniAuth.AppID) || strings.Contains(err.Error(), c.UniAuth.AppSecret) || strings.Contains(errors.Unwrap(failure).Error(), c.UniAuth.AppSecret) {
 		t.Fatal("SDK failure exposed credentials")
 	}
 }
@@ -392,15 +399,15 @@ func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
 
 func TestOpenAppReportsUnusableStorageRoot(t *testing.T) {
 	c := appTestConfig(t)
-	if err := os.WriteFile(c.StorageRoot, []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(c.Storage.Root, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	app, err := OpenAppWithLogger(context.Background(), c, nil)
-	var failure *config.ConfigurationError
+	var failure *configvalue.ConfigurationError
 	if app != nil || !errors.As(err, &failure) || failure.Field != "DAYNIGHT_STORAGE_ROOT" || errors.Unwrap(failure) == nil {
 		t.Fatalf("unusable storage root was not reported with its cause: app=%v, error=%v", app, err)
 	}
-	contents, readErr := os.ReadFile(c.StorageRoot)
+	contents, readErr := os.ReadFile(c.Storage.Root)
 	if readErr != nil || string(contents) != "not a directory" {
 		t.Fatalf("startup changed the existing storage root: contents=%q, error=%v", contents, readErr)
 	}
@@ -408,7 +415,7 @@ func TestOpenAppReportsUnusableStorageRoot(t *testing.T) {
 
 func TestOpenAppReportsDatabaseStartupFailure(t *testing.T) {
 	c := appTestConfig(t)
-	c.DatabaseURL = "postgres://user:secret@bad%host/database"
+	c.Database.URL = "postgres://user:secret@bad%host/database"
 	app, err := OpenAppWithLogger(context.Background(), c, nil)
 	if app != nil || err == nil {
 		t.Fatalf("invalid database was accepted: app=%v, error=%v", app, err)

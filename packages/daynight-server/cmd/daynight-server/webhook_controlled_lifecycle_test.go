@@ -89,7 +89,7 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 		os.Exit(1)
 	}
 	wrapped := controlledHandler{handler}
-	runtime, err := server.Start(context.Background(), cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, wrapped, wrapped.Shutdown, app.CancelWork, func(ctx context.Context) error {
+	runtime, err := server.Start(context.Background(), cfg.Server.ListenAddress, cfg.Server.StartupTimeout, cfg.Server.ShutdownTimeout, logger, wrapped, wrapped.Shutdown, app.CancelWork, func(ctx context.Context) error {
 		fmt.Fprintln(os.Stderr, "TRACE engine_drain_begin")
 		e := app.Drain(ctx)
 		fmt.Fprintln(os.Stderr, "TRACE engine_drain_end")
@@ -118,7 +118,7 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "TRACE runner_not_started")
 			os.Exit(1)
 		}
-		cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		cleanup, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 		defer cancel()
 		if err = runtime.Close(cleanup); err != nil {
 			fmt.Fprintln(os.Stderr, "TRACE partial_start_cleanup_error", err)

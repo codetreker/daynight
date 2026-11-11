@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
 
 func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
@@ -28,7 +30,7 @@ func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
 				}
 				return
 			}
-			var failure *ConfigurationError
+			var failure *configvalue.ConfigurationError
 			if !errors.As(err, &failure) || failure.Field != tc.field {
 				t.Fatalf("got %v, want configuration field %s", err, tc.field)
 			}
@@ -38,7 +40,7 @@ func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
 
 func TestConfigurationErrorCause(t *testing.T) {
 	cause := errors.New("underlying failure")
-	err := &ConfigurationError{Field: "field", Rule: "is invalid", Cause: cause}
+	err := &configvalue.ConfigurationError{Field: "field", Rule: "is invalid", Cause: cause}
 	if err.Error() != "field is invalid" || !errors.Is(err, cause) {
 		t.Fatalf("configuration error lost its diagnostic or cause: %v", err)
 	}

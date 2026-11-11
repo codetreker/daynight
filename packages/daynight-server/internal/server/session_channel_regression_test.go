@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
 	"github.com/coder/websocket"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -94,10 +94,10 @@ func TestControllerChannelStaleOfferRejectsOnlyOperation(t *testing.T) {
 }
 
 func TestSessionChannelCallbackPathsReserved(t *testing.T) {
-	config := configpkg.AuthSettings{PublicOrigin: "https://daynight.example.com"}
+	config := authconfig.AuthSettings{PublicOrigin: "https://daynight.example.com"}
 	for _, root := range []string{"/api/v1/session-capabilities", "/api/v1/test-session-capabilities", "/api/v1/controller-channel", "/api/v1/controller-resources"} {
 		for _, path := range []string{root, root + "/child"} {
-			if _, _, err := configpkg.ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			if _, _, err := authconfig.ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
 				t.Fatal("callback overlaps session route", path)
 			}
 		}
