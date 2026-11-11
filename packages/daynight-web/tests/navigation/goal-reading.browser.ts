@@ -105,6 +105,9 @@ async function install(page: Page) {
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false }),
       detailFixture(projectId, otherTask2Id, { parentId: otherGoalId, title: 'Other second task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
     currentGraph = graphFixture(details);
+  }, moveOtherTaskToGoal: () => {
+    details = details.map(item => item.id === otherTaskId ? { ...item, parentId: goalId, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
+    currentGraph = graphFixture(details);
   }, moveOtherTask: () => {
     details = details.map(item => item.id === otherTaskId ? { ...item, parentId: null, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
     currentGraph = graphFixture(details);
@@ -849,6 +852,47 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await page.goForward(); await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+test('a moved external Goal child follows its latest parent and protects both drafts', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal();
+  const writes: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const goalPage = page.locator('.goal-detail-surface.task-detail-page');
+  await goalPage.getByRole('button', { name: 'View dependencies' }).click();
+  await page.locator('.task-chain-dialog').getByRole('button', { name: 'Other task, Details' }).click();
+  const external = page.locator('.goal-detail-surface.task-detail-dialog').filter({ has: page.locator('.task-detail-title', { hasText: 'Other goal' }) });
+  await external.getByRole('tab', { name: 'Discussion' }).click();
+  const goalDraft = external.locator('.thread-composer textarea');
+  await goalDraft.fill('External Goal draft');
+  await external.getByRole('tab', { name: 'Tasks' }).click();
+  await external.locator(`[data-goal-task-id="${otherTaskId}"]`).click();
+  const child = page.getByRole('dialog', { name: 'Other task', exact: true });
+  await child.getByRole('tab', { name: 'Steps' }).click();
+  await child.getByRole('button', { name: 'Add step', exact: true }).click();
+  const taskDraft = child.locator('.step-add-form input');
+  await taskDraft.fill('Child Task draft');
+  await child.getByRole('tab', { name: 'Overview' }).click();
+  fixture.moveOtherTaskToGoal();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const link = child.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
+  await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
+  await link.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(child).toBeVisible();
+  await expect(taskDraft).toHaveValue('Child Task draft');
+  await expect(goalDraft).toHaveValue('External Goal draft');
+  await link.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0);
+  await expect(external).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface.task-detail-page .task-detail-title')).toHaveText('Goal reading');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await expect.poll(() => goalPage.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  expect(writes).toEqual([]);
 });
 
 test('history retains an external Goal draft when its old witness moves', async ({ page }) => {

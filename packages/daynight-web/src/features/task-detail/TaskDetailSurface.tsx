@@ -4,7 +4,6 @@ import { isThreadScopeLoss } from '../task-thread/api';
 import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
@@ -54,7 +53,7 @@ type TaskDetailCommonProps = {
   readonly projectId: string;
   readonly taskId: string;
   readonly parentGoalId?: string;
-  readonly onNavigateParent?: () => void;
+  readonly onNavigateParent?: (href: string) => void;
   readonly snapshot?: GraphSnapshot | null;
   readonly observation?: TaskObservationInput;
   readonly graphError?: unknown;
@@ -109,7 +108,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     if (onNavigateParent !== undefined && event.currentTarget.pathname === window.location.pathname) {
       const href = event.currentTarget.href;
-      event.preventDefault(); requestTaskAction(() => { flushSync(onNavigateParent); navigate(href); });
+      event.preventDefault(); onNavigateParent(href);
     } else followProjectLink(event);
   };
   const scope = `${projectId}/${taskId}`;
