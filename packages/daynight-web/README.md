@@ -510,7 +510,7 @@ The list also reads current monitoring summaries in batches of at most 100 loade
 Worker IDs and presents their permission-filtered admission reasons. Detail shows scheduling and admission, actual capacity, parallel
 activities, current failures and the latest recovery before host resources. Task
 associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines.
+retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and

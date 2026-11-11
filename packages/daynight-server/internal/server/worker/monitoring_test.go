@@ -120,6 +120,29 @@ func TestMonitoringRoutingAndInput(t *testing.T) {
 	}
 }
 
+func TestMonitoringWorktreeHTTPAdmission(t *testing.T) {
+	mock := &monitoringMock{}
+	h := monitoringRouter(mock, model.Principal{UserID: monitoringOtherID})
+	path := "/api/v1/me/workers/" + monitoringWorkerID + "/monitoring"
+	failure := `{"operationId":"` + monitoringOtherID + `","component":"cleanup","phase":"archive","scope":{"kind":"claim","projectId":"` + monitoringWorkerID + `","taskId":"` + monitoringOtherID + `","claimId":"` + monitoringOtherID + `"},"error":{"type":"operation","code":"unknown","cause":"The operation failed; inspect local Worker diagnostics for details.","causeTruncated":false},"firstObservedAt":"2026-10-29T00:00:00Z","lastObservedAt":"2026-10-29T00:00:00Z","occurrencesInRun":1,"retryState":"none","nextAttemptAt":null,"worktree":{"kind":"project-relative","path":"../tree/<>&"}}`
+	body := strings.Replace(monitoringBody, `"currentFailures":[]`, `"currentFailures":[`+failure+`]`, 1)
+	w := monitoringRequest(h, "PUT", path, body)
+	if w.Code != http.StatusOK || mock.calls != 1 || mock.observation["currentFailures"].([]any)[0].(map[string]any)["worktree"].(map[string]any)["path"] != "../tree/<>&" {
+		t.Fatalf("worktree PUT: %d %s", w.Code, w.Body)
+	}
+	for _, invalid := range []string{
+		strings.Replace(body, `"path":"../tree/<>&"`, `"path":"/absolute"`, 1),
+		strings.Replace(body, `"path":"../tree/<>&"`, `"path":"\ud800"`, 1),
+		strings.Replace(body, `"worktree":{"kind":"project-relative","path":"../tree/<>&"}`, `"worktree":null`, 1),
+		strings.Replace(body, `"kind":"claim"`, `"kind":"worker"`, 1),
+	} {
+		w = monitoringRequest(h, "PUT", path, invalid)
+		if w.Code != http.StatusBadRequest || mock.calls != 1 {
+			t.Fatalf("invalid worktree: status=%d calls=%d body=%s", w.Code, mock.calls, w.Body)
+		}
+	}
+}
+
 func TestMonitoringErrorsAndCancellation(t *testing.T) {
 	mock := &monitoringMock{}
 	h := monitoringRouter(mock, model.Principal{UserID: monitoringOtherID})

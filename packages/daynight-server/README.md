@@ -2288,7 +2288,7 @@ summary responses have separate encoding budgets. Four CAS conflicts return
 409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
 write returns `503 monitoring_write_outcome_unknown`; callers must read back an
 unknown result before deciding what to do. Current access filters associated
-names, IDs and private details without changing the Worker's total capacity.
+names, IDs and private details, including claim failure worktree paths, without changing the Worker's total capacity. Deploy all Servers that accept and preserve the optional field before strict CLI/Web readers, then enable Worker production. Before rollback to a reader or Server that rejects it, stop production and allow affected frames to expire naturally after 3600 seconds or be safely replaced without the field; do not delete keys, renew TTLs or replay uncertain writes.
 
 Summary reads first admit the entire Worker batch and read only each bounded
 Redis header. A current PostgreSQL snapshot rechecks Workers and projects the

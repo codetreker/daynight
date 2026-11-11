@@ -39,6 +39,31 @@ it('renders real capacity and cleanup details and preserves an expanded failure 
   expect(screen.getByText('No visible failures in this observation.')).toBeInTheDocument(); expect(screen.getByText('No visible recovery in this observation.')).toBeInTheDocument(); expect(screen.getByText('2 / 2')).toBeInTheDocument();
 });
 
+it('shows worktree locations only on their failure and withdraws them with restricted details', () => {
+  const withPath: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, currentFailures: [{ ...detail.data.currentFailures[0]!, worktree: { kind: 'project-relative', path: '../retained/工作 区' } }] } };
+  const view = renderWithLocale(<WorkerMonitoring state={state(withPath)} readEnabled />, { locale: 'en' });
+  const issue = screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')!;
+  fireEvent.click(issue.querySelector('summary')!);
+  expect(within(issue).getByText('Worktree path').nextElementSibling?.querySelector('code')).toHaveTextContent('../retained/工作 区');
+  expect(screen.queryAllByText('../retained/工作 区')).toHaveLength(1);
+  view.setLocale('zh-CN'); expect(within(issue).getByText('工作区路径')).toBeInTheDocument();
+  view.rerender(<WorkerMonitoring state={state({ ...withPath, permissionProjection: 'restricted', data: { ...withPath.data, currentFailures: [] } })} readEnabled />);
+  expect(screen.queryByText('../retained/工作 区')).toBeNull();
+  view.rerender(<WorkerMonitoring state={state()} readEnabled />);
+  expect(screen.queryByText('工作区路径')).toBeNull();
+});
+
+it.each([
+  ['different-volume', 'On a different drive or share.', '位于不同磁盘或共享位置。'],
+  ['invalid-path', 'The path is invalid.', '路径无效。'],
+  ['limit-exceeded', 'The path exceeds the reporting limit.', '路径超出上报限额。'],
+] as const)('localizes unavailable worktree reason %s', (reason, english, chinese) => {
+  const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, currentFailures: [{ ...detail.data.currentFailures[0]!, worktree: { kind: 'unavailable', reason } }] } };
+  const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale: 'en' });
+  expect(screen.getByText('Worktree path').nextElementSibling).toHaveTextContent(english);
+  view.setLocale('zh-CN'); expect(screen.getByText('工作区路径').nextElementSibling).toHaveTextContent(chinese);
+});
+
 it('distinguishes loading, absent, read error, stale and expiry at their boundaries', () => {
   const refresh = vi.fn();
   const failed = { ...state(null, null), status: 'error' as const, error: new ApiError('network'), refresh };
