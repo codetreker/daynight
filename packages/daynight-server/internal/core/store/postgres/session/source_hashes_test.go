@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -11,67 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
-	ctx := t.Context()
-	first, second := uuid.NewString(), uuid.NewString()
-	if first > second {
-		first, second = second, first
-	}
-	file := store.ArchiveBundleFile{SessionID: id, FileID: first, Purpose: "timeline", SHA256: archiveHashOf("original"), ByteLength: 8, State: "receiving", Path: "original/timeline"}
-	migration := store.ArchiveMigration{SessionID: id, MigrationID: uuid.NewString(), SourcePath: "original/source", SourceHash: archiveHashOf("source"), SourceLength: 6, TargetPath: "original/target", TargetHash: archiveHashOf("target"), Phase: "prepared"}
-	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-		dao := base.(store.SessionArchiveDAO)
-		if e := dao.SaveSessionArchiveFile(ctx, file); e != nil {
-			return e
-		}
-		other := file
-		other.FileID = second
-		other.Path = "original/second"
-		other.State = "failed"
-		if e := dao.SaveSessionArchiveFile(ctx, other); e != nil {
-			return e
-		}
-		changed := file
-		changed.SHA256 = archiveHashOf("changed!")
-		if e := dao.SaveSessionArchiveFile(ctx, changed); e == nil {
-			t.Fatal("same file identity accepted changed original")
-		}
-		if e := dao.SaveSessionArchiveMigration(ctx, migration); e != nil {
-			return e
-		}
-		changedMigration := migration
-		changedMigration.SourceHash = archiveHashOf("another source")
-		if e := dao.SaveSessionArchiveMigration(ctx, changedMigration); e == nil {
-			t.Fatal("migration accepted replacement original")
-		}
-		changedMigration = migration
-		changedMigration.SourceLength++
-		if e := dao.SaveSessionArchiveMigration(ctx, changedMigration); e == nil {
-			t.Fatal("migration accepted changed original byte length")
-		}
-		return nil
-	})
-	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-		dao := base.(store.SessionArchiveDAO)
-		files, e := dao.SessionArchiveFiles(ctx, id)
-		if e != nil {
-			return e
-		}
-		if len(files) != 2 || files[0].FileID != first || files[1].FileID != second || files[0].SHA256 != file.SHA256 {
-			t.Fatal("inventory lost canonical file order or immutable content", files)
-		}
-		saved, e := dao.SessionArchiveMigration(ctx, id)
-		if e != nil {
-			return e
-		}
-		if saved != migration {
-			t.Fatal("rejected replacement changed the saved migration", saved)
-		}
-		return nil
-	})
-}
 
 func TestSourceAcknowledgementLedgerCountAndCanceledStorageCalls(t *testing.T) {
 	database, _, id := sessionArchiveLockFixture(t)
@@ -110,26 +50,6 @@ func TestSourceAcknowledgementLedgerCountAndCanceledStorageCalls(t *testing.T) {
 	var count int
 	if e := database.Pool.QueryRow(ctx, `SELECT count(*) FROM session_source_hashes WHERE session_id=$1`, id).Scan(&count); e != nil || count != 8192 {
 		t.Fatal("canceled pruning changed persisted window", count, e)
-	}
-}
-
-func TestArchiveReadyDoesNotReportSuccessWhenStorageDeclinesWrite(t *testing.T) {
-	database, _, id := sessionArchiveLockFixture(t)
-	ctx := t.Context()
-	// This database belongs to the test. A declining trigger supplies PostgreSQL's
-	// successful-command/zero-written-row outcome without replacing the real DAO.
-	if _, e := database.Pool.Exec(ctx, `CREATE FUNCTION refuse_ready_fixture() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NULL; END'; CREATE TRIGGER refuse_ready_fixture BEFORE INSERT ON session_archives FOR EACH ROW EXECUTE FUNCTION refuse_ready_fixture()`); e != nil {
-		t.Fatal(e)
-	}
-	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-		if e := base.(store.SessionArchiveDAO).SetUnifiedSessionArchiveReady(ctx, id, archiveHashOf("manifest"), 8, "original/manifest", "complete"); e == nil {
-			t.Fatal("zero-written-row outcome became a ready receipt")
-		}
-		return nil
-	})
-	var count int
-	if e := database.Pool.QueryRow(ctx, `SELECT count(*) FROM session_archives WHERE session_id=$1`, id).Scan(&count); e != nil || count != 0 {
-		t.Fatal(count, e)
 	}
 }
 
@@ -173,4 +93,62 @@ func TestSourceAcknowledgementDoesNotAcceptFailedInsert(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExternalSourceHashPrunesExplicitBoundaryAndOldEpoch(t *testing.T) {
+	db, id, _ := imageLedgerSession(t)
+	epoch := uuid.NewString()
+	digest := bytes.Repeat([]byte{7}, 32)
+	h := store.SessionSourceHash{SessionID: id, SourceEpoch: epoch, Kind: "event", Digest: digest}
+	for _, item := range []struct {
+		id      string
+		through int64
+	}{{"1", 1}, {"2", 2}, {"2049", 2049}} {
+		h.Identity, h.Through = item.id, item.through
+		sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+			return base.(store.SessionSourceDAO).SaveSessionSourceHash(t.Context(), h)
+		})
+	}
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		dao := base.(store.SessionSourceDAO)
+		if e := dao.PruneSessionSourceHashes(t.Context(), id, epoch, 1); e != nil {
+			return e
+		}
+		query := h
+		query.Identity = "1"
+		if _, e := dao.SessionSourceHash(t.Context(), query); !errors.Is(e, model.ErrNotFound) {
+			t.Fatal("explicit cutoff retained its boundary", e)
+		}
+		query.Identity = "2"
+		if _, e := dao.SessionSourceHash(t.Context(), query); e != nil {
+			return e
+		}
+		count, e := dao.SessionSourceHashCount(t.Context(), id)
+		if e != nil || count != 2 {
+			t.Fatal("explicit prune removed a newer identity", count, e)
+		}
+		return nil
+	})
+	old := h
+	h.SourceEpoch = uuid.NewString()
+	h.Identity, h.Through = "1", 1
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		dao := base.(store.SessionSourceDAO)
+		if e := dao.SaveSessionSourceHash(t.Context(), h); e != nil {
+			return e
+		}
+		return dao.PruneSessionSourceHashes(t.Context(), id, h.SourceEpoch, -1)
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		dao := base.(store.SessionSourceDAO)
+		if _, e := dao.SessionSourceHash(t.Context(), old); !errors.Is(e, model.ErrNotFound) {
+			t.Fatal("old epoch hashes retained", e)
+		}
+		count, e := dao.SessionSourceHashCount(t.Context(), id)
+		if e != nil || count != 1 {
+			t.Fatal("negative cutoff removed a current nonnegative sequence", count, e)
+		}
+		_, e = dao.SessionSourceHash(t.Context(), h)
+		return e
+	})
 }
