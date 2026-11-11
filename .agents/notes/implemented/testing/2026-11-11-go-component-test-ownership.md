@@ -74,6 +74,11 @@ results do not prove database persistence. The separate Step stress test uses
 PostgreSQL and real Step services.
 The earlier [Root Step operation boundary](2026-11-10-root-mcp-step-operation-boundary.md)
 records why those operation-level observations were introduced.
+Webhook management and history mappings use the real HTTP registrar, Service
+and Core with explicit DAO observations. A supplied delivery generation is not
+a recovery proof. Root retains the real Runtime route assembly representative
+and the tagged full-application management, ACL and physical recovery witnesses.
+The latter retain PostgreSQL, TLS and their distinct build-tag boundaries.
 The Webhook Runner process-recovery and takeover witnesses live with the Runner
 and retain real PostgreSQL, TLS, subprocess and lease fencing mechanisms under
 their existing explicit tags. The [takeover fixture decision](2026-11-08-webhook-takeover-fixture.md)
