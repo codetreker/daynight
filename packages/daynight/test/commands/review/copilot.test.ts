@@ -1,5 +1,4 @@
 import path from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +7,6 @@ import { createProcessSupervisor } from "../../../src/commands/review/processes.
 import * as windowsJobs from "../../../src/commands/review/windows-job-scope.js";
 import type { CopilotRunOptions, CopilotRunnerOptions } from "../../../src/commands/review/adapters/copilot.js";
 import type { PreparedWorktree } from "../../../src/commands/review/adapters/worktrees.js";
-import type { AttemptIdentity } from "../../../src/commands/review/model.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { openStore } from "../../../src/commands/review/store.js";
 import type { PreparedReviewSkill } from "../../../src/commands/review/skill.js";
@@ -119,23 +117,12 @@ const fixture = () => {
     skill, paths, processOwner: uuid(700), timeoutMs: 10_000, terminationGraceMs: 100, now: () => 10,
     command: { file: process.execPath, args: [script] }, environment: { ...process.env, FIXTURE_REPORT: report, FIXTURE_MODE: mode }, ...overrides,
   }).run(store, review.id, worktree, supervise(input));
-  const processPhase = (child: ChildProcess, attempt: AttemptIdentity): "discovery" | "review" => {
-    const current = store.getReview(review.id);
-    if (current === null || attempt.reviewId !== review.id || current.id !== attempt.reviewId ||
-        current.attemptCount !== attempt.attempt || child.pid === undefined || current.processId !== child.pid) {
-      throw new Error("Copilot fixture callback does not match the persisted current process and attempt.");
-    }
-    const prefix = `${uuid(700)}:${review.id}:${attempt.attempt}:`;
-    if (current.processIdentity === prefix + "skill-list") return "discovery";
-    if (current.processIdentity === prefix + "review") return "review";
-    throw new Error("Copilot fixture callback has an unexpected persisted process phase.");
-  };
   const retry = () => {
     const running = store.getReview(review.id)!;
     store.retryReview({ reviewId: review.id, attempt: running.attemptCount }, proof, { error: "Incomplete attempt", retryAt: 20 }, 20);
     return store.reserveReview(pr, { reviewId: uuid(2), sessionId: uuid(999), maxAttempts: 3 }, 20)!;
   };
-  return { directory, skill, supervise, paths, script, report, store, repository, pr, review, worktree, sessionDirectory, run, retry, processPhase };
+  return { directory, skill, supervise, paths, script, report, store, repository, pr, review, worktree, sessionDirectory, run, retry };
 };
 
 afterEach(() => {
@@ -517,7 +504,7 @@ describe("Copilot skill discovery and phase ownership", () => {
     const outcome = await f.run("hang", { timeoutMs: 700, environment: { ...process.env, FIXTURE_REPORT: f.report, FIXTURE_MODE: "hang" } },
       { onProcess: (child, attempt) => {
         supervisor.onProcess(child, attempt);
-        const phase = f.processPhase(child, attempt);
+        const phase = child.spawnargs.some((arg) => arg.startsWith("--session-id=")) ? "review" : "discovery";
         phases.push(phase);
         if (phase === "discovery") monotonicTime += 150;
       }, stopProcess: supervisor.stop, excludeProcess: async (current, evidence) => {
@@ -572,7 +559,7 @@ describe("Copilot completion protocol", () => {
 
   it("rejects stream capture errors even if a valid marker was written", async () => {
     const f = fixture();
-    const outcome = await f.run("success", {}, { onProcess: (child, attempt) => { if (f.processPhase(child, attempt) === "review") child.stdout!.destroy(new Error("capture failed")); } });
+    const outcome = await f.run("success", {}, { onProcess: (child) => { if (child.spawnargs.some((arg) => arg.startsWith("--session-id="))) child.stdout!.destroy(new Error("capture failed")); } });
     expect(outcome.completed).toBe(false);
     expect(outcome.captureComplete).toBe(false);
     expect(outcome.errors.some((error) => error.message === "capture failed")).toBe(true);
@@ -587,7 +574,7 @@ describe("Copilot completion protocol", () => {
   it("aborts an active direct process and rejects cancellation before launch without consuming budget", async () => {
     const f = fixture();
     const controller = new AbortController();
-    const outcome = await f.run("hang", {}, { signal: controller.signal, onProcess: (child, attempt) => { if (f.processPhase(child, attempt) === "review") controller.abort(); } });
+    const outcome = await f.run("hang", {}, { signal: controller.signal, onProcess: (child) => { if (child.spawnargs.some((arg) => arg.startsWith("--session-id="))) controller.abort(); } });
     expect(outcome).toMatchObject({ completed: false, interruption: "aborted", directProcessClosed: true });
     const other = fixture();
     await expect(other.run("success", {}, { signal: AbortSignal.abort() })).rejects.toThrow();

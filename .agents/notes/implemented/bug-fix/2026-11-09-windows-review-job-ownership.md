@@ -58,17 +58,12 @@ combined completion handles Node omitting `ChildProcess.close` after a parent
 IPC disconnect.
 
 The shared native boundary lives in `platform/windows-job.ts` and uses the
-existing dynamically loaded `koffi` dependency. Platform owned-command modules
-share the completion contract and Job lifecycle. The review Node backend keeps
-its guardian, structured target receipt, inherited pipes and strict stop/retain
-policy. The
-[repository Git ownership decision](2026-11-10-repository-git-windows-job-ownership.md)
-uses native suspended creation and named-pipe transport with separate admission
-sealing, natural release and terminal failure cleanup. Those policies do not
-replace review's completion contract.
-The Bot Job lease reuses the native boundary without adopting either command
-completion protocol. The older unowned review helper retains its ancestry checks
-and diagnostics independently.
+existing dynamically loaded `koffi` dependency. The Bot Job lease reuses that
+boundary without adopting the review completion protocol. The older unowned
+review helper retains its ancestry checks and diagnostics independently. The
+[repository Git reversal](../simplification/2026-11-11-revert-native-windows-git.md)
+restores that runner's separate tree-termination policy; it does not change this
+review ownership decision.
 
 ## Alternatives
 
