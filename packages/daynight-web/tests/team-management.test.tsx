@@ -58,7 +58,7 @@ describe("Team management", () => {
     fireEvent.change(name, { target: { value: "\u2003\n " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Create Team" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("valid name"); expect(createTeam).not.toHaveBeenCalled();
     fireEvent.change(name, { target: { value: "  Duplicate\nName  " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Create Team" }));
-    await waitFor(() => expect(created).toHaveBeenCalledWith(expect.objectContaining({ name: "  Duplicate\nName  " })));
+    await waitFor(() => expect(created).toHaveBeenCalledWith(expect.objectContaining({ name: "  Duplicate\nName  " }), true));
     expect(createTeam).toHaveBeenCalledTimes(1); expect(vi.mocked(createTeam).mock.calls[0]?.[1]).toBe("  Duplicate\nName  ");
   });
   it("does not submit on Escape or cancellation", () => {

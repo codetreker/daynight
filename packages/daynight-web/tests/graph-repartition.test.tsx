@@ -33,6 +33,7 @@ let overflow: string;
 
 const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${projectId}`);
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(syncFixture.toSync(await graphRequest(projectId, signal), query)));
 });

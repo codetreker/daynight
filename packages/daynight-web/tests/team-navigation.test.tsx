@@ -78,10 +78,12 @@ describe("Team workspace navigation", () => {
     act(() => navigate(route));
     if (route === "/shared-projects") await screen.findByRole("heading", { name: "Projects shared with me" });
     else await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
-    expect(screen.getByRole("dialog", { hidden: true })).toBeInTheDocument();
+    const confirmation = screen.getByRole("dialog", { hidden: true });
     localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
     await act(async () => receipt.resolve(json({ teamId: a, userId, removed: true, actorRole: null })));
-    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+    await waitFor(() => expect(confirmation).toHaveAttribute("aria-busy", "false"));
+    expect(screen.getByRole("dialog", { hidden: true })).toBe(confirmation);
+    expect(confirmation).not.toBeVisible();
     expect(window.location.pathname).toBe(route);
     if (route === "/shared-projects") {
       expect(screen.getByRole("heading", { name: "Projects shared with me" })).toBeInTheDocument();
@@ -566,6 +568,71 @@ describe("Team workspace navigation", () => {
     if (outcome === "success") { await act(async () => reply.resolve(json({ teamId: a, deleted: true }))); await waitForState(() => expect(window.location.pathname).toBe(`/teams/${personal}`)); }
     else { await act(async () => reply.reject(new TypeError("connection lost"))); await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true)); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(deletes).toBe(1); }
   });
+  it("adopts a delete receipt without navigating after Back and Forward", async () => {
+    window.history.replaceState(null, "", "/shared-projects");
+    const receipt = Promise.withResolvers<Response>(); let deletes = 0, deleted = false, lists = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "DELETE") { deletes++; return receipt.promise; }
+      if (url.startsWith("/api/v1/teams?")) { lists++; return json({ items: deleted ? [team(b, "Beta")] : [team(a, "  Alpha  "), team(b, "Beta")], nextCursor: null }); }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => navigate(`/teams/${a}/settings`));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
+    const name = within(dialog).getByLabelText("Enter the Team name to confirm");
+    fireEvent.change(name, { target: { value: "  Alpha  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
+    await waitForState(() => expect(deletes).toBe(1));
+    act(() => window.history.back());
+    await waitForState(() => expect(window.location.pathname).toBe("/shared-projects"));
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => window.history.forward());
+    await waitForState(() => expect(window.location.pathname).toBe(`/teams/${a}/settings`));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog));
+    const before = lists; deleted = true;
+    await act(async () => receipt.resolve(json({ teamId: a, deleted: true })));
+    await waitForState(() => expect(lists).toBeGreaterThan(before));
+    await waitForState(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(personal));
+    expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+    expect(name).toHaveValue("  Alpha  ");
+    expect(within(dialog).getByText("Team deleted")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Delete Team" })).toBeDisabled();
+  });
+  it("shows the delete receipt after Back and Forward when a 404 arrives first", async () => {
+    window.history.replaceState(null, "", "/shared-projects");
+    const receipt = Promise.withResolvers<Response>(); let deletes = 0, missingReads = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "DELETE") { deletes++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && deletes > 0) {
+        missingReads++;
+        return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => navigate(`/teams/${a}/settings`));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
+    fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
+    await waitForState(() => expect(deletes).toBe(1));
+    act(() => window.history.back());
+    await waitForState(() => expect(window.location.pathname).toBe("/shared-projects"));
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => window.history.forward());
+    await waitForState(() => expect(window.location.pathname).toBe(`/teams/${a}/settings`));
+    await waitForState(() => expect(missingReads).toBeGreaterThan(0));
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(dialog.closest("[hidden]")).not.toBeNull();
+    expect(screen.getByText("Submitting", { selector: "[role=status]" })).toBeVisible();
+    await act(async () => receipt.resolve(json({ teamId: a, deleted: true })));
+    const result = await screen.findByText("Team deleted", { selector: "div.notice[role=status]" });
+    expect(result).toBeVisible(); expect(result).toHaveTextContent(a);
+    expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    expect(deletes).toBe(1);
+  });
   it.each(["success", "lost", "rejected"] as const)("keeps the delete owner when preference 404 arrives first: %s", async (outcome) => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
@@ -621,6 +688,36 @@ describe("Team workspace navigation", () => {
     await waitForState(() => expect(patches).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitForState(() => expect(reads).toBe(4));
     await act(async () => patch.resolve(json({ ...team(a, "New name"), version: 2n }))); await screen.findByText("Saved");
     await act(async () => late.resolve(json(team(a, "  Alpha  ")))); expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeInTheDocument();
+  });
+  it("adopts a rename receipt while retaining the editor after Back and Forward", async () => {
+    window.history.replaceState(null, "", "/shared-projects");
+    const receipt = Promise.withResolvers<Response>(); let patches = 0, renamed = false;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && renamed) return json({ ...team(a, "New name"), version: 2n });
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => navigate(`/teams/${a}/settings`));
+    fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    const name = within(dialog).getByLabelText("Team name");
+    fireEvent.change(name, { target: { value: "New name" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitForState(() => expect(patches).toBe(1));
+    act(() => window.history.back());
+    await waitForState(() => expect(window.location.pathname).toBe("/shared-projects"));
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => window.history.forward());
+    await waitForState(() => expect(window.location.pathname).toBe(`/teams/${a}/settings`));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog));
+    renamed = true;
+    await act(async () => receipt.resolve(json({ ...team(a, "New name"), version: 2n })));
+    await waitFor(() => expect(document.querySelector(".team-settings-name span")).toHaveTextContent("New name"));
+    expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
+    expect(name).toHaveValue("New name");
+    expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeEnabled();
   });
   it("keeps newer preference details in settings when an older rename receipt arrives", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
@@ -886,6 +983,44 @@ describe("Team workspace navigation", () => {
     expect(screen.getByRole("dialog", { name: "Create Team" })).toBe(dialog);
     expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(1); expect(name.selectionEnd).toBe(5);
     expect(name).toHaveValue("Draft Team");
+  });
+  it("refreshes Teams but retains the create draft after Back and Forward", async () => {
+    window.history.replaceState(null, "", "/shared-projects");
+    const receipt = Promise.withResolvers<Response>(); let creates = 0, created = false, lists = 0;
+    install((url, init) => {
+      if (url === "/api/v1/teams" && init?.method === "POST") { creates++; return receipt.promise; }
+      if (url.startsWith("/api/v1/teams?")) { lists++; return json({ items: created ? [team(a, "  Alpha  "), team(b, "Beta"), team(projectId, "Draft Team")] : [team(a, "  Alpha  "), team(b, "Beta")], nextCursor: null }); }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
+    act(() => navigate("/projects")); await screen.findByRole("heading", { name: "Personal" });
+    const selector = document.querySelector<HTMLElement>(".team-selector")!;
+    fireEvent.click(selector.querySelector(".team-switch")!);
+    fireEvent.click(within(selector).getByRole("menuitem", { name: "Create Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Team" });
+    const name = within(dialog).getByLabelText(/Team name/);
+    fireEvent.change(name, { target: { value: "Draft Team" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Team" }));
+    await waitForState(() => expect(creates).toBe(1));
+    act(() => window.history.back());
+    await waitForState(() => expect(window.location.pathname).toBe("/shared-projects"));
+    act(() => window.history.forward());
+    await waitForState(() => expect(window.location.pathname).toBe("/projects"));
+    const before = lists; created = true;
+    const createdResponse = json(team(projectId, "Draft Team"), 201);
+    createdResponse.headers.set("Location", `/api/v1/teams/${projectId}`);
+    await act(async () => receipt.resolve(createdResponse));
+    await waitForState(() => expect(lists).toBeGreaterThan(before));
+    expect(window.location.pathname).toBe("/projects");
+    expect(screen.getByRole("dialog", { name: "Create Team" })).toBe(dialog);
+    expect(name).toHaveValue("Draft Team");
+    expect(within(dialog).getByRole("status")).toHaveTextContent(`Created Team: Draft Team ${projectId}`);
+    expect(within(dialog).getByRole("button", { name: "Create Team" })).toBeDisabled();
+    fireEvent.submit(dialog.querySelector("form")!);
+    expect(creates).toBe(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.click(selector.querySelector(".team-switch")!);
+    expect(await within(selector).findByRole("menuitemradio", { name: "Draft Team" })).toBeInTheDocument();
   });
   it("discards a create dialog's late unknown-state read when the account changes", async () => {
     const bob = "00000000-0000-4000-8000-000000000011", bobPersonal = "00000000-0000-4000-8000-000000000012";

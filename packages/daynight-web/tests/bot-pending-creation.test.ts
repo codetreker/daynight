@@ -21,3 +21,25 @@ it('clears a cold retained identity on account cleanup before the Bot page is mo
  clearPendingBotCreation(BOT_USER);
  const scope=createTaskCacheScope({userId:BOT_USER,onIdentityMismatch:()=>{}});expect(pendingBotCreation(scope)).toBeNull();scope.dispose();
 });
+it('retains confirmed results independently until each is consumed or its scope is disposed', async () => {
+ const { confirmedBotCreations, rememberConfirmedBotCreation, forgetConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+ const scope=createTaskCacheScope({userId:BOT_USER,onIdentityMismatch:()=>{}});
+ const first={id:botId(11),name:'First'}, second={id:botId(12),name:'Second'};
+ const bot={} as import('../src/api/bots').Bot;
+ rememberBotCreation(scope,first); rememberConfirmedBotCreation(scope,first,bot);
+ rememberBotCreation(scope,second); rememberConfirmedBotCreation(scope,second,bot);
+ expect(confirmedBotCreations(scope).map(value=>value.request.id)).toEqual([first.id,second.id]);
+ forgetConfirmedBotCreation(scope,first.id);
+ expect(confirmedBotCreations(scope).map(value=>value.request.id)).toEqual([second.id]);
+ scope.dispose(); expect(confirmedBotCreations(scope)).toEqual([]);
+});
+it('notifies a replacement form when the original request receives a late confirmation', async () => {
+ const { confirmedBotCreations, rememberConfirmedBotCreation, subscribeConfirmedBotCreations } = await import('../src/features/bots/pending-creation');
+ const scope=createTaskCacheScope({userId:BOT_USER,onIdentityMismatch:()=>{}}), request={id:botId(13),name:'Original'};
+ rememberBotCreation(scope,request);
+ const observed: string[][]=[];
+ const unsubscribe=subscribeConfirmedBotCreations(scope,()=>observed.push(confirmedBotCreations(scope).map(value=>value.request.id)));
+ rememberConfirmedBotCreation(scope,request,{} as import('../src/api/bots').Bot);
+ expect(observed).toEqual([[request.id]]);
+ unsubscribe(); scope.dispose(); expect(observed).toHaveLength(1);
+});

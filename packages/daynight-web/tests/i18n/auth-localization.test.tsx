@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../../src/app/AuthenticatedApp";
+import { AccountChangeBanner } from "../../src/features/auth/AccountChangeBanner";
 import { CreateProjectDialog } from "../../src/features/auth/CreateProjectDialog";
 import { MembersPanel } from "../../src/features/management/MembersPanel";
 import { SecretDialog } from "../../src/features/management/feedback";
@@ -447,4 +448,13 @@ describe("authentication language changes", () => {
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle })).toBe(reveal);
     expect(screen.getByLabelText(zhCN.auth.management.secret.tokenLabel)).toBe(secret);
   });
+});
+
+it("localizes the account change notice and refresh action", () => {
+  const { setLocale } = renderWithLocale(<AccountChangeBanner active onReload={() => {}} />, { locale: "en" });
+  expect(screen.getByRole("status")).toHaveTextContent("Account changed");
+  expect(screen.getByRole("button", { name: "Refresh page" })).toBeVisible();
+  setLocale("zh-CN");
+  expect(screen.getByRole("status")).toHaveTextContent("账户已变化");
+  expect(screen.getByRole("button", { name: "刷新页面" })).toBeVisible();
 });

@@ -193,4 +193,4 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
   return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && root.current !== null && isTopOverlay(root.current) && !threadDetails.current) requestClose(); }}>{content}</div> : content;
 };
 
-export const GoalDetailSurface = (props: GoalDetailSurfaceProps) => <TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'}><GoalContent {...props} /></TaskDraftBoundary>;
+export const GoalDetailSurface = (props: GoalDetailSurfaceProps) => <TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'} projectSourceSensitive={false}><GoalContent {...props} /></TaskDraftBoundary>;

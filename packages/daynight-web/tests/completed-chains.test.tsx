@@ -50,6 +50,7 @@ const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
 const syncFixture = createGraphSyncFixture();
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${projectId}`);
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);

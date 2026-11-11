@@ -70,6 +70,7 @@ const deferred = <T,>() => {
 const stat = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!;
 let root: HTMLDivElement;
 beforeEach(() => {
+  window.history.replaceState(null, "", `/projects/${project}`);
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties })));
 });
 

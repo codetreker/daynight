@@ -169,7 +169,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   return response;
 };
 
-export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false): Promise<T> => {
+export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false, onServerError?: (error: ApiError) => void): Promise<T> => {
   const lifetime = responseSignal(response, signal);
   let body: unknown;
   try {
@@ -190,7 +190,9 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
       return result;
     }
     const serverError = parseServerError(body, includeStepsError);
-    throw new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
+    const error = new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
+    onServerError?.(error);
+    throw error;
   } catch (error) {
     lifetime.throwIfAborted();
     if (error instanceof ApiError) throw error;

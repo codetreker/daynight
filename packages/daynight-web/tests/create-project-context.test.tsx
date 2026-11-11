@@ -9,6 +9,10 @@ import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '..
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { act } from '@testing-library/react';
 import * as auth from '../src/api/auth';
+import { browserNavigation } from '../src/app/navigation';
+import { directAccessFixture } from './helpers/taskSync';
+import { stringifyWireJson } from './helpers/wireJson';
+import { ProjectsProvider, useProjectList, type ProjectScope } from '../src/features/projects/ProjectsProvider';
 
 const render = createLocaleRender('en');
 const userId = '00000000-0000-4000-8000-000000000101';
@@ -377,10 +381,37 @@ describe('project creation context', () => {
     const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
     await act(async () => pending.resolve(project));
     expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).not.toBeDisabled();
     await act(async () => { if (outcome === 'changed') { void admission.invalidateScope(); invalidateAuthRequests(); } resume(); });
     if (outcome === 'same') await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith(project));
     else expect(onCreated).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
+    view.unmount(); admission.dispose();
+  });
+
+  it('settles a real confirmed receipt during pause without another request', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const response = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(() => response.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const onCreated = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    const access = { ...directAccessFixture(project.id, userId, 'admin'), ownership: project.ownership, teamRole: 'admin', canTransfer: true };
+    await act(async () => response.resolve(new Response(stringifyWireJson({ ...project, access }), { status: 201, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } })));
+    await waitFor(() => expect(screen.getByLabelText(/Project name/)).not.toBeDisabled());
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => resume());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith(project));
+    expect(fetcher).toHaveBeenCalledTimes(1);
     view.unmount(); admission.dispose();
   });
 
@@ -413,6 +444,29 @@ describe('project creation context', () => {
     admission.dispose();
   });
 
+  it('settles cancelled preparation while retaining the dialog and never dispatches on resume', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const create = vi.spyOn(auth, 'createProject');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const resume = pauseAuthRequests();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    expect(screen.getByLabelText(/Project name/)).toBeDisabled();
+    await act(async () => admission.dispose());
+    await waitFor(() => expect(screen.getByLabelText(/Project name/)).not.toBeDisabled());
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+    expect(create).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    await act(async () => resume());
+    expect(create).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    view.unmount();
+  });
+
   it.each([['rejected', 'same'], ['unknown', 'same'], ['rejected', 'changed'], ['unknown', 'changed']] as const)('holds a %s creation result for the %s identity', async (outcome, identity) => {
     const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
     const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
@@ -426,10 +480,258 @@ describe('project creation context', () => {
     const error = outcome === 'unknown' ? new auth.ProjectCreationUnknown(new Error('lost')) : new ApiError('server', 403, 'forbidden');
     await act(async () => pending.reject(error));
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
     await act(async () => { if (identity === 'changed') { void admission.invalidateScope(); invalidateAuthRequests(); } resume(); });
     if (identity === 'same') expect(await screen.findByRole('alert')).toHaveTextContent(outcome === 'unknown' ? /creation result is unknown/i : /project could not be created/i);
     else expect(screen.queryByRole('alert')).toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
     view.unmount(); admission.dispose();
+  });
+
+  it.each(['edit', 'route', 'reopen'] as const)('does not apply an old confirmed creation after %s', async (change) => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const onCreated = vi.fn(), onClose = vi.fn(), onPublished = vi.fn();
+    const props = { userId, teamId: teamA, admission, onIdentityMismatch: vi.fn(), onClose, onCreated, onPublished };
+    const navigation = browserNavigation();
+    navigation.navigate('/projects');
+    let view = render(<CreateProjectDialog {...props} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Old draft' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:old.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Old draft', repoUrl: 'git@example.test:old.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => pending.resolve(project));
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
+    expect(onCreated).not.toHaveBeenCalled();
+    if (change === 'edit') {
+      fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'New draft' } });
+    } else if (change === 'route') {
+      act(() => { navigation.navigate('/account'); navigation.navigate('/projects'); });
+    } else {
+      view.unmount();
+      view = render(<CreateProjectDialog {...props} />);
+      fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Reopened draft' } });
+    }
+    await act(async () => resume());
+    if (change !== 'reopen') {
+      await waitFor(() => expect(onPublished).toHaveBeenCalledExactlyOnceWith(project));
+      expect(screen.getByRole('link', { name: 'Old draft' })).toHaveAttribute('href', `/projects/${project.id}`);
+    } else expect(onPublished).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue(change === 'edit' ? 'New draft' : change === 'reopen' ? 'Reopened draft' : 'Old draft');
+    expect(create).toHaveBeenCalledTimes(1);
+    view.unmount(); admission.dispose(); navigation.dispose();
+  });
+
+  it('lets a newer operation supersede a confirmed result awaiting publication', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const first = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const second = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const onCreated = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} />);
+    const input = screen.getByLabelText(/Project name/);
+    fireEvent.change(input, { target: { value: 'First' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'First', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => first.resolve(project));
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Second' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    expect(create).toHaveBeenCalledTimes(1);
+    await act(async () => resume());
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(onCreated).not.toHaveBeenCalled();
+    const latest = { ...project, id: '00000000-0000-4000-8000-000000000202', name: 'Second' };
+    await act(async () => second.resolve(latest));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith(latest));
+    view.unmount(); admission.dispose();
+  });
+
+  it('does not publish when identity pauses again immediately after admission resolves', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const originalReady = admission.ready.bind(admission);
+    const secondPause: { resume: (() => void) | null } = { resume: null };
+    let armed = false;
+    vi.spyOn(admission, 'ready').mockImplementation(async signal => {
+      await originalReady(signal);
+      if (armed) { armed = false; secondPause.resume = pauseAuthRequests(); }
+    });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const onCreated = vi.fn(), onPublished = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} onPublished={onPublished} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => pending.resolve(project));
+    armed = true;
+    await act(async () => resume());
+    await waitFor(() => expect(secondPause.resume).not.toBeNull());
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Project' })).toBeNull();
+    await act(async () => secondPause.resume!());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith(project));
+    expect(onPublished).toHaveBeenCalledExactlyOnceWith(project);
+    expect(create).toHaveBeenCalledOnce();
+    view.unmount(); admission.dispose();
+  });
+
+  it('settles locally but never publishes a receipt after generation changes and immediately pauses again', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const onCreated = vi.fn(), onPublished = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} onPublished={onPublished} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const resumeFirst = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => pending.resolve(project));
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
+    let resumeSecond: () => void = () => {};
+    await act(async () => { invalidateAuthRequests(); resumeSecond = pauseAuthRequests(); resumeFirst(); });
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Project' })).toBeNull();
+    await act(async () => resumeSecond());
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Project' })).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
+    view.unmount(); admission.dispose();
+  });
+
+  it('refreshes the current project-list scope when a delayed receipt is published after navigation', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Created project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    const shared = { ...project, id: '00000000-0000-4000-8000-000000000202', name: 'Shared project' };
+    const fetcher = vi.fn((url: string) => Promise.resolve(new Response(stringifyWireJson({ items: url.includes('shared=true') ? [shared] : [], nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } })));
+    vi.stubGlobal('fetch', fetcher);
+    const onCreated = vi.fn(), onPublished = vi.fn();
+    const Content = ({ scopeKind }: { readonly scopeKind: ProjectScope['kind'] }) => {
+      const projects = useProjectList();
+      return <><div>List: {projects.status}</div>{projects.items.map(item => <div key={item.id}>{item.name}</div>)}
+        <CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} onPublished={item => { onPublished(item, scopeKind); projects.refresh(); }} /></>;
+    };
+    const tree = (scope: ProjectScope) => <ProjectsProvider scope={scope} admission={admission}><Content scopeKind={scope.kind} /></ProjectsProvider>;
+    const navigation = browserNavigation();
+    navigation.navigate('/projects');
+    const view = render(tree({ kind: 'team', teamId: teamA }));
+    await screen.findByText('List: ready');
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Created project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    await act(async () => pending.resolve(project));
+    expect(screen.getByLabelText(/Project name/)).not.toBeDisabled();
+    act(() => navigation.navigate('/shared-projects'));
+    view.rerender(tree({ kind: 'shared' }));
+    expect(screen.getByText('List: loading')).toBeInTheDocument();
+    await act(async () => resume());
+    await screen.findByText('Shared project');
+    expect(screen.getByText('List: ready')).toBeInTheDocument();
+    expect(onPublished).toHaveBeenCalledExactlyOnceWith(project, 'shared');
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.some(([url]) => url.includes('shared=true'))).toBe(true);
+    view.unmount(); admission.dispose(); navigation.dispose();
+  });
+
+  it('publishes the first confirmed project when a newer creation is refused', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const first = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const second = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const onCreated = vi.fn(), onPublished = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} onPublished={onPublished} />);
+    const input = screen.getByLabelText(/Project name/);
+    fireEvent.change(input, { target: { value: 'First' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'First', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => first.resolve(project));
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Second' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    expect(create).toHaveBeenCalledTimes(1);
+    await act(async () => resume());
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await act(async () => second.reject(new ApiError('server', 403, 'forbidden')));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/project could not be created/i);
+    expect(await screen.findByRole('link', { name: 'First' })).toHaveAttribute('href', `/projects/${project.id}`);
+    expect(onPublished).toHaveBeenCalledExactlyOnceWith(project);
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(input).toHaveValue('Second');
+    view.unmount(); admission.dispose();
+  });
+
+  it('keeps a confirmed result distinct when navigation publication throws', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    const create = vi.spyOn(auth, 'createProject').mockResolvedValue(project);
+    const onCreated = vi.fn(() => { throw new Error('navigation failed'); });
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={onCreated} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    expect(await screen.findByRole('alert')).toHaveTextContent('The project was created, but its result could not be displayed.');
+    expect(screen.queryByText(/project could not be created/i)).toBeNull();
+    expect(screen.queryByText(/creation result is unknown/i)).toBeNull();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeDisabled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith(project);
+    view.unmount(); admission.dispose();
+  });
+
+  it('protects the dialog after a navigation decision is requested then cancelled', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const navigation = browserNavigation();
+    navigation.navigate('/projects');
+    const unregister = navigation.register({ scope: { identity: {}, projectId: 'p', taskId: 't' }, isDirty: () => true, discard: vi.fn(), survives: () => false });
+    const onCreated = vi.fn(), onClose = vi.fn();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={onClose} onCreated={onCreated} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    const project = { id: '00000000-0000-4000-8000-000000000201', name: 'Project', repoUrl: 'git@example.test:repo.git', ownership: { teamId: teamA, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    await act(async () => pending.resolve(project));
+    const location = navigation.snapshot();
+    act(() => navigation.navigate('/account'));
+    expect(navigation.decision()).not.toBeNull();
+    act(() => navigation.cancel());
+    expect(navigation.snapshot()).toBe(location);
+    await act(async () => resume());
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
+    unregister(); view.unmount(); admission.dispose(); navigation.dispose();
   });
 });
