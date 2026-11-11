@@ -8,7 +8,7 @@ import type { Operation } from "../../src/api/operation.js";
 import { RepositoryGitError } from "../../src/repository/git.js";
 import { startOwnedRepositoryGit } from "../../src/repository/git-owned.js";
 
-const helpers = vi.hoisted(() => ({ children: [] as ChildProcess[], replacement: undefined as string | undefined, gitReplacement: undefined as string | undefined }));
+const helpers = vi.hoisted(() => ({ children: [] as ChildProcess[], gitChildren: [] as ChildProcess[], replacement: undefined as string | undefined, gitReplacement: undefined as string | undefined }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const spawn = ((...args: unknown[]) => {
@@ -19,6 +19,7 @@ vi.mock("node:child_process", async (importOriginal) => {
         ? actual.spawn(process.execPath, [helpers.gitReplacement], args[2] as Parameters<typeof actual.spawn>[2])
         : Reflect.apply(actual.spawn, undefined, args) as ChildProcess;
     if (isHelper) helpers.children.push(child);
+    if (args[0] === "git") helpers.gitChildren.push(child);
     return child;
   }) as typeof actual.spawn;
   return { ...actual, spawn };
@@ -71,6 +72,7 @@ afterEach(async () => {
   for (const op of operations.splice(0)) op.dispose();
   vi.unstubAllEnvs();
   helpers.children.splice(0);
+  helpers.gitChildren.splice(0);
   helpers.replacement = undefined;
   helpers.gitReplacement = undefined;
   vi.unstubAllGlobals();
@@ -285,4 +287,30 @@ it("dispatches an immediate repeated stop only once", async () => {
   await command.joined;
   expect(helpers.children).toHaveLength(1);
   expect((await command.outcome).kind).toBe("failure");
+}, 15_000);
+
+it("retains an output stream error until the real child and both streams close", async () => {
+  const root = await repository();
+  const marker = path.join(root, "stream-error-ready");
+  await configureAlias(root, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ready');\nsetInterval(() => {}, 1000);\nsetTimeout(() => process.exit(1), 8000).unref();\n`);
+  const command = startOwnedRepositoryGit(root, ["daynight-fixture"], operation(), {});
+  const child = helpers.gitChildren.at(-1)!;
+  const closed = { child: false, stdout: false, stderr: false };
+  child.once("close", () => { closed.child = true; });
+  child.stdout!.once("close", () => { closed.stdout = true; });
+  child.stderr!.once("close", () => { closed.stderr = true; });
+  const original = new Error("fixture stdout failure");
+  try {
+    await waitForFile(marker);
+    child.stdout!.emit("error", original);
+    const outcome = await command.outcome;
+    expect(outcome.kind).not.toBe("success");
+    if (outcome.kind === "success") throw new Error("Stream error returned success");
+    expect(containsError(outcome.error, original)).toBe(true);
+    expect((await command.joined).kind).toBe("local-closed");
+    expect(closed).toEqual({ child: true, stdout: true, stderr: true });
+  } finally {
+    command.requestStop();
+    await command.joined;
+  }
 }, 15_000);
