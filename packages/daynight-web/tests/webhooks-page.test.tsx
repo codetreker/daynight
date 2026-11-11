@@ -8,10 +8,20 @@ import { parseWebhookCatalog, type WebhookActiveEndpoint, type WebhookEndpoint, 
 import { browserNavigation } from "../src/app/navigation";
 import { navigate, parseAuthRoute } from "../src/app/router";
 import type { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
+import type { WebhookIntentController } from "../src/features/webhook-intents/controller";
 import { WebhooksPage } from "../src/features/webhooks/WebhooksPage";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 import { waitForState } from "./helpers/waitForState";
+
+const capturedControllers = vi.hoisted(() => [] as unknown[]);
+vi.mock("../src/features/webhook-intents/controller", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/features/webhook-intents/controller")>();
+  class CapturingController extends actual.WebhookIntentController {
+    constructor(...args: ConstructorParameters<typeof actual.WebhookIntentController>) { super(...args); capturedControllers.push(this); }
+  }
+  return { ...actual, WebhookIntentController: CapturingController };
+});
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const userId = id(1), teamId = id(2), projectId = id(3), secondProjectId = id(4), endpointId = id(5), keyId = id(6), now = "2026-11-08T00:00:00Z";
@@ -186,6 +196,59 @@ describe("Webhook configuration page", () => {
     } finally { resume?.(); }
   });
 
+  it("resumes an explicit create receipt that arrives during an identity pause", async () => {
+    const view = await mount({ initial: [] }); fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    const dialog = screen.getByRole("dialog"); fireEvent.change(within(dialog).getByRole("textbox", { name: /^Name$/ }), { target: { value: "Recovered create" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /^Endpoint URL$/ }), { target: { value: "https://receiver.example/new" } });
+    view.loseNextWrite(); const held = barrier<Response>(); let reads = 0, entered = false;
+    view.intercept(url => url.includes("/operations/") ? ++reads === 1 ? Promise.resolve(failure(404, "not_found")) : (entered = true, held.promise) : null);
+    submitForm(); await waitFor(() => expect(dialog).toHaveTextContent("operation result is unknown"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check operation" })); await waitFor(() => expect(entered).toBe(true));
+    const resume = pauseAuthRequests(), original = [...view.receipts.values()][0]!; const before = view.fetch.mock.calls.length;
+    try {
+      await act(async () => { held.resolve(response(original)); }); await screen.findByText("Original operation confirmed");
+      expect(screen.getByRole("dialog")).toBe(dialog); expect(view.fetch.mock.calls.length).toBe(before);
+      expect(within(dialog).getByRole("button", { name: "Create webhook" })).toBeDisabled();
+      view.intercept(null); await act(async () => { resume(); });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await screen.findByRole("heading", { name: "Recovered create", level: 2 });
+      expect(location.search).toContain(original.endpointId); expect(view.writes).toHaveLength(1);
+    } finally { resume(); }
+  });
+  it("resumes a fresh reconciliation after the original write was stopped", async () => {
+    const view = await mount(); openEdit(); setName("Stopped write"); view.holdNextWrite(); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1)); const controller = capturedControllers.at(-1) as WebhookIntentController;
+    await act(async () => { controller.stopPending(); }); await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
+    await act(async () => { view.releaseWrite(); }); const held = barrier<Response>(); let entered = false;
+    view.intercept(url => url.includes("/operations/") ? (entered = true, held.promise) : null);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" })); await waitFor(() => expect(entered).toBe(true));
+    const resume = pauseAuthRequests(), original = [...view.receipts.values()][0]!;
+    try {
+      await act(async () => { held.resolve(response(original)); }); await screen.findByText("Original operation confirmed");
+      expect(screen.getByRole("dialog")).toBeVisible(); view.intercept(null); await act(async () => { resume(); });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(view.writes).toHaveLength(1);
+    } finally { resume(); }
+  });
+  it("keeps newer edits when a stopped write is explicitly reconciled", async () => {
+    const view = await mount(); openEdit(); setName("Submitted edit"); view.holdNextWrite(); submitForm();
+    await waitForState(() => expect(view.writes).toHaveLength(1)); const controller = capturedControllers.at(-1) as WebhookIntentController;
+    await act(async () => { controller.stopPending(); }); await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
+    await act(async () => { view.releaseWrite(); }); setName("Newer local edit");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" })); await screen.findByText("Original operation confirmed");
+    expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Newer local edit"); expect(view.writes).toHaveLength(1);
+  });
+  it("retains a trusted receipt without publishing after its operation stops", async () => {
+    const view = await mount(); openEdit(); setName("Stopped after receipt");
+    const controller = capturedControllers.at(-1) as WebhookIntentController, listener = () => { if (controller.getSnapshot().phase === "confirmed") controller.stopPending(); };
+    const unsubscribe = controller.subscribe(listener), before = view.fetch.mock.calls.length;
+    try {
+      submitForm(); await screen.findByText("Original operation confirmed");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+      expect(screen.getByRole("dialog")).toBeVisible(); expect((screen.getByRole("textbox", { name: /^Name$/ }) as HTMLInputElement).value).toBe("Stopped after receipt");
+      expect(view.fetch.mock.calls.length).toBe(before + 1); expect(view.writes).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
+
   it("publishes subscription counts and summaries only after the current background read finishes", async () => {
     const original = { ...endpoint(), subscriptions: [] };
     const view = await mount({ initial: [original] });
@@ -326,6 +389,19 @@ describe("Webhook configuration page", () => {
     await waitForState(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     await act(async () => { held.resolve(failure(403, "forbidden")); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.body.textContent).toContain("private=hidden");
+  });
+
+  it("withdraws owner data after a receipt denial while a newer editor is open", async () => {
+    const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
+    fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" }));
+    await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("New private draft");
+    const check = screen.getByRole("button", { name: "Check operation" }); await waitFor(() => expect(check).toBeEnabled());
+    view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(403, "forbidden")) : null); fireEvent.click(check);
+    await screen.findByText("Team access is unavailable.");
+    expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
+    expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(view.writes).toHaveLength(1);
   });
 
   it.each(["confirmed", "unknown"] as const)("withdraws owner data after receipt denial without changing the %s original operation or replaying it", async phase => {

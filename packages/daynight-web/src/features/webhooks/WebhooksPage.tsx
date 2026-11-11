@@ -74,12 +74,12 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     }
   }
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? idleSnapshot);
-  const writePauseRevisions = useRef(new Map<string, number>()), postWriteRead = useRef<AbortController | null>(null), publication = useRef<AbortController | null>(null), editRevision = useRef(0);
+  const writePauseRevisions = useRef(new Map<string, number>()), publicationStopRevisions = useRef(new Map<string, number>()), postWriteRead = useRef<AbortController | null>(null), publication = useRef<AbortController | null>(null), editRevision = useRef(0);
   const [publicationRevision, setPublicationRevision] = useState(0);
   const publicationReady = useRef<(() => void) | null>(null);
   const writeContexts = useRef(new Map<string, { readonly modal: Modal | null; readonly edit: number; readonly interaction: number; readonly revision: number; readonly stopRevision: number }>());
   const presentationGuards = useRef(new Map<string, () => boolean>());
-  const mayPresent = () => !authRequestsPaused() && (scope === null || (!writePauseRevisions.current.has(scope) || writePauseRevisions.current.get(scope) === authRequestsPauseRevision()) && (presentationGuards.current.get(scope)?.() ?? true));
+  const mayPresent = () => !authRequestsPaused() && (scope === null || ((!writePauseRevisions.current.has(scope) || writePauseRevisions.current.get(scope) === authRequestsPauseRevision()) && (!publicationStopRevisions.current.has(scope) || publicationStopRevisions.current.get(scope) === controller?.getStopRevision()) && (presentationGuards.current.get(scope)?.() ?? true)));
   const deletedByReceipt = mayPresent() && intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
   const endpoint = sourceEndpoint?.id === deletedByReceipt ? null : sourceEndpoint;
   const historyEndpointId = route.endpointId ?? data.endpointId;
@@ -178,7 +178,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     })();
   };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (controller === null || scope === null || owner === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
+    if (controller === null || scope === null || owner === null || authRequestsPaused() || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
     const state = controller.getSnapshot();
     if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
     if (!isBusy(state)) {
@@ -188,13 +188,15 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       const expansion = webhookExpansion(input, live.current.endpoint);
       if (expansion && !live.current.catalog.service.configurationExpansionAvailable) throw webhookAdmissionError("WebhookExpansionUnavailable");
       operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
+      publicationStopRevisions.current.set(scope, controller.getStopRevision());
       writeContexts.current.set(scope, { modal, edit: editRevision.current, interaction: interactionSequence.current, revision: authRequestsPauseRevision(), stopRevision: controller.getStopRevision() });
     }
     const fence = writeFences.current.get(scope) ?? null;
     const submittedKind = input.kind, submittedEndpointId = input.kind === "delivery.redeliver" ? input.endpointId : null;
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key, readAuthorizationKey = directories.getAuthorization(owner).readKey;
-    const revision = writePauseRevisions.current.get(scope), interaction = writeContexts.current.get(scope)?.interaction;
+    const revision = writePauseRevisions.current.get(scope), context = writeContexts.current.get(scope), interaction = context?.interaction;
     const outcome = await controller.submit(input);
+    if (writeContexts.current.get(scope) !== context || publicationStopRevisions.current.get(scope) !== controller.getStopRevision() || outcome.prepared !== null && controller.getSnapshot().prepared?.operationId !== outcome.prepared.operationId) return outcome;
     if (authRequestsPaused() || revision !== authRequestsPauseRevision() || writePauseRevisions.current.get(scope) !== revision) {
       if (outcome.phase === "confirmed" && writePauseRevisions.current.get(scope) === revision) deferConfirmation(scope, controller, outcome, fence, requestedOwner);
       return outcome;
@@ -225,12 +227,26 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     return outcome;
   };
   const reconcile = async () => {
-    if (controller === null || owner === null || !canRead) return;
-    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey, revision = authRequestsPauseRevision();
+    if (controller === null || owner === null || !canRead || authRequestsPaused()) return;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey, revision = authRequestsPauseRevision(), stopRevision = controller.getStopRevision(), operationId = controller.getSnapshot().prepared?.operationId;
+    if (scope !== null) {
+      const previous = writeContexts.current.get(scope);
+      if (previous === undefined) {
+        writePauseRevisions.current.set(scope, revision);
+        writeContexts.current.set(scope, { modal, edit: editRevision.current, interaction: interactionSequence.current, revision, stopRevision });
+      } else if (previous.stopRevision !== stopRevision) writeContexts.current.set(scope, { ...previous, stopRevision });
+      publicationStopRevisions.current.set(scope, stopRevision);
+    }
+    const context = scope === null ? undefined : writeContexts.current.get(scope);
+    if (scope !== null && context !== undefined) presentationGuards.current.set(scope, () => writeContexts.current.get(scope) === context && controller.getStopRevision() === stopRevision && controller.getSnapshot().prepared?.operationId === operationId && modalRef.current === context.modal && editRevision.current === context.edit && interactionSequence.current === context.interaction);
     const outcome = await controller.reconcile();
-    if (authRequestsPaused() || revision !== authRequestsPauseRevision()) return;
-    if (outcome.phase === "confirmed" && scope !== null && !mayPresent()) { deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner); return; }
+    if (controller.getStopRevision() !== stopRevision || scope !== null && writeContexts.current.get(scope) !== context || controller.getSnapshot().prepared?.operationId !== operationId) return;
+    if (authRequestsPaused() || revision !== authRequestsPauseRevision()) {
+      if (outcome.phase === "confirmed" && scope !== null) deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner);
+      return;
+    }
     observeDenial(outcome.error, requestedOwner, authorizationKey, false);
+    if (outcome.phase === "confirmed" && scope !== null && !mayPresent()) { deferConfirmation(scope, controller, outcome, writeFences.current.get(scope) ?? null, requestedOwner); return; }
     if (outcome.phase === "confirmed") { data.refreshCurrent(); directories.refresh(); }
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
@@ -269,7 +285,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     try { await navigator.clipboard.writeText(displayedSecret); setCopyStatus(m.copied); }
     catch { const node = document.getElementById("webhook-secret"); if (node !== null) { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); } setCopyStatus(m.copyManual); }
   };
-  const actions: WebhookFormActions = { state: intent, expansionAvailable: catalog.service.configurationExpansionAvailable, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
+  const actions: WebhookFormActions = { state: intent, expansionAvailable: catalog.service.configurationExpansionAvailable, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !authRequestsPaused() && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
   const validModal = manageOwner && modal?.scope === scope && (modal.kind === "create" ? manageOwner : endpoint?.id === modal.endpoint.id && endpoint.capabilities.manage) ? modal : null;
   const tabKeys: readonly WebhookRoute["tab"][] = ["configuration", "subscriptions", "deliveries"];
   const tabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
