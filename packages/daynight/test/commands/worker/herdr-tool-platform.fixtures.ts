@@ -17,7 +17,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
-import { decodeWindowsExternalScript, decodeWindowsPlatformJson, runWindowsPlatformQuery, windowsExternalScriptQuery } from "./windows-platform-query.fixtures.js";
+import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery } from "./windows-platform-query.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
@@ -190,12 +190,13 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       evidence.processRows = (await execute("/bin/ps", ["-ww", "-p", [before.shellPid, receipt.helperPid, receipt.childPid].join(","), "-o", "pid=,ppid=,pgid=,tty=,args="], { timeout: 3000 })).stdout;
       if (process.platform === "linux") evidence.nativeFileDescriptors = await Promise.all([0, 1, 2].map(fd => realpath(`/proc/${receipt.childPid}/fd/${fd}`)));
     } else {
+      const observerEnvironment = await prepareWindowsObserverEnvironment(root, process.env);
       const powershell = path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
       const script = `$ids=@(${before.shellPid},${receipt.helperPid},${receipt.childPid}); @{version=$PSVersionTable.PSVersion.ToString();processes=@(Get-CimInstance Win32_Process | Where-Object {$ids -contains $_.ProcessId} | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate)} | ConvertTo-Json -Depth 4 -Compress`;
-      evidence.windowsProcesses = decodeWindowsPlatformJson("processes", await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
+      evidence.windowsProcesses = decodeWindowsPlatformJson("processes", await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
       evidence.windowsRootCommand = mapping.windowsCommand;
       const consoleScript = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class NativeConsole { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint id); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); }'; [NativeConsole]::FreeConsole() | Out-Null; $attached=[NativeConsole]::AttachConsole(${receipt.childPid}); $errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); $ids=New-Object uint[] 256; $count=if($attached){[NativeConsole]::GetConsoleProcessList($ids,256)}else{0}; $result=@{attached=$attached;errorCode=$errorCode;processIds=@($ids | Select-Object -First $count)}; [NativeConsole]::FreeConsole() | Out-Null; $result | ConvertTo-Json -Compress`;
-      evidence.windowsConsole = decodeWindowsPlatformJson("console", await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
+      evidence.windowsConsole = decodeWindowsPlatformJson("console", await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
     }
     evidence.launch = launch; evidence.herdrLaunch = herdrLaunch;
     const allProcesses = await inventory(), descendants = new Set([daemonPid!, before.shellPid, receipt.helperPid, receipt.childPid]);

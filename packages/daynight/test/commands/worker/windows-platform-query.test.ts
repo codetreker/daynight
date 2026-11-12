@@ -1,9 +1,62 @@
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
-import * as command from "../../../dist/commands/worker/herdr/command.js";
-import { decodeWindowsExternalScript, decodeWindowsPlatformJson, runWindowsPlatformQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
+import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
+
+const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
 
 afterEach(() => vi.restoreAllMocks());
+
+const withObserverDirectory = async (inspect: (root: string) => Promise<void>) => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-tools/research-platform/observer-env-tests");
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, "observer-"));
+  try { await inspect(root); }
+  finally { await rm(root, { recursive: true, force: true }); }
+};
+
+test.each(["upper", "lower"])("isolates a %s-case harness observer without copying credentials or mutating harness inputs", async casing => {
+  await withObserverDirectory(async root => {
+    const system = { SystemRoot: "C:\\Windows", SystemDrive: "C:", ComSpec: "C:\\Windows\\System32\\cmd.exe", WINDIR: "C:\\Windows", OS: "Windows_NT", PATH: "harness-search", PATHEXT: ".EXE;.COM", ProgramData: "C:\\ProgramData", ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", ProgramW6432: "C:\\Program Files", CommonProgramFiles: "C:\\Program Files\\Common Files", "CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files", CommonProgramW6432: "C:\\Program Files\\Common Files" };
+    const source = Object.freeze({ ...Object.fromEntries(Object.entries(system).map(([name, value]) => [casing === "upper" ? name.toUpperCase() : name.toLowerCase(), value])), HOME: "harness-home", USERPROFILE: "harness-user", PSModulePath: "harness-ps7-or-user-modules", OPENAI_API_KEY: "credentials-sentinel", COPILOT_PROVIDER_API_KEY: "credentials-sentinel", UNKNOWN_PROVIDER_TOKEN: "credentials-sentinel", CODEX_HOME: "credentials-sentinel", GIT_CONFIG_GLOBAL: "credentials-sentinel" });
+    const beforeHarness = JSON.stringify(source);
+    const environment = await prepareWindowsObserverEnvironment(root, source);
+    expect(JSON.stringify(source)).toBe(beforeHarness);
+    expect(environment).toMatchObject(system);
+    expect(environment.PSModulePath).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules");
+    expect(environment.HOME).toBe(environment.USERPROFILE);
+    for (const name of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"] as const) {
+      const location = environment[name]!, relative = path.relative(path.join(root, "observer"), location);
+      expect(path.isAbsolute(location)).toBe(true); expect(relative).not.toBe(""); expect(relative).not.toMatch(/^\.\./); expect(path.isAbsolute(relative)).toBe(false);
+      const entry = await lstat(location); expect(entry.isDirectory()).toBe(true); expect(entry.isSymbolicLink()).toBe(false);
+      if (process.platform !== "win32") expect(entry.mode & 0o077).toBe(0);
+    }
+    expect(Object.keys(environment).sort()).toEqual([...Object.keys(system), "PSModulePath", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"].sort());
+    expect(JSON.stringify(environment)).not.toContain("credentials-sentinel"); expect(JSON.stringify(environment)).not.toContain("harness-home");
+  });
+});
+
+test("prepares real observer temporary storage for a joined child without granting it provider configuration", async () => {
+  await withObserverDirectory(async root => {
+    const environment = await prepareWindowsObserverEnvironment(root, Object.freeze({ SystemRoot: "C:\\Windows", PATH: "harness-search", UNKNOWN_PROVIDER_TOKEN: "credentials-sentinel" }));
+    const active = createOperation({ limits: { totalMs: 2000, requestMs: 1000 } }), observations: WindowsQueryObservation[] = [];
+    try {
+      const script = "const fs=require('node:fs'),path=require('node:path');fs.writeFileSync(path.join(process.env.TEMP,'owned-compiler-probe'),'owned');process.stdout.write(JSON.stringify({home:process.env.HOME,temporary:process.env.TEMP,providerPresent:'UNKNOWN_PROVIDER_TOKEN' in process.env}));";
+      const output = JSON.parse(await runWindowsPlatformQuery("console", { file: process.execPath, args: ["-e", script], environment }, active, observations));
+      expect(output).toEqual({ home: environment.HOME, temporary: environment.TEMP, providerPresent: false });
+      expect(await readFile(path.join(environment.TEMP!, "owned-compiler-probe"), "utf8")).toBe("owned");
+      expect(observations[0]).toMatchObject({ closed: true, cleanupConfirmed: true });
+    } finally { active.dispose(); }
+  });
+});
+
+test.each([undefined, "relative-windows-root"])("refuses an unavailable system PS5 location before creating observer files (%s)", async systemRoot => {
+  await withObserverDirectory(async root => {
+    await expect(prepareWindowsObserverEnvironment(root, systemRoot === undefined ? {} : { SystemRoot: systemRoot })).rejects.toThrow(/SystemRoot/);
+    expect(await readdir(root)).toEqual([]);
+  });
+});
 
 test("keeps Unicode and quote characters in the independent ExternalScript proof", () => {
   const source = "D:\\task's 空间 📖\\codex.ps1";

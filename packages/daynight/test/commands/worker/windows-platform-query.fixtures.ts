@@ -1,8 +1,33 @@
+import { lstat, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Operation } from "../../../src/api/operation.js";
 import type { HerdrCommand, HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 type Stage = "external-script" | "processes" | "console";
 export type WindowsQueryObservation = { stage: Stage; elapsedMs: number; code: number | string | null; killed: boolean | null; signal: string | null; stdoutBytes: number; stderrBytes: number; closed: boolean; cleanupConfirmed: boolean; errorType: string | null };
+/** Observer execution belongs to the test harness. Native/daemon environments
+ * remain inputs under test; provider and agent configuration is never copied.
+ */
+export const prepareWindowsObserverEnvironment = async (root: string, harness: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> => {
+  const entries = Object.entries(harness), environment: NodeJS.ProcessEnv = {};
+  for (const name of ["SystemRoot", "SystemDrive", "ComSpec", "WINDIR", "OS", "PATH", "PATHEXT", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432"]) {
+    const value = entries.find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+    if (value !== undefined) environment[name] = value;
+  }
+  if (!environment.SystemRoot || !path.win32.isAbsolute(environment.SystemRoot)) throw new Error("The Windows observer requires the harness's absolute SystemRoot.");
+  if (!path.isAbsolute(root)) throw new Error("The Windows observer requires an absolute task directory.");
+  const directory = path.join(root, "observer"), home = path.join(directory, "home"), appData = path.join(home, "AppData"), roaming = path.join(appData, "Roaming"), local = path.join(appData, "Local"), temporary = path.join(directory, "tmp");
+  for (const target of [directory, home, appData, roaming, local, temporary]) {
+    try { await mkdir(target, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    const entry = await lstat(target);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("The Windows observer requires ordinary task-owned directories.");
+  }
+  // Only the selected system PS5's built-in modules may supply these queries.
+  // https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath?view=powershell-5.1
+  return { ...environment, HOME: home, USERPROFILE: home, APPDATA: roaming, LOCALAPPDATA: local, TEMP: temporary, TMP: temporary,
+    PSModulePath: path.win32.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") };
+};
 export const decodeWindowsPlatformJson = (stage: Stage, stdout: string, observations: WindowsQueryObservation[]): unknown => {
   try { return JSON.parse(stdout); }
   catch {
@@ -28,7 +53,8 @@ export const decodeWindowsExternalScript = (stdout: string, observations: Window
 };
 
 /** Only transport is shared with production. Each script remains an independent
- * OS observation, using the original environment and ten-second request limit.
+ * OS observation, using its caller's explicit environment and the original
+ * ten-second request limit.
  */
 export const runWindowsPlatformQuery = async (stage: Stage, input: HerdrCommand, operation: Operation, observations: WindowsQueryObservation[]): Promise<string> => {
   const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");

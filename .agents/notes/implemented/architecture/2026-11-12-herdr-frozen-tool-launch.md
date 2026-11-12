@@ -111,6 +111,13 @@ ownership could be established. It consumes the same
 [resolver](2026-11-11-worker-tool-path-resolution.md) without broadening loader
 recognition or changing upstream Herdr.
 
+Independent Windows CIM and console acceptance queries own their execution
+environment. They inherit explicit system variables, use private user and
+temporary directories under the test root, and load system PowerShell 5 modules.
+Their scripts, original target PIDs, deadline and close requirements remain
+unchanged. ExternalScript discovery and official hook checks retain the native
+environment; an observer cannot repair or replace that environment.
+
 ## Alternatives
 
 **Add an executable RPC or modify Herdr.** This would require an upstream protocol
@@ -157,6 +164,12 @@ observation is required to confirm complete shutdown.
 execution, but a helper crash loses the handle needed to observe detached members.
 The Worker retains a second handle and explicitly observes and terminates the
 remaining members; losing both holders still leaves cleanup unknown.
+
+**Run independent acceptance queries in the native tool's minimal environment.**
+CIM queries timed out there while the same execution's harness-environment CIM
+inventory succeeded. The specific environment dependency was not established.
+The observer owns its own isolated Windows environment so its query dependencies
+do not alter the program under test or inherit Provider credentials.
 
 ## Consequences
 
