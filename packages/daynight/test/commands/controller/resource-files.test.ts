@@ -1,144 +1,125 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 
+const faults = vi.hoisted(() => ({ operation: "", target: "" }));
+vi.mock("node:fs", async original => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs,
+    unlinkSync: (file: Parameters<typeof fs.unlinkSync>[0]) => {
+      if (faults.operation === "unlink" && String(file) === faults.target) { faults.operation = ""; throw new Error("controlled unlink failure"); }
+      fs.unlinkSync(file);
+    },
+    renameSync: (from: Parameters<typeof fs.renameSync>[0], to: Parameters<typeof fs.renameSync>[1]) => {
+      if (faults.operation === "rename" && String(to) === faults.target) { faults.operation = ""; throw new Error("controlled rename failure"); }
+      fs.renameSync(from, to);
+    },
+  };
+});
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.operation = ""; faults.target = ""; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "dn-resource-files-")); roots.push(directory);
-  return { journal: path.join(directory, "journal.sqlite"), sessionId: randomUUID() };
+  const root = await mkdtemp(path.join(tmpdir(), "dn-resource-files-")); roots.push(root);
+  return { journal: path.join(root, "journal.sqlite"), sessionId: randomUUID() };
 };
-const descriptor = (bytes: Uint8Array) => ({ resourceId: randomUUID(), status: "available" as const, name: "原件.png", mediaType: "image/png", byteLength: String(bytes.byteLength), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
-const name = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
+const descriptor = (bytes: Buffer) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
+const filename = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
 
-test("resource files open without a journal or timeline and preserve lease and pin protections", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("original bytes");
-  const owner = openResourceFiles(journal, sessionId), resource = descriptor(bytes);
-  expect(await readdir(owner.root)).not.toContain("timeline");
-  expect(await readdir(owner.root)).not.toContain("entries");
-  owner.writeResource(resource, bytes);
-  expect(owner.descriptorBytes()).toBe(Buffer.byteLength(JSON.stringify(resource)));
-  const lease = owner.acquireResource(resource.resourceId);
-  expect(lease.read("2", 4)).toEqual(bytes.subarray(2, 6));
-  expect(() => lease.read("01", 1)).toThrow();
-  expect(() => lease.read("0", 524289)).toThrow();
-  expect(() => owner.releaseResource(resource.resourceId)).toThrow(/lease|reference/);
-  lease.close(); lease.close();
-  expect(() => lease.read("0", 1)).toThrow(/closed/);
-  owner.pinResource(resource.resourceId, "consumer");
-  expect(() => owner.releaseResource(resource.resourceId)).toThrow(/lease|reference/);
-  owner.unpinResource(resource.resourceId, "consumer");
-  owner.releaseResource(resource.resourceId);
-  expect(owner.descriptorBytes()).toBe(0);
-  expect(openResourceFiles(journal, sessionId).resources.size).toBe(0);
-  expect(() => openResourceFiles(journal, randomUUID())).toThrow(/another session/);
+test("opens independently without body directories and accounts for descriptor bytes", async () => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId);
+  expect(await readdir(files.root)).toEqual(expect.not.arrayContaining(["timeline", "entries"]));
+  const bytes = Buffer.from("original"), resource = descriptor(bytes);
+  files.writeResource(resource, bytes);
+  expect(files.descriptorBytes()).toBe(Buffer.byteLength(JSON.stringify(resource)));
+  expect(files.resources.get(resource.resourceId)).toEqual({ resource, data: null });
+  expect(openResourceFiles(journal, sessionId).resources.get(resource.resourceId)).toEqual({ resource, data: null });
+  expect(() => openResourceFiles(journal, randomUUID())).toThrow("another session");
 });
 
-test("opening a legacy inline descriptor retains its exact source and verifies its published blob", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("legacy resource"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId), file = name(resource.resourceId);
-  const original = Buffer.from(JSON.stringify({ resource, data: bytes.toString("base64") }, null, 2));
-  await writeFile(path.join(owner.root, "resources", file), original);
-  await writeFile(path.join(owner.root, "index.json"), JSON.stringify({ entries: [], resources: [file] }));
-  const reopened = openResourceFiles(journal, sessionId);
-  expect(await readFile(path.join(owner.root, "legacy-resources", file))).toEqual(original);
-  expect(JSON.parse(await readFile(path.join(owner.root, "resources", file), "utf8"))).toEqual({ resource, data: null });
-  expect(reopened.resources.get(resource.resourceId)).toEqual({ resource, data: null });
-  const lease = reopened.acquireResource(resource.resourceId);
-  try { expect(lease.read("0", bytes.length)).toEqual(bytes); } finally { lease.close(); }
+test("validates the shared legacy index and preserves the exact legacy resource source", async () => {
+  const { journal, sessionId } = await fixture(), root = `${journal}.pending-content`, bytes = Buffer.from("legacy resource"), resource = descriptor(bytes);
+  const entryFile = `${"a".repeat(64)}.json`, resourceFile = filename(resource.resourceId);
+  await mkdir(path.join(root, "resources"), { recursive: true });
+  const old = Buffer.from(JSON.stringify({ resource, data: bytes.toString("base64") }));
+  await writeFile(path.join(root, "resources", resourceFile), old);
+  await writeFile(path.join(root, "index.json"), JSON.stringify({ entries: [entryFile], resources: [resourceFile] }));
+  expect(() => openResourceFiles(journal, sessionId)).toThrow("incomplete");
+  await mkdir(path.join(root, "timeline")); await writeFile(path.join(root, "timeline", entryFile), "{}");
+  const files = openResourceFiles(journal, sessionId);
+  expect(await readFile(path.join(root, "legacy-resources", resourceFile))).toEqual(old);
+  expect(JSON.parse(await readFile(path.join(root, "resources", resourceFile), "utf8"))).toEqual({ resource, data: null });
+  const lease = files.acquireResource(resource.resourceId);
+  try { expect(lease.read("0", 524288)).toEqual(bytes); } finally { lease.close(); }
+  await rm(path.join(root, "resources", resourceFile));
+  expect(() => openResourceFiles(journal, sessionId)).toThrow("incomplete");
 });
 
-test("unknown persistent pins survive release of another resource", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("pin source");
-  const owner = openResourceFiles(journal, sessionId), resource = descriptor(bytes), unknown = randomUUID();
-  await writeFile(path.join(owner.root, "resource-pins.json"), JSON.stringify({ [unknown]: ["unknown-reference"] }));
-  const reopened = openResourceFiles(journal, sessionId);
-  reopened.writeResource(resource, bytes);
-  reopened.releaseResource(resource.resourceId);
-  expect(JSON.parse(await readFile(path.join(owner.root, "resource-pins.json"), "utf8"))).toEqual({ [unknown]: ["unknown-reference"] });
-  expect(() => reopened.releaseResource(unknown)).toThrow(/lease|reference/);
+test("retains unknown pins and refuses removal while pinned or leased", async () => {
+  const { journal, sessionId } = await fixture(), root = `${journal}.pending-content`;
+  await mkdir(root, { recursive: true });
+  const unknown = randomUUID(); await writeFile(path.join(root, "resource-pins.json"), JSON.stringify({ [unknown]: ["unknown-reference"] }));
+  const files = openResourceFiles(journal, sessionId), resource = descriptor(Buffer.from("original"));
+  files.writeResource(resource, Buffer.from("original")); files.pinResource(resource.resourceId, "known-reference");
+  expect(() => files.releaseResource(resource.resourceId)).toThrow("lease or reference");
+  files.unpinResource(resource.resourceId, "known-reference");
+  const lease = files.acquireResource(resource.resourceId);
+  expect(() => files.releaseResource(resource.resourceId)).toThrow("lease or reference");
+  expect(() => lease.read("01", 1)).toThrow(); expect(() => lease.read("0", 524289)).toThrow();
+  lease.close(); lease.close(); expect(() => lease.read("0", 1)).toThrow("closed");
+  files.releaseResource(resource.resourceId);
+  expect(JSON.parse(await readFile(path.join(root, "resource-pins.json"), "utf8"))).toEqual({ [unknown]: ["unknown-reference"] });
+  expect(() => files.releaseResource(unknown)).toThrow("lease or reference");
 });
 
-test("legacy index entries are checked even though resource files do not create a timeline", async () => {
-  const { journal, sessionId } = await fixture();
-  const owner = openResourceFiles(journal, sessionId), file = name(randomUUID());
-  await writeFile(path.join(owner.root, "index.json"), JSON.stringify({ entries: [file], resources: [] }));
-  expect(() => openResourceFiles(journal, sessionId)).toThrow(/incomplete/);
-  await mkdir(path.join(owner.root, "timeline"));
-  await writeFile(path.join(owner.root, "timeline", file), "{}");
-  expect(() => openResourceFiles(journal, sessionId)).not.toThrow();
-});
-
-test("resource import refuses content with a different digest and retains no descriptor", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("original"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId), source = path.join(path.dirname(journal), "source");
-  await writeFile(source, Buffer.from("replaced"), { mode: 0o600 });
-  expect(() => owner.importResourceFile(resource, source)).toThrow(/corrupt/i);
-  expect(owner.resources.size).toBe(0);
-  expect(await readdir(path.join(owner.root, "resources"))).toEqual([]);
-  expect(await readdir(path.join(owner.root, "blobs"))).toEqual([]);
-});
-
-test.skipIf(process.platform === "win32")("resource import refuses a non-private source file", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("original"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId), source = path.join(path.dirname(journal), "source");
-  await writeFile(source, bytes, { mode: 0o600 });
-  await chmod(source, 0o644);
-  expect(() => owner.importResourceFile(resource, source)).toThrow(/private regular file/);
-  expect(owner.resources.size).toBe(0);
-});
-
-test("reopening restores an indexed descriptor when deletion was interrupted", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("recover interrupted deletion"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId);
-  owner.writeResource(resource, bytes);
-  const lease = owner.acquireResource(resource.resourceId), blob = lease.path; lease.close();
-  const descriptorPath = path.join(owner.root, "resources", name(resource.resourceId));
-  const suffix = `.${randomUUID()}.removing`;
-  await rename(descriptorPath, descriptorPath + suffix);
-  const reopened = openResourceFiles(journal, sessionId);
-  expect(reopened.resources.get(resource.resourceId)).toEqual({ resource, data: null });
-  const restored = reopened.acquireResource(resource.resourceId);
-  try { expect(restored.read("0", bytes.length)).toEqual(bytes); } finally { restored.close(); }
-  expect(await readdir(path.dirname(blob))).toEqual([path.basename(blob)]);
-  expect(await readdir(path.dirname(descriptorPath))).toEqual([path.basename(descriptorPath)]);
-});
-
-test("an unindexed staged descriptor prevents reusing or deleting its retained blob", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("committed deletion"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId);
-  owner.writeResource(resource, bytes);
-  const lease = owner.acquireResource(resource.resourceId), blob = lease.path; lease.close();
-  const descriptorPath = path.join(owner.root, "resources", name(resource.resourceId)), suffix = `.${randomUUID()}.removing`;
-  await rename(descriptorPath, descriptorPath + suffix);
-  await writeFile(path.join(owner.root, "index.json"), JSON.stringify({ entries: [], resources: [] }));
-  const reopened = openResourceFiles(journal, sessionId);
-  expect(reopened.resources.size).toBe(0);
-  const source = path.join(path.dirname(journal), "source");
-  await writeFile(source, bytes, { mode: 0o600 });
-  expect(() => reopened.releaseResource(resource.resourceId)).toThrow(/staged descriptor/);
-  expect(() => reopened.saveResource({ resource, data: null }, bytes)).toThrow(/staged descriptor/);
-  expect(() => reopened.importResourceFile(resource, source)).toThrow(/staged descriptor/);
-  expect(await readdir(path.dirname(blob))).toEqual([path.basename(blob)]);
-  expect(await readdir(path.dirname(descriptorPath))).toEqual([path.basename(descriptorPath + suffix)]);
-  expect(await readFile(blob)).toEqual(bytes);
-});
-
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a descriptor deletion failure retains both the descriptor and its only blob", async () => {
-  const { journal, sessionId } = await fixture(), bytes = Buffer.from("retained original"), resource = descriptor(bytes);
-  const owner = openResourceFiles(journal, sessionId);
-  owner.writeResource(resource, bytes);
-  const descriptorPath = path.join(owner.root, "resources", name(resource.resourceId));
-  const lease = owner.acquireResource(resource.resourceId), blob = lease.path; lease.close();
-  const directory = path.dirname(descriptorPath);
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a descriptor deletion refusal retains its descriptor and unique blob", async () => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId), bytes = Buffer.from("original"), resource = descriptor(bytes);
+  files.writeResource(resource, bytes);
+  const directory = path.join(files.root, "resources"), descriptorPath = path.join(directory, filename(resource.resourceId));
   await chmod(directory, 0o500);
-  try { expect(() => owner.releaseResource(resource.resourceId)).toThrow(); }
-  finally { await chmod(directory, 0o700); }
+  try {
+    expect(() => files.releaseResource(resource.resourceId)).toThrow();
+    expect(JSON.parse(await readFile(descriptorPath, "utf8"))).toEqual({ resource, data: null });
+    const lease = files.acquireResource(resource.resourceId);
+    try { expect(lease.read("0", 100)).toEqual(bytes); } finally { lease.close(); }
+  } finally { await chmod(directory, 0o700); }
+});
+
+test("refuses mismatched and non-private imports without publishing a resource", async () => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId), bytes = Buffer.from("original"), resource = descriptor(bytes);
+  const source = path.join(path.dirname(journal), "source.bin");
+  await writeFile(source, Buffer.from("modified"), { mode: 0o600 });
+  expect(() => files.importResourceFile(resource, source)).toThrow("Corrupt pending resource content");
+  expect(files.resources.has(resource.resourceId)).toBe(false);
+  expect(await readdir(path.join(files.root, "blobs"))).toEqual([]);
+  await writeFile(source, bytes);
+  if (process.platform !== "win32") {
+    await chmod(source, 0o644);
+    expect(() => files.importResourceFile(resource, source)).toThrow("private regular file");
+    expect(files.resources.has(resource.resourceId)).toBe(false);
+    await chmod(source, 0o600);
+  }
+  files.importResourceFile(resource, source);
+  expect(await readFile(source)).toEqual(bytes);
+  const lease = files.acquireResource(resource.resourceId);
+  try { expect(lease.read("0", 100)).toEqual(bytes); } finally { lease.close(); }
+});
+
+
+test.each(["descriptor", "blob", "pins", "index"] as const)("a %s deletion failure preserves a readable original after reopening", async point => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId), bytes = Buffer.from("original"), resource = descriptor(bytes);
+  files.writeResource(resource, bytes);
+  const descriptorPath = path.join(files.root, "resources", filename(resource.resourceId));
+  const blobPath = path.join(files.root, "blobs", filename(resource.resourceId).replace(/\.json$/, ".bin"));
+  faults.operation = point === "descriptor" || point === "blob" ? "unlink" : "rename";
+  faults.target = point === "descriptor" ? descriptorPath : point === "blob" ? blobPath : path.join(files.root, point === "pins" ? "resource-pins.json" : "index.json");
+  expect(() => files.releaseResource(resource.resourceId)).toThrow("controlled");
+  expect(files.resources.get(resource.resourceId)).toEqual({ resource, data: null });
   expect(JSON.parse(await readFile(descriptorPath, "utf8"))).toEqual({ resource, data: null });
-  expect(await readFile(blob)).toEqual(bytes);
-  const reopened = openResourceFiles(journal, sessionId).acquireResource(resource.resourceId);
-  try { expect(reopened.read("0", bytes.length)).toEqual(bytes); } finally { reopened.close(); }
+  expect(await readFile(blobPath)).toEqual(bytes);
+  const reopened = openResourceFiles(journal, sessionId);
+  const lease = reopened.acquireResource(resource.resourceId);
+  try { expect(lease.read("0", 100)).toEqual(bytes); } finally { lease.close(); }
 });

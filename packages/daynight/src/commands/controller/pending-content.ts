@@ -60,10 +60,11 @@ const openPendingContentFiles = (journal: string, sessionId: string, db: Databas
     db.prepare("INSERT INTO content_index(id,content_hash,revision,entry_seq,content_file,content_sha256,content_bytes) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,entry_seq=excluded.entry_seq,content_file=excluded.content_file,content_sha256=excluded.content_sha256,content_bytes=excluded.content_bytes").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, pointer.file, pointer.sha256, pointer.bytes);
   };
   const releaseResource = (id: string): void => read(() => {
+    resourceFiles.assertResourceReleasable(id);
     if (db.prepare("SELECT 1 FROM native_input_publication_images WHERE resource_id=? LIMIT 1").get(id) || sessionArchiveReferences([...entries().values()], false).resources.has(id)) throw new Error("Resource is referenced by session history.");
     resourceFiles.releaseResource(id);
   });
-  return { ...resourceFiles, resourceFiles: { ...resourceFiles, releaseResource }, releaseResource, get entries() { return entries(); }, getEntry, hasEntry: (id: string) => getEntry(id) !== undefined, saveEntry,
+  return { ...resourceFiles, get resources() { return resourceFiles.resources; }, resourceFiles: { ...resourceFiles, get resources() { return resourceFiles.resources; }, releaseResource }, releaseResource, get entries() { return entries(); }, getEntry, hasEntry: (id: string) => getEntry(id) !== undefined, saveEntry,
     hasRetainedEntries: () => [timelineDirectory, entryDirectory].some(directory => readdirSync(directory).some(file => file.endsWith(".json"))),
     metadataBytes: () => { const size = timelineSize(); return timelineBytes(size.count, size.bytes) + resourceFiles.descriptorBytes(); },
     nextEntrySequence: () => read(() => String(BigInt((db.prepare("SELECT CAST(COALESCE(MAX(CAST(entry_seq AS INTEGER)),0) AS TEXT) AS sequence FROM content_index").get() as { sequence: string }).sequence) + 1n)),

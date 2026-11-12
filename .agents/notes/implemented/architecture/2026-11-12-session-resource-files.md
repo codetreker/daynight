@@ -26,10 +26,10 @@ delegating deletion. The resource owner then enforces lease and pin protection.
 The composition supplies guarded deletion to its resource consumers, including
 media import cleanup. The [source decision](2026-11-05-session-image-sources.md)
 describes capture adoption. The directory layout, manifest binding, legacy
-resource export and index format remain unchanged. Deletion keeps a durable undo
-record and the original blob until the descriptor removal is confirmed. An
-unconfirmed staged descriptor is retained, prevents further writes to that
-resource, and its orphaned blob remains charged to the physical budget.
+resource export and index format remain unchanged. Deletion retains private hard links to the descriptor and blob until file and
+index updates are confirmed. If restoration fails, the retained links identify
+the original evidence and the owner refuses further writes. Retained blob links
+are charged to the physical budget, with links to the same inode counted once.
 
 ## Alternatives
 

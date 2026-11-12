@@ -242,7 +242,7 @@ observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90
 
 ### 本机内容与在线读取
 
-活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/。每个 entry revision 先写入不可变候选文件并 flush，再由同一 SQLite 事务提交 `content_index` 指针和 outbox。在线分页、inspection、历史同步和归档均按调用者 SQLite 快照的指针读取，不从目录扫描或可变内存 Map 推断当前 revision。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
+活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/。`controller/content/resource-files.ts` 管理资源 descriptor、blob、pin 和 lease；`pending-content.ts` 组合资源与正文，并在删除前于同一同步读事务检查当前正文和原生输入图片引用。资源导入收尾使用该受保护的删除入口。每个 entry revision 先写入不可变候选文件并 flush，再由同一 SQLite 事务提交 `content_index` 指针和 outbox。在线分页、inspection、历史同步和归档均按调用者 SQLite 快照的指针读取，不从目录扫描或可变内存 Map 推断当前 revision。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
 
 sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；不可变内容候选先可靠写入，再提交 SQL 指针与投递事务；超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
 

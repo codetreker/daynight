@@ -82,3 +82,17 @@ test("counts orphan originals before importing a new blob and leaves no new publ
   expect(content.resources.size).toBe(0);
   expect(await readdir(path.join(content.root, "blobs"))).toEqual([`${"a".repeat(64)}.bin`]);
 });
+
+
+test("the composition refuses to delete a resource referenced by committed v8 history", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "dn-history-resource-")); roots.push(root);
+  const journal = path.join(root, "journal.sqlite"), session = randomUUID(), bytes = Buffer.from("original");
+  const resource = descriptor(bytes), db = database(journal), content = openPendingContent(journal, session, db);
+  content.writeResource(resource, bytes);
+  const entry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message" as const, content: [{ type: "resource" as const, resourceId: resource.resourceId, label: "original" }] };
+  db.transaction(() => content.saveEntry(entry)).immediate();
+  expect(() => content.releaseResource(resource.resourceId)).toThrow("referenced by session history");
+  const lease = content.acquireResource(resource.resourceId);
+  try { expect(lease.read("0", 100)).toEqual(bytes); } finally { lease.close(); }
+  expect(openPendingContent(journal, session, db).getEntry(entry.entryId)).toEqual(entry);
+});
