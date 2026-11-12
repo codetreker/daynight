@@ -7,6 +7,34 @@ attachments and Thread, separate from those of its child Tasks. Use the Goal ID
 with the same material commands for shared resources; membership does not move
 child materials. Writes also require [write safety](write-safety.md).
 
+## Goal outcomes and progress
+
+A Goal owns the current effective shared specification, architecture, task
+breakdown, key decisions, stage outcomes, delivery results and whole-Goal
+acceptance conclusions. Its child Tasks track the work contributing to that
+objective and retain their own definitions, responsibility, status, results and
+evidence. Consumers reference the Goal's shared material by its actual resource
+ID and location.
+
+This ownership applies whether a conclusion is produced directly in a Session
+or through a child Task for discussion, research, design or breakdown. When a
+Goal-wide conclusion becomes effective, update the Goal's description or owning
+attachment and verify the saved content. A completed child or a conclusion left
+only in its material or Thread does not update the Goal. Preserve task-specific
+results and evidence with the producing Task and reference them from the Goal
+when needed; shared material has one effective owner.
+
+Keep the Goal's overall progress current when a stage result, scope or decision
+changes, a delivery is verified, or a significant blocker affects the objective.
+Record achieved outcomes, remaining scope and material blockers or limitations;
+keep command chronology and temporary execution context in Session. The service's
+`progress` counts direct child Tasks; it does not synchronize conclusions or
+establish delivery or acceptance. Goal status remains independently controlled.
+
+The target project's workflow determines required files, discussion Tasks,
+confirmation and delivery gates. Material ownership does not require a fixed
+Goal pipeline or a separate child Task for every discussion.
+
 ## Descriptions and references
 
 Descriptions are Markdown: Web renders CommonMark/GFM and displays raw HTML as

@@ -465,6 +465,9 @@ Resources and `resources/read` to obtain a complete topic at its returned
 operation. Steps, Thread, Session reads and messages, and attachment reads and
 writes have separate guides. Every write requires the common write-safety guide
 and its operation's conditions; related topics retain explicit reading prerequisites.
+The materials topic defines Goal-owned shared specifications, architecture,
+breakdowns, conclusions and overall progress, alongside each child Task's own
+results and evidence.
 Reading guidance does not select a Project or authorize work.
 
 The manuals are embedded with the server and require no Project membership.

@@ -6,7 +6,7 @@ Daynight provides MCP tools for Projects, Tasks/Goals, Steps, Threads, attachmen
 | Create and organize Tasks/Goals; query projections, readiness, lifecycle or properties | tasks |
 | Interpret graphs; create or replace dependencies | dependencies; tasks for creation rules |
 | Interpret versions, authorization and write outcomes | write-safety |
-| Organize requirements, accepted conclusions, references and results | materials |
+| Organize Goal outcomes/progress, requirements, accepted conclusions, references and results | materials |
 | Read or maintain ordered Steps | steps |
 | Read or post durable discussion | threads |
 | Read attachment metadata or complete bytes | attachment-reads |

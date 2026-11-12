@@ -12,7 +12,7 @@ Goal 是 `type=goal` 的独立容器，普通阶段 Task 通过 `parentId` 归�
 读取和常规检查保留在 session 执行计划，不成为 task 或任务材料。独立验收或验证有自己的成果时仍可成为任务。
 容器归属不改变依赖、状态或执行权限。
 
-仓库流程位于 `.agents/skills/development-workflow/`。入口按目的导航，`goal.md` 拥有阶段、确认和拆分，`task-content.md` 拥有内容标准，`dependencies.md` 拥有依赖约简与图核验，`handoff.md` 和 `run-task.md` 分别拥有移交与普通执行，`task-execution.md` 拥有共享准备，`delivery.md` 拥有 PR 交付与仅适用于托管任务的额外成果要求，`final-acceptance.md` 拥有整体验收。产品操作由 `daynight --skill` 的公共手册拥有；Worker assignment 和运行约束由 CLI 运行时提供。
+仓库流程位于 `.agents/skills/development-workflow/`。入口按目的导航，`goal.md` 拥有阶段、确认和拆分，`task-content.md` 拥有内容标准，`dependencies.md` 拥有依赖约简与图核验，`handoff.md` 和 `run-task.md` 分别拥有移交与普通执行，`task-execution.md` 拥有共享准备，`delivery.md` 拥有 PR 交付与仅适用于托管任务的额外成果要求，`final-acceptance.md` 拥有整体验收。产品操作及通用材料归属由 `daynight --skill` 的公共手册拥有；Worker assignment 和运行约束由 CLI 运行时提供。
 
 阶段规则只由共享 Goal 协议拥有，各模式按需要读取输入与验收条件，避免通用执行或
 PR 规则覆盖讨论的确认门槛。普通入口执行用户明确要求的讨论转场；managed 入口只
@@ -75,6 +75,7 @@ Goal 和阶段任务标题说明各自目的，不以标题标记建立归属或
 | Goal spec 与原型 | Goal 拥有独立完整的 `spec.md` 附件；需求讨论 task 负责生产并在 description 保留自足任务说明、Goal ID 和完整入口。适用原型及资源归需求 task，spec 引用需求 task ID 和原型完整附件路径。 |
 | 架构、方案与拆分 | Goal 持有共享设计和候选及最终拆分；方案讨论 task 保留生产责任、Goal ID 和完整入口，用户确认后登记真实交付任务。 |
 | 整体验收与总体讨论 | Goal 持有整体验收结论和总体 Thread；验收 task 保留生产责任和资料入口，managed 验收 task 仍须上传必需证据附件。 |
+| 整体成果与进展 | Goal 持有当前有效的整体结论、已达成结果、剩余范围和重要阻碍，无论由 Session 直接形成还是由子 task 产出；结论或重要进展变化时更新并核验，服务的子任务计数不代替该同步。子 task 的具体结果和证据保留在生产任务。 |
 | 交付任务材料 | 各交付 task 拥有自身目标、scope、含选定方案、详细设计和有序步骤的实施方案、验收、必要资源和实际成果；description 说明本任务对 Goal 的贡献与边界，直接列出架构生产任务 ID、共享资料拥有者 Goal ID，以及来源 description 全文或适用章节、真实附件完整路径或不可变仓库引用。 |
 | PR 资料 | 实际需要交付的任务使用完整 properties.pullRequests 保存真实 URL 与 title。 |
 | session 与本地检查点 | session 执行或讨论安排、命令日程、工具、协作、操作授权、确认经过、当前 ID、工作位置、阻塞、等待和恢复上下文；不写入任务描述、附件或任务管理专用仓库文件。 |

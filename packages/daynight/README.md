@@ -248,7 +248,10 @@ current package. The build generates it from the same topic sources installed
 with `using-daynight`, in a fixed order with topic and section links converted
 to internal anchors. It covers connection and Projects, Tasks, Steps, materials,
 write safety, Session reads and messages, Webhooks and Worker operations. Exact
-arguments remain in each subcommand's help. The output preserves the generated
+arguments remain in each subcommand's help.
+The materials topic defines Goal-owned shared specifications, architecture,
+breakdowns, conclusions and overall progress, alongside each child Task's own
+results and evidence. The output preserves the generated
 artifact's bytes, including YAML frontmatter and the final newline. The document
 has no package-relative references to read separately and requires no installed
 skill or individual topic files.

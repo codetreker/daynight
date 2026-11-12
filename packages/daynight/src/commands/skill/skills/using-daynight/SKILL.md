@@ -19,7 +19,7 @@ current authorization.
 | Connect; select a Project; manage Teams, Projects or invitations | [Setup and projects](references/setup-and-projects.md) |
 | Create/query/change Tasks, status, properties or dependencies | [Tasks](references/tasks.md) |
 | Read/maintain ordered Task Steps | [Steps](references/steps.md) |
-| Read/write descriptions, attachments or discussion Threads | [Materials](references/materials.md) |
+| Organize Goal outcomes and progress; read/write descriptions, attachments or discussion Threads | [Materials](references/materials.md) |
 | Check versions; interpret write outcomes | [Write safety](references/write-safety.md) |
 | Locate Sessions; observe activity; read history | [Session reads](references/session-reads.md) |
 | Send an authorized message; recover its original result | [Session messages](references/session-messages.md); also Session reads if target/execution identity is unknown |

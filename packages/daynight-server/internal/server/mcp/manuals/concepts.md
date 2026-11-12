@@ -10,14 +10,14 @@ Read this topic to identify the Account, Team, Project and resource an operation
 | Team | Membership and Project ownership context. Each account has a Personal Team and can join ordinary Teams. |
 | Project | A registered repository, its owning Team, settings and Task/access scope; identified by a Project UUID. |
 | Task | Ordinary work identified by a Task UUID within its Project, with `type: "task"` and nullable Goal `parentId`. |
-| Goal | A stored objective with `type: "goal"`, its own resource UUID and child progress. A Goal is flat within a Project; its direct ordinary Task ownership and dependency edges are different relationships. See [Tasks](daynight://manuals/tasks.md). |
+| Goal | A stored objective with `type: "goal"`, its own resource UUID, shared outcomes and overall progress. Ordinary direct child Tasks track contributing work; Parent and dependency edges are different relationships. See [Tasks](daynight://manuals/tasks.md) and [Materials](daynight://manuals/materials.md). |
 | Step | A Task-owned ordered work record, identified by parent scope and a complete eight-hex-digit ID. See [Steps](daynight://manuals/steps.md). |
 | Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. See [Threads](daynight://manuals/threads.md). |
 | Attachment | Independent Task file bytes and metadata, identified by the complete case-sensitive relative path. See [Attachment reads](daynight://manuals/attachment-reads.md). |
 | Session | Execution or conversation content and its own execution identity; not reconstructed from Task material. See [Session reads](daynight://manuals/session-reads.md). |
 | Bot | An account-owned assistant definition and associated runtime state, identified by a Bot UUID. Creation does not prove readiness or execution. |
 
-Descriptions, attachments, Steps, Threads and Sessions require separate reads. [Materials](daynight://manuals/materials.md) explains information ownership. Source references identify inputs; dependency edges control scheduling and ordinary-chain membership. Neither terminal Task status nor Goal progress proves acceptance of the complete objective.
+Descriptions, attachments, Steps, Threads and Sessions require separate reads. [Materials](daynight://manuals/materials.md) explains Goal-owned specifications, architecture, breakdowns, conclusions and progress, regardless of which Session or child Task produces them. Source references identify inputs; dependency edges control scheduling and ordinary-chain membership. Neither terminal Task status nor Goal progress proves acceptance of the complete objective.
 
 MCP supplies the service operations it advertises. The host supplies any local checkout, filesystem, shell, Git, browser, tests or collaboration capabilities. A Project's repository address does not provide those capabilities. Repository workflows govern their own delivery and confirmation rules; this product manual does not impose a universal Goal/PR pipeline. An explicit Worker assignment has its own controller and workspace responsibilities; see [Worker operations](daynight://manuals/worker-operations.md).
 
