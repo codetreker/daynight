@@ -150,7 +150,7 @@ macOS 任务暂停不禁止有效 owner 获取、续约和释放人工 lease，�
 - Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。按 backend 停止原运行后提交远端变更；legacy 通知、关闭并删除，Web 遵守归档门槛，macOS Herdr 不发送 cleanup prompt 且停止、封段及同步确认后可结束本机执行行，但归档条件满足前保留工作区与独立 archive 责任。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。
 - Web 详情显示当前 active claim 的用户、机器、agent 和阶段，released 明确标识；completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active/released 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed 或缺失 worker 不提供该操作。
 - 撤回确认说明所有重置结果以及远端 agent 不保证立即停止，取消不写入，冲突重新审阅，未知结果只读核对。撤回无需 stoppedConfirmed 或源机器在线，不撤销外部凭据；原 worker 下次成功完整自有清单发现原 claim 缺席后进入既有终止清理。自动再次领取需要明确重新开启许可。
-- Resume 核验 released previousClaimId、ready、原 owner/admin 和精确版本，保留明确人工安排的自动许可/平台例外，取得 fresh claimId/worktreeId 后登记 pending、session_id=NULL，macOS 同时保存该确认 grant 的新启动来源；存在旧 Herdr archive/worktree 责任时须在申请前拒绝。普通 daemon 跳过 released 并继续分页。
+- Resume 核验 released previousClaimId、ready、原 owner/admin 和精确版本，保留明确人工安排的自动许可/平台例外，取得 fresh claimId/worktreeId 后登记 pending、session_id=NULL，macOS 同时保存该确认 grant 的新启动来源；存在旧 Herdr archive/worktree 责任时须在申请前拒绝。符合普通资格的 released 任务与其他候选按服务端顺序参与调度；原 Worker 仍受本机旧资源和归档责任屏障约束。
 - 用户给定 --if-version 不替换。请求前生成并输出 fresh ID；未知结果只 GET 核对、不重放。仍未知或命令中断时，操作者先核对远端结果，再启动 runner。命令不承诺跨进程续接原管理意图。
 - Transfer API、typed operation、CLI 命令及 target descriptor 已移除；没有目标执行移交。服务端继续保留 release 的 stoppedConfirmed、resume 的资格检查、唯一归属、权限及旧 claim fencing。
 

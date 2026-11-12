@@ -2354,7 +2354,9 @@ false application value means disabled; null means no confirmed application.
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
 only acquires ready, permitted tasks compatible with its actual platform; WSL is
-Linux. It never enables permission itself. Released tasks wait for explicit resume.
+Linux. It never enables permission itself. Eligible released tasks participate in
+ordinary acquisition. The original Worker remains subject to its own retained
+resource barriers.
 
 ```bash
 daynight worker run
@@ -3137,8 +3139,9 @@ daynight worker release <task-id> --claim-id <claim-id> --if-version <version> \
   --project <project-id>
 ```
 
-Release returns the task to todo and clears its execution interval. Ordinary
-automatic acquisition skips released tasks until explicitly resumed:
+Release returns the task to todo and clears its execution interval. Eligible
+released tasks participate in ordinary automatic acquisition. Explicit resume
+also remains available:
 
 ```bash
 daynight worker resume <task-id> --claim-id <released-claim-id> --if-version <version> \

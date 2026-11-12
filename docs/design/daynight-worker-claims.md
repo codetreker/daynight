@@ -61,7 +61,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot/claude，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
 
-人工 resume 只处理 released、todo且全部前置为done或cancelled的任务。调用者必须仍是项目成员，并是原 owner 或管理员；previousClaimId 必须匹配保留记录，claimId/worktreeId 必须为新的执行身份。它创建归属于认证调用者的新 active claim，允许本次明确 agent，保留普通人工安排不受自动负责人/许可/平台过滤限制的语义。自动调度不能失败后退入该入口；普通 daemon 跳过 released 候选并继续后续分页。cancelled不符合todo资格，不能resume。公开resume命令使用本次有效配置，实际取得 claim 后才登记 pending。
+人工 resume 只处理 released、todo且全部前置为done或cancelled的任务。调用者必须仍是项目成员，并是原 owner 或管理员；previousClaimId 必须匹配保留记录，claimId/worktreeId 必须为新的执行身份。它创建归属于认证调用者的新 active claim，允许本次明确 agent，保留普通人工安排不受自动负责人/许可/平台过滤限制的语义。自动调度不能失败后退入该入口；普通 daemon 按服务端顺序消费符合普通资格的 released 候选，并在远端领取前检查本机旧资源责任。cancelled不符合todo资格，不能resume。公开resume命令使用本次有效配置，实际取得 claim 后才登记 pending。
 
 ### 更新、完成和状态保护
 
@@ -103,7 +103,7 @@ Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWork
 
 Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User 的 id、email、emailVerified、name、avatarUrl 五字段；它不增加服务端 API。可选 expectedUserId 在成功响应正文准入前核对既有 Daynight-User-ID，空分页同样受约束。Worker 在读取项目/清单前固定启动凭据的认证 UID，当前进程后续请求保持该身份。本机认领索引不保存旧账号或服务范围；切换前先结束旧执行，再重建本机状态。具体启动和查询覆盖规则由[运行时设计](daynight-worker.md#启动发现与周期对账)拥有。
 
-listTaskPage 保留 nextCursor，供运行时有界推进候选；assignedTo=me、许可、ready 和实际平台在服务端排序和分页前组合，后续每页保留同一筛选。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 跳过 released 候选并继续后续游标，不能据此把仓库判为空。
+listTaskPage 保留 nextCursor，供运行时有界推进候选；assignedTo=me、许可、ready 和实际平台在服务端排序和分页前组合，后续每页保留同一筛选。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 将 released 与其他候选按服务端顺序消费，active 候选明确拒绝；同 task 的本机旧资源责任在领取前形成屏障。
 
 `GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/platformSpecific/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。新候选显式使用 assignedTo=me，完整既有库存调用省略该条件，不新增 claim 表或归属权威。
 

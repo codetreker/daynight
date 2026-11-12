@@ -82,7 +82,7 @@ export const workerDefinition: CommandDefinition = {
     description: "Clean the original execution and release its claim to todo",
     arguments: task,
     options: [claim, version, project, help],
-    details: `${controlDetails}\nThe daemon skips released tasks until explicitly resumed.`,
+    details: `${controlDetails}\nReleased tasks remain eligible for ordinary automatic acquisition.`,
   }, {
     name: "resume",
     description: "Start a released task as a fresh execution on this worker",
