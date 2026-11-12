@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -49,13 +50,30 @@ func (h *teamHandler) addDirectMember(w http.ResponseWriter, r *http.Request, p 
 	logger := h.logger.With("user_id", p.UserID)
 	input, err := directMemberInput(w, r)
 	if err != nil {
-		writeTeamError(w, r, logger, "add_member", err)
+		writeDirectMemberError(w, r, logger, err)
 		return
 	}
 	result, err := h.addMember(r.Context(), p, r.PathValue("teamId"), input)
 	if err != nil {
-		writeTeamError(w, r, logger, "add_member", err)
+		writeDirectMemberError(w, r, logger, err)
 		return
 	}
 	writeTeamJSON(w, r, logger.With("team_id", result.Membership.TeamID), http.StatusOK, api.AddTeamMemberReceipt{Membership: teamMemberResponse(result.Membership), Added: result.Added, ActorRole: string(model.ProjectAdmin)})
+}
+
+func writeDirectMemberError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	if fault, classified := coreteam.WriteFault(err); classified && (fault.Code == "internal_error" || fault.Code == "write_outcome_unknown") {
+		writeTeamError(w, r, logger, "add_member", err)
+		return
+	}
+	if failed, _ := store.DatabaseErrorFacts(err); failed || httpx.ErrorKind(err) == "network" {
+		httpx.WriteError(w, r, logger, "team", "add_member", err)
+		return
+	}
+	// Credential refusal can retain a missing credential row as its cause; it does not describe the Team.
+	if fault, known := httpx.KnownFault(err); known && fault.Code == "unauthenticated" {
+		httpx.WriteError(w, r, logger, "team", "add_member", err)
+		return
+	}
+	writeTeamError(w, r, logger, "add_member", err)
 }

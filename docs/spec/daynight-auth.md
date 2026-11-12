@@ -265,6 +265,8 @@ role 必须显式为 admin 或 member。user 使用完整用户初始化的共�
 独立完成目标用户及其 Personal Team 初始化，并确认提交；随后在成员写事务重新检查凭据、当前 admin、
 Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，成员行等待后以新鲜时间再次检查凭据。
 后阶段撤权、到期或其他拒绝可保留已完整初始化的目标账号，但不能提交部分成员或 eligibility。
+凭据在任一阶段失效返回 `401 unauthenticated`；凭据行缺失不是 Team 缺失。实际 Team 不存在返回
+`404 not_found`，未知提交和清理失败仍优先返回各自的事务完成错误。
 
 首次插入返回 added=true；已有同角色返回 added=false，保留实际成员的原 version、createdAt、updatedAt。
 已有不同角色返回 `409 resource_conflict`，关系和时间均不变；调用者须读取当前成员版本后使用既有 PATCH

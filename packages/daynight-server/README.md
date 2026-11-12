@@ -2659,6 +2659,9 @@ prelock, refreshes eligibility atomically and checks fresh credential validity
 after member contention. Native Session/PAT checks use their reader-compatible
 SHARE capability; API principals use the fixed API tuple. A late refusal can leave
 a complete target account, while membership and eligibility roll back together.
+Invalid credentials in either phase return `401 unauthenticated`, including a
+missing credential row; an absent Team returns `404 not_found`. Completion and
+cleanup failures retain priority over either refusal.
 
 Success is `200 {membership,added,actorRole:"admin"}` with the actual target UUID,
 role, independent membership version and UTC timestamps. A new relationship

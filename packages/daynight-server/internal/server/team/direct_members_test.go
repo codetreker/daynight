@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -219,6 +222,11 @@ func TestDirectMemberCancellationAndResponseLossDoNotRepeat(t *testing.T) {
 }
 
 func TestDirectMemberCompletionErrors(t *testing.T) {
+	missingCredential := &store.Error{MissingRow: true, Cause: model.ErrNotFound}
+	credentialRefusal := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.Unauthenticated(missingCredential)}
+	unknown := &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("private commit")}
+	cleanup := &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.New("private cleanup")}
+	network := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("private network")}
 	for _, tc := range []struct {
 		name   string
 		err    error
@@ -231,6 +239,20 @@ func TestDirectMemberCompletionErrors(t *testing.T) {
 		{"sql_refusal", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &store.Error{DatabaseFailure: true, Cause: &model.Fault{Code: "forbidden", Message: "private SQL"}}}, 500, "internal_error"},
 		{"role_conflict", &model.Fault{Code: "resource_conflict", Message: "Membership has another role."}, 409, "resource_conflict"},
 		{"revoked", &model.Fault{Code: "unauthenticated", Message: "Credential revoked."}, 401, "unauthenticated"},
+		{"missing_credential", credentialRefusal, 401, "unauthenticated"},
+		{"missing_credential_sentinel", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.Unauthenticated(model.ErrNotFound)}, 401, "unauthenticated"},
+		{"nested_missing_credential", fmt.Errorf("Team operation: %w", fmt.Errorf("credential lookup: %w", credentialRefusal)), 401, "unauthenticated"},
+		{"joined_missing_credential_first", errors.Join(credentialRefusal, errors.New("private context")), 401, "unauthenticated"},
+		{"joined_missing_credential_last", errors.Join(errors.New("private context"), credentialRefusal), 401, "unauthenticated"},
+		{"credential_unknown_first", errors.Join(unknown, credentialRefusal), 503, "write_outcome_unknown"},
+		{"credential_unknown_last", errors.Join(credentialRefusal, unknown), 503, "write_outcome_unknown"},
+		{"credential_cleanup_first", errors.Join(cleanup, credentialRefusal), 500, "internal_error"},
+		{"credential_cleanup_last", errors.Join(credentialRefusal, cleanup), 500, "internal_error"},
+		{"credential_sql_first", errors.Join(&store.Error{DatabaseFailure: true, Cause: errors.New("private SQL")}, credentialRefusal), 500, "internal_error"},
+		{"credential_sql_last", errors.Join(credentialRefusal, &store.Error{DatabaseFailure: true, Cause: errors.New("private SQL")}), 500, "internal_error"},
+		{"credential_network_first", errors.Join(network, credentialRefusal), 500, "internal_error"},
+		{"credential_network_last", errors.Join(credentialRefusal, network), 500, "internal_error"},
+		{"missing_team", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &store.Error{MissingRow: true, Cause: model.ErrNotFound}}, 404, "not_found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
@@ -244,6 +266,133 @@ func TestDirectMemberCompletionErrors(t *testing.T) {
 			assertProjectError(t, w, tc.status, tc.code)
 			if calls != 1 || strings.Contains(w.Body.String(), "private") || strings.Contains(logs.String(), "private") {
 				t.Fatalf("calls=%d body=%s logs=%s", calls, w.Body.String(), logs.String())
+			}
+		})
+	}
+}
+
+type directCredentialDAO struct {
+	store.IdentityDAO
+	check func(context.Context, model.Principal, time.Time) error
+}
+
+func (d directCredentialDAO) LockProfileCredential(ctx context.Context, p model.Principal, now time.Time) error {
+	return d.check(ctx, p, now)
+}
+
+type directAuthorizationDAO struct {
+	store.TeamWriteDAO
+	t      *testing.T
+	read   func(context.Context, string) (model.Team, error)
+	writes *int
+}
+
+func (d directAuthorizationDAO) Team(ctx context.Context, userID string) (model.Team, error) {
+	return d.read(ctx, userID)
+}
+
+func (d directAuthorizationDAO) Member(context.Context, string) (model.TeamMember, error) {
+	d.t.Fatal("credential refusal reached target membership lookup")
+	return model.TeamMember{}, nil
+}
+
+func (d directAuthorizationDAO) AddMember(context.Context, string, model.ProjectRole) (model.TeamMember, error) {
+	*d.writes++
+	d.t.Fatal("credential refusal reached membership write")
+	return model.TeamMember{}, nil
+}
+
+type directCredentialScope struct {
+	t        *testing.T
+	identity store.IdentityDAO
+	team     store.TeamWriteDAO
+}
+
+func (s directCredentialScope) IdentityDAO() store.IdentityDAO                 { return s.identity }
+func (s directCredentialScope) CredentialFamilyDAO() store.CredentialFamilyDAO { return nil }
+func (s directCredentialScope) TeamDAO() store.TeamWriteDAO                    { return s.team }
+func (s directCredentialScope) EligibilityDAO() store.WebhookEligibilityDAO {
+	s.t.Fatal("credential refusal reached eligibility")
+	return nil
+}
+
+type directCredentialWriter struct {
+	t     *testing.T
+	write func(context.Context, string, func(store.TeamWriteScope) error) (store.Completion, error)
+}
+
+func (w directCredentialWriter) CreateTeam(context.Context, string, func(store.TeamCreationDAO) error) (store.Completion, error) {
+	w.t.Fatal("direct membership attempted Team creation")
+	return store.Completion{}, nil
+}
+func (w directCredentialWriter) WriteTeam(ctx context.Context, id string, op func(store.TeamWriteScope) error) (store.Completion, error) {
+	return w.write(ctx, id, op)
+}
+
+func TestDirectMemberCredentialRefusalAcrossInitializationReturns401(t *testing.T) {
+	for _, final := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial_scope", true: "final_scope"}[final], func(t *testing.T) {
+			var events []string
+			writes, ensured, scopes := 0, 0, 0
+			completeTarget := model.User{ID: directTarget, UniAuthID: "msft:target@tenant", PersonalTeam: model.TeamRef{ID: "50000000-0000-4000-8000-000000000001", Kind: "personal"}}
+			deadline := time.Now().Add(time.Second)
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			writer := directCredentialWriter{t: t, write: func(got context.Context, id string, op func(store.TeamWriteScope) error) (store.Completion, error) {
+				scopes++
+				if id != directTeam {
+					t.Fatalf("Team ID=%s", id)
+				}
+				scope := directCredentialScope{t: t,
+					identity: directCredentialDAO{check: func(got context.Context, p model.Principal, now time.Time) error {
+						events = append(events, "credential")
+						actual, ok := got.Deadline()
+						if !ok || !actual.Equal(deadline) || p.UserID != directActor || p.CredentialID != "40000000-0000-4000-8000-000000000001" || p.Kind != model.PATCredential || now.IsZero() {
+							t.Fatalf("credential context/actor=%v %+v", actual, p)
+						}
+						if !final || scopes == 2 {
+							return &store.Error{MissingRow: true, Cause: model.ErrNotFound}
+						}
+						return nil
+					}},
+					team: directAuthorizationDAO{t: t, writes: &writes, read: func(_ context.Context, userID string) (model.Team, error) {
+						events = append(events, "admin")
+						if userID != directActor {
+							t.Fatalf("Team actor=%s", userID)
+						}
+						return model.Team{TeamRef: model.TeamRef{ID: directTeam, Kind: "ordinary"}, Membership: model.TeamMember{TeamID: directTeam, UserID: directActor, Role: model.ProjectAdmin}}, nil
+					}},
+				}
+				if err := op(scope); err != nil {
+					return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: err}
+				}
+				return store.Completion{Outcome: store.TransactionCommitted}, nil
+			}}
+			members := teamservice.NewDirectMembers(writer, func(got context.Context, input model.User) (model.User, error) {
+				ensured++
+				events = append(events, "ensure")
+				if input.UniAuthID != completeTarget.UniAuthID || input.ID != "" {
+					t.Fatalf("target input=%+v", input)
+				}
+				actual, ok := got.Deadline()
+				if !ok || !actual.Equal(deadline) {
+					t.Fatal("ensure lost deadline")
+				}
+				return completeTarget, nil
+			}, "https://daynight.example/api/v1")
+			var logs bytes.Buffer
+			h := directHTTP(t, members.AddMember, slog.New(slog.NewJSONHandler(&logs, nil)))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, directRequest(directBody).WithContext(ctx))
+			assertProjectError(t, w, 401, "unauthenticated")
+			want := []string{"credential"}
+			wantScopes, wantEnsure := 1, 0
+			if final {
+				want = []string{"credential", "admin", "ensure", "credential"}
+				wantScopes, wantEnsure = 2, 1
+			}
+			if writes != 0 || scopes != wantScopes || ensured != wantEnsure || !reflect.DeepEqual(events, want) {
+				t.Fatalf("scopes=%d ensure=%d writes=%d events=%v", scopes, ensured, writes, events)
 			}
 		})
 	}

@@ -27,6 +27,10 @@ fixed API resource/scope/client tuple. A fresh credential check after member and
 eligibility contention prevents expiry during those waits from authorizing the
 commit. The initial refusal creates no target account. A later refusal may retain
 a complete independently committed account while rolling back the member phase.
+The endpoint preserves completion and cleanup failures before classifying an
+explicit credential refusal. A missing credential row remains unauthenticated,
+while the Team missing-row fallback describes only an absent Team. Network and
+database failures retain their existing transport classification.
 
 Core checks the real target member under the Team scope. A matching role returns
 the original membership and added=false. An absent relationship is inserted with

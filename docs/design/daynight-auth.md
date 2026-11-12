@@ -588,7 +588,9 @@ expectedUserId 和规范 Team ID 校验先于领域 SQL，目标外部身份只�
 确认该只读核验事务完成后，第二阶段调用独立 `Identity.EnsureUser`，仅使用其确认提交的完整目标账号。
 第三阶段重新进入原 Team 写事务，再检查凭据与当前 Team/admin，锁定目标成员并添加或读取关系，
 刷新同事务 eligibility，最后用新鲜时间再次检查凭据。初始无权不产生用户，后阶段失败回滚成员和 eligibility，
-可以保留第二阶段已完整建立的用户和 Personal Team。
+可以保留第二阶段已完整建立的用户和 Personal Team。HTTP 的直接成员错误适配先保留事务完成和清理失败，
+再保留明确的 unauthenticated 凭据拒绝；其 missing-row 原因不被 Team 缺失回退覆盖。
+实际 Team 缺失仍使用 not_found；网络或数据库故障不被领域拒绝掩盖。
 
 `TeamWriteScope.IdentityDAO()` 与 `CredentialFamilyDAO()` 由 PostgreSQL 根装配绑定到同一事务。
 API principal 复用 Identity 的固定 resource/scope/client `LockAccess`；原生 Session/PAT 复用
