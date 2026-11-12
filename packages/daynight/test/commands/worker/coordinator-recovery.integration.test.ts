@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrPromptResult, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -29,13 +29,25 @@ const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toStr
 const origin = "https://daynight.example";
 const workerId = uuid(1);
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 };
+const coordinators: ReturnType<typeof createCoordinator>[] = [];
+const createWorkerCoordinator = (options: Parameters<typeof createCoordinator>[0]): ReturnType<typeof createCoordinator> => {
+  const coordinator = createCoordinator(options);
+  const shutdown = coordinator.shutdown.bind(coordinator);
+  let closing: ReturnType<typeof shutdown> | undefined;
+  coordinator.shutdown = () => closing ??= shutdown();
+  coordinators.push(coordinator);
+  return coordinator;
+};
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
+  const shutdowns = await Promise.allSettled(coordinators.splice(0).map(coordinator => coordinator.shutdown()));
+  const shutdownErrors = shutdowns.flatMap(result => result.status === "rejected" ? [result.reason] : []);
   polling.onSchedule = undefined; polling.requested.length = 0;
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  if (shutdownErrors.length > 0) throw new AggregateError(shutdownErrors, "Coordinator fixture shutdown failed.");
 });
 const task = (projectId: string, id: string): Task => ({ type: "task", parentId: null, id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });

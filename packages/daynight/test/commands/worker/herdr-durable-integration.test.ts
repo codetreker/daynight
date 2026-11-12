@@ -1239,7 +1239,7 @@ it("reports post-launch attachment failure until actual reattachment is publishe
   let unavailable = false, lost = 0;
   f.api.ledger = async (...args) => { const result = await ledger(...args); if (f.read().runs.at(-1)?.phase === "active" && lost < 2) { lost++; unavailable = true; throw new Error("lost ledger response"); } return result; };
   f.api.state = (...args) => unavailable ? Promise.reject(new Error("ledger readback unavailable")) : state(...args);
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
   try {
     await expect(driver.advance(input)).rejects.toThrow();
@@ -1270,7 +1270,7 @@ it("labels a durable input admission failure without changing the original error
   const phases = vi.fn(), failure = new Error("input admission failed");
   const start = f.facade.tasks.start.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitting: () => { input.onPromptSubmitting?.(); f.failTaskRead(failure); } }, active));
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases });
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
   try {
     await expect(driver.advance(input)).rejects.toBe(failure);
@@ -1292,7 +1292,7 @@ it("reports post-transport observation failure without inventing a receipt or re
   f.settings.observeAfterInputFailure = failure;
   const start = f.facade.tasks.start.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitted: receipt => { submitted(receipt); input.onPromptSubmitted?.(receipt); } }, active));
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
   try {
     await expect(driver.advance(input)).rejects.toBe(failure);
@@ -1313,7 +1313,7 @@ it("recovers a continuation at confirmed transport even when the following obser
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
   store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
   const phases = vi.fn(), successes = vi.fn(), failure = new Error("continuation observation failed");
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now, observePhase: phases, observeSuccess: successes });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
   try {
     await driver.advance(input);
@@ -1335,7 +1335,7 @@ it("does not replay the accepted assignment through the execution driver after e
     const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
     store.registerProject(project); store.registerPending({ ...f.context, agent: "codex" }); const task = store.activateTask(f.context);
     const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
-    const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+    const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
       herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
     const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
     const ledger = f.api.ledger, state = f.api.state; let unavailable = false;
@@ -1363,7 +1363,7 @@ it.each(["initial", "deferred"] as const)("keeps the %s assignment pending throu
   let submitted = 0;
   const start = f.facade.tasks.start.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitted: receipt => { submitted++; input.onPromptSubmitted?.(receipt); } }, active));
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
   try {
     await driver.advance(input);
@@ -1401,7 +1401,7 @@ it.each(["unknown", "oversized"] as const)("reattaches a fixed initial input bef
   const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? project.projectId : uuid(5), text, revision: "1", updatedAt: "2026-11-09T00:00:00Z" });
   const current = vi.fn(() => latest === "unknown" ? null : { user: resource("user", "x".repeat(17_000)), project: resource("project", ""), worker: resource("worker", "") });
   const sync = vi.fn(async () => { throw new Error("A fixed input must not synchronize new prompt values"); });
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
     herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "New assignment must not be used",
     promptSource: { current }, preparePromptSource: sync, emit: () => {}, now: Date.now });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
@@ -1433,7 +1433,7 @@ it("does not replay a pending initial input after a human marks its uncertain ou
   const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
   store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
     herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
   try {
@@ -1473,7 +1473,7 @@ it("keeps a blocked macOS recovery input fixed and respects a later task pause",
   const resource = (scope: "user" | "project" | "worker", text: string, revision: string) => ({ scope, scopeId: scope === "project" ? project.projectId : uuid(5), text, revision, updatedAt: "2026-11-09T00:00:00Z" });
   let tuple = { user: resource("user", "captured", "1"), project: resource("project", "", "0"), worker: resource("worker", "", "0") };
   const submit = vi.spyOn(f.facade.tasks, "submitPrompt");
-  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+  const driver = createExecutionDriver({ store, git: { resolveWorktreeBinding: async () => worktree, prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
     herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment",
     promptSource: { current: () => tuple }, emit: () => {}, now: Date.now });
   const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
@@ -1509,7 +1509,7 @@ it.each([[0, false], [0, undefined], [3, false], [3, undefined]] as const)("keep
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = {
     currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask,
   };
-  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], listWorktreeManifests: async () => [{ owner: f.context, binding: worktree }], resolveWorktreeBinding: async () => worktree, retireWorktreeManifest: async () => {}, verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit };
   const events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
@@ -1538,7 +1538,7 @@ it("counts a first-frame task read failure against the coordinator recovery budg
   const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
-  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], listWorktreeManifests: async () => [{ owner: f.context, binding: worktree }], resolveWorktreeBinding: async () => worktree, retireWorktreeManifest: async () => {}, verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = [];
   const submit = vi.spyOn(f.facade.tasks, "submitPrompt"), sync = vi.spyOn(f.facade.tasks, "syncWorkspaceName");
   const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
@@ -1574,7 +1574,7 @@ it("keeps manual and suspended durable control as ordinary coordinator waits", a
   const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
   const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: [await f.readTask()], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
-  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: async () => [{ owner: f.context, binding: worktree }], listWorktreeManifests: async () => [{ owner: f.context, binding: worktree }], resolveWorktreeBinding: async () => worktree, retireWorktreeManifest: async () => {}, verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
@@ -1645,7 +1645,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
     },
   };
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 };
-  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { scanWorktrees: scanFromList, listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { scanWorktrees: scanFromList, listWorktrees: async () => [], listWorktreeManifests: async () => [], resolveWorktreeBinding: async () => null, findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
     workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false,
     emit: () => {}, buildPrompt: () => "managed", signal: cancellation.signal, onClaim: () => cancellation.abort(new Error("Stop this test after successor admission")) });
   try {

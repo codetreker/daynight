@@ -6,6 +6,8 @@ import { ApiError } from "../../../src/api/client.js";
 import { execFileSync } from "node:child_process";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
+import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
+import { manifestPath } from "../../../src/commands/worker/worktrees/paths.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
 import { afterEach, expect, it, onTestFailed, vi } from "vitest";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
@@ -20,6 +22,10 @@ import type { Task } from "../../../src/api/types.js";
 import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const origin = "https://daynight.example", workerId = uuid(1), userId = uuid(2);
+const prepareFormat: NonNullable<Parameters<typeof createWorkerGitManager>[0]["prepareFormat"]> = async (_project, repo, operation) => {
+  await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation,
+    sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+};
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.restoreAllMocks(); });
 const fixture = () => {
@@ -30,7 +36,7 @@ const fixture = () => {
   const project = { projectId: uuid(3), repoUrl: "https://example.test/org/repo.git", localPath: path.join(root, "repo") }; mkdirSync(project.localPath); store.registerProject(project);
   const tasks = new Map<string, Task>(), events: WorkerEvent[] = [];
   const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => userId), readTask: vi.fn(async (_project: string, id: string) => tasks.get(id)!), ownInventory: vi.fn(async () => ({ tasks: [] as Task[], coveredProjectIds: [project.projectId], unavailableProjectIds: [] })), candidates: vi.fn(async function* () {}), claim: vi.fn() } as unknown as WorkerRemote;
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), findWorktree: vi.fn(async () => null), prepareWorktree: vi.fn(async () => { throw new Error("Preparation failed before creating resources."); }), removeWorktree: vi.fn(), removeEmptyReservation: vi.fn() } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), resolveWorktreeBinding: vi.fn(async () => null), removeUnpublishedReservation: vi.fn(async () => {}), retireWorktreeManifest: vi.fn(async () => {}), findWorktree: vi.fn(async () => null), prepareWorktree: vi.fn(async () => { throw new Error("Preparation failed before creating resources."); }), removeWorktree: vi.fn(), removeEmptyReservation: vi.fn() } as unknown as WorkerGitManager;
   const open = () => createDurableWorkerHerdr({ paths, homeDirectory: root, serverOrigin: origin, serverToken: "fixture", workerId, readTask: (...args) => remote.readTask(...args), currentUserId: (...args) => remote.currentUserId(...args), createAdapter: () => ({}) as WorkerHerdrAdapter });
   let herdr = open(); cleanups.push(() => herdr.lifecycle!.close());
   const configuration = { agent: "codex" as const, agentControlMode: "herdr" as const, args: [], model: null, recoveryLimit: 0 };
@@ -139,11 +145,12 @@ it("retains a real Git worktree created before any native preparation journal", 
   const bare = path.join(f.root, "origin.git");
   git("bare", "clone", "--bare", f.project.localPath, bare);
   git("rewrite", "config", `url.${bare}.insteadOf`, f.project.repoUrl);
-  const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory, runGit: async (...args) => {
+  const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory, prepareFormat, runGit: async (...args) => {
     const command = args[1][4]!, end = begin(`manager:${command.startsWith("--git-dir=") ? args[1][5] : command}`);
     try { return await runRepositoryGit(...args); } finally { end(); }
   } }), operation = createOperation();
   try {
+    await manager.prepareRepository(f.project, operation);
     const prepared = begin("prepare-worktree"); try { await manager.prepareWorktree(f.project, owner, operation); } finally { prepared(); }
     expect(f.read(owner)).toMatchObject({ preparation: null, runs: [] });
     await expect(retirement(f, owner, async () => { if (await manager.findWorktree(f.project, owner, operation)) throw new Error("Git registration remains"); })).rejects.toThrow();
@@ -197,15 +204,15 @@ it("retains real Git worktrees and durable stop evidence when their Project retu
     git(project.localPath, "clone", "--bare", project.localPath, bare);
     git(project.localPath, "config", `url.${bare}.insteadOf`, project.repoUrl);
   }
-  const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory });
+  const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory, prepareFormat });
   const operation = createOperation();
   const markerFiles: { path: string; bytes: Buffer; contents: string }[] = [];
+  await manager.prepareRepository(f.project, operation);
+  await manager.prepareRepository(second, operation);
   for (const owner of [activeOwner, stoppedOwner]) {
     const binding = await manager.prepareWorktree(f.project, owner, operation);
     const dirty = path.join(binding.worktreePath, "private.txt"); writeFileSync(dirty, `private ${owner.claimId}`);
-    const pointer = readFileSync(path.join(binding.worktreePath, ".git"), "utf8").trim();
-    const admin = path.resolve(binding.worktreePath, pointer.replace(/^gitdir: /, ""));
-    const marker = path.join(admin, "locked");
+    const marker = manifestPath(binding.commonDirectory, owner.worktreeId);
     markerFiles.push({ path: marker, bytes: readFileSync(marker), contents: dirty });
     f.store.activateTask(f.store.getTask(owner)!);
   }

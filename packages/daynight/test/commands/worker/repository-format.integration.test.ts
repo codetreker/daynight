@@ -19,6 +19,7 @@ const fixture = () => {
   const root = mkdtempSync(path.join(scratch, "case-")); roots.push(root);
   const repo = path.join(root, "repo"); mkdirSync(repo);
   git(repo, ["init", "--initial-branch=main"]); git(repo, ["config", "user.name", "Fixture"]); git(repo, ["config", "user.email", "fixture@example.test"]);
+  git(repo, ["config", "core.autocrlf", "false"]); git(repo, ["config", "core.eol", "lf"]);
   writeFileSync(path.join(repo, "tracked"), "contents\n"); git(repo, ["add", "tracked"]); git(repo, ["commit", "-m", "fixture"]);
   const commonDirectory = git(repo, ["rev-parse", "--absolute-git-dir"]);
   const owner = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };

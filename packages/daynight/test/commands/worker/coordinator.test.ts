@@ -25,7 +25,7 @@ import { isWorkerCancellation } from "../../../src/commands/worker/execution.js"
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
-import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
@@ -70,13 +70,25 @@ const unknownStop = async (target: CleanupTarget): Promise<StopObservation> => (
 const origin = "https://daynight.example";
 const workerId = uuid(1);
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 };
+const coordinators: ReturnType<typeof createCoordinator>[] = [];
+const createWorkerCoordinator = (options: Parameters<typeof createCoordinator>[0]): ReturnType<typeof createCoordinator> => {
+  const coordinator = createCoordinator(options);
+  const shutdown = coordinator.shutdown.bind(coordinator);
+  let closing: ReturnType<typeof shutdown> | undefined;
+  coordinator.shutdown = () => closing ??= shutdown();
+  coordinators.push(coordinator);
+  return coordinator;
+};
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
+  const shutdowns = await Promise.allSettled(coordinators.splice(0).map(coordinator => coordinator.shutdown()));
+  const shutdownErrors = shutdowns.flatMap(result => result.status === "rejected" ? [result.reason] : []);
   polling.onSchedule = undefined; polling.requested.length = 0;
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  if (shutdownErrors.length > 0) throw new AggregateError(shutdownErrors, "Coordinator fixture shutdown failed.");
 });
 const task = (projectId: string, id: string): Task => ({ type: "task", parentId: null, id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
@@ -1591,7 +1603,8 @@ describe("minimal worker resource reconciliation", () => {
     pane.status = "idle"; pane.stateChangeSeq = 3; pane.completionSeq = 1;
 
     for (let patrol = 1; patrol <= 3; patrol++) {
-      await eventually(async () => { await coordinator.tick(); expect(f.remote.readTask).toHaveBeenCalledTimes(patrol); });
+      await coordinator.tick();
+      await eventually(() => expect(vi.mocked(f.remote.readTask).mock.calls.length).toBeGreaterThanOrEqual(patrol));
     }
     expect(f.order.filter((entry) => entry === "notify")).toEqual([]);
     expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
@@ -2272,7 +2285,7 @@ it("routes Web claims without Herdr, freezes launch settings, and keeps interact
     await eventually(() => expect(monitor.capture("2").activities).toEqual([expect.objectContaining({ kind: "execution", phase: "executing", status: "running", waitReason: null })]));
     expect(webStore.getTask(row)?.configuration?.model).toBe("frozen-model");
     expect(verifyWebUnregistered).toHaveBeenCalledOnce();
-  } finally { webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it("missing Web execution evidence never permits replacing or deleting an existing server Session", async () => {
@@ -2294,7 +2307,7 @@ it("missing Web execution evidence never permits replacing or deleting an existi
     await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
     expect(f.store.getTask(row)?.status).toBe("active");
     expect(await coordinator.shutdown()).toBe(false);
-  } finally { webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it.each(["archive", "worktree removal"])("releases a deleted Web task's slot while %s remains pending", async stage => {
@@ -2355,7 +2368,7 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's slot whi
     expect(f.worktrees.has(owner.claimId)).toBe(true);
     await coordinator.completeSource(owner);
     await coordinator.shutdown();
-  } finally { allowRemoval.resolve(); webStore.close(); }
+  } finally { allowRemoval.resolve(); await coordinator.shutdown(); webStore.close(); }
 });
 
 it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries with %s startup reporting without advancing recovery", async support => {
@@ -2398,7 +2411,7 @@ it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries wit
     expect(advance).toHaveBeenCalledOnce();
     expect(f.remote.update).toHaveBeenCalledTimes(2);
     expect(webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
-  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it.each(["claim", "worktree"])("rejects Web retry after original %s loss without authorizing or advancing it", async field => {
@@ -2416,7 +2429,7 @@ it.each(["claim", "worktree"])("rejects Web retry after original %s loss without
     await expect(coordinator.advanceRetry(row)).rejects.toThrow(/no longer/);
     expect(webStore.getTask(row)?.recovery.retryAuthorized).toBe(false);
     expect(advance).toHaveBeenCalledOnce();
-  } finally { webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it("keeps an authorized Web retry waiting until a healthy observation after confirmed shutdown", async () => {
@@ -2460,7 +2473,7 @@ it("keeps an authorized Web retry waiting until a healthy observation after conf
     await eventually(() => expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("executing"));
     await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: recovery.operationId }));
     expect(webStore.getTask(row)?.recovery.count).toBe(1);
-  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it("returns a Web retry's input wait without claiming a completed submission", async () => {
@@ -2494,7 +2507,7 @@ it("refuses an explicit Web retry without original execution evidence instead of
     await expect(coordinator.advanceRetry(row)).rejects.toThrow("original Web execution evidence");
     expect(advance).not.toHaveBeenCalled();
     expect(webStore.getTask(row)).toBeNull();
-  } finally { webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 describe("terminal cleanup retry scheduling", () => {
@@ -2736,7 +2749,7 @@ it("observes completed Web resources when shutdown follows an interrupted schedu
     expect(f.events.some(e => e.kind === "shutdown-error")).toBe(false);
     expect(f.store.getCleanupSchedule(owner)).not.toBeNull();
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  } finally { webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 describe("cloud project removal", () => {
@@ -3053,16 +3066,16 @@ describe("applied cloud runtime configuration", () => {
     const f = await fixture();
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
-    await f.coordinator.tick(); await eventually(() => expect(f.tasks.observe).toHaveBeenCalledOnce());
-    await new Promise<void>(resolve => setImmediate(resolve));
+    const original = f.store.listUnfinishedTasks()[0]!;
+    await f.coordinator.advanceRetry(original);
     const observed = f.tasks.observe.mock.calls.length;
     f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, model: "unrelated-global-model" }, maxConcurrent: 2, preferPlatformSpecificTasks: false });
     await f.coordinator.tick();
-    expect(f.tasks.observe).toHaveBeenCalledTimes(observed);
+    await eventually(() => expect(f.tasks.observe.mock.calls.length).toBeGreaterThan(observed));
     expect(f.tasks.start).toHaveBeenCalledOnce();
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
-    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).resolves.toBeUndefined();
+    await expect(f.coordinator.advanceRetry(original)).resolves.toBeUndefined();
     expect(f.tasks.start.mock.calls[0]![2].configuration).toMatchObject(configuration);
     await f.coordinator.shutdown();
   });

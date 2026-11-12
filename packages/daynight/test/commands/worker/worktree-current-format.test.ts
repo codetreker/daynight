@@ -18,6 +18,7 @@ const fixture = async () => {
   const repository = path.join(root, "repository"); await mkdir(repository);
   git(repository, "init", "--initial-branch=main");
   git(repository, "config", "user.name", "Fixture"); git(repository, "config", "user.email", "fixture@example.com");
+  git(repository, "config", "core.autocrlf", "false"); git(repository, "config", "core.eol", "lf");
   await writeFile(path.join(repository, "tracked.txt"), "original\n");
   git(repository, "add", "tracked.txt"); git(repository, "commit", "-m", "fixture");
   const remote = path.join(root, "origin.git"); git(root, "clone", "--bare", repository, remote);
@@ -109,7 +110,9 @@ it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a workt
     await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
     const admin = git(binding.worktreePath, "rev-parse", "--absolute-git-dir");
-    if (damage === "reverse") await writeFile(path.join(binding.worktreePath, ".git"), "gitdir: /foreign\n");
+    const tracked = path.join(binding.worktreePath, "tracked.txt"), original = await readFile(tracked);
+    const pointer = path.join(binding.worktreePath, ".git");
+    if (damage === "reverse") { await rm(pointer); await writeFile(pointer, "gitdir: /foreign\n"); }
     if (damage === "common") await writeFile(path.join(admin, "commondir"), f.root);
     if (damage === "missing-pointer") await rm(path.join(binding.worktreePath, ".git"));
     if (damage === "duplicate") {
@@ -117,7 +120,8 @@ it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a workt
       await cp(admin, path.join(path.dirname(admin), "duplicate"), { recursive: true });
     }
     await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).rejects.toThrow();
-    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await readFile(tracked)).toEqual(original);
+    if (damage === "reverse") expect(await readFile(pointer, "utf8")).toBe("gitdir: /foreign\n");
     const scan = await f.adapter.scanWorktrees(f.project, operation);
     expect(scan.quarantined.length + scan.unknown.length).toBeGreaterThan(0);
   } finally { operation.dispose(); await f.adapter.dispose(); }

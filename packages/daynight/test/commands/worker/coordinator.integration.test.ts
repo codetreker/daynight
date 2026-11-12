@@ -21,7 +21,7 @@ import { isWorkerCancellation } from "../../../src/commands/worker/execution.js"
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
-import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
@@ -91,13 +91,25 @@ const unknownStop = async (target: CleanupTarget): Promise<StopObservation> => (
 const origin = "https://daynight.example";
 const workerId = uuid(1);
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 };
+const coordinators: ReturnType<typeof createCoordinator>[] = [];
+const createWorkerCoordinator = (options: Parameters<typeof createCoordinator>[0]): ReturnType<typeof createCoordinator> => {
+  const coordinator = createCoordinator(options);
+  const shutdown = coordinator.shutdown.bind(coordinator);
+  let closing: ReturnType<typeof shutdown> | undefined;
+  coordinator.shutdown = () => closing ??= shutdown();
+  coordinators.push(coordinator);
+  return coordinator;
+};
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
+  const shutdowns = await Promise.allSettled(coordinators.splice(0).map(coordinator => coordinator.shutdown()));
+  const shutdownErrors = shutdowns.flatMap(result => result.status === "rejected" ? [result.reason] : []);
   polling.onSchedule = undefined; polling.requested.length = 0; gitProcess.wrapper = undefined; gitProcess.helper = undefined; gitProcess.child = undefined; gitProcess.stopHelper = undefined; gitProcess.childClosed = false; gitProcess.stdoutClosed = false; gitProcess.stderrClosed = false; gitProcess.helperClosed = false; gitProcess.helperStdoutClosed = false;
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  if (shutdownErrors.length > 0) throw new AggregateError(shutdownErrors, "Coordinator fixture shutdown failed.");
 });
 const task = (projectId: string, id: string): Task => ({ type: "task", parentId: null, id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
@@ -674,6 +686,7 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
     expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(17n);
     expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toEqual({ phase: "waiting", nativeSessionId: uuid(880), herdr: null });
+    await coordinator.shutdown();
     webStore.close(); webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
     coordinator = createWorkerCoordinator(options());
     await tick(); await tick();
@@ -684,7 +697,7 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)).toMatchObject({ claimId: row.claimId, state: "active", phase: "waiting" });
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it("validates and freezes a Web tool before claiming, then retains that choice when current targets fail", async () => {
@@ -726,6 +739,7 @@ it("releases a stopped execution while its worktree remains held, without admitt
   await coordinator.tick();
   await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
   const original = f.store.listTasks()[0]!;
+  const nextCandidate = f.candidates.splice(1, 1)[0]!;
   f.grants.clear();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -734,7 +748,8 @@ it("releases a stopped execution while its worktree remains held, without admitt
   try {
     await coordinator.tick();
     await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
-    expect(monitoring.capture("1").capacity).toMatchObject({ quality: "current", occupied: 0, available: 1 });
+    await eventually(() => expect(monitoring.capture("1").capacity).toMatchObject({ quality: "current", occupied: 0, available: 1 }));
+    f.candidates.push(nextCandidate);
     await coordinator.tick();
     await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
     expect([...f.grants.values()].some(value => value.id === original.taskId)).toBe(false);
@@ -864,7 +879,7 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
       f.clock(1_000_000);
       await coordinator.tick();
       await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
-      expect(f.store.getCleanupSchedule(original)).toBeNull();
+      await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
     }
   } finally {
     interrupt.abort(new Error("fixture cleanup"));
