@@ -17,8 +17,10 @@ Controller Job operations use the existing Koffi dependency to call Win32 in the
 calling process. Native function bindings are loaded lazily and reused. Creation
 retains the original name validation, noninheritable handles, process assignment
 and handle release. Inspection opens with query access, adding terminate access
-only for a stop request; termination retains exit code 1 before the membership
-query. No breakaway or kill-on-close policy is added.
+only for a stop request. The original termination queried membership after
+using exit code 1; the [submitted launch identity decision](../bug-fix/2026-11-12-submitted-controller-launch.md)
+supersedes that ordering with same-handle ownership verification and bounded
+waiting. No breakaway or kill-on-close policy is added.
 
 Only an open failure with `ERROR_FILE_NOT_FOUND` yields an empty inventory.
 Access denial, duplicate creation, native failures and malformed process IDs

@@ -8,7 +8,9 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
-import { ControllerBootstrapReplacedError, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
+import { ControllerIpcIdentityConflictError, requestController } from "../../../src/commands/controller/local-client.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 
@@ -113,6 +115,26 @@ it("returns observed only from the original authenticated IPC response", async (
   finally { server.close(); await once(server, "close"); }
 }, 20_000);
 
+it.each(["response", "execution", "session"] as const)("classifies a real IPC %s identity mismatch", async kind => {
+  const f = await fixture();
+  const store = openControllerLifecycleStore(f.journalFile, f.ticket, { onMigration: () => {} });
+  const snapshot = store.getSnapshot(); store.close();
+  const server = createServer(socket => socket.once("data", bytes => {
+    const request = JSON.parse(String(bytes));
+    const changed = kind === "session" ? { ...snapshot, sessionId: randomUUID() } : kind === "execution" ? { ...snapshot, executionId: randomUUID() } : snapshot;
+    socket.end(`${JSON.stringify({ requestId: kind === "response" ? randomUUID() : request.requestId, ok: true, snapshot: changed })}\n`);
+  }));
+  server.listen(f.ticket.ipcEndpoint); await once(server, "listening");
+  try { await expect(requestController(f.ticket, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError); }
+  finally { server.close(); await once(server, "close"); }
+}, 20_000);
+
+it("finds an IPC identity conflict wrapped with pure journal I/O and deadline errors", () => {
+  const ipc = new ControllerIpcIdentityConflictError("fence conflict");
+  const journal = new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("I/O"), { code: "EIO" }));
+  expect(hasUnsafeControllerObservationFailure(new AggregateError([journal, new Error("deadline")]))).toBe(true);
+});
+
 it("interrupts an in-flight IPC observation with the original cancellation reason", async () => {
   const f = await fixture(); const connected = Promise.withResolvers<void>();
   const sockets = new Set<import("node:net").Socket>();
@@ -166,3 +188,17 @@ it.skipIf(process.platform === "win32")("waits through a real process identity c
     await expect(stopping).resolves.toBeUndefined();
   } finally { kill.mockRestore(); }
 }, 15_000);
+
+
+it("permits retained proof only for pure journal I/O failures and rejects mixed conflicts", () => {
+  const ipc = Object.assign(new Error("IPC missing"), { code: "ENOENT" });
+  const io = Object.assign(new Error("database unavailable"), { code: "SQLITE_IOERR_READ" });
+  const wrapped = new ControllerLaunchJournalObservationError(ipc, io);
+  expect(isControllerJournalIoFailure(wrapped)).toBe(true);
+  expect(wrapped.errors).toEqual([ipc, io]); expect(wrapped.cause).toBe(io);
+  expect(isControllerJournalIoFailure(new ControllerLaunchJournalObservationError(ipc, new Error("identity conflict")))).toBe(false);
+  expect(isControllerJournalIoFailure(new ControllerLaunchJournalObservationError(ipc, new ControllerLaunchJournalConflictError("generation conflict", { cause: io })))).toBe(false);
+  expect(isControllerJournalIoFailure(new ControllerLaunchJournalObservationError(ipc, new AggregateError([io, new Error("identity conflict")])))).toBe(false);
+  expect(isControllerJournalIoFailure(new ControllerLaunchJournalObservationError(ipc, new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "inspect" }, { cause: io })))).toBe(false);
+  expect(isControllerJournalIoFailure(ipc)).toBe(false);
+});

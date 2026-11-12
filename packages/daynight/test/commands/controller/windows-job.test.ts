@@ -2,12 +2,14 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({
-  create: vi.fn(), open: vi.fn(), openProcess: vi.fn(), assign: vi.fn(), query: vi.fn(), terminate: vi.fn(), close: vi.fn(),
+  create: vi.fn(), open: vi.fn(), openProcess: vi.fn(), assign: vi.fn(), query: vi.fn(), terminate: vi.fn(), close: vi.fn(), contains: vi.fn(), verify: vi.fn(),
   load: vi.fn(), setLastError: vi.fn(), pointerSize: 8, error: 0, now: 0,
 }));
 vi.mock("koffi", () => ({ load: f.load, sizeof: () => f.pointerSize }));
+vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ verifyWindowsJobMember: f.verify }));
 const launchId = "11111111-1111-4111-8111-111111111111", name = `Local\\Daynight-${launchId}`;
 const job = { kind: "job" }, processHandle = { kind: "process" }, pid = 4101;
+const proof = { pid, parentPid: 4000, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
 let create: typeof import("../../../src/commands/controller/windows-job.js").createControllerJob;
 let inspect: typeof import("../../../src/commands/controller/windows-job.js").inspectControllerJob;
 const members = (data: Buffer, pids: readonly bigint[] = [4101n, 4202n]) => {
@@ -26,6 +28,7 @@ beforeEach(async () => {
     if (declaration.includes("OpenProcess")) return f.openProcess;
     if (declaration.includes("AssignProcessToJobObject")) return f.assign;
     if (declaration.includes("QueryInformationJobObject")) return f.query;
+    if (declaration.includes("IsProcessInJob")) return f.contains;
     if (declaration.includes("TerminateJobObject")) return f.terminate;
     if (declaration.includes("CloseHandle")) return f.close;
     if (declaration.includes("SetLastError")) return f.setLastError;
@@ -34,7 +37,9 @@ beforeEach(async () => {
   } }));
   f.create.mockReturnValue(job); f.open.mockReturnValue(job); f.openProcess.mockReturnValue(processHandle);
   f.assign.mockReturnValue(1); f.terminate.mockReturnValue(1); f.close.mockReturnValue(1);
-  f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data); return 1; });
+  f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data, f.terminate.mock.calls.length ? [] : [4101n, 4202n]); return 1; });
+  f.contains.mockImplementation((_process, _job, result: Buffer) => { result.writeInt32LE(1); return 1; });
+  f.verify.mockImplementation(async (_proof, _deadline, belongs) => belongs(processHandle));
   ({ createControllerJob: create, inspectControllerJob: inspect } = await import("../../../src/commands/controller/windows-job.js"));
 });
 afterEach(() => vi.restoreAllMocks());
@@ -63,12 +68,49 @@ describe("native Controller Job Objects", () => {
     expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
-  it("terminates before querying while retaining the same open Job handle", async () => {
-    expect(await inspect(name, true)).toEqual([4101, 4202]);
+  it("authenticates a member and waits for an empty inventory on the original Job handle", async () => {
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
     expect(f.open).toHaveBeenCalledExactlyOnceWith(12, 0, name);
     expect(f.terminate).toHaveBeenCalledExactlyOnceWith(job, 1);
-    expect(f.terminate.mock.invocationCallOrder[0]).toBeLessThan(f.query.mock.invocationCallOrder[0]!);
+    expect(f.query).toHaveBeenCalledTimes(2);
+    expect(f.query.mock.invocationCallOrder[0]).toBeLessThan(f.terminate.mock.invocationCallOrder[0]!);
+    expect(f.contains).toHaveBeenCalledExactlyOnceWith(processHandle, job, expect.any(Buffer));
     expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("does not terminate a same-name Job without a verified original member", async () => {
+    f.verify.mockResolvedValue(false);
+    await expect(inspect(name, true, Date.now() + 5000, [proof])).rejects.toThrow(/no verified original/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("keeps the same Job handle open until termination empties the inventory", async () => {
+    f.query.mockImplementation((_job, _kind, data: Buffer) => {
+      expect(f.close).not.toHaveBeenCalled();
+      members(data, f.query.mock.calls.length < 4 ? [4101n] : []);
+      return 1;
+    });
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
+    expect(f.query).toHaveBeenCalledTimes(4);
+    expect(f.query.mock.calls.every(call => call[0] === job)).toBe(true);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("closes the Job if its members do not exit before the deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.query.mockImplementation((_job, _kind, data: Buffer) => {
+      members(data, [4101n]);
+      if (f.terminate.mock.calls.length) clock.mockReturnValue(deadline);
+      return 1;
+    });
+    await expect(inspect(name, true, deadline, [proof])).rejects.toThrow(/deadline/);
+    expect(f.terminate).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("does not terminate an empty Job", async () => {
+    f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data, []); return 1; });
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
+    expect(f.verify).not.toHaveBeenCalled(); expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
   it("maps only a missing named Job to an empty inventory without inventing a handle", async () => {
@@ -115,8 +157,8 @@ describe("native Controller Job Objects", () => {
 
   it("propagates termination failure without claiming a stopped inventory", async () => {
     f.terminate.mockReturnValue(0); f.error = 5;
-    await expect(inspect(name, true)).rejects.toMatchObject({ stage: "terminate-members", win32Code: 5 });
-    expect(f.query).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+    await expect(inspect(name, true, Date.now() + 5000, [proof])).rejects.toMatchObject({ stage: "terminate-members", win32Code: 5 });
+    expect(f.query).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
   it("preserves an exact thrown native error while releasing its handle", async () => {
@@ -194,6 +236,38 @@ describe("native Controller Job Objects", () => {
     f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data); f.now = 15_000; return 1; });
     await expect(inspect(name)).rejects.toThrow(/deadline/);
     expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("does not open or terminate a Job after the caller's deadline", async () => {
+    await expect(inspect(name, true, Date.now() - 1)).rejects.toThrow(/deadline/);
+    expect(f.open).not.toHaveBeenCalled(); expect(f.terminate).not.toHaveBeenCalled();
+  });
+
+  it("closes a Job whose open call consumes the caller's deadline without terminating it", async () => {
+    const deadline = Date.now() + 100;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.open.mockImplementation(() => { clock.mockReturnValue(deadline); return job; });
+    await expect(inspect(name, true, deadline)).rejects.toThrow(/deadline/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("joins a Job termination that crosses the caller's deadline and closes its handle", async () => {
+    const deadline = Date.now() + 100;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.terminate.mockImplementation(() => { clock.mockReturnValue(deadline); return 1; });
+    await expect(inspect(name, true, deadline, [proof])).rejects.toThrow(/deadline/);
+    expect(f.terminate).toHaveBeenCalledOnce(); expect(f.query).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("retains termination and close failures when a native call crosses the deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.terminate.mockImplementation(() => { f.error = 5; clock.mockReturnValue(deadline); return 0; });
+    f.close.mockReturnValue(0);
+    const error = await inspect(name, true, deadline, [proof]).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.message).toMatch(/deadline/);
+    expect(error.errors[0]).toBeInstanceOf(AggregateError);
+    expect(error.errors[0].errors.map((failure: { stage: string }) => failure.stage)).toEqual(["terminate-members", "close-job-handle"]);
+    expect(f.close).toHaveBeenCalledOnce();
   });
 
   it("closes an acquired Job even when creation consumes the budget", async () => {

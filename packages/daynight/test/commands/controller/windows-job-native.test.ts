@@ -82,7 +82,7 @@ process.send({ ready: true });
       expect(expected).toContain(descendant!.pid);
       expect([...(await inspectControllerJob(name))].sort((a, b) => a - b)).toEqual(expected);
     }, { timeout: 10_000, interval: 25 });
-    await inspectControllerJob(name, true);
+    await inspectControllerJob(name, true, Date.now() + 15_000, [leader, descendant]);
     await waitForClose();
     await vi.waitFor(async () => {
       expect(await inspectProcessProof(leader!)).toBe("stopped");
@@ -107,3 +107,96 @@ process.send({ ready: true });
   if (cleanupFailures.length > 0) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "Native Job fixture cleanup failed.", failed ? { cause: failure } : undefined);
   if (failed) throw failure;
 }, 90_000);
+
+test.skipIf(process.platform !== "win32")("observes whether a live member retains a Job name after the last handle closes", async () => {
+  const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
+  const open = library.func("void * __stdcall OpenJobObjectW(uint32_t access, int inherit, str16 name)");
+  const close = library.func("int __stdcall CloseHandle(void *handle)");
+  const lastError = library.func("uint32_t __stdcall GetLastError()");
+  const child = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  const closed = once(child, "close", { signal: AbortSignal.timeout(30_000) }); void closed.catch(() => {});
+  let reopened: unknown = null, failure: unknown, failed = false;
+  const cleanupFailures: unknown[] = [];
+  try {
+    await once(child.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
+    const proof = await captureProcessProof(child.pid!);
+    const name = await createControllerJob(randomUUID(), child.pid!);
+    expect(await inspectProcessProof(proof)).toBe("running");
+    reopened = open(4, 0, name);
+    if (reopened === null) {
+      const code = lastError();
+      console.info(`Live-member Job name after last handle close: unavailable (Win32 ${code}).`);
+      expect(code).toBe(2);
+      expect(await inspectControllerJob(name)).toEqual([]);
+    } else {
+      console.info("Live-member Job name after last handle close: available.");
+      expect(await inspectControllerJob(name)).toContain(child.pid);
+    }
+    expect(await inspectProcessProof(proof)).toBe("running");
+  } catch (error) { failed = true; failure = error; }
+  finally {
+    if (reopened !== null) try { if (close(reopened) === 0) throw new Error(`Fixture Job close failed (Win32 ${lastError()}).`); } catch (error) { cleanupFailures.push(error); }
+    try { if (child.exitCode === null && child.signalCode === null && !child.kill()) throw new Error("Fixture process termination failed."); await closed; }
+    catch (error) { cleanupFailures.push(error); }
+  }
+  if (cleanupFailures.length > 0) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "Job name fixture cleanup failed.", failed ? { cause: failure } : undefined);
+  if (failed) throw failure;
+}, 60_000);
+
+test.skipIf(process.platform !== "win32")("does not terminate a real replacement Job created under the old name", async () => {
+  const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
+  const create = library.func("void * __stdcall CreateJobObjectW(void *attributes, str16 name)");
+  const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
+  const assign = library.func("int __stdcall AssignProcessToJobObject(void *job, void *process)");
+  const terminate = library.func("int __stdcall TerminateJobObject(void *job, uint32_t code)");
+  const close = library.func("int __stdcall CloseHandle(void *handle)");
+  const getError = library.func("uint32_t __stdcall GetLastError()");
+  const setError = library.func("void __stdcall SetLastError(uint32_t code)");
+  const name = `Local\\Daynight-${randomUUID()}`;
+  const children: { child: ReturnType<typeof spawn>; closed: Promise<unknown> }[] = [];
+  let firstJob: unknown = null, secondJob: unknown = null;
+  const start = async () => {
+    const child = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    const closed = once(child, "close", { signal: AbortSignal.timeout(30_000) });
+    children.push({ child, closed });
+    await once(child.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
+    return child;
+  };
+  const attach = (job: unknown, pid: number) => {
+    const processHandle: unknown = openProcess(0x101, 0, pid);
+    if (processHandle === null) throw new Error(`Fixture process opening failed (Win32 ${getError()}).`);
+    try { if (assign(job, processHandle) === 0) throw new Error(`Fixture Job assignment failed (Win32 ${getError()}).`); }
+    finally { if (close(processHandle) === 0) throw new Error(`Fixture process handle close failed (Win32 ${getError()}).`); }
+  };
+  try {
+    firstJob = create(null, name);
+    if (firstJob === null) throw new Error(`Original fixture Job creation failed (Win32 ${getError()}).`);
+    const first = await start(); attach(firstJob, first.pid!);
+    const original = await captureProcessProof(first.pid!);
+    if (terminate(firstJob, 1) === 0) throw new Error(`Original fixture Job termination failed (Win32 ${getError()}).`);
+    await children[0]!.closed;
+    if (close(firstJob) === 0) throw new Error(`Original fixture Job close failed (Win32 ${getError()}).`);
+    firstJob = null;
+    setError(0);
+    secondJob = create(null, name);
+    if (secondJob === null || getError() === 183) throw new Error("Replacement fixture Job was not independently created.");
+    const replacement = await start(); attach(secondJob, replacement.pid!);
+    const current = await captureProcessProof(replacement.pid!);
+    expect(current.startedAt).not.toBe(original.startedAt);
+    // Model PID reuse while keeping the old birth and command evidence.
+    await expect(inspectControllerJob(name, true, Date.now() + 15_000, [{ ...original, pid: replacement.pid! }])).rejects.toThrow(/no verified original/);
+    expect(await inspectProcessProof(current)).toBe("running");
+  } finally {
+    const failures: unknown[] = [];
+    for (const job of [firstJob, secondJob]) if (job !== null) {
+      try { if (terminate(job, 1) === 0) throw new Error(`Fixture Job termination failed (Win32 ${getError()}).`); }
+      catch (error) { failures.push(error); }
+    }
+    for (const { child, closed } of children) {
+      try { if (child.exitCode === null && child.signalCode === null) child.kill(); await closed; }
+      catch (error) { failures.push(error); }
+    }
+    for (const job of [firstJob, secondJob]) if (job !== null) try { if (close(job) === 0) throw new Error(`Fixture Job close failed (Win32 ${getError()}).`); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Replacement Job fixture cleanup failed.");
+  }
+}, 60_000);

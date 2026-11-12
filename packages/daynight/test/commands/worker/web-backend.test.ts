@@ -15,7 +15,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
+import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
@@ -507,13 +507,15 @@ it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execut
   expect(source.stopped).toHaveBeenCalledTimes(3);
 });
 
-it("cleanup propagates a source snapshot read failure before issuing stop or deletion", async () => {
+it("cleanup stops the original bootstrap when its journal snapshot read fails", async () => {
   const f = await fixture();
   const source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const failure = new Error("controller journal read failed");
   source.saved.mockImplementation(() => { throw failure; });
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 6, request: source.request });
-  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 100, immediateStop: true })).rejects.toMatchObject({ stage: "agent-stop", cause: failure });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 100, immediateStop: true })).rejects.toMatchObject({ stage: "agent-stop", cause: { errors: [failure, failure] } });
+  expect(stop).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, expect.any(Number));
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]); expect(source.stopped).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
   expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100 });
@@ -562,7 +564,7 @@ it("reconciles an original exit when its PID is reused before bootstrap stop", a
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
   expect((await backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).complete).toBe(true);
   expect(stop).toHaveBeenCalledOnce();
-  expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses);
+  expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, expect.any(Number));
 });
 
 it("retains PID replacement and missing committed proof together", async () => {
@@ -1074,7 +1076,7 @@ it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-l
     expect(f.store.getOrchestrationBlocker(task)).toBeNull();
     expect(inspect.mock.calls.map(([proof]) => proof)).toEqual([controller, native]);
   } else {
-    expect(source.stopped).toHaveBeenCalledWith(controller, [native]);
+    expect(source.stopped).toHaveBeenCalledWith(controller, [native], expect.any(Number));
     expect(stop).toHaveBeenCalledWith(controller, [native], expect.any(Number));
   }
   expect(launcher.launch).not.toHaveBeenCalled();
@@ -1245,4 +1247,155 @@ it("does not report a stopped incomplete initialization as still starting", asyn
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
   expect(backend.observeStartupReport(source.task)?.startup).toEqual({ state: "unknown", reasonCode: "controller_start_unknown" });
+});
+
+
+it.each([false, true])("Task cleanup retains an IPC refusal and stops the original bootstrap (stop fails=%s)", async stopFails => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const refusal = new Error("Controller journal observation refused"), stopFailure = new Error("bootstrap stop failed");
+  source.request.mockRejectedValue(refusal);
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap");
+  if (stopFails) stop.mockRejectedValue(stopFailure); else stop.mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.stage).toBe("agent-stop");
+  if (stopFails) expect(error.cause.errors).toEqual([refusal, stopFailure]); else expect(error.cause).toBe(refusal);
+  expect(stop).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, expect.any(Number));
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(source.task)?.webExecution).toMatchObject({ launchId: source.ticket.launchId, launchSubmission: "acknowledged" });
+  if (stopFails) { expect(tree).not.toHaveBeenCalled(); expect(source.stopped).not.toHaveBeenCalled(); }
+  else { expect(tree).toHaveBeenCalledOnce(); expect(source.stopped).toHaveBeenCalledOnce(); }
+});
+
+it("Task cleanup does not stop descendants when its fallback journal conflicts with retained native proof", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const refusal = new Error("Controller journal observation refused"); source.request.mockRejectedValue(refusal);
+  const native = { pid: 980, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "b".repeat(64) };
+  const task = f.store.updateWebExecution(source.task, { nativeProcesses: [native] }, 8);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockResolvedValue({ kind: "controller-exited", process: task.webExecution!.controllerProcess!, snapshot: { ...source.snapshot, nativeProcesses: [] } });
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause.errors[0]).toBe(refusal); expect(error.cause.errors[1].message).toMatch(/conflicts/);
+  expect(stop).toHaveBeenCalledOnce(); expect(source.stopped).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("Task fallback retains a still-running native tree after stopping the bootstrap", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const refusal = new Error("Controller journal observation refused"); source.request.mockRejectedValue(refusal);
+  vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  source.stopped.mockResolvedValue(false);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause.errors[0]).toBe(refusal); expect(error.cause.errors[1].message).toMatch(/process tree did not stop/);
+  expect(tree).toHaveBeenCalledOnce(); expect(source.stopped).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it.each(["refused", "unknown"] as const)("Task preserves a %s IPC stop after safely stopping the original process", async kind => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const failure = kind === "refused" ? new Error("Controller stop refused") : new ControllerIpcOutcomeUnknownError("Controller stop response unavailable");
+  const snapshot = { ...source.snapshot, lifecycle: "ready" as const, nativeStopped: false, stoppedAt: null };
+  source.saved.mockReturnValue(snapshot); source.stopped.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  source.request.mockImplementation(async (_ticket, action) => { if (action.kind === "stop") throw failure; return { requestId: randomUUID(), ok: true, snapshot }; });
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.stage).toBe("agent-stop"); expect(error.cause).toBe(failure); expect(tree).toHaveBeenCalledOnce();
+  expect(source.stopped).toHaveBeenCalledTimes(2); expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+
+it.skipIf(process.platform === "win32")("Task uses retained attributed POSIX proof when both journal reads fail with I/O", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable"), io = () => new launchObservation.ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const first = io(), second = io(); source.request.mockRejectedValue(ipc);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause.errors).toEqual([first, second]); expect(stop).toHaveBeenCalledOnce();
+  expect(tree).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, source.task.webExecution!.nativeProcesses, expect.any(Number));
+  expect(source.stopped).toHaveBeenCalledOnce(); expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform === "win32")("Task cleans the retained tree when journal I/O fails after bootstrap stop", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable"), io = () => new launchObservation.ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const first = io(), second = io(); source.request.mockRejectedValue(ipc);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof })).mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause.errors).toEqual([first, second]); expect(stop).toHaveBeenCalledOnce();
+  expect(tree).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, source.task.webExecution!.nativeProcesses, expect.any(Number));
+  expect(source.stopped).toHaveBeenCalledOnce(); expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== "win32")("Task does not use a retained Job after bootstrap stop and journal I/O failure", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable"), io = () => new launchObservation.ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  source.request.mockRejectedValue(ipc);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof })).mockRejectedValueOnce(io()).mockRejectedValueOnce(io());
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true })).rejects.toThrow();
+  expect(stop).toHaveBeenCalledOnce(); expect(tree).not.toHaveBeenCalled();
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("Task does not retry tree cleanup after a conflicting observation of an exited controller", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  source.request.mockRejectedValueOnce(new ControllerIpcOutcomeUnknownError("IPC unavailable"))
+    .mockResolvedValueOnce({ requestId: randomUUID(), ok: true, snapshot: { ...source.snapshot, executionGeneration: "999" } });
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockResolvedValue({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: source.snapshot });
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true })).rejects.toThrow(/different generation/);
+  expect(tree).not.toHaveBeenCalled(); expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled();
+});
+
+it.each(["journal identity", "journal format", "IPC identity"] as const)("Task blocks tree cleanup after first %s conflict even if a later snapshot is valid", async kind => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable"), io = Object.assign(new Error("journal I/O"), { code: "EIO" });
+  const first = kind === "IPC identity" ? new ControllerIpcIdentityConflictError("IPC fence conflict") : new launchObservation.ControllerLaunchJournalObservationError(ipc, kind === "journal identity" ? new AggregateError([io, new launchObservation.ControllerLaunchJournalConflictError("identity conflict")]) : new SyntaxError("invalid journal"));
+  source.request.mockRejectedValue(ipc);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch).mockRejectedValueOnce(first).mockResolvedValueOnce({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: source.snapshot });
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause).toBe(first); expect(launchObservation.reconcileSubmittedControllerLaunch).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce(); expect(tree).not.toHaveBeenCalled();
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("Task stops only the bootstrap when the IPC stop response has an identity conflict", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const conflict = new ControllerIpcIdentityConflictError("stop fence conflict");
+  source.stopped.mockResolvedValue(false);
+  source.request.mockImplementation(async (_ticket, action) => { if (action.kind === "stop") throw conflict; return { requestId: randomUUID(), ok: true, snapshot: source.snapshot }; });
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "shutdown", deadline: 30, immediateStop: true }).catch(error => error);
+  expect(error.cause).toBe(conflict); expect(stop).toHaveBeenCalledOnce(); expect(tree).not.toHaveBeenCalled();
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("Task retains a cleanup IPC identity conflict even if an operation receipt appears", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const conflict = new ControllerIpcIdentityConflictError("cleanup fence conflict");
+  source.stopped.mockResolvedValue(false);
+  source.request.mockImplementation(async (_ticket, action) => { if (action.kind === "cleanup") throw conflict; return { requestId: randomUUID(), ok: true, snapshot: source.snapshot }; });
+  const operation = vi.spyOn(lifecycle, "readControllerOperation").mockReturnValueOnce(null).mockReturnValueOnce({ kind: "cleanup", executionGeneration: source.ticket.executionGeneration, state: "confirmed" } as never);
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
+  const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  const error = await backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } }).catch(error => error);
+  expect(error.cause).toBe(conflict); expect(operation).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce(); expect(tree).not.toHaveBeenCalled();
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });

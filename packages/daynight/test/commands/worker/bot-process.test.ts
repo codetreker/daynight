@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { captureProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -5,9 +9,9 @@ import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/b
 import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/environment.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
-import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
+import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import { ControllerBootstrapReplacedError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
 
 afterEach(cleanupBotProcesses);
@@ -552,4 +556,168 @@ test("authenticated ready observation does not erase an earlier terminal startup
   await f.manager.shutdown(f.current(), f.signal);
   expect(f.executions.get(f.current())).toMatchObject({ startup: failed, lastError: "native rejected", restartAfterShutdown: false });
   await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/budget is exhausted/);
+});
+
+
+test.each([false, true])("Bot shutdown retains observation failure and stops its original bootstrap (stop fails=%s)", async stopFails => {
+  const f = await recoveryFixture(), original = f.current().intent!, refusal = new Error("Controller journal observation refused"), stopFailure = new Error("bootstrap stop failed");
+  f.deps.reconcileLaunch.mockRejectedValueOnce(refusal);
+  if (stopFails) f.deps.stopBootstrap.mockRejectedValueOnce(stopFailure);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  if (stopFails) expect(error.errors).toEqual([refusal, stopFailure]); else expect(error).toBe(refusal);
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopBootstrap).toHaveBeenCalledWith(f.executions.get(f.current())!.controllerProcess, expect.any(Number));
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().intent).toEqual(original); expect(f.release).not.toHaveBeenCalled();
+  if (stopFails) expect(f.deps.stopProcesses).not.toHaveBeenCalled(); else expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+});
+
+test("Bot shutdown stops the original bootstrap after orderly provenance cannot be saved", async () => {
+  const f = await recoveryFixture(), failure = new Error("Bot snapshot persistence failed");
+  vi.spyOn(f.executions, "update").mockImplementationOnce(() => { throw failure; });
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error).toBe(failure); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test("Bot shutdown retains unknown process status after attempting original bootstrap stop", async () => {
+  const f = await recoveryFixture(), unknown = new Error("process status unknown");
+  f.deps.reconcileLaunch.mockResolvedValueOnce({ kind: "unknown", cause: unknown });
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.cause).toBe(unknown); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+
+test("Bot observation refusal still stops a real original bootstrap process", async () => {
+  const child = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setTimeout(()=>process.exit(0),10000)'], { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] });
+  const closed = once(child, "close", { signal: AbortSignal.timeout(12_000) });
+  try {
+    await once(child.stdout!, "data", { signal: AbortSignal.timeout(5000) });
+    const proof = await captureProcessProof(child.pid!), f = fixture(), signal = new AbortController().signal;
+    f.launch.mockImplementationOnce(async options => {
+      await options.onSubmitting(); await options.onSpawned(proof);
+      const snapshot = { ...await f.observe(options.ticket), controllerProcess: proof };
+      await options.onObserved(snapshot); return snapshot;
+    });
+    await f.process.advance(f.current(), signal);
+    const refusal = new Error("Controller journal observation refused"); let observations = 0;
+    const reconcile = vi.fn<typeof reconcileSubmittedControllerLaunch>(async ({ spawnProof }) => {
+      if (++observations === 1) throw refusal;
+      return { kind: "pre-writer-exited", process: spawnProof, journal: "missing" };
+    });
+    const manager = f.createProcess({ reconcileLaunch: reconcile, stopBootstrap: stopControllerBootstrap });
+    await expect(manager.shutdown(f.current(), signal)).rejects.toBe(refusal);
+    await closed;
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(f.executions.get(f.current())!.snapshot?.nativeStopped).toBe(false);
+    expect(f.release).not.toHaveBeenCalled();
+  } finally { await closed; }
+}, 20_000);
+
+test("Bot fallback retains a still-running native tree after stopping the bootstrap", async () => {
+  const f = await recoveryFixture(), refusal = new Error("Controller journal observation refused");
+  f.deps.reconcileLaunch.mockRejectedValueOnce(refusal);
+  f.deps.stopProcesses.mockImplementationOnce(async () => {});
+  f.deps.confirmStopped.mockResolvedValue(false);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.errors[0]).toBe(refusal); expect(error.errors[1].message).toMatch(/process tree did not stop/);
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.each(["refused", "unknown"] as const)("Bot preserves a %s IPC stop after safely stopping the original process", async kind => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  const failure = kind === "refused" ? new Error("Controller stop refused") : new ControllerIpcOutcomeUnknownError("Controller stop response unavailable");
+  f.executions.markShutdown(f.current(), true);
+  expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(true);
+  f.deps.request.mockRejectedValueOnce(failure);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error).toBe(failure); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+  expect(f.deps.confirmStopped).toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+  expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(true); expect(f.current().intent).toEqual(original); expect(f.release).not.toHaveBeenCalled();
+  f.deps.confirmStopped.mockResolvedValue(false);
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/stop is unproven/);
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().intent).toEqual(original);
+});
+
+
+
+
+test.skipIf(process.platform === "win32")("Bot uses retained attributed POSIX proof when both journal reads fail with I/O", async () => {
+  const f = await recoveryFixture(), ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const io = () => new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const first = io(), second = io(); f.deps.reconcileLaunch.mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.errors).toEqual([first, second]); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
+  expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform === "win32").each(["observed", "running-unobserved"] as const)("Bot cleans the retained tree when journal I/O fails after %s bootstrap stop", async kind => {
+  const f = await recoveryFixture(), ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const io = () => new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  const first = io(), second = io();
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => kind === "observed" ? { kind, snapshot: f.saved() } : { kind, process: spawnProof })
+    .mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.errors).toEqual([first, second]); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
+  expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("Bot does not use a retained Job after bootstrap stop and journal I/O failure", async () => {
+  const f = await recoveryFixture(), ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const io = () => new ControllerLaunchJournalObservationError(ipc, Object.assign(new Error("journal I/O"), { code: "EIO" }));
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof }))
+    .mockRejectedValueOnce(io()).mockRejectedValueOnce(io());
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow();
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test("Bot retries tree classification after persistence fails on an already exited controller", async () => {
+  const f = await recoveryFixture(), failure = new Error("snapshot persistence failed");
+  f.deps.reconcileLaunch.mockImplementation(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved() }));
+  vi.spyOn(f.executions, "update").mockImplementationOnce(() => { throw failure; });
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error).toBe(failure); expect(f.deps.stopBootstrap).not.toHaveBeenCalled(); expect(f.deps.stopProcesses).toHaveBeenCalledOnce();
+  expect(f.deps.confirmStopped).toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+test.each(["journal identity", "journal format", "IPC identity"] as const)("Bot blocks tree cleanup after first %s conflict even if a later snapshot is valid", async kind => {
+  const f = await recoveryFixture(), ipc = new ControllerIpcOutcomeUnknownError("IPC unavailable");
+  const io = Object.assign(new Error("journal I/O"), { code: "EIO" });
+  const first = kind === "IPC identity" ? new ControllerIpcIdentityConflictError("IPC fence conflict") : new ControllerLaunchJournalObservationError(ipc, kind === "journal identity" ? new AggregateError([io, new ControllerLaunchJournalConflictError("identity conflict")]) : new SyntaxError("invalid journal"));
+  f.deps.reconcileLaunch.mockRejectedValueOnce(first).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved() }));
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error).toBe(first); expect(f.deps.reconcileLaunch).toHaveBeenCalledOnce(); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+test("Bot stops only the bootstrap when the IPC stop response has an identity conflict", async () => {
+  const f = await recoveryFixture(), conflict = new ControllerIpcIdentityConflictError("stop fence conflict");
+  f.deps.request.mockRejectedValueOnce(conflict);
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toBe(conflict);
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.each(["controller", "native session", "native process"] as const)("Bot blocks tree cleanup after an observed %s conflict", async kind => {
+  const f = await recoveryFixture(), original = f.saved();
+  const snapshot = kind === "controller" ? { ...original, controllerProcess: { ...original.controllerProcess!, commandHash: "b".repeat(64) } }
+    : kind === "native session" ? { ...original, nativeSessionId: id(88) }
+      : { ...original, nativeProcesses: [{ pid: 980, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "b".repeat(64) }] };
+  if (kind === "native process") f.executions.update(f.current(), { snapshot: { ...original, nativeProcesses: [{ pid: 981, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "c".repeat(64) }] } });
+  f.deps.reconcileLaunch.mockResolvedValueOnce({ kind: "observed", snapshot });
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow();
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce(); expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test("Bot blocks tree cleanup if an exited journal loses retained native proof", async () => {
+  const f = await recoveryFixture(), original = f.saved();
+  f.executions.update(f.current(), { snapshot: { ...original, nativeProcesses: [{ pid: 981, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "c".repeat(64) }] } });
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: original }));
+  await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/conflicts/);
+  expect(f.deps.stopBootstrap).not.toHaveBeenCalled(); expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
 });

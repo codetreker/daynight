@@ -14,11 +14,29 @@ const controller: ProcessProof = { pid: 4101, parentPid: 4000, processGroupId: n
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   vi.useFakeTimers(); vi.clearAllMocks();
-  f.job.mockResolvedValue([]);
+  f.job.mockReset().mockResolvedValue([]);
   f.native.mockImplementation(async pid => ({ ...controller, pid }));
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
 const missing = () => { throw Object.assign(new Error("Gone"), { code: "ESRCH" }); };
+
+test("an expired cleanup deadline never opens or terminates the Job", async () => {
+  await expect(stopControllerProcesses(controller, [], Date.now() - 1)).rejects.toThrow(/deadline/);
+  expect(f.job).not.toHaveBeenCalled();
+});
+
+test("confirmation shares the remaining deadline across original processes", async () => {
+  const start = Date.now(), native = { ...controller, pid: 4102 }, probes: number[] = [];
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  f.native.mockImplementation(async (pid: number, timeout: number) => {
+    probes.push(timeout);
+    if (pid === controller.pid) vi.setSystemTime(start + 70);
+    else vi.setSystemTime(start + 100);
+    return { ...controller, pid, startedAt: "replacement-birth" };
+  });
+  await expect(confirmControllerProcessesStopped(controller, [native], start + 100)).rejects.toThrow(/deadline/);
+  expect(probes).toEqual([100, 30]); expect(f.job).not.toHaveBeenCalled();
+});
 
 test("retains a live original birth with different command evidence even when the named Job is missing", async () => {
   vi.spyOn(process, "kill").mockReturnValue(true);
@@ -36,7 +54,7 @@ test("waits for the original process after the Windows Job inventory becomes emp
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(probes).toBe(3);
-  expect(f.job).toHaveBeenCalledWith(controller.jobObjectName, true);
+  expect(f.job).toHaveBeenCalledExactlyOnceWith(controller.jobObjectName, true, expect.any(Number), [controller]);
 });
 
 test("retains resources when an original process stays live through the existing deadline", async () => {
@@ -61,7 +79,7 @@ test("does not start identity polling when the Job termination operation exhaust
   const started = Date.now();
   f.job.mockImplementationOnce(async () => { vi.setSystemTime(started + 100); return []; });
   const probe = vi.spyOn(process, "kill").mockReturnValue(true);
-  await expect(stopControllerProcesses(controller, [], started + 100)).rejects.toThrow("The original Windows Job Object did not stop completely.");
+  await expect(stopControllerProcesses(controller, [], started + 100)).rejects.toThrow(/deadline/);
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -83,19 +101,20 @@ test("does not turn process permission failures into successful stop evidence", 
 
 test("propagates a Job inspection failure without treating it as an empty boundary", async () => {
   vi.spyOn(process, "kill").mockImplementation(missing);
-  f.job.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("Job access denied"));
+  f.job.mockRejectedValueOnce(new Error("Job access denied"));
   await expect(stopControllerProcesses(controller, [], Date.now() + 100)).rejects.toThrow("Job access denied");
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("retains the complete Job boundary after original process identities stop", async () => {
+test("waits for the original Job boundary before confirming original process identities", async () => {
   vi.spyOn(process, "kill").mockImplementation(missing);
-  f.job.mockResolvedValueOnce([4102]).mockResolvedValueOnce([4102]).mockResolvedValueOnce([]);
+  f.job.mockImplementationOnce(async () => { await new Promise(resolve => setTimeout(resolve, 50)); return []; });
   const started = Date.now();
   const completion = stopControllerProcesses(controller, [], started + 100).then(() => "stopped", error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(Date.now()).toBeGreaterThan(started);
+  expect(f.job).toHaveBeenCalledOnce();
 });
 
 

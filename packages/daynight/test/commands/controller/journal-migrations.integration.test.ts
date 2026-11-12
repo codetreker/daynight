@@ -21,6 +21,76 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   return { home, file: path.join(home, "journal.sqlite"), ticket };
 };
+
+const currentStopFixture = async () => {
+  const f = await fixture();
+  const journal = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) } });
+  journal.close();
+  return f;
+};
+
+test("does not write stopped if complete proof consumes the stop deadline", async () => {
+  const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  proof.stopped.mockImplementationOnce(async () => { clock.mockReturnValue(deadline); return true; });
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, deadline)).rejects.toThrow(/deadline/);
+  expect(proof.stopped).toHaveBeenCalledWith(expect.anything(), [], deadline);
+  expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
+});
+
+test("refreshes the SQLite busy timeout before starting the write transaction", async () => {
+  const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now), execute = Database.prototype.exec;
+  let writeTimeout: unknown;
+  proof.stopped.mockImplementationOnce(async () => { clock.mockReturnValue(now + 60); return true; });
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (sql === "BEGIN IMMEDIATE") writeTimeout = this.pragma("busy_timeout", { simple: true });
+    return execute.call(this, sql);
+  });
+  await recordStoppedControllerGeneration(f.file, f.ticket, deadline);
+  expect(writeTimeout).toBe(40);
+});
+
+test("does not begin a write transaction when timeout configuration exhausts the deadline", async () => {
+  const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now), pragma = Database.prototype.pragma, execute = vi.spyOn(Database.prototype, "exec");
+  proof.stopped.mockImplementationOnce(async () => { clock.mockReturnValue(deadline - 1); return true; });
+  vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source: string, options?: { simple?: boolean | undefined }) {
+    const result = pragma.call(this, source, options);
+    if (source === "busy_timeout = 1") clock.mockReturnValue(deadline);
+    return result;
+  });
+  await expect(recordStoppedControllerGeneration(f.file, f.ticket, deadline)).rejects.toThrow(/stop-deadline/);
+  expect(execute.mock.calls.some(([sql]) => sql === "BEGIN IMMEDIATE")).toBe(false);
+  expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
+});
+
+test("bounds an actual journal write lock and retains the original SQLite failure", async () => {
+  const f = await currentStopFixture(), locked = new Database(f.file);
+  locked.exec("BEGIN IMMEDIATE");
+  try {
+    const error = await recordStoppedControllerGeneration(f.file, f.ticket, Date.now() + 200).catch(error => error);
+    if (error.cause instanceof AggregateError) {
+      expect(error).toMatchObject({ context: { phase: "stop-deadline" }, outcome: "not-started" });
+      expect(error.cause.errors[0]).toMatchObject({ code: "SQLITE_BUSY" });
+    } else expect(error).toMatchObject({ code: "SQLITE_BUSY" });
+    expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
+  } finally { locked.exec("ROLLBACK"); locked.close(); }
+});
+
+test("reports a committed stop honestly when COMMIT crosses the deadline", async () => {
+  const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now), execute = Database.prototype.exec;
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    const result = execute.call(this, sql);
+    if (sql === "COMMIT") clock.mockReturnValue(deadline);
+    return result;
+  });
+  const error = await recordStoppedControllerGeneration(f.file, f.ticket, deadline).catch(error => error);
+  expect(error).toMatchObject({ name: "SqliteAccessError", outcome: "committed", connectionClosed: true, context: { phase: "stop-deadline" } });
+  expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: true, lifecycle: "stopped" });
+});
 // Fixtures reproduce the shipped statements rather than calling the current
 // format definition or removing columns from its latest schema.
 const historical = (file: string, version: number, ticket: ControllerLaunchTicket, owner: number | null = null) => {

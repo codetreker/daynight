@@ -3,13 +3,56 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), execFile: f.exec }));
-import { inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped } from "../../../src/commands/controller/process-proof.js";
+import { inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const proof = { pid: 4101, parentPid: 4000, processGroupId: 4101, startedAt: "Thu Nov 12 15:53:09 2026", commandHash: createHash("sha256").update("node main.js").digest("hex") };
 const exiting = "4101 4000 4101 ?Es Thu Nov 12 15:53:09 2026 (node)\n";
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
+
+it("does not signal a group when its inventory consumes the cleanup deadline", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
+  const start = Date.now(), kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  f.exec.mockImplementation((_file, _args, options, callback) => {
+    expect(options.timeout).toBe(100); vi.setSystemTime(start + 100); callback(null, "4101 4101 S\n");
+  });
+  await expect(stopControllerProcesses(proof, [], start + 100)).rejects.toThrow(/deadline/);
+  expect(kill).not.toHaveBeenCalled();
+});
+
+it("retains an inventory failure when the probe crosses the cleanup deadline", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
+  const start = Date.now(), failure = new Error("process inventory failed"), kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  f.exec.mockImplementation((_file, _args, _options, callback) => { vi.setSystemTime(start + 100); callback(failure, ""); });
+  const error = await stopControllerProcesses(proof, [], start + 100).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(failure); expect(error.message).toMatch(/deadline/);
+  expect(kill).not.toHaveBeenCalled();
+});
+
+it("does not KILL a process group whose original instance was replaced after TERM", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
+  let term = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => { if (signal === "SIGTERM") term = true; return true; });
+  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, args.includes("-A")
+    ? "4101 4101 S\n" : `4101 4000 4101 S Thu Nov 12 15:53:${term ? "10" : "09"} 2026 node main.js\n`));
+  const result = stopControllerProcesses(proof, [], Date.now() + 5000).catch(error => error);
+  await vi.runAllTimersAsync();
+  expect((await result).message).toMatch(/no original process-instance proof/);
+  expect(kill.mock.calls.filter(([, signal]) => signal === "SIGTERM")).toHaveLength(1);
+  expect(kill.mock.calls.some(([, signal]) => signal === "SIGKILL")).toBe(false);
+});
+
+it("does not confirm a stopped tree when an original native birth has conflicting identity outside the group", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  const native = { ...proof, pid: 4202, processGroupId: 4202 };
+  vi.spyOn(process, "kill").mockImplementation(pid => {
+    if (pid === proof.pid) throw Object.assign(new Error("Gone"), { code: "ESRCH" });
+    return true;
+  });
+  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, args.includes("-A") ? "" : "4202 4000 9999 S Thu Nov 12 15:53:09 2026 changed\n"));
+  await expect(confirmControllerProcessesStopped(proof, [native], Date.now() + 5000)).rejects.toThrow(/conflicting identity/);
+});
 
 it("waits through Darwin's exiting state without signaling incomplete identity or claiming a full tree stopped", async () => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" });

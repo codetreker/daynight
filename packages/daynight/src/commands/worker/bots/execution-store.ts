@@ -44,7 +44,7 @@ const sameProcess = (previous: ProcessProof, next: ProcessProof): boolean => pre
   && previous.startedAt === next.startedAt && previous.commandHash === next.commandHash
   && (previous.jobObjectName === undefined || previous.jobObjectName === next.jobObjectName);
 
-const checkSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void => {
+export const validateBotExecutionSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void => {
   const intent = record.intent!;
   if (snapshot === null || typeof snapshot !== "object" || snapshot.executionId !== intent.executionId
     || snapshot.testExecutionId !== intent.registration.testExecutionId || snapshot.claimId !== undefined
@@ -84,7 +84,7 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   if (value.startup !== null) parseStartupObservation(value.startup);
   if (value.controllerProcess !== null) checkProcess(value.controllerProcess);
   if (value.snapshot !== null) {
-    checkSnapshot(record, value.snapshot);
+    validateBotExecutionSnapshot(record, value.snapshot);
     if (value.controllerProcess !== null && value.snapshot.controllerProcess !== null && !sameProcess(value.controllerProcess, value.snapshot.controllerProcess)) throw new Error("Bot snapshot has a conflicting controller process.");
   }
   if (value.launchSubmission === "not-submitted" && (value.controllerProcess !== null || value.snapshot !== null)) throw new Error("Bot process evidence requires a submitted launch.");
@@ -178,7 +178,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       const saved = current(record), previous = get(saved), intent = saved.intent!;
       if (saved.observed.deletion !== null) throw new Error("A deleting Bot cannot recover execution.");
       if (previous === null || previous.launchSubmission === "not-submitted") throw new Error("Bot recovery requires the original submitted generation.");
-      checkSnapshot(saved, stopped);
+      validateBotExecutionSnapshot(saved, stopped);
       if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.nativeSessionId === null || stopped.controllerProcess === null
         || previous.snapshot?.nativeSessionId !== stopped.nativeSessionId
         || previous.controllerProcess !== null && !sameProcess(previous.controllerProcess, stopped.controllerProcess)

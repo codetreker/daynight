@@ -12,6 +12,7 @@ const fileTime = 134067744001234567n;
 let ControllerBootstrapReplacedError: typeof import("../../../src/commands/controller/bootstrap-error.js").ControllerBootstrapReplacedError;
 let stop: typeof import("../../../src/commands/controller/windows-process-proof.js").stopWindowsBootstrapProcess;
 let capture: typeof import("../../../src/commands/controller/windows-process-proof.js").captureWindowsProcessProof;
+let verifyMember: typeof import("../../../src/commands/controller/windows-process-proof.js").verifyWindowsJobMember;
 const writePointer = (data: Buffer, offset: number, value: bigint) => f.pointerSize === 8 ? data.writeBigUInt64LE(value, offset) : data.writeUInt32LE(Number(value), offset);
 const basic = (data: Buffer, returned: Buffer) => {
   writePointer(data, f.pointerSize * 4, BigInt(pid)); writePointer(data, f.pointerSize * 5, BigInt(parentPid));
@@ -43,7 +44,7 @@ beforeEach(async () => {
     if (kind === 0) basic(data, returned); else if (kind === 60) commandLine(data, returned); else throw new Error("Unexpected information class");
     return 0;
   });
-  ({ captureWindowsProcessProof: capture, stopWindowsBootstrapProcess: stop } = await import("../../../src/commands/controller/windows-process-proof.js"));
+  ({ captureWindowsProcessProof: capture, stopWindowsBootstrapProcess: stop, verifyWindowsJobMember: verifyMember } = await import("../../../src/commands/controller/windows-process-proof.js"));
   ({ ControllerBootstrapReplacedError } = await import("../../../src/commands/controller/bootstrap-error.js"));
 });
 afterEach(() => vi.restoreAllMocks());
@@ -183,6 +184,31 @@ describe("Windows bootstrap stop handle", () => {
     f.wait.mockReset().mockReturnValue(258); f.close.mockReturnValue(0);
     const error = await stop(proof, Date.now() + 5000).catch(error => error);
     expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toMatch(/deadline/);
+    expect(error.errors[1]).toMatchObject({ stage: "close-process-handle" });
+  });
+});
+
+describe("Windows Job original member verification", () => {
+  const proof = { pid, parentPid, processGroupId: null, startedAt: "2025-11-05T00:00:00.1234560Z", commandHash: createHash("sha256").update(command).digest("hex") };
+  it("uses the same process handle for birth, command and membership before closing", async () => {
+    const membership = vi.fn(() => true);
+    expect(await verifyMember(proof, Date.now() + 5000, membership)).toBe(true);
+    expect(f.open).toHaveBeenCalledExactlyOnceWith(0x101000, 0, pid);
+    expect(f.times.mock.calls[0]?.[0]).toBe(handle);
+    expect(f.query.mock.calls.every(call => call[0] === handle)).toBe(true);
+    expect(membership).toHaveBeenCalledExactlyOnceWith(handle);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("does not accept a replacement birth or consult its membership", async () => {
+    const membership = vi.fn(() => true);
+    expect(await verifyMember({ ...proof, startedAt: "earlier" }, Date.now() + 5000, membership)).toBe(false);
+    expect(membership).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("retains identity and handle close failures together", async () => {
+    f.close.mockReturnValue(0);
+    const membership = vi.fn(() => { throw new Error("membership failed"); });
+    const error = await verifyMember(proof, Date.now() + 5000, membership).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("membership failed");
     expect(error.errors[1]).toMatchObject({ stage: "close-process-handle" });
   });
 });

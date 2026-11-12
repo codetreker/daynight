@@ -27,6 +27,7 @@ export const validateControllerLocalRequest = (value: unknown, ticket: Controlle
 // A missing transport response cannot establish whether an authenticated action
 // reached the controller. Callers may observe its journal, but must not replay it.
 export class ControllerIpcOutcomeUnknownError extends Error {}
+export class ControllerIpcIdentityConflictError extends Error {}
 
 export const requestController = (ticket: ControllerLaunchTicket, action: ControllerLocalAction, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<ControllerLocalResponse & { ok: true }> => new Promise((resolve, reject) => {
   const request: ControllerLocalRequest = { requestId: randomUUID(), executionId: ticket.executionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, secret: ticket.ipcSecret, action };
@@ -42,9 +43,9 @@ export const requestController = (ticket: ControllerLaunchTicket, action: Contro
     const newline = text.indexOf("\n"); if (newline < 0) return;
     try {
       const response = JSON.parse(text.slice(0, newline)) as ControllerLocalResponse;
-      if (response.requestId !== request.requestId || (response.ok !== true && response.ok !== false)) throw new Error("Controller IPC response identity mismatch.");
+      if (response === null || typeof response !== "object" || response.requestId !== request.requestId || (response.ok !== true && response.ok !== false)) throw new ControllerIpcIdentityConflictError("Controller IPC response identity mismatch.");
       if (!response.ok) throw new Error(response.error);
-      if (response.snapshot.executionId !== ticket.executionId || response.snapshot.claimId !== ticket.claimId || response.snapshot.testExecutionId !== ticket.testExecutionId || response.snapshot.executionGeneration !== ticket.executionGeneration || response.snapshot.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Controller IPC snapshot fence mismatch.");
+      if (response.snapshot === null || typeof response.snapshot !== "object" || response.snapshot.executionId !== ticket.executionId || response.snapshot.claimId !== ticket.claimId || response.snapshot.testExecutionId !== ticket.testExecutionId || response.snapshot.executionGeneration !== ticket.executionGeneration || response.snapshot.controllerInstanceId !== ticket.controllerInstanceId || response.snapshot.sessionId !== ticket.sessionId) throw new ControllerIpcIdentityConflictError("Controller IPC snapshot fence mismatch.");
       finish(undefined, response);
     } catch (error) { finish(error); }
   });

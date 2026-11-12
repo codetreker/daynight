@@ -34,6 +34,23 @@ POSIX does not signal an unverified PID.
 Unconfirmed children are unreferenced so they cannot hold the foreground CLI
 open, while the capture error, execution evidence and native lease remain.
 
+An observation, stop IPC or bookkeeping failure during active cleanup does not
+skip bounded stopping of the original bootstrap process. Matching current journal
+evidence permits a subsequent full native stop and confirmation, but the original
+failure remains visible and does not authorize archival or resource release. The
+same cleanup deadline bounds process probes, Job operations and stop recording;
+started native calls still finish and release their handles. A pure journal I/O
+failure can use previously authenticated POSIX evidence only to attempt stopping
+an attributable original group; it cannot establish complete native stop.
+
+A Windows Job name can be reused after the original name or object disappears.
+Termination therefore holds the opened Job handle while verifying an original
+member's identity and membership through the same process handle, and waits for
+that Job to empty before closing it. An empty Job is not terminated; a nonempty
+Job without an attributable original member remains unknown. This strengthens the
+[native Job API decision](../testing/2026-11-05-native-controller-job-api.md)
+without changing Job lifetime policy.
+
 A reparented POSIX zombie can establish the original Controller's exit when its
 birth and process group match; its parent and displayed command can change during
 exit. This does not establish descendant stop. Bot orderly shutdown persists its

@@ -149,3 +149,35 @@ export const stopWindowsBootstrapProcess = async (proof: ProcessProof, deadline:
   catch (error) { if (failed) throw new AggregateError([failure, error], "Windows bootstrap stop and handle release failed.", { cause: failure }); throw error; }
   if (failed) throw failure;
 };
+
+/** Hold the process handle through identity and Job membership verification. */
+export const verifyWindowsJobMember = async (proof: ProcessProof, deadline: number, belongs: (handle: unknown) => boolean): Promise<boolean> => {
+  if (!Number.isSafeInteger(proof.pid) || proof.pid <= 0 || proof.pid > 2_147_483_647) throw new Error("Invalid process identity.");
+  const checkDeadline = () => { if (Date.now() >= deadline) throw new Error("Windows Job process verification exceeded its deadline."); };
+  checkDeadline();
+  const api = await (kernel ??= loadKernel());
+  checkDeadline();
+  if (api.pointerSize !== 4 && api.pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
+  let handle: unknown;
+  try { handle = api.open(proof.pid, 0x101000); }
+  catch (error) {
+    if (error instanceof WindowsProcessProofError && error.stage === "open-process" && error.code === 87) { checkDeadline(); return false; }
+    throw error;
+  }
+  let result = false, failure: unknown, failed = false;
+  try {
+    checkDeadline();
+    if (!api.wait(handle, 0)) {
+      const observed = readHandleProof(api, handle, proof.pid, checkDeadline);
+      if (observed.startedAt === proof.startedAt) {
+        if (observed.commandHash !== proof.commandHash || observed.parentPid !== proof.parentPid || observed.processGroupId !== proof.processGroupId) throw new Error("Windows Job member has conflicting original process identity.");
+        checkDeadline(); result = belongs(handle); checkDeadline();
+      }
+    }
+  } catch (error) { failed = true; failure = error; }
+  try { api.close(handle); }
+  catch (error) { if (failed) throw new AggregateError([failure, error], "Windows Job process verification and handle release failed.", { cause: failure }); throw error; }
+  if (failed) throw failure;
+  checkDeadline();
+  return result;
+};

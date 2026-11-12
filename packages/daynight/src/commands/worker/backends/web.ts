@@ -9,8 +9,8 @@ import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../contr
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
-import { ControllerBootstrapReplacedError, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
+import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
@@ -463,6 +463,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         return observation.kind === "unknown" ? observation.error : undefined;
       };
       let stage: WorkerCleanupStage = "observation";
+      let fallback: { proof: ProcessProof; deadline: number; task: LocalTask } | undefined, fallbackTicket: ControllerLaunchTicket | undefined;
+      let bootstrapAttempted = false, bootstrapCompleted = false, treeAttempted = false, treeEvidenceBlocked = false;
+      let stopRequestFailure: { cause: unknown } | undefined;
       phase(input, { kind: "cleanup", phase: stage });
       try {
         const startedAt = options.now();
@@ -492,6 +495,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         signal = AbortSignal.timeout(CLEANUP_OPERATION_MS);
         let launched = false;
         if (execution !== null) {
+          if (execution.launchSubmission !== "not-submitted" && execution.controllerProcess !== null) fallback = { proof: execution.controllerProcess, deadline: stopDeadline, task };
           await notifyStopped();
           let saved = execution.launchSubmission === "not-submitted" ? readControllerSnapshot(journal(task)) : null;
           let initialResponse: Awaited<ReturnType<typeof request>> | undefined;
@@ -502,21 +506,25 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
               || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.serverOrigin !== task.serverOrigin) throw new Error("The cleanup ticket does not identify the original execution.");
             if (execution.controllerProcess === null) throw new Error("The original controller spawn identity is missing; cleanup cannot infer stop.");
+            fallbackTicket = ticket;
             try { initialResponse = await request(ticket, { kind: "observe" }, { signal, timeoutMs: Math.max(1, Math.min(2000, stopDeadline - Date.now())) }); }
             catch (error) { signal.throwIfAborted(); if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error; }
             let observation = initialResponse === undefined
               ? await reconcileSubmittedControllerLaunch({ journalFile: journal(task), ticket, spawnProof: execution.controllerProcess, signal, deadline: stopDeadline })
               : { kind: "observed" as const, snapshot: initialResponse.snapshot };
+            if (observation.kind === "controller-exited" || observation.kind === "pre-writer-exited") bootstrapCompleted = true;
+            if (observation.kind === "pre-writer-exited") treeEvidenceBlocked = true;
             if (observation.kind === "running-unobserved") {
-              try { await stopControllerBootstrap(execution.controllerProcess, stopDeadline); }
-              catch (error) { if (!(error instanceof ControllerBootstrapReplacedError)) throw error; replaced = error; }
+              bootstrapAttempted = true;
+              try { await stopControllerBootstrap(execution.controllerProcess, stopDeadline); bootstrapCompleted = true; }
+              catch (error) { if (!(error instanceof ControllerBootstrapReplacedError)) throw error; bootstrapCompleted = true; replaced = error; }
               try { observation = await reconcileSubmittedControllerLaunch({ journalFile: journal(task), ticket, spawnProof: execution.controllerProcess, signal, deadline: stopDeadline }); }
               catch (error) { if (replaced !== undefined) throw new AggregateError([replaced, error], "Bootstrap stop and launch reconciliation failed.", { cause: error }); throw error; }
-              if (replaced !== undefined && (observation.kind === "unknown" || observation.kind === "running-unobserved" || observation.kind === "observed")) throw new AggregateError(observation.kind === "unknown" ? [replaced, observation.cause] : [replaced], "Bootstrap replacement could not be reconciled to the original exit.", { cause: replaced });
+              if (replaced !== undefined && (observation.kind === "unknown" || observation.kind === "running-unobserved" || observation.kind === "observed")) { treeEvidenceBlocked = true; throw new AggregateError(observation.kind === "unknown" ? [replaced, observation.cause] : [replaced], "Bootstrap replacement could not be reconciled to the original exit.", { cause: replaced }); }
             }
-            if (observation.kind === "unknown") throw new Error("The original controller process status is unknown during cleanup.", { cause: observation.cause });
-            if (observation.kind === "running-unobserved") throw new Error("The original controller remains running after bootstrap cleanup.");
-            if (observation.kind === "pre-writer-exited") throw new Error(`The original controller exited before committing its generation (${observation.journal}); launch and resources are retained.`, replaced === undefined ? undefined : { cause: replaced });
+            if (observation.kind === "unknown") { treeEvidenceBlocked = bootstrapCompleted; throw new Error("The original controller process status is unknown during cleanup.", { cause: observation.cause }); }
+            if (observation.kind === "running-unobserved") { treeEvidenceBlocked = true; throw new Error("The original controller remains running after bootstrap cleanup."); }
+            if (observation.kind === "pre-writer-exited") { treeEvidenceBlocked = true; throw new Error(`The original controller exited before committing its generation (${observation.journal}); launch and resources are retained.`, replaced === undefined ? undefined : { cause: replaced }); }
             saved = observation.kind === "observed" ? readControllerSnapshot(journal(task)) : observation.snapshot;
           }
           try {
@@ -524,8 +532,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               try {
                 if (execution.launchSubmission !== "not-submitted" || saved.executionId !== execution.executionId || saved.claimId !== task.claimId
                   || saved.controllerProcess === null || BigInt(saved.executionGeneration) + 1n !== BigInt(execution.executionGeneration)
-                  || !await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses)) throw new Error("The original controller generation cannot be identified and stopped from its journal.");
+                  || !await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses, stopDeadline)) throw new Error("The original controller generation cannot be identified and stopped from its journal.");
               } catch (error) {
+                treeEvidenceBlocked = true;
                 let observationError: unknown;
                 try { observationError = await notifyStopped(); } catch (failure) { observationError = failure; }
                 if (observationError !== undefined) throw new AggregateError([error, observationError], "Web stop and stop observation both failed.");
@@ -546,28 +555,28 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
                 const observed = readControllerSnapshot(journal(task));
                 if (observed !== null) {
-                  if (!matchesGeneration(task, observed)) throw new Error("The original controller journal belongs to a different generation.", { cause: error });
-                  if (saved !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) throw new Error("The cleanup observation conflicts with the original controller journal.");
+                  if (!matchesGeneration(task, observed)) { treeEvidenceBlocked = true; throw new Error("The original controller journal belongs to a different generation.", { cause: error }); }
+                  if (saved !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) { treeEvidenceBlocked = true; throw new Error("The cleanup observation conflicts with the original controller journal."); }
                   saved = observed;
                 }
               }
               const reachable = response !== undefined;
               if (response !== undefined) {
-                if (!matchesGeneration(task, response.snapshot)) throw new Error("The observed controller belongs to a different generation.");
-                if (saved !== null && !preservesControllerEvidence(saved, response.snapshot, ticket.launchId)) throw new Error("The cleanup observation conflicts with the original controller journal.");
+                if (!matchesGeneration(task, response.snapshot)) { treeEvidenceBlocked = true; throw new Error("The observed controller belongs to a different generation."); }
+                if (saved !== null && !preservesControllerEvidence(saved, response.snapshot, ticket.launchId)) { treeEvidenceBlocked = true; throw new Error("The cleanup observation conflicts with the original controller journal."); }
                 saved = response.snapshot;
               }
               if (saved?.controllerProcess != null && execution.controllerProcess !== null) {
-                if (!preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)) throw new Error("The original controller process identity conflicts with its journal.");
+                if (!preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)) { treeEvidenceBlocked = true; throw new Error("The original controller process identity conflicts with its journal."); }
               }
-              if (saved !== null && !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("The original native process identities conflict with their journal.");
+              if (saved !== null && !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) { treeEvidenceBlocked = true; throw new Error("The original native process identities conflict with their journal."); }
               if (saved?.nativeSessionId != null && task.status !== "done") task = options.store.bindNativeSession(task, { source: "controller", sessionId: saved.nativeSessionId }, options.now(), saved);
               const proof = saved?.controllerProcess;
               const native = saved?.nativeProcesses ?? execution.nativeProcesses;
-              if (proof == null) throw new Error("The committed controller process identity is missing; cleanup cannot infer stop.");
+              if (proof == null) { treeEvidenceBlocked = true; throw new Error("The committed controller process identity is missing; cleanup cannot infer stop."); }
               let stopped: boolean;
               try {
-                stopped = await confirmControllerProcessesStopped(proof, native);
+                stopped = await confirmControllerProcessesStopped(proof, native, stopDeadline);
                 if (!immediateStop && task.status !== "done" && !stopped && options.now() < intent.deadline) {
                   if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process identity.");
                   if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
@@ -576,6 +585,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                   if (operation === null) {
                     try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, intent.deadline - options.now())) }); }
                     catch (error) {
+                      if (hasUnsafeControllerObservationFailure(error)) throw error;
                       signal.throwIfAborted();
                       operation = readControllerOperation(journal(task), operationId);
                       if (operation === null) throw error;
@@ -586,12 +596,15 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                   if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return { task, complete: false };
                 }
                 if (!stopped) {
-                  if (reachable) try { await request(ticket, { kind: "stop", deadline: stopDeadline }, { signal, timeoutMs: Math.max(1, Math.min(2000, stopDeadline - Date.now())) }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
+                  if (reachable) try { await request(ticket, { kind: "stop", deadline: stopDeadline }, { signal, timeoutMs: Math.max(1, Math.min(2000, stopDeadline - Date.now())) }); } catch (error) { stopRequestFailure = { cause: error }; if (hasUnsafeControllerObservationFailure(error)) throw error; }
                   signal.throwIfAborted();
+                  treeAttempted = true;
                   await stopControllerProcesses(proof, native, stopDeadline);
-                  stopped = await confirmControllerProcessesStopped(proof, native);
+                  stopped = await confirmControllerProcessesStopped(proof, native, stopDeadline);
                 }
                 if (!stopped) throw new Error("The original controller or its native processes still exist.");
+                treeAttempted = true;
+                if (stopRequestFailure !== undefined) throw stopRequestFailure.cause;
               } catch (error) {
                 let observationError: unknown;
                 try { observationError = await notifyStopped(); } catch (failure) { observationError = failure; }
@@ -599,7 +612,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 throw error;
               }
               await notifyStopped();
-              if (saved !== null) await recordStoppedControllerGeneration(journal(task), ticket);
+              if (saved !== null) await recordStoppedControllerGeneration(journal(task), ticket, stopDeadline);
               success(task, { kind: "cleanup", phase: "agent-stop" });
               phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
               stage = "backend-close";
@@ -637,7 +650,45 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         waiting.delete(task.claimId); rejected.delete(task.claimId);
         return { task, complete: true };
       } catch (error) {
-        throw new WorkerCleanupError(stage, error);
+        const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
+        treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
+        if (stage === "agent-stop" && fallback !== undefined) {
+          if (!bootstrapAttempted && !bootstrapCompleted && !treeAttempted) {
+            try { await stopControllerBootstrap(fallback.proof, fallback.deadline); bootstrapCompleted = true; }
+            catch (stopError) { failures.push(stopError); bootstrapCompleted = stopError instanceof ControllerBootstrapReplacedError; }
+          }
+          if (bootstrapCompleted && !treeEvidenceBlocked && !treeAttempted && fallbackTicket !== undefined) {
+            let journalIoFailure = false;
+            try {
+              const fallbackDeadline = fallback.deadline;
+              const remaining = () => { const time = fallbackDeadline - Date.now(); if (time <= 0) throw new Error("Web bootstrap cleanup exceeded its deadline; evidence is retained."); return time; };
+              const observation = await reconcileSubmittedControllerLaunch({ journalFile: journal(input), ticket: fallbackTicket, spawnProof: fallback.proof, signal: AbortSignal.timeout(remaining()), deadline: fallback.deadline });
+              remaining();
+              if (observation.kind === "controller-exited") {
+                const saved = observation.snapshot;
+                if (saved.controllerProcess === null) throw new Error("Web journal lacks complete controller proof; stopping remains unconfirmed.");
+                if (!matchesGeneration(fallback.task, saved) || !preservesControllerProcessProof(fallback.proof, saved.controllerProcess, fallbackTicket.launchId) || !preservesNativeProcessPrefix(fallback.task.webExecution!.nativeProcesses, saved.nativeProcesses)) throw new Error("Web fallback journal conflicts with the original process evidence.");
+                treeAttempted = true;
+                await stopControllerProcesses(saved.controllerProcess, saved.nativeProcesses, fallback.deadline); remaining();
+                if (!await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses, fallback.deadline)) throw new Error("Web original process tree did not stop; evidence is retained.");
+                remaining();
+              } else if (observation.kind !== "pre-writer-exited") throw new Error("Web bootstrap exit could not be classified; evidence is retained.", observation.kind === "unknown" ? { cause: observation.cause } : undefined);
+            } catch (verificationError) { failures.push(verificationError); journalIoFailure = isControllerJournalIoFailure(verificationError); }
+            const previous = fallback.task.webExecution!;
+            if (!treeAttempted && journalIoFailure && (isControllerJournalIoFailure(error) || error instanceof ControllerIpcOutcomeUnknownError)
+              && process.platform !== "win32" && previous.launchSubmission === "acknowledged"
+              && fallback.proof.processGroupId === fallback.proof.pid && fallback.proof.jobObjectName === undefined) {
+              try {
+                if (Date.now() >= fallback.deadline) throw new Error("Web retained-proof cleanup exceeded its deadline.");
+                await stopControllerProcesses(fallback.proof, previous.nativeProcesses, fallback.deadline);
+                if (Date.now() >= fallback.deadline) throw new Error("Web retained-proof cleanup exceeded its deadline.");
+                if (!await confirmControllerProcessesStopped(fallback.proof, previous.nativeProcesses, fallback.deadline)) throw new Error("Web retained process tree remains unconfirmed.");
+                if (Date.now() >= fallback.deadline) throw new Error("Web retained-proof cleanup exceeded its deadline.");
+              } catch (retainedError) { failures.push(retainedError); }
+            }
+          }
+        }
+        throw new WorkerCleanupError(stage, failures.length === 1 ? failures[0] : new AggregateError(failures, "Web cleanup observation and stopping failed.", { cause: failures[0] }));
       }
     },
   };
