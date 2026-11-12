@@ -84,6 +84,8 @@ Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process 
 
 同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。
 
+POSIX 原 Controller 被重新收养后，匹配出生时间和进程组的 zombie 仍证明该单进程退出；父进程与 zombie 命令显示可能改变。此观察不证明 native 进程或进程组停止。Bot 有序关闭使用同次鉴权的最新健康快照判断重启资格，保留已经记录的明确启动失败。
+
 取消未鉴权的启动先使用原 spawn proof 和清理的绝对期限停止 Controller 单进程，再分类 journal。POSIX 每次发送 TERM 或 KILL 前复核原实例；Windows 使用同一进程句柄核对身份、终止和有界等待，不依赖尚未建立的 Job Object。此证明不覆盖 native 进程；当前 generation 已提交时仍以 journal 的完整证明独立确认整个原生边界。清理一旦开始便完成有界停止收尾，失败保留原意图和错误。取舍见[启动身份决策](../../.agents/notes/implemented/bug-fix/2026-11-12-submitted-controller-launch.md)。
 
 `captureProcessProof` 统一拥有新进程证明采集的默认预算：Windows 为 15 秒，POSIX 为 5 秒；显式调用预算仍优先。父 launcher、Controller 自身以及 native spawn 共用该机制，`inspectProcessProof` 的日常身份复核仍显式使用 5 秒。Windows 通过已有 Koffi 依赖在本进程内打开原 PID 的 process handle，保持该句柄直到出生时间、父进程身份和完整 UTF-16 命令行采集及校验完成。全部字段来自同一进程实例，PID 复用不能把多次查询拼成另一实例的证明；证明字段结构与出生时间的既有 UTC 表示、CIM 微秒精度保持不变，命令行按完整 Unicode 文本计算哈希，不经过 PowerShell console 编码，也不用 executable path 代替。旧查询曾因 console code page 丢失字符，其错误文本的哈希与完整 Unicode 哈希不保证相同；不接受旧哈希 fallback，也不重算或替换原证明。Windows 复核只有出生时间、命令行哈希和 process group 均相同时返回 running；出生时间不同才返回 replaced。出生时间仍相同而命令行哈希或 process group 不同时，原进程实例尚未证明停止，复核抛出身份不确定错误，停止确认在查询 Job 成员前传播该错误并保留执行资料与资源责任，不能据此恢复或删除资源。POSIX 的比较行为保持不变。Windows 在 native 调用之间检查预算并等待已开始的调用返回，JavaScript 计时器不能抢占 kernel 调用。Controller 先保存自身证明及 Windows Job 边界，再绑定认证 IPC。权限、native 查询或结果格式错误继续失败并保留原错误和未确认责任，缺失管道不能证明启动未提交或进程已停止。机制与依赖限制见[Windows 原生进程证明决策](../../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)，预算依据见[启动证明预算决策](../../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)。

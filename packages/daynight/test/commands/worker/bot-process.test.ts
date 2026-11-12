@@ -86,13 +86,20 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false) => {
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3) => {
   const f = fixture("codex", configuration), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   if (unacknowledged) {
     f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); await options.onSpawned(proof); throw new Error("observation unavailable"); });
     await expect(f.process.advance(f.current(), signal)).rejects.toThrow("observation unavailable");
-  } else await f.process.advance(f.current(), signal);
+  } else if (starting) {
+    f.launch.mockImplementationOnce(async options => {
+      await options.onSubmitting(); await options.onSpawned(proof);
+      const snapshot: ControllerSnapshot = { ...await f.observe(options.ticket), controllerProcess: proof, lifecycle: "starting", nativeSessionId: null, startup: { state: "starting", reasonCode: "initializing" } };
+      await options.onObserved(snapshot); return snapshot;
+    });
+    await f.createProcess({}, recoveryLimit).advance(f.current(), signal);
+  } else await f.createProcess({}, recoveryLimit).advance(f.current(), signal);
   let saved: ControllerSnapshot = { ...(unacknowledged ? await f.observe(await f.process.readTicket(f.current())) : f.executions.get(f.current())!.snapshot!), controllerProcess: proof };
   f.executions.update(f.current(), { snapshot: saved });
   const confirmStopped = vi.fn(async () => false);
@@ -111,9 +118,9 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     catch { return { kind: "running-unobserved" as const, process: spawnProof }; }
   });
   const deps = { confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved, reconcileLaunch, stopBootstrap };
-  return { ...f, signal, deps, manager: f.createProcess(deps), saved: () => saved,
+  return { ...f, signal, deps, manager: f.createProcess(deps, recoveryLimit), saved: () => saved,
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
-    restart: () => f.createProcess(deps) };
+    restart: () => f.createProcess(deps, recoveryLimit) };
 };
 
 test("shutdown retains Bot artifacts and restart resumes the original native session with a new generation", async () => {
@@ -523,4 +530,26 @@ test("Bot preserves replacement when later full process stopping fails", async (
   const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
   expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([replacement, failure]);
   expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+
+test("shutdown saves a newly authenticated ready observation before orderly recovery with zero budget", async () => {
+  const f = await recoveryFixture({}, false, true, 0), original = f.current().intent!;
+  expect(f.executions.get(f.current())).toMatchObject({ startup: { state: "starting" }, snapshot: { lifecycle: "starting", nativeSessionId: null } });
+  f.patch({ lifecycle: "ready", nativeSessionId: id(9), startup: { state: "ready", reasonCode: "ready" } });
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.executions.get(f.current())).toMatchObject({ startup: { state: "ready" }, snapshot: { lifecycle: "stopped", nativeSessionId: id(9) }, restartAfterShutdown: true });
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.current().intent).toMatchObject({ executionGeneration: "2", nativeSessionId: id(9), sessionId: original.sessionId, recoveryLimit: 0 });
+  expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+});
+
+test("authenticated ready observation does not erase an earlier terminal startup failure", async () => {
+  const f = await recoveryFixture({}, false, true, 0);
+  const failed = { state: "failed", reasonCode: "native_rejected" } as const;
+  f.executions.update(f.current(), { startup: failed, lastError: "native rejected", snapshot: { ...f.saved(), lifecycle: "failed", error: "native rejected", startup: failed } });
+  f.patch({ lifecycle: "ready", nativeSessionId: id(9), startup: { state: "ready", reasonCode: "ready" } });
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.executions.get(f.current())).toMatchObject({ startup: failed, lastError: "native rejected", restartAfterShutdown: false });
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/budget is exhausted/);
 });

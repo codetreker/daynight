@@ -27,6 +27,12 @@ intent and resources as blocked. The independent
 [startup report decision](2026-11-05-session-startup-observations.md) continues
 to describe the public classification and its precedence.
 
+A reparented POSIX zombie can establish the original Controller's exit when its
+birth and process group match; its parent and displayed command can change during
+exit. This does not establish descendant stop. Bot orderly shutdown persists its
+authenticated current health before deciding whether restart consumes recovery
+budget, while retaining any recorded terminal startup failure.
+
 ## Alternatives
 
 **Use the journal as launch acknowledgement.** A preceding generation may be

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
-import { captureProcessProof, inspectProcessProof, stopControllerProcesses, confirmControllerProcessesStopped } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, inspectProcessProof, stopControllerProcesses, confirmControllerProcessesStopped, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 const children: ChildProcess[] = [];
 afterEach(() => vi.unstubAllEnvs());
 afterEach(async () => { for (const child of children.splice(0)) if (child.pid && child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } } });
@@ -50,3 +51,32 @@ it.skipIf(process.platform === "win32")("recognizes the original exited child wh
   expect(state).toBe("stopped");
   expect(() => process.kill(pid, 0)).not.toThrow();
 }, 10_000);
+it.skipIf(process.platform === "win32")("recognizes the original child after its parent exits and it is reparented", async () => {
+  const script = 'import os,sys,time\npid=os.fork()\nif pid == 0:\n os.close(0); os.close(1); time.sleep(20); os._exit(0)\nprint(pid,flush=True); sys.stdin.buffer.read(1); os._exit(0)';
+  const parent = spawn("python3", ["-c", script], { detached: true, stdio: ["pipe", "pipe", "ignore"] }); children.push(parent);
+  const [data] = await once(parent.stdout!, "data", { signal: AbortSignal.timeout(5000) });
+  const pid = Number(String(data).trim());
+  let proof: ProcessProof | undefined;
+  try {
+    proof = await captureProcessProof(pid);
+    expect(proof.parentPid).toBe(parent.pid);
+    const parentClosed = once(parent, "close", { signal: AbortSignal.timeout(5000) });
+    parent.stdin!.write("x"); await parentClosed;
+    const deadline = Date.now() + 5000;
+    let reparented = await captureProcessProof(pid);
+    while (reparented.parentPid === proof.parentPid && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25)); reparented = await captureProcessProof(pid);
+    }
+    expect(reparented.parentPid).not.toBe(proof.parentPid);
+    expect(reparented.startedAt).toBe(proof.startedAt);
+    expect(reparented.processGroupId).toBe(proof.processGroupId);
+    process.kill(pid, "SIGTERM");
+    let state = await inspectProcessProof(proof);
+    while (state !== "stopped" && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 25)); state = await inspectProcessProof(proof); }
+    expect(state).toBe("stopped");
+  } finally {
+    if (proof !== undefined && await inspectProcessProof(proof) === "running") {
+      try { process.kill(pid, "SIGKILL"); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+    }
+  }
+}, 15_000);

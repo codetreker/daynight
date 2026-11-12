@@ -278,6 +278,8 @@ export const createBotProcess = (options: {
     remaining();
     if (before.kind === "observed") {
       const observed = before.snapshot;
+      if (execution.startup?.state === "failed") options.executions.update(record, { launchSubmission: "acknowledged", snapshot: observed });
+      else remember(record, observed);
       options.executions.markShutdown(record, ["ready", "working"].includes(observed.lifecycle)
         && observed.error === null && observed.startup?.state === "ready" && !observed.nativeStopped);
       try { await request(ticket, { kind: "stop", deadline }, { signal: cleanupSignal, timeoutMs: Math.min(2000, remaining()) }); }

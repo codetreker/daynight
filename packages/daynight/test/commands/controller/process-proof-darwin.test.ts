@@ -36,3 +36,25 @@ it("reports identity differences and never signals a live replacement", async ()
   await expect(stopControllerBootstrap(proof, Date.now() + 5000)).rejects.toThrow('"status":"S","sameBirth":true,"sameParent":true,"sameGroup":true,"sameCommand":false');
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
+
+
+it("classifies a reparented original zombie without claiming its live group has stopped", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, args.includes("-A")
+    ? "4102 4101 S\n" : "4101 1 4101 Z Thu Nov 12 15:53:09 2026 (node)\n"));
+  expect(await inspectBootstrapProcessProof(proof)).toBe("stopped");
+  await stopControllerBootstrap(proof, Date.now() + 5000);
+  expect(await confirmControllerProcessesStopped(proof, [])).toBe(false);
+  expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each([
+  ["birth", "4101 1 4101 Z Thu Nov 12 15:53:10 2026 (node)\n"],
+  ["group", "4101 1 9999 Z Thu Nov 12 15:53:09 2026 (node)\n"],
+])("does not infer zombie exit when the original %s differs", async (_field, row) => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, row));
+  expect(await inspectBootstrapProcessProof(proof)).toBe("replaced");
+});

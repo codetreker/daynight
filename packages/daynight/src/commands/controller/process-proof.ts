@@ -37,13 +37,13 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
     else { const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status; }
   }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
-  // POSIX may retain a dead child as a zombie until its parent reaps it. Its
-  // command display can change, so use the same observation's birth and group.
-  if (current.startedAt === proof.startedAt && current.processGroupId === proof.processGroupId && current.parentPid === proof.parentPid) {
+  // A zombie's parent and command can change after the original parent exits.
+  // Birth and group still fence this single exited process, not its descendants.
+  if (current.startedAt === proof.startedAt && current.processGroupId === proof.processGroupId) {
     if (zombie) return "stopped";
     // Darwin can discard the command line before the process becomes a zombie.
     // This state permits waiting only, not signaling on incomplete identity.
-    if (exiting) return "exiting";
+    if (exiting && current.parentPid === proof.parentPid) return "exiting";
   }
   // The original birth still identifies a live Windows process. Conflicting
   // command evidence cannot authorize releasing its resources as a reused PID.
