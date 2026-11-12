@@ -4,6 +4,7 @@ import { once } from "node:events";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
+import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 type CimProcess = { ProcessId: number; ParentProcessId: number; Birth: string; CommandLine: string };
@@ -79,3 +80,31 @@ test.skipIf(process.platform !== "win32")("captures one native child identity ac
     child.kill(); await closed;
   }
 }, 90_000);
+
+
+test.skipIf(process.platform !== "win32")("terminates and waits for the real bootstrap process without a Job proof", async () => {
+  const child = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n"); setInterval(() => {}, 1000)'], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  const closed = once(child, "close");
+  try {
+    await once(child.stdout!, "data", { signal: AbortSignal.timeout(20_000) });
+    const proof = await captureProcessProof(child.pid!);
+    expect(proof.jobObjectName).toBeUndefined();
+    const koffi = await import("koffi");
+    const kernel = koffi.load("kernel32.dll");
+    const current = kernel.func("void * __stdcall GetCurrentProcess()");
+    const count = kernel.func("int __stdcall GetProcessHandleCount(void *process, void *count)");
+    const handleCount = () => { const result = Buffer.alloc(4); if (count(current(), result) === 0) throw new Error("GetProcessHandleCount failed."); return result.readUInt32LE(); };
+    await expect(stopControllerBootstrap(proof, Date.now() - 1)).rejects.toThrow(/deadline/);
+    expect(await inspectProcessProof(proof)).toBe("running");
+    const before = handleCount();
+    for (let attempt = 0; attempt < 8; attempt++) await expect(stopControllerBootstrap({ ...proof, commandHash: "replacement" }, Date.now() + 15_000)).rejects.toThrow();
+    expect(handleCount()).toBe(before);
+    await expect(stopControllerBootstrap({ ...proof, commandHash: "replacement" }, Date.now() + 15_000)).rejects.toThrow();
+    expect(await inspectProcessProof(proof)).toBe("running");
+    const beforeStop = handleCount();
+    await stopControllerBootstrap(proof, Date.now() + 15_000);
+    expect(handleCount()).toBe(beforeStop);
+    await closed;
+    expect(await inspectProcessProof(proof)).toBe("stopped");
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill(); await closed; }
+}, 60_000);

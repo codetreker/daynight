@@ -25,8 +25,10 @@ ordinary Windows entries to the complete phase; all other native phases retain
 one entry. Each matrix entry prepares its own runner, and both matrices depend only on module detection with
 the same CLI selection condition and `fail-fast: false`. All entries use common
 checkout, Node.js 24, pnpm, locked dependency installation, environment recording
-and build steps. Every job has the same 10-minute limit, including setup,
-validation and uploads. Test, hook and command deadlines retain their settings.
+and build steps. The original jobs had the same 10-minute limit, including setup,
+validation and uploads. The [macOS ordinary job budget](2026-11-12-macos-ordinary-validation-budget.md)
+supersedes that limit for the ordinary macOS entry. Test, hook and command
+deadlines retain their settings.
 
 Conditional macOS steps assert Darwin ARM64 in both matrices. Ordinary macOS
 verification runs the complete ordinary Vitest command under the

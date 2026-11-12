@@ -10,6 +10,8 @@ import type { LocalTask } from "../../../src/commands/worker/backends/web-types.
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
+import * as jobLeases from "../../../src/commands/worker/backends/controller-job-leases.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
@@ -27,6 +29,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
   afterEach(async()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals();for (const child of children.splice(0)) { child.kill("SIGKILL"); if (child.exitCode === null && child.signalCode === null) await new Promise<void>(resolve => child.once("exit", () => resolve())); }for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 
   const fixture=async(agent: "codex" | "claude" | "copilot" = "codex", recoveryLimit = 2)=>{
+   vi.spyOn(jobLeases, "createControllerJobLeases").mockImplementation(() => ({ enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} }));
    const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
    const store=openWebExecutionStore(storage === "memory" ? createMemoryDatabase() : path.join(home,"worker.sqlite"));stores.push(store);
    const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};
@@ -46,6 +49,10 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     task = f.store.updateWebExecution(task, { ticketPath: await launchTickets.writeLaunchTicket(f.home, ticket) }, 5);
     const snapshot: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: ticket.sessionId, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: task.resources.nativeSession?.sessionId ?? null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: task.webExecution!.controllerProcess, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
+      const current = lifecycle.readControllerSnapshot(input.journalFile);
+      return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };
+    });
     const stopped = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
     vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
     const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
@@ -84,6 +91,10 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
     };
     vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(ticketFor(task));
     const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+    vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => {
+      const current = lifecycle.readControllerSnapshot(input.journalFile);
+      return current === null ? { kind: "pre-writer-exited", process: input.spawnProof, journal: "missing" } : { kind: "controller-exited", process: input.spawnProof, snapshot: current };
+    });
     const stopped = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
     vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
     const launcher = { prepare: vi.fn(async (record: LocalTask) => ticketFor(record)), launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}) };

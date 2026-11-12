@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -13,12 +14,15 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 250 ? 1 : milliseconds, value, options);
   } };
 });
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
-vi.mock("node:child_process", () => ({ spawn: f.spawn }));
+const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn() }));
+vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
-vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
+vi.mock("../../../src/commands/controller/process-proof.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/process-proof.js")>(), captureProcessProof: f.capture, confirmControllerProcessesStopped: f.confirm, stopControllerProcesses: f.stop }));
+vi.mock("../../../src/commands/controller/launch-observation.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/launch-observation.js")>(), ControllerBootstrapReplacedError: errors.ControllerBootstrapReplacedError, isControllerJournalIoFailure: f.journalIo, stopControllerBootstrap: f.bootstrap, reconcileSubmittedControllerLaunch: f.reconcile }));
+vi.mock("../../../src/commands/controller/windows-job.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/windows-job.js")>(), acquireControllerJobLease: f.acquireJob, releaseControllerJobLease: f.releaseJob }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -81,13 +85,27 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
     if (url.endsWith("/stop")) return archiveFailure ? new Response("", { status: 401 }) : Response.json({ session: { ...session, lifecycle: "archived" } });
     throw new Error("Unexpected request");
   }));
-  const proof = { pid: 987, processGroupId: 987, startedAt: "original", commandHash: "hash", parentPid: 1 };
-  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as string | null, kill: vi.fn() });
+  const proof = { pid: 987, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64), parentPid: 1 };
+  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as string | null, kill: vi.fn(), unref: vi.fn() });
   f.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
   f.capture.mockResolvedValue(proof);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, signal, deadline }) => {
+    if (f.bootstrap.mock.calls.length) return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() };
+    if (deadline !== undefined) return { kind: "observed", snapshot: {} };
+    try { return { kind: "observed", snapshot: (await f.request(ticket, { kind: "observe" }, { timeoutMs: 2000, signal })).snapshot }; }
+    catch (error) {
+      const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+      if (error instanceof ControllerIpcOutcomeUnknownError) return { kind: "running-unobserved", process: spawnProof };
+      throw error;
+    }
+  });
   f.snapshot.mockReturnValue({ controllerProcess: proof, nativeProcesses: [] });
   f.record.mockResolvedValue({ stoppedAt: new Date().toISOString() });
   f.stop.mockResolvedValue(undefined);
+  f.confirm.mockResolvedValue(true);
+  f.bootstrap.mockResolvedValue(undefined);
+  f.acquireJob.mockReset().mockResolvedValue({}); f.releaseJob.mockReset();
+  f.journalIo.mockReturnValue(false);
   f.archive.mockResolvedValue({ state: "ready" });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
@@ -108,6 +126,7 @@ test.each([null, "hello 中文"])("foreground Test lifecycle preserves registrat
   expect(v.requests.some(r => r.url.includes("/tasks") || r.url.includes("/workers"))).toBe(false);
   expect(v.requests.filter(r => r.url.endsWith("controller-grant")).map(r => r.body.kind)).toEqual(["bootstrap", "reconnect"]);
   expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+  expect(f.record.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]);
   const launch = (await readdir(path.join(v.home, ".daynight", "controller", "launches")))[0]!;
   const ticket = JSON.parse(await readFile(path.join(v.home, ".daynight", "controller", "launches", launch), "utf8"));
   expect(ticket).toMatchObject({ initialInput: prompt === null ? "none" : "prompt", initialPrompt: prompt ?? "" });
@@ -155,7 +174,7 @@ test.each(["starting", "ready"])("IPC loss after a successful %s observation war
   expect(f.stop).toHaveBeenCalledOnce();
 });
 
-test.each([false, true])("startup still fails at its deadline when IPC was observed: %s", async observed => {
+test.each([false, true])("startup continues observing after its deadline when IPC was observed: %s", async observed => {
   const v = await setup(null), original = f.request.getMockImplementation()!;
   const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
   const failure = new ControllerIpcOutcomeUnknownError("Controller IPC outcome is unknown after its deadline.");
@@ -164,16 +183,16 @@ test.each([false, true])("startup still fails at its deadline when IPC was obser
   f.request.mockImplementation(async (ticket, action, options) => {
     if (action.kind === "observe") {
       observations++; clock += 30_000;
+      if (observations === 3) process.emit("SIGINT", "SIGINT");
       if (!observed) throw failure;
       return { snapshot: { lifecycle: "starting", nativeSessionId: null } };
     }
     return original(ticket, action, options);
   });
   const running = runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
-  if (observed) await expect(running).rejects.toThrow("Test controller startup timed out; its original execution is retained.");
-  else await expect(running).rejects.toBe(failure);
-  expect(observations).toBe(2);
-  expect(v.err).toEqual([]);
+  await running;
+  expect(observations).toBe(3);
+  expect(v.err.join("")).toContain("startup remains unconfirmed");
   expect(v.out.join("")).not.toContain("Provider ready:");
   expect(f.spawn).toHaveBeenCalledOnce();
   expect(f.stop).toHaveBeenCalledOnce();
@@ -187,10 +206,11 @@ test("an explicit first observation rejection still fails immediately", async ()
     if (action.kind === "observe") throw failure;
     return original(ticket, action, options);
   });
-  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toBe(failure);
-  expect(v.err).toEqual([]);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(failure); expect(error.errors[1].errors[0]).toBe(failure);
+  expect(v.err.join("")).toContain("stop could not be fully confirmed");
   expect(f.request.mock.calls.filter(([, action]) => action.kind === "observe")).toHaveLength(1);
-  expect(f.stop).toHaveBeenCalledOnce();
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
 });
 
 test("revoked archival credentials cannot prevent local process stop", async () => {
@@ -489,12 +509,12 @@ test.each(["direct", "aggregate"] as const)("%s SQLite archive failure stays vis
 });
 
 test("SQLite archive failure retains the preceding execution failure", async () => {
-  const v = await setup(null), execution = new Error("Agent runtime failed");
+  const v = await setup("initial"), execution = new Error("Agent runtime failed");
   const archive = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "inspect" });
   const original = f.request.getMockImplementation()!;
-  f.request.mockImplementation((...args) => { if (args[1].kind === "observe") throw execution; return original(...args); });
+  f.request.mockImplementation((...args) => { if (args[1].kind === "submit_initial") throw execution; return original(...args); });
   f.archive.mockRejectedValueOnce(archive);
-  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial" }, v.context).catch(error => error);
   expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([execution, archive]);
   expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
 });
@@ -509,6 +529,7 @@ test("archive-only retry reuses saved stop proof without starting a process or r
   const v = await setup(null);
   f.archive.mockRejectedValueOnce(new Error("offline"));
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
   const oldProof = v.requests.find(request => request.url.endsWith("/stop"))!.body;
   const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
   v.context.workingDirectory = () => { throw new Error("Old worktree no longer exists"); };
@@ -558,6 +579,7 @@ test("never-started sessions do not announce a pending history archive", async (
 test("archive-only retry marks pending before stop and tolerates metadata publication failure", async () => {
   const v = await setup(null);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
   const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
   const fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!, order: string[] = [];
   fetch.mockImplementation(async (...args) => {
@@ -596,16 +618,16 @@ test("journal observation failure still stops its owned child without fabricatin
   f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
   f.snapshot.mockImplementation(() => { throw failure; });
   await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
-  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
   expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
 });
 
-test("journal and local-stop failures remain independently visible", async () => {
+test("journal failure blocks complete native stopping after bootstrap exit", async () => {
   const v = await setup(null), journal = new Error("Journal unsupported version"), stopping = new Error("Local stopping failed");
   f.snapshot.mockImplementation(() => { throw journal; }); f.stop.mockRejectedValue(stopping);
   const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
-  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([journal, stopping]);
-  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+  expect(error).toBe(journal);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
 });
 
 
@@ -614,4 +636,859 @@ test("terminal cancellation does not hide a database failure while acquiring res
   f.resume.mockImplementationOnce(async () => { process.emit("SIGINT", "SIGINT"); throw failure; });
   await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
   expect(f.spawn).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+
+test.each(["missing", "preceding-generation"] as const)("pre-writer %s retains the independent launch without stopped or archival proof", async journal => {
+  const v = await setup("do not replay");
+  f.reconcile.mockImplementation(async ({ spawnProof }) => ({ kind: "pre-writer-exited", process: spawnProof, journal }));
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: "do not replay" }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors.every((item: Error) => item.message.includes("before committing"))).toBe(true);
+  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.bootstrap).not.toHaveBeenCalled();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([, action]) => action.kind === "submit_initial")).toBe(false);
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("terminal cancellation does not hide a simultaneous launch identity conflict", async () => {
+  const v = await setup(null), failure = new Error("Controller launch identity conflict");
+  f.reconcile.mockImplementation(async () => { process.emit("SIGINT", "SIGINT"); throw failure; });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors).toContain(failure);
+  expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("independent cleanup uses committed proof after original exit without signaling a replacement PID", async () => {
+  const v = await setup(null);
+  f.reconcile.mockImplementation(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  f.bootstrap.mockRejectedValue(new Error("replacement PID must not be signaled"));
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow(/exited after committing/);
+  expect(f.bootstrap).not.toHaveBeenCalled();
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+});
+
+
+test("independent cleanup reclassifies replacement after a running observation", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "controller-exited", process: input.spawnProof, snapshot: f.snapshot() };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+});
+
+test("independent cleanup retains replacement and unknown causes without stopped proof", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited"), unknown = new Error("unknown process");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "unknown", cause: unknown };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.cause).toBeInstanceOf(AggregateError); expect(error.cause.errors).toEqual([replacement, unknown]);
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test("independent cleanup preserves replacement when later full process stopping fails", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited"), failure = new Error("native stopping failed");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "controller-exited", process: input.spawnProof, snapshot: f.snapshot() };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement); f.stop.mockRejectedValueOnce(failure);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([replacement, failure]);
+  expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("capture failure still requests authenticated stop and retains the original error without a stop proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+  expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "stop"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("capture failure and unavailable IPC do not signal an unverified POSIX PID", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  f.capture.mockRejectedValueOnce(capture);
+  let attempts = 0;
+  f.request.mockImplementation(async () => { if (attempts++ === 0) { v.child.emit("error", new Error("unconfirmed child status")); throw new ControllerIpcOutcomeUnknownError("IPC unavailable"); } throw new Error("IPC status remains unconfirmed"); });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+  expect(error.errors[1].errors[0]).toBeInstanceOf(ControllerIpcOutcomeUnknownError);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test("capture failure stops a real spawned child over the original authenticated IPC", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-child-ready"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const ticket = JSON.parse(fs.readFileSync(path.join(process.env.DN_CONFIG_DIR, 'controller', 'launches', process.argv[5] + '.json'), 'utf8'));
+const snapshot = { executionId: ticket.executionId, testExecutionId: ticket.testExecutionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, controllerProcess: { pid: process.pid, parentPid: process.ppid, processGroupId: process.platform === "win32" ? null : process.pid, startedAt: "fixture-birth", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: "Local\\\\Daynight-" + ticket.launchId } : {}) }, nativeProcesses: [] };
+const server = net.createServer(socket => {
+  let input = '';
+  socket.on('data', data => {
+    input += data;
+    if (!input.includes('\\n')) return;
+    const request = JSON.parse(input);
+    if (request.secret !== ticket.ipcSecret || request.executionId !== ticket.executionId || request.testExecutionId !== ticket.testExecutionId || request.executionGeneration !== ticket.executionGeneration || request.controllerInstanceId !== ticket.controllerInstanceId) return socket.destroy();
+    socket.end(JSON.stringify({ requestId: request.requestId, ok: true, snapshot }) + '\\n', () => { if (request.action.kind === 'stop') server.close(); });
+  });
+});
+server.listen(ticket.ipcEndpoint, () => fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)));
+setTimeout(() => process.exit(9), 10000).unref();
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); throw capture; });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+    expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+    expect(spawned?.exitCode).toBe(0); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+    expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  } finally {
+    if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real IPC fixture child did not close.")), 12_000); })]); } finally { if (timer) clearTimeout(timer); } }
+  }
+}, 45_000);
+
+test("capture failure does not infer a process tree from authenticated journal evidence", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const proof = { pid: v.child.pid, parentPid: 1, processGroupId: v.child.pid, startedAt: "original", commandHash: "hash", ...(process.platform === "win32" ? { jobObjectName: "controlled-job" } : {}) };
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: proof, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(f.stop).not.toHaveBeenCalled();
+  expect(f.record).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("capture failure rejects conflicting IPC process identity without signaling it", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid + 1 }, nativeProcesses: [] } };
+    throw new Error("Conflicting peer must not receive stop");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors[0].message).toContain("does not match the spawned child");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("capture failure terminates the real Windows spawn handle without Job proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-child-ready"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => process.exit(9), 20000);`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); throw capture; });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+    expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+    expect(spawned).toBeDefined(); expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true);
+    expect(spawned!.exitCode).not.toBe(9); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  } finally {
+    if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real Windows fixture child did not close.")), 22_000); })]); } finally { if (timer) clearTimeout(timer); } }
+  }
+}, 60_000);
+
+
+test.skipIf(process.platform === "win32")("capture failure does not send IPC stop when the authenticated snapshot lacks child proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async ticket => ({ snapshot: { sessionId: ticket.sessionId, controllerProcess: null, nativeProcesses: [] } }));
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors[0].message).toContain("does not match the spawned child");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("capture cleanup continues after a child error and stops the still-running authenticated child", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed"), childError = new Error("child status error");
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  f.capture.mockRejectedValueOnce(capture);
+  let observations = 0;
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe" && observations++ === 0) { v.child.emit("error", childError); throw new ControllerIpcOutcomeUnknownError("IPC not ready"); }
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors).toContain(childError);
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "observe", "stop"]);
+  expect(v.child.unref).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("capture cleanup reserves time for the Windows spawn handle near the IPC cutoff", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  let clock = Date.now(), killAt: number | undefined;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe") { clock += 12_499; return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } }; }
+    if (action.kind === "stop") { expect(options.timeoutMs).toBe(1); clock += 1; return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  v.child.kill.mockImplementation(() => { killAt = clock; v.child.exitCode = 0; v.child.emit("exit", 0); return true; });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(killAt).toBeDefined();
+  expect(v.child.kill).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("observation failure preserves both it and identity-checked bootstrap stop failure", async () => {
+  const v = await setup(null), observation = new Error("journal observation failed"), stopping = new Error("bootstrap stop failed");
+  f.reconcile.mockRejectedValue(observation); f.bootstrap.mockRejectedValueOnce(stopping);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(observation);
+  expect(error.errors[1]).toBeInstanceOf(AggregateError); expect(error.errors[1].errors).toEqual([observation, stopping]);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("observation failure at cleanup deadline retains the failure without signaling", async () => {
+  const v = await setup(null), observation = new Error("journal observation failed");
+  let clock = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.reconcile.mockImplementation(async input => { if (input.deadline) { clock = input.deadline; throw observation; } process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: { lifecycle: "starting" } }; });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(observation);
+  expect(error.errors[1].message).toContain("cleanup exceeded its deadline");
+  expect(f.bootstrap).not.toHaveBeenCalled(); expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.record).not.toHaveBeenCalled();
+});
+
+test("authenticated ok:false observation still stops the real spawned Controller without recording stopped", async () => {
+  const v = await setup(null), childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const processProof = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
+  const launchObservation = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-failed-journal-ready"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const ticket = JSON.parse(fs.readFileSync(path.join(process.env.DN_CONFIG_DIR, 'controller', 'launches', process.argv[5] + '.json'), 'utf8'));
+const server = net.createServer(socket => {
+  let input = '';
+  socket.on('data', data => {
+    input += data;
+    if (!input.includes('\\n')) return;
+    const request = JSON.parse(input);
+    if (request.secret !== ticket.ipcSecret || request.executionId !== ticket.executionId || request.testExecutionId !== ticket.testExecutionId || request.executionGeneration !== ticket.executionGeneration || request.controllerInstanceId !== ticket.controllerInstanceId) return socket.destroy();
+    socket.end(JSON.stringify({ requestId: request.requestId, ok: false, error: 'fixture journal snapshot unavailable' }) + '\\n');
+  });
+});
+server.listen(ticket.ipcEndpoint, () => fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)));
+setTimeout(() => process.exit(9), 10000).unref();
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.reconcile.mockImplementation((...args: Parameters<typeof launchObservation.reconcileSubmittedControllerLaunch>) => launchObservation.reconcileSubmittedControllerLaunch(...args));
+  f.bootstrap.mockImplementation((...args: Parameters<typeof launchObservation.stopControllerBootstrap>) => launchObservation.stopControllerBootstrap(...args));
+  f.capture.mockImplementationOnce(async pid => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); return processProof.captureProcessProof(pid); });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("fixture journal snapshot unavailable");
+    expect(error.errors[1].errors[0].message).toContain("fixture journal snapshot unavailable");
+    expect(f.bootstrap).toHaveBeenCalledOnce(); await expect(f.bootstrap.mock.results[0]!.value).resolves.toBeUndefined();
+    expect(error.errors[1].errors[1].message).toContain("exited before committing its generation (missing)");
+    expect(spawned).toBeDefined(); expect(spawnedClose).toBeDefined();
+    // The Windows native stop waits synchronously on the process handle; Node's
+    // exit event may not be dispatched until the event loop runs again.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([spawnedClose!, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Stopped Controller child did not close.")), 5000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+    expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true); expect(spawned!.exitCode).not.toBe(9);
+    expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+    expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  } finally {
+    if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real failed-journal fixture child did not close.")), 12_000); })]); } finally { if (timer) clearTimeout(timer); } }
+  }
+}, 45_000);
+
+test.skipIf(process.platform === "win32").each([false, true])("observation failure checks real native stop with separate process group=%s", async detached => {
+  const v = await setup(null), childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const processProof = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
+  const launchObservation = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const { readLaunchTicket } = await import("../../../src/commands/controller/launch-ticket.js");
+  const { resolveConfigurationPaths } = await import("../../../src/config/paths.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-failed-journal-with-native"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const ticket = JSON.parse(fs.readFileSync(path.join(process.env.DN_CONFIG_DIR, 'controller', 'launches', process.argv[5] + '.json'), 'utf8'));
+const native = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(9), 10000)'], { stdio: 'ignore', detached: ${JSON.stringify(detached)} });
+const server = net.createServer(socket => {
+  let input = '';
+  socket.on('data', data => {
+    input += data;
+    if (!input.includes('\\n')) return;
+    const request = JSON.parse(input);
+    if (request.secret !== ticket.ipcSecret || request.executionId !== ticket.executionId || request.testExecutionId !== ticket.testExecutionId || request.executionGeneration !== ticket.executionGeneration || request.controllerInstanceId !== ticket.controllerInstanceId) return socket.destroy();
+    socket.end(JSON.stringify({ requestId: request.requestId, ok: false, error: 'fixture journal snapshot unavailable' }) + '\\n');
+  });
+});
+server.listen(ticket.ipcEndpoint, () => fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ controller: process.pid, native: native.pid })));
+setTimeout(() => process.exit(9), 10000).unref();
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  let controllerProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let nativeProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let journal = "", nativeObservedRunning = false;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.reconcile.mockImplementation((...args: Parameters<typeof launchObservation.reconcileSubmittedControllerLaunch>) => launchObservation.reconcileSubmittedControllerLaunch(...args));
+  f.bootstrap.mockImplementation((...args: Parameters<typeof launchObservation.stopControllerBootstrap>) => launchObservation.stopControllerBootstrap(...args));
+  f.confirm.mockImplementation((controller, native, deadline) => processProof.confirmControllerProcessesStopped(controller, native, deadline));
+  f.stop.mockImplementation(async (controller, native, deadline) => {
+    expect(await processProof.inspectProcessProof(native[0]!)).toBe("running"); nativeObservedRunning = true;
+    await processProof.stopControllerProcesses(controller, native, deadline);
+  });
+  f.capture.mockImplementationOnce(async pid => {
+    let identities: { controller: number; native: number } | undefined;
+    await vi.waitFor(async () => { identities = JSON.parse(await readFile(ready, "utf8")) as typeof identities; expect(identities!.native).toBeGreaterThan(0); }, { timeout: 5000, interval: 25 });
+    expect(identities!.controller).toBe(pid);
+    controllerProof = await processProof.captureProcessProof(pid); nativeProof = await processProof.captureProcessProof(identities!.native);
+    const ticket = await readLaunchTicket(v.home, spawned!.spawnargs.at(-1)!);
+    journal = path.join(resolveConfigurationPaths(v.home).stateDirectory, "controller", "executions", ticket.executionId, "journal.sqlite");
+    const store = lifecycle.openControllerLifecycleStore(journal, ticket, { onMigration: () => {} });
+    try { store.patchSnapshot({ controllerProcess: controllerProof, nativeProcesses: [nativeProof] }); } finally { store.close(); }
+    return controllerProof;
+  });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("fixture journal snapshot unavailable");
+    expect(nativeObservedRunning).toBe(true); expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
+    if (detached) {
+      expect(error.errors[1].errors[1].message).toContain("native process stop is unconfirmed");
+      expect(await processProof.inspectProcessProof(nativeProof!)).toBe("running");
+    } else expect(await processProof.confirmControllerProcessesStopped(controllerProof!, [nativeProof!])).toBe(true);
+    expect(lifecycle.readControllerSnapshot(journal)).toMatchObject({ nativeStopped: false, stoppedAt: null });
+    expect(f.record).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  } finally {
+    const failures: unknown[] = [];
+    try {
+      if (detached && nativeProof && await processProof.inspectProcessProof(nativeProof) === "running") await launchObservation.stopControllerBootstrap(nativeProof, Date.now() + 10_000);
+      if (controllerProof && nativeProof && !await processProof.confirmControllerProcessesStopped(controllerProof, [nativeProof])) await processProof.stopControllerProcesses(controllerProof, [nativeProof], Date.now() + 10_000);
+    }
+    catch (error) { failures.push(error); }
+    try { if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real Controller fixture child did not close.")), 12_000); })]); } finally { if (timer) clearTimeout(timer); } } }
+    catch (error) { failures.push(error); }
+    if (spawned && (!nativeProof || failures.length)) await new Promise(resolve => setTimeout(resolve, 10_500));
+    if (failures.length) throw new AggregateError(failures, "Real Controller fixture cleanup failed.");
+  }
+}, 45_000);
+
+
+test("unknown initial observation still stops a verified current tree without publishing stopped", async () => {
+  const v = await setup(null), unknown = new Error("controlled process inspection failure");
+  f.reconcile.mockResolvedValueOnce({ kind: "unknown", cause: unknown }).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0].cause).toBe(unknown); expect(error.errors[1].errors[0]).toBe(error.errors[0]);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce();
+  expect(f.stop.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]); expect(f.confirm.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]);
+  expect(f.record).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.each(["journal identity", "journal format", "IPC identity", "IPC identity with journal I/O"] as const)("initial %s conflict blocks native cleanup even if a later snapshot is valid", async mode => {
+  const v = await setup(null);
+  const launch = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const { ControllerIpcIdentityConflictError } = await import("../../../src/commands/controller/local-client.js");
+  const ipc = new ControllerIpcIdentityConflictError("IPC fence conflict");
+  const journal = mode === "journal identity" ? new launch.ControllerLaunchJournalConflictError("journal identity conflict")
+    : mode === "journal format" ? new SqliteAccessError("invalid-format", { database: "journal", phase: "read" })
+    : Object.assign(new Error("journal inaccessible"), { code: "SQLITE_CANTOPEN" });
+  const conflict = mode === "IPC identity" ? ipc : new launch.ControllerLaunchJournalObservationError(mode === "IPC identity with journal I/O" ? ipc : new Error("IPC unavailable"), journal);
+  let calls = 0;
+  f.reconcile.mockImplementation(async ({ spawnProof }) => { if (calls++ === 0) throw conflict; return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }; });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(conflict); expect(error.errors[1].errors).toContain(conflict);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.reconcile).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.confirm).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("IPC stop identity conflict stops only the original bootstrap and preserves the failure", async () => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const { ControllerIpcIdentityConflictError } = await import("../../../src/commands/controller/local-client.js");
+  const conflict = new ControllerIpcIdentityConflictError("IPC stop fence conflict");
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); throw new Error("wrapped IPC failure", { cause: conflict }); }
+    return original(ticket, action, options);
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0].cause).toBe(conflict); expect(f.bootstrap).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.confirm).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("initial input IPC identity conflict blocks later native cleanup", async () => {
+  const v = await setup("hello"), original = f.request.getMockImplementation()!;
+  const { ControllerIpcIdentityConflictError } = await import("../../../src/commands/controller/local-client.js");
+  const conflict = new ControllerIpcIdentityConflictError("initial input fence conflict");
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "submit_initial") throw conflict;
+    return original(ticket, action, options);
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: "hello" }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(conflict); expect(error.errors[1].errors).toContain(conflict);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.reconcile).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.confirm).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("replacement during failed observation cleanup can classify the old generation without signaling the replacement", async () => {
+  const v = await setup(null), observation = new Error("controlled journal error"), replacement = new errors.ControllerBootstrapReplacedError("original instance exited");
+  f.reconcile.mockRejectedValueOnce(observation).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  f.bootstrap.mockRejectedValueOnce(replacement);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(observation); expect(error.errors[1].errors).toEqual([observation, replacement]);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(v.child.kill).not.toHaveBeenCalled();
+});
+
+
+test("observation failure preserves a failed native-stop confirmation after bootstrap cleanup", async () => {
+  const v = await setup(null), observation = new Error("controlled journal error");
+  f.reconcile.mockRejectedValueOnce(observation).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  f.confirm.mockResolvedValueOnce(false);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(observation); expect(error.errors[1].errors[1].message).toContain("native process stop is unconfirmed");
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
+  expect(f.record).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("observation failure preserves a native-stop confirmation error", async () => {
+  const v = await setup(null), observation = new Error("controlled journal error"), confirmation = new Error("native status inaccessible");
+  f.reconcile.mockRejectedValueOnce(observation).mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  f.confirm.mockRejectedValueOnce(confirmation);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(observation); expect(error.errors[1].errors).toEqual([observation, confirmation]);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.each(["rejected", "unknown"] as const)("IPC stop %s retains the error after verified local stopping", async mode => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  const ipc = mode === "unknown" ? new ControllerIpcOutcomeUnknownError("stop outcome unknown") : new Error("stop explicitly rejected");
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); throw ipc; }
+    return original(ticket, action, options);
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(ipc);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
+  expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("IPC stop failure and later bootstrap failure both remain visible", async () => {
+  const v = await setup(null), original = f.request.getMockImplementation()!, ipc = new Error("stop explicitly rejected"), stopping = new Error("bootstrap stop failed");
+  f.request.mockImplementation(async (ticket, action, options) => { if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); throw ipc; } return original(ticket, action, options); });
+  f.bootstrap.mockRejectedValueOnce(stopping);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([ipc, stopping]);
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test("IPC stop failure retains the resume lease even after native stop confirmation", async () => {
+  const v = await setup(null), original = f.request.getMockImplementation()!, ipc = new Error("stop explicitly rejected");
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  f.request.mockImplementation(async (ticket, action, options) => { if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); throw ipc; } return original(ticket, action, options); });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(ipc); expect(f.confirm).toHaveBeenCalledOnce();
+  expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+
+const retainedSnapshot = (ticket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket, spawn: import("../../../src/commands/controller/process-proof.js").ProcessProof): import("../../../src/commands/controller/lifecycle-store.js").ControllerSnapshot => ({
+  executionId: ticket.executionId, testExecutionId: ticket.testExecutionId!, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
+  controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeSessionId: id, initialInputState: "not_required", activity: "idle", currentTurnId: null,
+  capabilities: { send: true, steer: false, cancel: false, respond: false }, controllerProcess: { ...spawn, ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) },
+  nativeProcesses: [{ pid: 988, parentPid: spawn.pid, processGroupId: spawn.processGroupId, startedAt: "native", commandHash: "b".repeat(64) }],
+  nativeStopped: false, stoppedAt: null, error: null,
+});
+
+const withWindowsPlatform = async (action: () => Promise<void>): Promise<void> => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: "win32" });
+  try { await action(); } finally { Object.defineProperty(process, "platform", original); }
+};
+
+test("Windows keeps an authenticated Job lease through stop and journal recording", async () => {
+  const v = await setup(null), lease = {}; f.acquireJob.mockResolvedValue(lease);
+  await withWindowsPlatform(async () => {
+    let saved: ReturnType<typeof retainedSnapshot>;
+    f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+      if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+      if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+      return { kind: "controller-exited", process: spawnProof, snapshot: saved };
+    });
+    await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+    expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(f.acquireJob.mock.invocationCallOrder[0]).toBeLessThan(f.bootstrap.mock.invocationCallOrder[0]!);
+    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.record.mock.calls[0]![3]).toBe(lease);
+    expect(f.stop.mock.calls[0]![2]).toBe(f.record.mock.calls[0]![2]);
+    expect(f.record.mock.invocationCallOrder[0]).toBeLessThan(f.releaseJob.mock.invocationCallOrder[0]!);
+  });
+});
+
+test("Windows initial IPC failure retains the original error while using the pinned Job for cleanup", async () => {
+  const v = await setup(null), lease = {}, failure = new Error("IPC refused observation"); f.acquireJob.mockResolvedValue(lease);
+  await withWindowsPlatform(async () => {
+    let calls = 0;
+    f.reconcile.mockImplementation(async ({ spawnProof }) => { if (calls++ === 0) throw failure; return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }; });
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error.errors[0]).toBe(failure); expect(error.errors[1].errors[0]).toBe(failure);
+    expect(f.acquireJob.mock.invocationCallOrder[0]).toBeLessThan(f.bootstrap.mock.invocationCallOrder[0]!);
+    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.confirm.mock.calls[0]![3]).toBe(lease);
+    expect(f.stop.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]); expect(f.confirm.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]);
+    expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+  });
+});
+
+test("Windows missing original Job preserves the failure and only stops bootstrap", async () => {
+  const v = await setup(null), missing = new Error("original Job name is unavailable"); f.acquireJob.mockRejectedValue(missing);
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error.errors).toContain(missing); expect(f.bootstrap).toHaveBeenCalledOnce();
+    expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.releaseJob).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  });
+});
+
+test("Windows Job handle close failure preserves the error and blocks archival and resume release", async () => {
+  const v = await setup(null), lease = {}, failure = new Error("Job handle close failed"); f.acquireJob.mockResolvedValue(lease); f.releaseJob.mockImplementation(() => { throw failure; });
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context).catch(error => error);
+    expect(error).toMatchObject({ outcome: "committed", cause: failure }); expect(error.message).toContain("stopped journal was committed");
+    expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(f.archive).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  });
+});
+
+test("deadline after stopped journal commit preserves the committed outcome and releases the Job", async () => {
+  const v = await setup(null), lease = {}; let clock = Date.now();
+  f.acquireJob.mockResolvedValue(lease); vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.record.mockImplementation(async (_file, _ticket, deadline) => { clock = deadline; return { stoppedAt: new Date().toISOString() }; });
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error).toMatchObject({ outcome: "committed" }); expect(error.cause.message).toContain("cleanup exceeded its deadline");
+    expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease); expect(f.archive).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  });
+});
+
+test.skipIf(process.platform !== "win32")("real Windows Job stop is committed and verified in a new Node process", async () => {
+  const v = await setup(null), childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  vi.stubEnv("DN_CONFIG_DIR", path.join(v.home, ".daynight"));
+  const job = await vi.importActual<typeof import("../../../src/commands/controller/windows-job.js")>("../../../src/commands/controller/windows-job.js");
+  const proofApi = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
+  const launch = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const koffi = await import("koffi"), kernel = koffi.load("kernel32.dll");
+  const openProcess = kernel.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
+  const processTimes = kernel.func("int __stdcall GetProcessTimes(void *process, void *creation, void *exit, void *kernel, void *user)");
+  const waitProcess = kernel.func("uint32_t __stdcall WaitForSingleObject(void *handle, uint32_t milliseconds)");
+  const exitCode = kernel.func("int __stdcall GetExitCodeProcess(void *handle, void *code)");
+  const closeHandle = kernel.func("int __stdcall CloseHandle(void *handle)");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "job-ready.json"); await mkdir(dist);
+  const jobModule = path.resolve(import.meta.dirname, "../../../dist/commands/controller/windows-job.js");
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+(async () => {
+  const job = await import(${JSON.stringify(pathToFileURL(jobModule).href)});
+  await job.createOwnedControllerJob(process.argv[5], process.pid);
+  // Detached avoids libuv's parent-lifetime Job while retaining the Controller Job.
+  // https://github.com/libuv/libuv/blob/v1.52.1/src/win/process.c#L69-L80
+  const native = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(9), 30000)'], { stdio: 'ignore', detached: true });
+  fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ native: native.pid }));
+  setTimeout(() => process.exit(9), 60000);
+})().catch(error => { console.error(error); process.exit(1); });
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, close: Promise<void> | undefined;
+  let nativeProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let nativeHandle: unknown = null;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); close = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.capture.mockImplementationOnce(async pid => {
+    let data: { native: number } | undefined;
+    await vi.waitFor(async () => { data = JSON.parse(await readFile(ready, "utf8")); expect(data!.native).toBeGreaterThan(0); }, { timeout: 15_000, interval: 25 });
+    nativeProof = await proofApi.captureProcessProof(data!.native);
+    nativeHandle = openProcess(0x101000, 0, nativeProof.pid);
+    if (nativeHandle === null) throw new Error("Native fixture handle is unavailable.");
+    const creation = Buffer.alloc(8);
+    if (processTimes(nativeHandle, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)) === 0) throw new Error("Native fixture creation time is unavailable.");
+    const ticks = creation.readBigUInt64LE() / 10n * 10n - 116444736000000000n;
+    const startedAt = `${new Date(Number(ticks / 10000000n) * 1000).toISOString().slice(0, 19)}.${(ticks % 10000000n).toString().padStart(7, "0")}Z`;
+    expect(startedAt).toBe(nativeProof.startedAt); expect(waitProcess(nativeHandle, 0)).toBe(258);
+    return proofApi.captureProcessProof(pid);
+  });
+  f.acquireJob.mockImplementation((...args: Parameters<typeof job.acquireControllerJobLease>) => job.acquireControllerJobLease(...args));
+  f.releaseJob.mockImplementation((...args: Parameters<typeof job.releaseControllerJobLease>) => job.releaseControllerJobLease(...args));
+  f.bootstrap.mockImplementation((...args: Parameters<typeof launch.stopControllerBootstrap>) => launch.stopControllerBootstrap(...args));
+  f.stop.mockImplementation(async (...args: Parameters<typeof proofApi.stopControllerProcesses>) => {
+    expect(await proofApi.inspectProcessProof(nativeProof!)).toBe("running");
+    await proofApi.stopControllerProcesses(...args);
+  });
+  f.confirm.mockImplementation((...args: Parameters<typeof proofApi.confirmControllerProcessesStopped>) => proofApi.confirmControllerProcessesStopped(...args));
+  f.record.mockImplementation((...args: Parameters<typeof lifecycle.recordStoppedControllerGeneration>) => lifecycle.recordStoppedControllerGeneration(...args));
+  let saved: ReturnType<typeof retainedSnapshot>;
+  let actualTicket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket | undefined;
+  let journalFile = "";
+  let failed = false, originalFailure: unknown;
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) {
+      actualTicket = ticket; journalFile = path.join(v.home, ".daynight", "controller", "executions", ticket.executionId, "journal.sqlite");
+      const store = lifecycle.openControllerLifecycleStore(journalFile, ticket);
+      try {
+        const controllerProcess = { ...spawnProof, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
+        saved = store.patchSnapshot({ lifecycle: "ready", nativeSessionId: id, controllerProcess, nativeProcesses: [nativeProof!] });
+      } finally { store.close(); }
+      f.snapshot.mockReturnValue(saved); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved };
+    }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    return { kind: "controller-exited", process: spawnProof, snapshot: saved };
+  });
+  try {
+    await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home });
+    expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledOnce();
+    expect(f.stop.mock.calls[0]![3]).toBe(f.record.mock.calls[0]![3]);
+    expect(waitProcess(nativeHandle, 0)).toBe(0);
+    const nativeExit = Buffer.alloc(4); expect(exitCode(nativeHandle, nativeExit)).not.toBe(0); expect(nativeExit.readUInt32LE()).toBe(1);
+    const stored = lifecycle.readProvenWindowsStoppedControllerGeneration(journalFile, actualTicket!);
+    expect(stored).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: { pid: spawned!.pid }, nativeProcesses: [{ pid: nativeProof!.pid }], windowsJobStopProof: { version: 1 } });
+    const readerUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/lifecycle-store.js")).href;
+    const ticketUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/launch-ticket.js")).href;
+    const script = `const { readProvenWindowsStoppedControllerGeneration } = await import(${JSON.stringify(readerUrl)}); const { readLaunchTicket } = await import(${JSON.stringify(ticketUrl)}); const ticket = await readLaunchTicket(${JSON.stringify(v.home)}, ${JSON.stringify(actualTicket!.launchId)}); const snapshot = readProvenWindowsStoppedControllerGeneration(${JSON.stringify(journalFile)}, ticket); console.log(JSON.stringify({ lifecycle: snapshot.lifecycle, nativeStopped: snapshot.nativeStopped, controllerPid: snapshot.controllerProcess.pid, nativePid: snapshot.nativeProcesses[0].pid, proofVersion: snapshot.windowsJobStopProof.version }));`;
+    const output = await new Promise<string>((resolve, reject) => childProcess.execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: 15_000 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+    expect(JSON.parse(output.trim())).toEqual({ lifecycle: "stopped", nativeStopped: true, controllerPid: spawned!.pid, nativePid: nativeProof!.pid, proofVersion: 1 });
+  } catch (error) { failed = true; originalFailure = error; }
+  finally {
+    const failures: unknown[] = [];
+    try {
+      if (spawned && spawned.exitCode === null && spawned.signalCode === null) spawned.kill();
+      if (close) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([close, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Windows Controller fixture did not close.")), 5000); })]); } finally { if (timer) clearTimeout(timer); } }
+    } catch (error) { failures.push(error); }
+    try { if (nativeProof && (nativeHandle === null || waitProcess(nativeHandle, 0) !== 0)) await launch.stopControllerBootstrap(nativeProof, Date.now() + 10_000); else if (!nativeProof && spawned) await new Promise(resolve => setTimeout(resolve, 31_000)); } catch (error) { failures.push(error); }
+    if (nativeHandle !== null) try { if (closeHandle(nativeHandle) === 0) throw new Error("Native fixture handle close failed."); } catch (error) { failures.push(error); }
+    if (failures.length) {
+      roots.splice(roots.indexOf(v.home), 1);
+      throw new AggregateError(failed ? [originalFailure, ...failures] : failures, `Windows Job fixture cleanup failed; evidence retained in ${v.home}.`, failed ? { cause: originalFailure } : undefined);
+    }
+  }
+  if (failed) throw originalFailure;
+}, 90_000);
+
+test.skipIf(process.platform === "win32")("journal I/O failure uses only the authenticated original POSIX snapshot for bounded cleanup", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure");
+  let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  f.journalIo.mockImplementation(error => error === journal);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    throw journal;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBe(journal); expect(f.stop).toHaveBeenCalledOnce();
+  expect(f.stop).toHaveBeenCalledWith(saved!.controllerProcess, saved!.nativeProcesses, f.bootstrap.mock.calls[0]![1]);
+  expect(f.confirm).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("conflicting authenticated process evidence forbids retained-snapshot cleanup", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure");
+  f.journalIo.mockImplementation(error => error === journal);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { const snapshot = retainedSnapshot(ticket, spawnProof); snapshot.controllerProcess = { ...spawnProof, pid: spawnProof.pid + 1 }; return { kind: "observed", snapshot }; }
+    return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() };
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0].message).toContain("conflicting process evidence");
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.reconcile).toHaveBeenCalledOnce(); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform === "win32")("non-I/O journal conflicts never authorize retained-snapshot cleanup", async () => {
+  const v = await setup(null), conflict = new Error("journal identity conflict"); let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    throw conflict;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBe(conflict); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform === "win32")("discarded native proof blocks retained-snapshot cleanup after journal failure", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure"); let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  f.journalIo.mockImplementation(error => error === journal);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: { ...saved!, nativeProcesses: [] } };
+    throw journal;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0].message).toContain("conflicting process evidence");
+  expect(f.reconcile).toHaveBeenCalledTimes(2); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("journal I/O failure never terminates a named Job from a retained snapshot", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure"); let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  const proof = { pid: v.child.pid, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
+  f.capture.mockResolvedValueOnce(proof); f.journalIo.mockImplementation(error => error === journal);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    throw journal;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBe(journal); expect(f.stop).not.toHaveBeenCalled(); expect(f.confirm).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform === "win32")("retained authenticated snapshot stops a real attributable POSIX group on journal I/O failure", async () => {
+  const v = await setup(null), childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const processProof = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
+  const launchObservation = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const { readLaunchTicket } = await import("../../../src/commands/controller/launch-ticket.js");
+  const { resolveConfigurationPaths } = await import("../../../src/config/paths.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "saved-snapshot-child-ready"), evidence = path.join(v.home, "saved-snapshot.json"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const ticket = JSON.parse(fs.readFileSync(path.join(process.env.DN_CONFIG_DIR, 'controller', 'launches', process.argv[5] + '.json'), 'utf8'));
+const native = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(9), 10000)'], { stdio: 'ignore' });
+const server = net.createServer(socket => {
+  let input = '';
+  socket.on('data', data => {
+    input += data;
+    if (!input.includes('\\n')) return;
+    const request = JSON.parse(input);
+    if (request.secret !== ticket.ipcSecret || request.executionId !== ticket.executionId || request.testExecutionId !== ticket.testExecutionId || request.executionGeneration !== ticket.executionGeneration || request.controllerInstanceId !== ticket.controllerInstanceId) return socket.destroy();
+    const snapshot = JSON.parse(fs.readFileSync(${JSON.stringify(evidence)}, 'utf8'));
+    socket.end(JSON.stringify({ requestId: request.requestId, ok: true, snapshot }) + '\\n');
+  });
+});
+server.listen(ticket.ipcEndpoint, () => fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ controller: process.pid, native: native.pid })));
+setTimeout(() => process.exit(9), 10000).unref();
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  let controllerProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let nativeProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let nativeWasRunning = false, journalFile = "";
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.journalIo.mockImplementation(error => launchObservation.isControllerJournalIoFailure(error));
+  f.reconcile.mockImplementation(async input => {
+    const result = await launchObservation.reconcileSubmittedControllerLaunch(input);
+    if (!input.deadline && result.kind === "observed") process.emit("SIGINT", "SIGINT");
+    return result;
+  });
+  f.bootstrap.mockImplementation(async (...args: Parameters<typeof launchObservation.stopControllerBootstrap>) => { await launchObservation.stopControllerBootstrap(...args); await chmod(journalFile, 0); });
+  f.confirm.mockImplementation((controller, native, deadline) => processProof.confirmControllerProcessesStopped(controller, native, deadline));
+  f.stop.mockImplementation(async (controller, native, deadline) => {
+    expect(await processProof.inspectProcessProof(native[0]!)).toBe("running"); nativeWasRunning = true;
+    await processProof.stopControllerProcesses(controller, native, deadline);
+  });
+  f.capture.mockImplementationOnce(async pid => {
+    let identities: { controller: number; native: number } | undefined;
+    await vi.waitFor(async () => { identities = JSON.parse(await readFile(ready, "utf8")) as typeof identities; expect(identities!.native).toBeGreaterThan(0); }, { timeout: 5000, interval: 25 });
+    expect(identities!.controller).toBe(pid);
+    controllerProof = await processProof.captureProcessProof(pid); nativeProof = await processProof.captureProcessProof(identities!.native);
+    const ticket = await readLaunchTicket(v.home, spawned!.spawnargs.at(-1)!);
+    journalFile = path.join(resolveConfigurationPaths(v.home).stateDirectory, "controller", "executions", ticket.executionId, "journal.sqlite");
+    const store = lifecycle.openControllerLifecycleStore(journalFile, ticket, { onMigration: () => {} });
+    try { store.patchSnapshot({ controllerProcess: controllerProof, nativeProcesses: [nativeProof] }); await writeFile(evidence, JSON.stringify(store.getSnapshot())); } finally { store.close(); }
+    return controllerProof;
+  });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(launchObservation.isControllerJournalIoFailure(error)).toBe(true); expect(error.journalCause).toMatchObject({ code: "SQLITE_CANTOPEN" });
+    expect(nativeWasRunning).toBe(true); expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
+    expect(await processProof.confirmControllerProcessesStopped(controllerProof!, [nativeProof!])).toBe(true);
+    expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  } finally {
+    const failures: unknown[] = [];
+    try { if (journalFile) await chmod(journalFile, 0o600); } catch (error) { failures.push(error); }
+    try { if (controllerProof && nativeProof && !await processProof.confirmControllerProcessesStopped(controllerProof, [nativeProof])) await processProof.stopControllerProcesses(controllerProof, [nativeProof], Date.now() + 10_000); }
+    catch (error) { failures.push(error); }
+    try { if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real saved-snapshot fixture child did not close.")), 12_000); })]); } finally { if (timer) clearTimeout(timer); } } }
+    catch (error) { failures.push(error); }
+    if (spawned && (!nativeProof || failures.length)) await new Promise(resolve => setTimeout(resolve, 10_500));
+    if (failures.length) throw new AggregateError(failures, "Real saved-snapshot fixture cleanup failed.");
+  }
+}, 45_000);
+
+test.skipIf(process.platform === "win32")("retained snapshot preserves journal I/O and known native-stop confirmation failure", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure"); let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  f.journalIo.mockImplementation(error => error === journal); f.confirm.mockResolvedValueOnce(false);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    throw journal;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(journal); expect(error.errors[1].message).toContain("Known Test controller processes remain active");
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform === "win32")("unattributable retained process group is blocked and preserves the journal failure", async () => {
+  const v = await setup(null), journal = new Error("controlled journal I/O failure"), stopping = new Error("remaining group has no original proof");
+  let saved: ReturnType<typeof retainedSnapshot> | undefined;
+  f.journalIo.mockImplementation(error => error === journal); f.stop.mockRejectedValueOnce(stopping);
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    throw journal;
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors).toEqual([journal, stopping]); expect(f.confirm).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
 });

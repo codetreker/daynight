@@ -4,13 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { openControllerLifecycleStore } from "../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../src/commands/controller/process-proof.js";
+import type { ControllerJobLease } from "../../src/commands/controller/windows-job.js";
 import type { ControllerLaunchTicket } from "../../src/commands/controller/launch-ticket.js";
 import { createControllerRelay, publicOperation } from "../../src/commands/controller/relay.js";
 import { RELAY_LIMITS, parseControllerMessage } from "../../src/session/controller-protocol.js";
 const id = "00000000-0000-4000-8000-000000000001";
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
 describe("relay transport persistence", () => {
-  it.each(["rejected", "expired"] as const)("persists an old-generation %s reconciliation through the real relay and SQLite journal", async (state) => {
+  it.each((["rejected", "expired"] as const).flatMap(state => fixturePlatforms.map(mode => [state, mode] as const)))("persists an old-generation %s reconciliation through the real relay and SQLite journal (%s)", async (state, mode) => {
     const base = path.resolve(import.meta.dirname, "../../../../.tmp/controller-tests");
     await mkdir(base, { recursive: true });
     const home = await mkdtemp(path.join(base, "reconcile-"));
@@ -18,6 +22,7 @@ describe("relay transport persistence", () => {
     let journal: ReturnType<typeof openControllerLifecycleStore> | undefined;
     let relay: ReturnType<typeof createControllerRelay> | undefined;
     try {
+      if (mode === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" });
       await once(server, "listening");
       const address = server.address();
       if (typeof address === "string" || !address) throw new Error("Missing relay listen address");
@@ -34,8 +39,13 @@ describe("relay transport persistence", () => {
       journal = openControllerLifecycleStore(filename, original);
       const operation = journal.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload: { text: "Do not replay" } });
       const nativeSessionId = randomUUID();
-      journal.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, nativeSessionId });
+      if (process.platform === "win32") journal.patchSnapshot({ nativeSessionId, controllerProcess: { pid: 987654, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${original.launchId}` } });
+      else journal.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, nativeSessionId });
       journal.close(); journal = undefined;
+      if (process.platform === "win32") {
+        const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+        try { await recordStoppedControllerGeneration(filename, original, undefined, {} as ControllerJobLease); } finally { confirm.mockRestore(); }
+      }
       const ticket = { ...original, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
       journal = openControllerLifecycleStore(filename, ticket);
       await writeFile(ticket.credentialFile, JSON.stringify({ token: "local-test-grant", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
@@ -64,11 +74,11 @@ describe("relay transport persistence", () => {
       expect(journal.listUnacknowledgedOperations()).toEqual([]);
       expect(() => journal!.markDispatching(operation.operationId)).toThrow(/replay/);
     } finally {
-      relay?.close();
-      journal?.close();
-      for (const client of server.clients) client.terminate();
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      await rm(home, { recursive: true, force: true });
+      try {
+        relay?.close(); journal?.close();
+        for (const client of server.clients) client.terminate();
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      } finally { Object.defineProperty(process, "platform", platform); await rm(home, { recursive: true, force: true }); }
     }
   });
 });

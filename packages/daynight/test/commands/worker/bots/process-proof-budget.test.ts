@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({ execute: vi.fn(), native: vi.fn(), job: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: fixture.execute }));
 vi.mock("../../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: fixture.native }));
-vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: fixture.job, inspectControllerJob: vi.fn() }));
+vi.mock("../../../../src/commands/controller/windows-job.js", () => ({ createOwnedControllerJob: fixture.job, inspectControllerJobLease: vi.fn() }));
 import { captureControllerProcessProof, captureProcessProof, inspectProcessProof } from "../../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -22,7 +22,7 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
   fixture.job.mockResolvedValue("Local\\Daynight-controlled");
   fixture.native.mockImplementation(async pid => proof(pid));
-  fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 ${command}\n`));
+  fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Ss Thu Nov 5 00:00:00 2026 ${command}\n`));
 });
 afterEach(() => {
   vi.restoreAllMocks(); vi.useRealTimers();
@@ -118,7 +118,7 @@ describe("ordinary process ownership inspection", () => {
   it("retains POSIX replacement semantics for a changed command with the same birth", async () => {
     setPlatform("linux"); vi.spyOn(process, "kill").mockReturnValue(true);
     const original = await captureProcessProof(42);
-    fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 different command\n`));
+    fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Ss Thu Nov 5 00:00:00 2026 different command\n`));
     expect(await inspectProcessProof(original)).toBe("replaced");
   });
 });

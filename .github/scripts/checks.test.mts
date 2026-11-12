@@ -89,7 +89,6 @@ test("Linux, Windows and macOS share independent ordinary and installed CLI matr
     assert.match(stage, /^      fail-fast: false$/m);
 
     assert.match(stage, /^    runs-on: \$\{\{ matrix.os \}\}$/m);
-    assert.match(stage, /^    timeout-minutes: 10$/m);
     assert.match(stage, /^          node-version: 24$/m);
     assert.match(stage, /^          check-latest: true$/m);
     assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
@@ -97,6 +96,8 @@ test("Linux, Windows and macOS share independent ordinary and installed CLI matr
     assert.ok(stage.includes("run: pnpm build"));
     assert.doesNotMatch(stage, /VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error/);
   }
+  assert.ok(ordinary.includes("    timeout-minutes: ${{ matrix.os == 'macos-15' && 15 || 10 }}"));
+  assert.match(installed, /^    timeout-minutes: 10$/m);
 });
 
 test("ordinary CLI owns source checks while installed CLI owns the complete installed configuration", () => {

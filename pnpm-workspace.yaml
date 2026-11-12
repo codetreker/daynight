@@ -2,6 +2,8 @@ packages:
   - packages/*
 engineStrict: true
 storeDir: .tmp/pnpm-store
+minimumReleaseAgeExclude:
+  - better-sqlite3@13.1.1
 allowBuilds:
   better-sqlite3: false
   koffi@3.3.4: false

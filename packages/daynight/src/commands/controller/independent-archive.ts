@@ -30,6 +30,10 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
   }
   if (!ticket) throw new Error("No local Test Session matches this provider, session ID and configured server.");
   const execution = controllerExecutionDirectory(home, ticket.executionId), journalPath = path.join(execution, "journal.sqlite");
+  if (process.platform === "win32") {
+    const journal = await lstat(journalPath);
+    if (!journal.isFile() || journal.isSymbolicLink()) throw new Error("Test Session stop evidence must be a private regular file.");
+  }
   const stopped = await recordStoppedControllerGeneration(journalPath, ticket);
   const proofPath = path.join(execution, "stop-proof.json");
   let body: unknown;

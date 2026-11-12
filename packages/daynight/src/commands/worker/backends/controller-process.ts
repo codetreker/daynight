@@ -6,6 +6,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
+import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
 
 /** Serialize mutations of one execution without blocking unrelated executions. */
 export const createControllerExecutionSerializer = () => {
@@ -62,19 +63,18 @@ export const launchControllerProcess = async (options: {
     });
     child.unref();
     if (child.pid === undefined) throw new Error("Controller spawn did not establish its process identity.");
-    await options.onSpawned(await captureProcessProof(child.pid));
+    const spawnProof = await captureProcessProof(child.pid);
+    await options.onSpawned(spawnProof);
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       signal.throwIfAborted();
-      let snapshot: ControllerSnapshot | undefined;
-      try { snapshot = await observeControllerProcess(ticket, signal); }
-      catch {
-        if (child.exitCode !== null || child.signalCode !== null) throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller exited before its authenticated initialization; inspect its private log.");
+      const observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(directory, "journal.sqlite"), ticket, spawnProof, signal });
+      if (observation.kind === "observed") {
+        await options.onObserved(observation.snapshot);
+        return observation.snapshot;
       }
-      if (snapshot !== undefined) {
-        await options.onObserved(snapshot);
-        return snapshot;
-      }
+      if (observation.kind === "controller-exited" || observation.kind === "pre-writer-exited") throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, `Controller exited before authenticated initialization (${observation.kind}); its launch identity is retained.`);
+      if (observation.kind === "unknown") throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller process identity could not be established.", { cause: observation.cause });
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller startup outcome is unknown; the original process and launch intent are retained.");
