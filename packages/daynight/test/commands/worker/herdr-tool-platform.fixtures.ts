@@ -16,7 +16,7 @@ import type { WorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
-import { executeRawPreparationProbe, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
+import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
@@ -320,14 +320,11 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     if (closed && adapter && preparingWorkspace && evidence.error && process.platform === "win32" && !cancellation.signal.aborted && preparationProbeEnvironment && !windowsPreparationProbeAttempted) {
       windowsPreparationProbeAttempted = true;
       try {
-        const metadata = await import(new URL("../../../dist/commands/worker/herdr/tool-launch-lifecycle.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/tool-launch-lifecycle.js");
-        const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
-        const inventory = metadata.windowsMappingProcessInventoryCommand(preparationProbeEnvironment);
+        const inventory = historicalWindowsInventoryCommand(preparationProbeEnvironment);
         const marker = { ...inventory, args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", `[Console]::Out.Write('${preparationProbeMarker}')`] };
         evidence.cleanup.preparationProbes = await runPreparationProbeSequence({ marker, inventory }, async (mode, input, active) => {
           if (mode === "execFile") return executeRawPreparationProbe(input);
-          try { return { ...await metadata.runWindowsToolMetadataCommand(input, active), closed: true }; }
-          catch (error) { return { stdout: "", stderr: "", closed: !command.hasUnconfirmedHerdrCommandCleanup(error), outputCaptured: false, errorType: error instanceof Error ? error.name : "unknown" }; }
+          return executeHistoricalMetadataProbe(mode, input, active);
         }, () => cancellation.signal.aborted);
         if (evidence.cleanup.preparationProbes.some((probe: { closed: boolean }) => !probe.closed)) closed = false;
       } catch (error) { evidence.cleanup.preparationProbeSetupError = error instanceof Error ? error.name : "unknown"; closed = false; }

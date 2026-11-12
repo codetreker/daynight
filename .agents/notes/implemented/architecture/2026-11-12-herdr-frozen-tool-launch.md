@@ -34,13 +34,14 @@ channel. Node, helper and native processes must remain attributable to the
 original shell. Shutdown keeps responsibility for native descendants after their
 helper exits.
 
-Private PowerShell 5 metadata queries use non-detached children: detached creation
-can return exit zero without query output. The original command
-runner still owns deadlines, tree termination and child/output-stream closure.
-Queries reconstruct their system module search path so an intermediate Node
-process cannot carry incompatible PowerShell 7 modules into inspection. Query
-errors and incomplete inventories retain unknown ownership; these choices change
-neither the native environment nor daemon startup.
+Windows metadata inspection uses the repository's native process inspection
+pattern. One held process handle supplies the root executable path and creation
+time, with liveness checked before and after the observation. The readiness token
+preserves the full 100ns FILETIME precision when converting to .NET ticks.
+Toolhelp32 supplies candidate parent links; the original process proof and birth
+chain still establish ownership. Deadlines are checked around native calls, and a
+call already in progress is joined before late results are rejected and handles
+are closed. Inspection changes neither the native environment nor daemon startup.
 
 Windows descendant enrollment requires the original parent instance and a
 strictly later child birth, including PIDs supplied directly by callers. The
@@ -48,8 +49,40 @@ strictly later child birth, including PIDs supplied directly by callers. The
 can retain a dead parent's PID after an unrelated new process reuses it. Parent
 PID equality alone therefore cannot authorize enrollment or termination. Equal
 recorded birth times retain unknown ownership because their precision cannot
-establish ordering. Existing journal chains are checked before any Job or process
-termination; invalid records remain intact instead of being recaptured or pruned.
+establish ordering. Explicit mapping cleanup and recovery check the existing
+journal chains before terminating Jobs or processes; invalid records remain
+intact instead of being recaptured or pruned.
+
+The Windows helper retains a named kill-on-close Job handle through its OS
+process lifetime. Worker mappings retain a second original Job handle and the
+original helper process handle after verifying the owned boundary and membership.
+Because that second handle suppresses last-close termination, a lightweight observer
+is installed before initial member enumeration and terminates remaining members
+when the original helper is signaled, even if that enumeration fails. Retirement
+still requires empty Job membership, signaled observed process handles and the
+original journal's stop proof before durable publication and handle release.
+The helper's natural exit retains the native exit code; explicit JavaScript handle
+closure must not terminate the helper before its outcome is returned.
+Kill-on-close and the original-handle observer enforce the automatic lifetime
+policy established at launch, independently of later journal enrollment. They
+publish no retirement and grant no explicit cleanup or recovery authority when
+the required journal is missing.
+
+An observation fault closes input admission while preserving bounded cleanup
+through the original handles. A member can bypass enrollment through an exited
+parent only after its original Job membership and held-handle exit are confirmed,
+with PID reuse excluded. Once retirement is durable, cleanup retries only retained
+handle releases; it neither reopens the Job nor queries historical PIDs. Successfully
+closed handles are removed individually so a later release failure cannot cause
+them to be closed again.
+
+This Herdr-specific lifetime is separate from ordinary Controller jobs.
+[Temporary object references](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject)
+can retain the kernel object without retaining its name after the last handle
+closes. A missing name, even with a kill-on-close marker, does not prove that
+[asynchronous process termination](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+finished. Lost handles and missing or
+contradictory boundary records therefore retain unknown cleanup responsibility.
 
 Before first input, launch, receipt, kind, readiness, binding and the complete
 original process chain must agree. Official Codex and Copilot integration can
@@ -98,6 +131,26 @@ metadata and fails if a required original dependency cannot be verified.
 **Trust parent PID links and verify each descendant only at shutdown.** A birth
 proof can faithfully identify the wrong descendant. Windows retains stale parent
 IDs, so shutdown identity checks alone cannot repair mistaken enrollment.
+
+**Query root identity and process inventory through private PowerShell children.**
+Non-detached execution repaired the observed successful exits with empty output,
+but real Windows readiness still exhausted its budget in process metadata
+queries. Simple marker commands completed in the same private environment while
+cmdlet-based queries timed out; the cause within that environment was not
+established. Native inspection removes that additional shell and module-loading
+dependency without extending the deadline or weakening identity checks. The
+controlled root shell itself remains PowerShell 5 and retains its real-platform
+acceptance requirement.
+
+**Close the Job handle after assignment or treat a missing name as empty.** The
+name can disappear while member references retain the object. Kill-on-close also
+initiates termination without proving every process has finished. Original handle
+observation is required to confirm complete shutdown.
+
+**Retain only a helper-owned Job handle.** This preserves the name during normal
+execution, but a helper crash loses the handle needed to observe detached members.
+The Worker retains a second handle and explicitly observes and terminates the
+remaining members; losing both holders still leaves cleanup unknown.
 
 ## Consequences
 

@@ -4,12 +4,13 @@ import type { Operation } from "../../../api/operation.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
-import { inspectControllerJob } from "../../controller/windows-job.js";
-import { runHerdrCommand, spawnHerdrProcess, type HerdrCommand } from "./command.js";
+import { runHerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
 import { readToolStartRequest } from "./tool-launch-start.js";
+import { releaseHerdrJobObserver, retainHerdrJobObserver } from "./tool-launch-windows-job.js";
+import { captureWindowsProcessInventory } from "./windows-process-metadata.js";
 
 type Inventory = { pid: number; parentPid: number; group: number | null };
 type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
@@ -32,40 +33,8 @@ const assertWindowsBirthChain = (proofs: readonly ProcessProof[]): void => {
     assertWindowsParentBirth(proof, parent);
   }
 };
-const windowsMetadataEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
-/** Windows PowerShell can exit successfully without redirected output when
- * detached. The original runner still owns its deadline, tree and close.
- */
-export const runWindowsToolMetadataCommand = (command: HerdrCommand, operation: Operation) => runHerdrCommand(
-  { ...command, environment: windowsMetadataEnvironment(command.environment) }, operation,
-  (file, args, options) => spawnHerdrProcess(file, args, { ...options, detached: false }),
-);
-export const windowsMappingProcessInventoryCommand = (environment: NodeJS.ProcessEnv): HerdrCommand => {
-  const root = environment.SystemRoot ?? environment.SYSTEMROOT;
-  if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required to inspect the original Herdr process tree.");
-  // An intermediate Node process inherits PowerShell 7 module paths unchanged.
-  // PS5 must reconstruct its own paths before loading its system CIM/JSON modules.
-  // https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath#starting-windows-powershell-from-powershell-7
-  const metadataEnvironment = windowsMetadataEnvironment(environment);
-  return { file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::Out.Write((ConvertTo-Json -InputObject @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | Select-Object ProcessId,ParentProcessId) -Compress))"], environment: metadataEnvironment };
-};
-export const parseWindowsMappingProcessInventory = (stdout: string, stderr = ""): Inventory[] => {
-  const diagnostics = (): string => `stdoutBytes=${Buffer.byteLength(stdout)}, stderrBytes=${Buffer.byteLength(stderr)}, stderr=${JSON.stringify(stderr.slice(0, 2048))}`;
-  let value: unknown;
-  try { value = JSON.parse(stdout); }
-  catch (cause) { throw new Error(`The Windows process inventory produced no complete JSON; original process ownership remains unknown. ${diagnostics()}`, { cause }); }
-  const ids = new Set<number>();
-  if (!Array.isArray(value) || value.length === 0 || value.some(row => {
-    if (row === null || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join() !== "ParentProcessId,ProcessId" || !Number.isSafeInteger(row.ProcessId) || row.ProcessId < 0 || !Number.isSafeInteger(row.ParentProcessId) || row.ParentProcessId < 0 || ids.has(row.ProcessId)) return true;
-    ids.add(row.ProcessId); return false;
-  }) || !value.some(row => row.ProcessId > 0)) throw new Error(`The Windows process inventory could not be established; original process ownership remains unknown. ${diagnostics()}`);
-  return value.filter(row => row.ProcessId > 0).map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, group: null }));
-};
 const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
-  if (process.platform === "win32") {
-    const result = await runWindowsToolMetadataCommand(windowsMappingProcessInventoryCommand(environment), operation);
-    return parseWindowsMappingProcessInventory(result.stdout, result.stderr);
-  }
+  if (process.platform === "win32") return captureWindowsProcessInventory(operation);
   const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
   return result.stdout.split("\n").filter(row => row.trim() !== "").flatMap(row => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(row);
@@ -94,6 +63,16 @@ const parse = (value: unknown, nonce: string): ProcessRecord => {
 export const createMappingProcessLifecycle = (manifestPath: string, manifest: HerdrToolLaunchManifest, environment: NodeJS.ProcessEnv) => {
   const directory = path.dirname(manifestPath), file = path.join(directory, "processes.json"), retired = path.join(directory, "retired.json");
   const frozen = new Map<number, ProcessProof>();
+  const retiredValue = { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner };
+  const alreadyRetired = async (): Promise<boolean> => {
+    const value = await optionalOwnedJson(retired);
+    if (value === null) return false;
+    if (JSON.stringify(value) !== JSON.stringify(retiredValue)) throw new Error("The original Herdr mapping retirement proof is invalid.");
+    // Durable closure remains terminal. A failed local CloseHandle retains its
+    // original registry owner and can be retried without reopening historical PIDs.
+    if (process.platform === "win32") releaseHerdrJobObserver(manifestPath, manifest);
+    return true;
+  };
   const read = async (): Promise<ProcessRecord | null> => { const value = await optionalOwnedJson(file); return value === null ? null : parse(value, manifest.nonce); };
   const save = async (proofs: ProcessProof[]): Promise<void> => { const row = parse({ nonce: manifest.nonce, proofs }, manifest.nonce); await replaceFileAtomically(file, JSON.stringify(row), 0o600); syncDurableDirectory(directory); };
   const observeWindowsParent = async (proof: ProcessProof, operation: Operation): Promise<void> => {
@@ -101,12 +80,12 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
     if (!sameProcessIdentity(current, proof)) throw new Error("The original Windows descendant parent process identity changed; process ownership remains unknown.");
   };
-  const assertDeclaredLaunchProofs = async (record: ProcessRecord | null): Promise<void> => {
+  const assertDeclaredLaunchProofs = async (record: ProcessRecord | null): Promise<HerdrToolLaunchReceipt | null> => {
     const files = mappingFiles(manifestPath), intentValue = await optionalOwnedJson(files.intent), receiptValue = await optionalOwnedJson(files.receipt);
     const request = await readToolStartRequest(manifestPath, { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner });
     if (intentValue === null && receiptValue === null) {
       if (request?.state === "reserved") throw new Error("The original native launch RPC has no complete helper receipt; process ownership remains unknown.");
-      return;
+      return null;
     }
     if (request?.state === "rejected") throw new Error("The rejected native launch request conflicts with a helper launch intent; process ownership remains unknown.");
     const intent = parseToolReceipt(intentValue, manifest, false);
@@ -118,14 +97,21 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     for (const [role, id] of [["helper", receipt.helperPid], ["native child", receipt.childPid]] as const) {
       if (!ids.has(id)) throw new Error(`The declared original ${role} has no durable birth proof; complete native process ownership remains unknown.`);
     }
+    return receipt;
   };
   const captureProcesses = async (pids: readonly number[], operation: Operation, freeze = false): Promise<number[]> => {
     operation.check();
     const previous = await read(), proofs = new Map((previous?.proofs ?? []).map(proof => [proof.pid, proof]));
     // Receipt PIDs alone cannot establish the birth of a process found during cleanup.
+    let closingJob: Awaited<ReturnType<typeof retainHerdrJobObserver>> | undefined;
     if (freeze) {
-      await assertDeclaredLaunchProofs(previous);
+      const receipt = await assertDeclaredLaunchProofs(previous);
       if (process.platform === "win32" && previous === null) throw new Error("The original Windows cleanup root has no prepared process journal; process ownership remains unknown.");
+      if (process.platform === "win32" && receipt !== null) {
+        closingJob = await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, previous!.proofs.find(proof => proof.pid === receipt.helperPid));
+        closingJob.captureForeground(pids, operation);
+        await closingJob.stop(operation);
+      }
     }
     const freezeOriginal = async (proof: ProcessProof): Promise<void> => {
       if (!freeze || process.platform === "win32" || frozen.has(proof.pid)) return;
@@ -136,7 +122,7 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     try {
       for (const id of pids) {
         operation.check();
-        if (proofs.has(id)) continue;
+        if (proofs.has(id) || closingJob?.closedMember(id)) continue;
         // Only preparation can supply the first root. Further foreground IDs
         // need the same parent and birth checks as inventory discoveries.
         if (process.platform === "win32" && proofs.size !== 0) continue;
@@ -151,10 +137,10 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
       }
       for (let round = 0; round < 1000; round++) {
         operation.check();
-        const rows = await inventory(environment, operation), ids = new Set(proofs.keys()), groups = new Set([...proofs.values()].map(proof => proof.processGroupId).filter(group => group !== null));
+        const rows = (await inventory(environment, operation)).filter(row => !closingJob?.closedMember(row.pid)), ids = new Set(proofs.keys()), groups = new Set([...proofs.values()].map(proof => proof.processGroupId).filter(group => group !== null));
         let changed = true;
         while (changed) { changed = false; for (const row of rows) if (!ids.has(row.pid) && (ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) { ids.add(row.pid); changed = true; } }
-        if (process.platform === "win32" && pids.some(id => !ids.has(id))) throw new Error("The original Windows foreground process has no complete original parent chain; process ownership remains unknown.");
+        if (process.platform === "win32" && pids.some(id => !ids.has(id) && !closingJob?.closedMember(id))) throw new Error("The original Windows foreground process has no complete original parent chain; process ownership remains unknown.");
         const unseen = rows.filter(row => ids.has(row.pid) && !proofs.has(row.pid));
         if (unseen.length === 0) return [...proofs.keys()];
         while (unseen.length > 0) {
@@ -185,23 +171,27 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     if (failures.length > 0) throw new AggregateError(failures, "The original Herdr process freeze rollback remains unknown.");
   };
   const confirmStopped = async (operation: Operation): Promise<boolean> => {
+    operation.check();
+    if (await alreadyRetired()) return true;
     const record = await read();
     if (record === null) throw new Error("The original Herdr process tree has no stopped identity proof.");
-    await assertDeclaredLaunchProofs(record);
+    const receipt = await assertDeclaredLaunchProofs(record);
+    const job = process.platform === "win32" && receipt !== null ? await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, record.proofs.find(proof => proof.pid === receipt.helperPid)) : null;
     operation.check();
     // Zombies have exited and cannot execute or spawn, even before an adopter reaps them.
     const rows = await inventory(environment, operation), ids = new Set(record.proofs.map(proof => proof.pid)), groups = new Set(record.proofs.map(proof => proof.processGroupId).filter(group => group !== null));
     if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) return false;
-    if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null && (await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`)).length !== 0) return false;
+    if (job !== null && !job.stopped()) return false;
     await assertDeclaredLaunchProofs(record);
     return true;
   };
   const stopProcesses = async (operation: Operation): Promise<void> => {
     operation.check();
+    if (await alreadyRetired()) return;
     const record = await read();
     if (record === null) throw new Error("The original Herdr process tree has no termination identity proof.");
-    await assertDeclaredLaunchProofs(record);
-    if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null) await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`, true);
+    const receipt = await assertDeclaredLaunchProofs(record);
+    if (process.platform === "win32" && receipt !== null) await (await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, record.proofs.find(proof => proof.pid === receipt.helperPid))).stop(operation);
     const current = new Set((await inventory(environment, operation)).map(row => row.pid));
     for (const proof of [...record.proofs].reverse()) {
       operation.check();
@@ -244,6 +234,7 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     };
     const helper = await capture(receipt.helperPid, "helper", shell), child = await capture(receipt.childPid, "native child", helper);
     if (process.platform !== "win32" && child.processGroupId !== helper.processGroupId) throw new Error("The original native child left its helper process group.");
+    if (process.platform === "win32") (await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, helper)).check();
     const rows = await inventory(environment, operation), descendants = new Set([shell.pid]);
     let changed = true;
     while (changed) { changed = false; for (const row of rows) if (!descendants.has(row.pid) && descendants.has(row.parentPid)) { descendants.add(row.pid); changed = true; } }
@@ -263,9 +254,10 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     captureProcesses, confirmStopped, stopProcesses, releaseFrozen, verifyProcesses,
     retire: async (operation: Operation): Promise<void> => {
       if (!await confirmStopped(operation)) throw new Error("The original Herdr process tree is not confirmed stopped; its mapping cannot rotate.");
-      const value = { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner };
+      const value = retiredValue;
       try { await publishOwnedJson(retired, value); }
       catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "EEXIST" || JSON.stringify(await optionalOwnedJson(retired)) !== JSON.stringify(value)) throw cause; }
+      if (process.platform === "win32") releaseHerdrJobObserver(manifestPath, manifest);
       frozen.clear();
     },
   };

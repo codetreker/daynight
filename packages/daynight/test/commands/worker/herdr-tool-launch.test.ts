@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,10 +10,13 @@ import { createToolLaunchMapping, posixToolMappingRc } from "../../../src/comman
 import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch-inventory.js";
 import { advanceToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
-import { parseWindowsMappingProcessInventory, windowsMappingProcessInventoryCommand } from "../../../src/commands/worker/herdr/tool-launch-lifecycle.js";
-import { hasUnconfirmedHerdrCommandCleanup, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
-import * as commands from "../../../src/commands/worker/herdr/command.js";
+import * as metadata from "../../../src/commands/worker/herdr/windows-process-metadata.js";
 import * as processProofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
+import { readToolManifest } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
+import { retainHerdrJobObserver } from "../../../src/commands/worker/herdr/tool-launch-windows-job.js";
+import { createHerdrAgentManager, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
+import type { HerdrRpcClient } from "../../../src/commands/worker/herdr/rpc.js";
+import { loadWindowsJobKernel, type WindowsNamedJobKernel, type WindowsJobProcess } from "../../../src/platform/windows-job.js";
 import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
 
 const roots: string[] = [], operations: Operation[] = [];
@@ -39,70 +42,6 @@ const execute = async (file: string, args: string[], environment = process.env) 
   try { const [code, signal] = await once(child, "close"); return { code, signal, stdout, stderr, pid: child.pid }; }
   finally { clearTimeout(timer); }
 };
-const windowsInventoryDiagnostics = async (environment: NodeJS.ProcessEnv) => {
-  const command = windowsMappingProcessInventoryCommand(environment), prefix = command.args.slice(0, -2);
-  const marker = "$ErrorActionPreference='Stop'; [Console]::Out.Write('daynight-stdout'); [Console]::Error.Write('daynight-stderr'); Write-Output 'daynight-pipeline'";
-  const args = (script: string, encoded = false): string[] => [...prefix, encoded ? "-EncodedCommand" : "-Command", encoded ? Buffer.from(script, "utf16le").toString("base64") : script];
-  const results: Record<string, unknown> = {};
-  let cleanupUnconfirmed = false;
-  const probe = async (name: string, run: () => Promise<{ stdout: string; stderr: string; code?: number | null; signal?: string | null }>, inventory = false) => {
-    if (cleanupUnconfirmed) { results[name] = { skipped: "An earlier probe has unconfirmed cleanup." }; return; }
-    try {
-      const result = await run();
-      let output: unknown = result.stdout.slice(0, 256);
-      if (inventory) {
-        try { const rows = parseWindowsMappingProcessInventory(result.stdout, result.stderr); output = { count: rows.length, containsCurrentProcess: rows.some(row => row.pid === process.pid) }; }
-        catch (error) { output = error instanceof Error ? error.message : String(error); }
-      }
-      results[name] = { code: result.code === undefined ? 0 : result.code, signal: result.signal ?? null, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr), output, stderr: result.stderr.slice(0, 2048) };
-    } catch (error) {
-      cleanupUnconfirmed = hasUnconfirmedHerdrCommandCleanup(error);
-      if (!(error instanceof Error)) { results[name] = { error: String(error), cleanupUnconfirmed }; return; }
-      const details = error as Error & Record<string, unknown>;
-      const metadata: Record<string, unknown> = {};
-      for (const key of ["code", "exitCode", "signal", "killed"] as const) if (key in details) metadata[key] = details[key];
-      for (const key of ["stdout", "stderr"] as const) if (typeof details[key] === "string") {
-        const output = details[key];
-        metadata[`${key}Bytes`] = Buffer.byteLength(output);
-        if (key === "stderr") metadata.stderr = output.slice(0, 2048);
-      }
-      results[name] = { name: error.name, message: error.message.slice(0, 2048), cleanupUnconfirmed, ...metadata };
-    }
-  };
-  const runner = async (commandArgs: readonly string[]) => {
-    const budget = createOperation({ limits: { totalMs: 4000, requestMs: 2500 } });
-    try { return await runHerdrCommand({ ...command, args: commandArgs }, budget, undefined, { cleanupWithinDeadline: true }); }
-    finally { budget.dispose(); }
-  };
-  const direct = (commandArgs: readonly string[]) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(command.file, commandArgs, { env: command.environment, windowsHide: true, timeout: 2500, killSignal: "SIGKILL", maxBuffer: 64 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
-      if (error !== null) reject(Object.assign(error, { stdout, stderr }));
-      else resolve({ stdout, stderr });
-    });
-  });
-  const rawSpawn = async (detached: boolean, stdin: "ignore" | "pipe") => {
-    const child = spawn(command.file, args(marker), { env: command.environment, detached, windowsHide: true, stdio: [stdin, "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout!.on("data", chunk => { stdout += chunk; }); child.stderr!.on("data", chunk => { stderr += chunk; });
-    child.stdin?.end();
-    const timer = setTimeout(() => child.kill("SIGKILL"), 2500);
-    try { const [code, signal] = await once(child, "close"); return { code: code as number | null, signal: signal as string | null, stdout, stderr }; }
-    finally { clearTimeout(timer); }
-  };
-  // Only fixed markers, PID/PPID output summaries and bounded errors are recorded.
-  // A working alternate probe does not replace the original production failure.
-  await probe("runner-command-marker", () => runner(args(marker)));
-  await probe("runner-encoded-marker", () => runner(args(marker, true)));
-  await probe("spawn-detached-ignore-marker", () => rawSpawn(true, "ignore"));
-  await probe("spawn-attached-ignore-marker", () => rawSpawn(false, "ignore"));
-  await probe("spawn-detached-pipe-marker", () => rawSpawn(true, "pipe"));
-  await probe("execFile-command-marker", () => direct(args(marker)));
-  await probe("execFile-encoded-marker", () => direct(args(marker, true)));
-  await probe("runner-encoded-inventory", () => runner(args(command.args.at(-1)!, true)), true);
-  await probe("execFile-command-inventory", () => direct(command.args), true);
-  await probe("execFile-encoded-inventory", () => direct(args(command.args.at(-1)!, true)), true);
-  return results;
-};
 afterEach(async () => { Object.defineProperty(process, "platform", platformDescriptor); vi.restoreAllMocks(); operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 const windowsProof = (pid: number, parentPid: number, startedAt: string): processProofs.MappingProcessProof => ({ pid, parentPid, processGroupId: null, startedAt, commandHash: "a".repeat(64) });
@@ -115,26 +54,93 @@ const windowsTree = async (proofs: processProofs.MappingProcessProof[], rows = p
     return { ...proof };
   });
   vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
-  const query = vi.spyOn(commands, "runHerdrCommand").mockResolvedValue({ stdout: JSON.stringify(rows.map(row => ({ ProcessId: row.pid, ParentProcessId: row.parentPid }))), stderr: "" });
+  const query = vi.spyOn(metadata, "captureWindowsProcessInventory").mockResolvedValue(rows.map(row => ({ pid: row.pid, parentPid: row.parentPid, group: null })));
   return { ...f, capture, query, journal: path.join(path.dirname(f.mapping.manifestPath), "processes.json") };
 };
 const controlledReceipt = (f: Awaited<ReturnType<typeof fixture>>, helperPid: number, childPid: number) => ({ schemaVersion: 1 as const, owner, nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, logicalArgvDigest: "b".repeat(64), file: f.launch.command.file, prefixArgs: [...f.launch.command.prefixArgs], helperPid, childPid });
 
 describe("owned Herdr launch mapping", () => {
-  it.each(["inventory", "readiness"] as const)("keeps Windows %s metadata attached while the owned command runner joins its output", async consumer => {
-    const f = await fixture("win32"), shell = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z");
-    const output = consumer === "inventory" ? JSON.stringify([{ ProcessId: 501, ParentProcessId: 1 }]) : JSON.stringify({ executable: f.mapping.windowsCommand![0], startToken: "123456789" });
-    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(options.detached === false ? output : "")})`], options));
-    const runner = commands.runHerdrCommand;
-    vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => runner(command, active, provided ?? start, options));
-    if (consumer === "readiness") await writeFile(path.join(path.dirname(f.mapping.manifestPath), "shell-ready.json"), JSON.stringify({ nonce: f.mapping.nonce, pid: shell.pid, executable: f.mapping.windowsCommand![0], startToken: "123456789" }), { mode: 0o600 });
-    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
-    vi.spyOn(processProofs, "captureMappingProcessProof").mockResolvedValue(shell);
-    vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
-    if (consumer === "inventory") expect(await f.mapping.captureProcesses([shell.pid], operation())).toEqual([shell.pid]);
-    else await f.mapping.verifyReady(shell.pid, operation());
-    expect(start).toHaveBeenCalledOnce();
-    expect(start.mock.calls[0]![2]).toMatchObject({ detached: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  it.each(["exact", "ticks", "executable"] as const)("compares Windows readiness against native metadata without rounding (%s)", async kind => {
+    const f = await fixture("win32"), shell = 501, executable = f.mapping.windowsCommand![0]!, startToken = "639300096001234567";
+    await writeFile(path.join(path.dirname(f.mapping.manifestPath), "shell-ready.json"), JSON.stringify({ nonce: f.mapping.nonce, pid: shell, executable, startToken }), { mode: 0o600 });
+    const query = vi.spyOn(metadata, "readWindowsProcessMetadata").mockResolvedValue({ executable: kind === "executable" ? `${executable}.changed` : executable, startToken: kind === "ticks" ? "639300096001234568" : startToken });
+    if (kind === "exact") await f.mapping.verifyReady(shell, operation());
+    else await expect(f.mapping.verifyReady(shell, operation())).rejects.toThrow("identity changed");
+    expect(query).toHaveBeenCalledOnce(); expect(query.mock.calls[0]![0]).toBe(shell);
+  });
+
+  it.each(["recovery", "external", "reused", "release-process", "release-job"] as const)("keeps the manager cleanup bound to original Job handles after helper exit (%s)", async scenario => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), helper = windowsProof(502, 501, "2026-11-12T00:00:00.1235000Z"), native = windowsProof(503, 502, "2026-11-12T00:00:00.1236000Z"), detached = windowsProof(504, 503, "2026-11-12T00:00:00.1237000Z");
+    const f = await windowsTree([root, helper, native, detached]);
+    const manifest = await readToolManifest(f.mapping.manifestPath), directory = path.dirname(f.mapping.manifestPath), receipt = controlledReceipt(f, helper.pid, native.pid), { childPid: _child, ...intent } = receipt;
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root, helper, native] }), { mode: 0o600 });
+    await writeFile(path.join(directory, "launch-intent.json"), JSON.stringify(intent), { mode: 0o600 });
+    await writeFile(path.join(directory, "launch-receipt.json"), JSON.stringify(receipt), { mode: 0o600 });
+    const raw = (proof: processProofs.MappingProcessProof): WindowsJobProcess => ({ pid: proof.pid, parentPid: proof.parentPid, birth: BigInt(Date.parse(`${proof.startedAt.slice(0, 19)}Z`)) * 10000n + BigInt(proof.startedAt.slice(20, 27)) + 116444736000000000n });
+    const originals = new Map([helper, native, detached].map(proof => [proof.pid, raw(proof)])), live = new Map([root, helper, native].map(proof => [proof.pid, raw(proof)]));
+    await writeFile(path.join(directory, "windows-job.json"), JSON.stringify({ schemaVersion: 1, nonce: manifest.nonce, owner, selectionKey: manifest.launch.selectionKey, helperPid: helper.pid, helperParentPid: helper.parentPid, helperBirth: raw(helper).birth.toString(), policy: "kill-on-close" }), { mode: 0o600 });
+    const job = {}, terminate = vi.fn(() => { for (const [pid, identity] of originals) if (live.get(pid)?.birth === identity.birth) live.delete(pid); });
+    const api: WindowsNamedJobKernel = {
+      create: () => job, killOnClose: () => {}, assign: () => {}, assignHandle: () => {}, openNamed: () => job,
+      open: pid => live.get(pid) ?? null, identity: handle => handle as WindowsJobProcess,
+      contains: (_job, handle) => originals.get((handle as WindowsJobProcess).pid)?.birth === (handle as WindowsJobProcess).birth,
+      signaled: handle => live.get((handle as WindowsJobProcess).pid)?.birth !== (handle as WindowsJobProcess).birth,
+      active: () => [...originals].filter(([pid, identity]) => live.get(pid)?.birth === identity.birth).length,
+      inspect: () => [...originals].filter(([pid, identity]) => live.get(pid)?.birth === identity.birth).map(([pid]) => pid),
+      terminate, close: () => {}, closeProcess: () => {},
+    };
+    f.query.mockImplementation(async () => [...live.values()].map(row => ({ pid: row.pid, parentPid: row.parentPid, group: null })));
+    vi.mocked(processProofs.inspectMappingProcessForCleanup).mockImplementation(async proof => live.has(proof.pid) ? "running" : "stopped");
+    f.capture.mockImplementation(async pid => {
+      if (!live.has(pid)) throw new Error("The original parent process is no longer available.");
+      const original = [root, helper, native, detached].find(proof => proof.pid === pid);
+      if (original === undefined) throw new Error("An unexpected process proof was requested.");
+      return { ...original };
+    });
+    vi.useFakeTimers();
+    const observer = await retainHerdrJobObserver(f.mapping.manifestPath, manifest, receipt, operation(), helper, api);
+    try {
+      terminate.mockImplementationOnce(() => { throw new Error("controlled monitor termination failure"); });
+      live.set(detached.pid, raw(detached)); live.delete(helper.pid);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(() => observer.check()).toThrow("ownership remains unknown");
+      vi.useRealTimers();
+      if (scenario === "external") live.set(505, { pid: 505, parentPid: 1, birth: raw(detached).birth + 10n });
+      if (scenario === "reused") live.set(detached.pid, { ...raw(detached), birth: raw(helper).birth - 10n });
+      let closed = false;
+      const context = { ...owner, cwd: f.directory, agent: "codex" as const }, binding = { session: "w", workspaceId: "owned", paneId: "pane", terminalId: "terminal" };
+      const rpc: HerdrRpcClient = { request: async method => {
+        if (method === "session.snapshot") return { type: "session_snapshot", snapshot: { workspaces: closed ? [] : [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context, "Task") }], panes: closed ? [] : [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, agent: "codex" }], agents: [], tabs: [] } };
+        if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: root.pid, foreground_processes: [detached.pid, ...(scenario === "external" ? [505] : [])].map(pid => ({ pid })) } };
+        if (method === "workspace.close") { closed = true; live.delete(root.pid); return { type: "ok" }; }
+        throw new Error(`Unexpected cleanup RPC: ${method}`);
+      } };
+      const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: async () => f.mapping });
+      if (scenario === "recovery" || scenario.startsWith("release-")) {
+        if (scenario.startsWith("release-")) {
+          const closeFailure = new Error("controlled original handle release failure"), closedProcesses: number[] = [];
+          const closeProcess = vi.fn((handle: unknown) => { closedProcesses.push((handle as WindowsJobProcess).pid); });
+          api.closeProcess = closeProcess;
+          if (scenario === "release-process") closeProcess.mockImplementationOnce(handle => { closedProcesses.push((handle as WindowsJobProcess).pid); }).mockImplementationOnce(() => { throw closeFailure; });
+          else api.close = vi.fn().mockImplementationOnce(() => { throw closeFailure; });
+          await expect(manager.stopAndClose(context, binding, operation())).rejects.toBe(closeFailure);
+          expect(JSON.parse(await readFile(path.join(directory, "retired.json"), "utf8"))).toMatchObject({ nonce: manifest.nonce });
+          expect(await launchInventory.confirmToolLaunchMappingsStopped(f.directory, process.env, operation())).toBe(true);
+          expect(new Set(closedProcesses).size).toBe(closedProcesses.length);
+          const open = vi.spyOn(api, "open"), openJob = vi.spyOn(api, "openNamed");
+          await manager.stopAndClose(context, binding, operation());
+          await f.mapping.stopProcesses(operation()); expect(await f.mapping.confirmStopped(operation())).toBe(true); await f.mapping.retire(operation());
+          expect(open).not.toHaveBeenCalled(); expect(openJob).not.toHaveBeenCalled();
+        } else await manager.stopAndClose(context, binding, operation());
+        expect(closed).toBe(true); expect(live.size).toBe(0);
+        expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root, helper, native]);
+        expect(JSON.parse(await readFile(path.join(directory, "retired.json"), "utf8"))).toMatchObject({ nonce: manifest.nonce });
+      } else {
+        await expect(manager.stopAndClose(context, binding, operation())).rejects.toThrow(/parent|foreground|unexpected process/i);
+        expect(closed).toBe(false); expect(live.has(scenario === "external" ? 505 : detached.pid)).toBe(true);
+        await expect(readFile(path.join(directory, "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally { vi.useRealTimers(); live.clear(); if (scenario === "external" || scenario === "reused") { await observer.stop(operation()); observer.release(); } }
   });
 
   it.each(["2026-11-12T00:00:00.1233000Z", "2026-11-12T00:00:00.1234000Z", "unproved-birth"])("does not register a Windows descendant without strictly later birth (%s)", async startedAt => {
@@ -198,7 +204,7 @@ describe("owned Herdr launch mapping", () => {
     await writeFile(path.join(directory, "launch-intent.json"), JSON.stringify(intent), { mode: 0o600 });
     await writeFile(path.join(directory, "launch-receipt.json"), JSON.stringify(receipt), { mode: 0o600 });
     const alive = new Set([root.pid, helper.pid, child.pid]), job = vi.spyOn(windowsJobs, "inspectControllerJob").mockResolvedValue([]), kill = vi.spyOn(process, "kill").mockImplementation(id => { alive.delete(id); return true; });
-    f.query.mockImplementation(async () => ({ stdout: JSON.stringify([... [root, helper, child].filter(row => alive.has(row.pid)).map(row => ({ ProcessId: row.pid, ParentProcessId: row.parentPid })), { ProcessId: 999, ParentProcessId: 1 }]), stderr: "" }));
+    f.query.mockImplementation(async () => [...[root, helper, child].filter(row => alive.has(row.pid)).map(row => ({ pid: row.pid, parentPid: row.parentPid, group: null })), { pid: 999, parentPid: 1, group: null }]);
     await expect(f.mapping.stopProcesses(operation())).rejects.toThrow(/birth|parent/);
     expect(job).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled();
     expect(await readFile(f.journal, "utf8")).toBe(journal);
@@ -210,54 +216,20 @@ describe("owned Herdr launch mapping", () => {
     vi.mocked(processProofs.inspectMappingProcessForCleanup).mockImplementation(async proof => proof.pid === root.pid ? "stopped" : "running");
     let running = true;
     const kill = vi.spyOn(process, "kill").mockImplementation(() => { running = false; return true; });
-    f.query.mockImplementation(async () => ({ stdout: JSON.stringify(running ? [{ ProcessId: child.pid, ParentProcessId: root.pid }] : [{ ProcessId: 999, ParentProcessId: 1 }]), stderr: "" }));
+    f.query.mockImplementation(async () => running ? [{ pid: child.pid, parentPid: root.pid, group: null }] : [{ pid: 999, parentPid: 1, group: null }]);
     await f.mapping.stopProcesses(operation());
     expect(kill).toHaveBeenCalledExactlyOnceWith(child.pid, "SIGKILL");
   });
-  it("isolates system PowerShell metadata queries from inherited module paths without changing the native environment", () => {
-    const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules", pSmOdUlEpAtH: "C:\\OtherModules", PATH: "/frozen/native/path", CODEX_HOME: "/native/home" };
-    const command = windowsMappingProcessInventoryCommand(environment);
-    expect(command.file).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    expect(command.environment).toEqual({ SystemRoot: environment.SystemRoot, PATH: environment.PATH, CODEX_HOME: environment.CODEX_HOME });
-    expect(environment.PSModulePath).toBe("C:\\PowerShell7\\Modules");
-    expect(environment.pSmOdUlEpAtH).toBe("C:\\OtherModules");
-  });
-
-  it.each(["", " \r\n", "null", "[]", "{}", '[{"ProcessId":0,"ParentProcessId":0}]', '[{"ProcessId":2,"ParentProcessId":-1}]', '[{"ProcessId":2,"ParentProcessId":0},{"ProcessId":2,"ParentProcessId":0}]', '[{"ProcessId":"2","ParentProcessId":0}]', '[{"ProcessId":2}]', '[{"ProcessId":2,"ParentProcessId":0}] trailing diagnostic'])("keeps invalid Windows process output unknown: %j", stdout => {
-    expect(() => parseWindowsMappingProcessInventory(stdout)).toThrow("Windows process inventory");
-  });
-
-  it("accepts complete Windows process arrays and excludes only the idle pseudo-process", () => {
-    expect(parseWindowsMappingProcessInventory('[{"ProcessId":0,"ParentProcessId":0},{"ProcessId":12,"ParentProcessId":4},{"ProcessId":4,"ParentProcessId":0}]')).toEqual([{ pid: 12, parentPid: 4, group: null }, { pid: 4, parentPid: 0, group: null }]);
-    expect(parseWindowsMappingProcessInventory('[{"ProcessId":12,"ParentProcessId":4}]')).toEqual([{ pid: 12, parentPid: 4, group: null }]);
-  });
-
-  it("retains bounded command stderr and the JSON cause when a Windows inventory is incomplete", () => {
-    let failure: unknown;
-    try { parseWindowsMappingProcessInventory("", `fixed-stderr-marker:${"x".repeat(4096)}:omitted-tail`); }
-    catch (error) { failure = error; }
-    expect(failure).toBeInstanceOf(Error);
-    const error = failure as Error;
-    expect(error.cause).toBeInstanceOf(SyntaxError);
-    expect(error.message).toContain("stdoutBytes=0");
-    expect(error.message).toContain("stderrBytes=4129");
-    expect(error.message).toContain("fixed-stderr-marker:");
-    expect(error.message).not.toContain("omitted-tail");
-    expect(error.message.length).toBeLessThan(2300);
-  });
-
-  it.skipIf(process.platform !== "win32")("reads the real Windows process inventory despite inherited incompatible PowerShell module paths", async () => {
+  it.skipIf(process.platform !== "win32")("reads native Windows process inventory independently of shell module paths", async () => {
     const f = await fixture(), native = spawn(process.execPath, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     const closed = once(native, "close"), timer = setTimeout(() => native.kill("SIGKILL"), 8_000);
     try {
       await once(native.stdout!, "data");
       const environment = { ...f.input.nativeEnvironment, PSModulePath: path.join(f.directory, "incompatible-modules"), pSmOdUlEpAtH: path.join(f.directory, "other-incompatible-modules") };
       const mapping = (await createToolLaunchMapping({ ...f.input, nativeEnvironment: environment, existingOnly: true }, operation()))!;
-      try {
-        expect(await mapping.captureProcesses([native.pid!], operation())).toContain(native.pid);
-        native.kill("SIGKILL"); await closed;
-        expect(await mapping.confirmStopped(operation())).toBe(true);
-      } catch (cause) { throw new Error(`Windows process inventory command diagnostics: ${JSON.stringify(await windowsInventoryDiagnostics(environment))}`, { cause }); }
+      expect(await mapping.captureProcesses([native.pid!], operation())).toContain(native.pid);
+      native.kill("SIGKILL"); await closed;
+      expect(await mapping.confirmStopped(operation())).toBe(true);
       expect(environment.PSModulePath).toBe(path.join(f.directory, "incompatible-modules"));
       expect(environment.PATH).toBe("/native/path");
     } finally { clearTimeout(timer); native.kill("SIGKILL"); await closed; }
@@ -394,7 +366,102 @@ describe("owned Herdr launch mapping", () => {
       await closed;
       expect(await inspectControllerJob(job)).toEqual([]);
       expect(await f.mapping.confirmStopped(operation())).toBe(true);
+      await f.mapping.retire(operation());
     } finally { clearTimeout(timer); await inspectControllerJob(job, true); helper.kill("SIGKILL"); await closed; }
+  });
+
+  it.skipIf(process.platform !== "win32").each([0, 37, "killed"] as const)("keeps the original Windows Job observable through helper exit (%s) and stops unregistered descendants", async outcome => {
+    const f = await fixture(), code = outcome === "killed" ? 0 : outcome;
+    const script = `const {spawn}=require('node:child_process');let started=false;process.stdout.write('ready\\n');process.stdin.on('data',()=>{if(started){process.exit(${code});return;}started=true;const child=spawn(process.execPath,['-e','setInterval(()=>{},1000);'],{detached:true,stdio:'ignore'});process.stdout.write(String(child.pid)+'\\n');});setInterval(()=>{},1000);`;
+    const args = ["-e", script], helper = spawn(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args], { stdio: ["pipe", "pipe", "pipe"] });
+    const closed = once(helper, "close"), job = `Local\\Daynight-${f.mapping.nonce}`, timer = setTimeout(() => helper.kill("SIGKILL"), 30_000);
+    let failure: unknown, failed = false, retired = false;
+    const cleanupFailures: unknown[] = [];
+    try {
+      expect(String((await once(helper.stdout!, "data"))[0])).toBe("ready\n");
+      const receipt = await f.mapping.verifyReceipt(args, operation());
+      const registered = await f.mapping.captureProcesses([helper.pid!, receipt.childPid], operation());
+      const spawned = once(helper.stdout!, "data"); helper.stdin!.write("spawn\n");
+      const detached = Number(String((await spawned)[0]).trim());
+      expect(Number.isSafeInteger(detached) && detached > 0).toBe(true); expect(registered).not.toContain(detached);
+      const originalNative = await captureMappingProcessProof(receipt.childPid), originalDetached = await captureMappingProcessProof(detached);
+      expect(await inspectControllerJob(job)).toEqual(expect.arrayContaining([helper.pid!, receipt.childPid, detached]));
+      if (outcome === "killed") helper.kill("SIGKILL"); else helper.stdin!.write("exit\n");
+      const [exitCode] = await closed;
+      if (outcome !== "killed") expect(exitCode).toBe(outcome);
+      await vi.waitFor(async () => {
+        expect(await f.mapping.confirmStopped(operation())).toBe(true);
+        expect(await processProofs.inspectMappingProcessForCleanup(originalNative)).toBe("stopped");
+        expect(await processProofs.inspectMappingProcessForCleanup(originalDetached)).toBe("stopped");
+      }, { timeout: 10_000, interval: 25 });
+      await f.mapping.retire(operation()); retired = true;
+    } catch (error) { failed = true; failure = error; }
+    finally {
+      try { if (!retired) { await f.mapping.stopProcesses(operation()); await f.mapping.retire(operation()); } }
+      catch (error) { cleanupFailures.push(error); }
+      try { await inspectControllerJob(job, true); helper.kill("SIGKILL"); await closed; }
+      catch (error) { cleanupFailures.push(error); }
+      clearTimeout(timer);
+    }
+    if (cleanupFailures.length) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "The original Windows helper exit fixture cleanup failed.", failed ? { cause: failure } : undefined);
+    if (failed) throw failure;
+  }, 45_000);
+
+  it.skipIf(process.platform !== "win32")("preserves exit code 37 and closes detached descendants with only the helper Job lease", async () => {
+    const f = await fixture(), api = await loadWindowsJobKernel();
+    const koffi = await import("koffi"), library = koffi.load("kernel32.dll"), terminate = library.func("int __stdcall TerminateProcess(void *process, uint32_t code)");
+    const script = "const {spawn}=require('node:child_process');let started=false;process.stdout.write('ready\\n');process.stdin.on('data',()=>{if(started){process.exit(37);return;}started=true;const child=spawn(process.execPath,['-e','setInterval(()=>{},1000);'],{detached:true,stdio:'ignore'});process.stdout.write(String(child.pid)+'\\n');});setInterval(()=>{},1000);";
+    const helper = spawn(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", "-e", script], { stdio: ["pipe", "pipe", "pipe"] }), closed = once(helper, "close");
+    const handles: Array<{ handle: unknown }> = [];
+    const hold = (pid: number) => {
+      const handle = api.open(pid);
+      if (handle === null) throw new Error("The original Windows lease fixture process cannot be held.");
+      handles.push({ handle });
+      const identity = api.identity(handle);
+      if (identity.pid !== pid || api.signaled(handle)) throw new Error("The original Windows lease fixture process identity changed.");
+      return identity;
+    };
+    let failure: unknown, failed = false;
+    const failures: unknown[] = [];
+    const timer = setTimeout(() => {
+      for (const { handle } of handles) try { if (!api.signaled(handle)) terminate(handle, 1); } catch (error) { failures.push(error); }
+      helper.kill("SIGKILL");
+    }, 30_000);
+    try {
+      const helperIdentity = hold(helper.pid!);
+      expect(String((await once(helper.stdout!, "data"))[0])).toBe("ready\n");
+      // Read immutable receipt bytes without opening an observer Job handle.
+      let receipt = await f.mapping.readReceipt(operation());
+      await vi.waitFor(async () => { receipt = await f.mapping.readReceipt(operation()); expect(receipt).not.toBeNull(); });
+      const nativeIdentity = hold(receipt!.childPid);
+      expect(nativeIdentity.parentPid).toBe(helperIdentity.pid); expect(nativeIdentity.birth).toBeGreaterThan(helperIdentity.birth);
+      const spawned = once(helper.stdout!, "data"); helper.stdin!.write("spawn\n");
+      const detachedIdentity = hold(Number(String((await spawned)[0]).trim()));
+      expect(detachedIdentity.parentPid).toBe(nativeIdentity.pid); expect(detachedIdentity.birth).toBeGreaterThan(nativeIdentity.birth);
+      helper.stdin!.write("exit\n");
+      const [code] = await closed; expect(code).toBe(37);
+      await vi.waitFor(() => { for (const { handle } of handles) expect(api.signaled(handle)).toBe(true); }, { timeout: 10_000, interval: 25 });
+    } catch (error) { failed = true; failure = error; }
+    finally {
+      clearTimeout(timer);
+      helper.kill("SIGKILL");
+      for (const { handle } of handles) try { if (!api.signaled(handle) && terminate(handle, 1) === 0) throw new Error("Original Windows lease fixture termination failed."); } catch (error) { failures.push(error); }
+      try { await closed; await vi.waitFor(() => { for (const { handle } of handles) expect(api.signaled(handle)).toBe(true); }, { timeout: 10_000, interval: 25 }); } catch (error) { failures.push(error); }
+      for (const { handle } of handles) try { api.closeProcess(handle); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failed ? [failure, ...failures] : failures, "The original Windows lease fixture cleanup failed.", failed ? { cause: failure } : undefined);
+    if (failed) throw failure;
+  }, 45_000);
+
+  it.skipIf(process.platform !== "win32")("does not spawn native input when the original Windows Job boundary cannot be published", async () => {
+    const f = await fixture(), forbidden = path.join(f.directory, "forbidden-native-start");
+    const boundary = path.join(path.dirname(f.mapping.manifestPath), "windows-job.json");
+    await writeFile(boundary, "{}", { mode: 0o600 });
+    const result = await execute(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", "-e", "require('node:fs').writeFileSync(process.argv[1],'started')", forbidden]);
+    expect(result.code).toBe(1);
+    expect(await readFile(boundary, "utf8")).toBe("{}");
+    await expect(readFile(forbidden)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(path.dirname(f.mapping.manifestPath), "launch-intent.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("treats a validated retired generation as terminal even when its historical PID is running again", async () => {
@@ -460,9 +527,10 @@ describe("owned Herdr launch mapping", () => {
     const result = await execute(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args], { ...process.env, ...f.mapping.environment, PATH: "/mapping:/native/path", CODEX_HOME: "/native/home" });
     expect(result).toMatchObject({ code: 0, signal: null, stderr: "" });
     expect(JSON.parse(result.stdout)).toEqual({ args: args.slice(3), path: "/native/path", home: "/native/home" });
-    const receipt = await f.mapping.verifyReceipt(args, operation());
+    const receipt = await f.mapping.readReceipt(operation());
+    expect(receipt).not.toBeNull();
     expect(receipt).toMatchObject({ helperPid: result.pid, selectionKey: f.launch.selectionKey, file: f.launch.command.file, prefixArgs: f.launch.command.prefixArgs });
-    expect(receipt.childPid).not.toBe(result.pid);
+    expect(receipt!.childPid).not.toBe(result.pid);
     await expect(f.mapping.verifyReceipt([...args, "changed"], operation())).rejects.toThrow("receipt");
     const replay = await execute(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args]);
     expect(replay.code).not.toBe(0);
@@ -484,18 +552,56 @@ describe("owned Herdr launch mapping", () => {
     const result = await execute(process.execPath, [childEntry, "--encoded-manifest", encode(f.mapping.manifestPath), "codex", "--encoded-args", encode(JSON.stringify(args))]);
     expect(result).toMatchObject({ code: 0, signal: null, stderr: "" });
     expect(JSON.parse(result.stdout)).toEqual(args.slice(3));
-    expect(await f.mapping.verifyReceipt(args, operation())).toMatchObject({ helperPid: result.pid });
+    expect(await f.mapping.readReceipt(operation())).toMatchObject({ helperPid: result.pid });
   });
 
   it("waits for the asynchronous receipt publication without starting another native process", async () => {
-    const f = await fixture(), args = ["-e", "process.stdout.write('once');"];
+    const f = await fixture(), args = ["-e", "process.stdout.write('once');process.stdin.once('data',()=>process.exit(0));setInterval(()=>{},1000);"];
     const verification = f.mapping.verifyReceipt(args, operation());
-    const [receiptResult, childResult] = await Promise.allSettled([verification, execute(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args])]);
-    if (receiptResult.status === "rejected") throw receiptResult.reason;
-    if (childResult.status === "rejected") throw childResult.reason;
-    const receipt = receiptResult.value, result = childResult.value;
-    expect(result).toMatchObject({ code: 0, stdout: "once" });
-    expect(receipt.helperPid).toBe(result.pid);
+    const helper = spawn(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args], { detached: true, stdio: ["pipe", "pipe", "pipe"] }), closed = once(helper, "close");
+    let stdout = "", stderr = "";
+    helper.stdout!.on("data", chunk => { stdout += chunk; }); helper.stderr!.on("data", chunk => { stderr += chunk; });
+    const timer = setTimeout(() => helper.kill("SIGKILL"), 8_000);
+    let registered = false, retired = false, failure: unknown, failed = false;
+    let receipt: Awaited<typeof verification> | undefined, observer: Awaited<ReturnType<typeof retainHerdrJobObserver>> | undefined;
+    const cleanupFailures: unknown[] = [];
+    try {
+      receipt = await verification;
+      expect(receipt.helperPid).toBe(helper.pid);
+      if (process.platform === "win32") observer = await retainHerdrJobObserver(f.mapping.manifestPath, await readToolManifest(f.mapping.manifestPath), receipt, operation());
+      await f.mapping.captureProcesses([receipt.helperPid, receipt.childPid], operation()); registered = true;
+      await vi.waitFor(() => expect(stdout).toBe("once"));
+      helper.stdin!.write("exit\n");
+      expect(await closed).toEqual([0, null]); expect(stderr).toBe("");
+      await vi.waitFor(async () => expect(await f.mapping.confirmStopped(operation())).toBe(true));
+      await f.mapping.retire(operation()); retired = true;
+    } catch (error) { failed = true; failure = error; }
+    finally {
+      clearTimeout(timer);
+      if (!retired) {
+        if (process.platform === "win32") {
+          try {
+            receipt ??= await f.mapping.readReceipt(operation()) ?? undefined;
+            if (receipt !== undefined) observer ??= await retainHerdrJobObserver(f.mapping.manifestPath, await readToolManifest(f.mapping.manifestPath), receipt, operation());
+            if (observer !== undefined) { await observer.stop(operation()); observer.release(); }
+          } catch (error) { cleanupFailures.push(error); }
+        } else {
+          try {
+            if (registered) { await f.mapping.stopProcesses(operation()); await f.mapping.retire(operation()); }
+            else {
+              // The original helper forwards SIGTERM through its held native
+              // ChildProcess; a receipt PID cannot create a cleanup birth proof.
+              if (!helper.kill("SIGTERM")) throw new Error("The asynchronous receipt fixture lost its original helper before cleanup; native closure remains unknown.");
+              await vi.waitFor(() => expect(helper.exitCode !== null || helper.signalCode !== null).toBe(true), { timeout: 1000, interval: 10 });
+            }
+          } catch (error) { cleanupFailures.push(error); }
+        }
+      }
+      try { helper.kill("SIGKILL"); } catch (error) { cleanupFailures.push(error); }
+      try { await closed; } catch (error) { cleanupFailures.push(error); }
+    }
+    if (cleanupFailures.length) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "The asynchronous receipt fixture cleanup failed.", failed ? { cause: failure } : undefined);
+    if (failed) throw failure;
   });
 
   it.skipIf(process.platform === "win32")("rotates a same-owner generation only after every recorded process has stopped", async () => {

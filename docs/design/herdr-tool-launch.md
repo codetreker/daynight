@@ -30,7 +30,9 @@ Herdr 的 `agent.start` 仍接收原 kind 与逻辑参数，回执必须精确�
 
 bootstrap 将私有映射目录置于父 pane 的 PATH，并验证 `Get-Command` 命中原 `ExternalScript`。`codex.ps1`、`copilot.ps1` 将参数数组编码为 JSON/base64，再由 Node 解码后 `spawn(..., shell:false)`，避免 PowerShell 5 的 native 参数拼接改变空字符串、引号和反斜线。调用 helper 前恢复 native 原 PATH，Codex 内部 CLI 环境同样使用原 PATH。执行策略、系统 PowerShell、脚本发现或 readiness 验证失败均明确拒绝；不改用任意 shell，不宣称 PowerShell 7 支持。
 
-进程清单和根进程 readiness 的 PowerShell 5 元数据查询使用非 detached 子进程，保留原命令执行器的期限、进程树终止与原 child/output streams 关闭确认。Windows 的 detached 启动可能返回 exit 0 而没有查询输出，不能用退出码推断查询成功。查询只在自己的子环境移除继承的 `PSModulePath`，由系统重建模块路径，避免经 Node 传入 PowerShell 7 的模块。进程清单将命令错误作为终止错误，必须返回有效的非空 JSON 数组；空白、空数组、损坏或不完整输出均保持进程归属未知。这些处理不改变 native 子进程环境或 Herdr daemon 的启动方式。
+根进程 readiness 使用 Windows 原生进程接口独立核验 bootstrap 报告：在同一个原进程句柄上读取 Win32 executable 路径和 `GetProcessTimes` 出生时间，并在读取前后确认进程未退出。FILETIME 转换为 `.NET Ticks` 时保留全部 100ns 精度，与原 `startToken` 精确匹配；不得复用为旧 CIM 记录兼容而截断到微秒的 journal 时间格式。
+
+进程清单使用 Toolhelp32 的完整进程快照，只提供候选 PID 与 parent PID；归属仍由原完整 command hash、出生身份及父子链核验决定，快照本身没有终止授权。空清单、重复或非法条目、未完成枚举和句柄关闭失败都保留未知。采集继续受 `min(10s, requestMs, totalRemaining)` 限制，在原生调用前后及库载入后检查预算；已进入的同步系统调用须等待返回，再拒绝过期结果并关闭句柄，不声称能够强行取消内核调用。该观察路径不启动额外 PowerShell，不改变 native 环境或 Herdr daemon 的启动方式。
 
 ## 启动、输入与 Session 确认
 
@@ -38,11 +40,21 @@ manager 在 `agent.start` RPC 前持久保存原 request、binding、逻辑 argv
 
 输入前必须同时核实原 workspace/pane/terminal、Herdr kind/readiness、逻辑 argv 回执、manifest/nonce、实际 launch receipt、原 shell 和完整 shell→helper→loader/native 归属。`tool-launch-lifecycle.ts` 保存原进程证明并沿已证实的父子关系追加后代。helper 名称不伪装成原生工具，不设置假的进程名，不调用 `pane.report_agent` 补造识别结果；Herdr 必须识别真正 native。
 
-Windows 的 `ParentProcessId` 可能保留已退出父进程的编号，并指向后来复用该编号的无关进程。因此新后代登记同时核验原父进程实例和父子出生顺序；调用方直接提供的 PID 与清单发现的 PID 使用同一规则。子进程的精确出生时间必须严格晚于原父进程；相同时间不能证明先后，保持未知。登记前后父进程必须仍匹配原出生证明，候选按父子顺序建立完整链。已有 journal 的出生链也须在终止任何 Job 或进程前通过核验，缺证或矛盾不能靠删除旧记录、重新采样或改认新根进程消除。清理阶段缺少原 journal 时，不得从当前 foreground PID 新建根进程归属。
+Windows 的 `ParentProcessId` 可能保留已退出父进程的编号，并指向后来复用该编号的无关进程。因此新后代登记同时核验原父进程实例和父子出生顺序；调用方直接提供的 PID 与清单发现的 PID 使用同一规则。子进程的精确出生时间必须严格晚于原父进程；相同时间不能证明先后，保持未知。登记前后父进程必须仍匹配原出生证明，候选按父子顺序建立完整链。显式 mapping 清理和恢复必须先核验原 journal 的出生链，才可终止 Job 或进程；缺证或矛盾不能靠删除旧记录、重新采样或改认新根进程消除。清理阶段缺少原 journal 时，不得从当前 foreground PID 新建根进程归属。
 
 新会话的官方 integration 可能直到首次输入触发 SessionStart 才报告 ID。因此初始输入最多提交一次，递交前持久保存原 intent；macOS 继续使用原输入 journal 与仲裁器。启动成功必须等待同 pane 的官方 integration 报告符合原 kind 的合法 native Session UUID，并再次核验原进程归属。已知 ID 必须精确相同。缺失事件、不同 Session、进程变化及未知输入结果均保持未确认，不重放初始输入、不换会话、不人工补报。普通自动输入不能越过 frozen 执行的未知 native Session。
 
 退出与清理包含 helper、loader、native 和已登记后代。helper 退出但 native 仍活着不能证明关闭，也不能授权 mapping 换代或共享 daemon 切换。macOS 的 audit/birth 身份及停止顺序继续由独占生命周期维护；共享路径保留各代进程 journal，缺损或未解释资源阻止新 spawn。启动 intent/receipt 声明的 helper 与 native 都必须有原出生证明；只有 shell 的 journal 不能证明尚未登记的 native 已停止。已严格确认的 retirement 是该代的终态停证，后续 PID 复用不重新开启旧责任。
+
+Windows helper 在 native spawn 前创建唯一命名 Job、配置 kill-on-close 并加入自身，使后续子进程继承同一 Job；全部成功后才持久发布绑定原 owner、nonce、selection 和 helper 的边界记录。helper 的原句柄保留到 OS 处理其自然或异常退出，不在 JavaScript 清理中关闭并误杀自身，从而保留 native 的退出码。Job 成员引用可以保留对象本体，却不能在最后命名句柄关闭后保留名称；按名称查询失败不能解释为空 Job。
+
+kill-on-close 及原句柄观察器是启动前建立的自动退出策略，其职责是终止原 Job，独立于之后的 journal 登记。它们不发布 retirement，也不能从缺失 journal 推导显式清理或恢复的权限。
+
+Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第二个原 Job 句柄和原 helper 进程句柄，供同代 mapping 重连复用。第二句柄会抑制最后句柄关闭时的自动终止，因此保留后立即建立轻量观察器，在原 helper 句柄已 signaled 后终止原 Job 的剩余成员；之后的首次成员枚举失败不能取消该退出观察。观察器不发布 retirement；失败保留句柄、未知状态和清理责任，不反复高速重试。完整停止仍须通过原句柄确认 Job active count 为零、已观察成员的原进程句柄全部 signaled，以及原 journal 的退出核验，再持久保存 retirement 并释放句柄。若 Worker 与 helper 均丢失句柄，kill-on-close 的触发也不能替代全部退出证据；没有已确认停证的 Job 名称缺失、旧记录缺边界或身份不匹配均保持未知。
+
+历史观察错误阻止输入，却不能提前阻断使用原句柄的有界停止与重新核验。清理先验证完整 journal 和 receipt，再终止原 Job；只有曾由原 Job 成员关系确认、原进程句柄已 signaled 且 PID 未被复用的成员，才可跳过已消失父进程的重新登记。未知前台进程仍保留原出生链要求。retirement 已精确匹配该 generation 时，后续清理只重试本地仍保留的句柄释放，不重开 Job 或查询历史 PID；已经成功关闭的句柄不得再次关闭。
+
+首次绑定尚未证明 Job 与 helper 共同归属时，关闭失败只保留原句柄的释放责任，不授予终止权；并发接入不得覆盖这份未完成责任。
 
 ## 共享实例切换与恢复
 

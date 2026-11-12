@@ -205,7 +205,7 @@ jobs:
       - name: Verify the original shell, native terminal and official Session hook
         id: herdr-platform
         working-directory: packages/daynight
-        run: node node_modules/vitest/vitest.mjs run test/commands/worker/herdr-tool-platform.integration.test.ts
+        run: node node_modules/vitest/vitest.mjs run test/commands/worker/herdr-tool-platform.integration.test.ts test/commands/worker/herdr-windows-process-metadata-native.test.ts
       - name: Independently verify owned process and endpoint cleanup
         if: ${{ always() && steps.herdr-platform.outcome != 'skipped' }}
         run: node packages/daynight/scripts/check-herdr-platform-cleanup.mjs

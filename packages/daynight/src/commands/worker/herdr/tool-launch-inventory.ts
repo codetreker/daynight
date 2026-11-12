@@ -6,6 +6,7 @@ import { resourceOwnerKey } from "../resource-owner.js";
 import type { HerdrExecutionOwner } from "./agents.js";
 import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { createMappingProcessLifecycle } from "./tool-launch-lifecycle.js";
+import { releaseHerdrJobObserver } from "./tool-launch-windows-job.js";
 import { mappingFiles, optionalOwnedJson, parseToolManifest, parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest } from "./tool-launch-protocol.js";
 import { parseToolStartRequest } from "./tool-launch-start.js";
@@ -69,7 +70,10 @@ export const confirmToolLaunchMappingsStopped = async (directory: string, enviro
   for (const { fact, manifest } of generations(directory)) {
     operation.check();
     // Retirement already durably proved complete closure for this immutable generation.
-    if (fact.retired) continue;
+    if (fact.retired) {
+      if (manifest.platform === "win32") releaseHerdrJobObserver(fact.manifestPath, manifest);
+      continue;
+    }
     const processRecord = await optionalOwnedJson(path.join(path.dirname(fact.manifestPath), "processes.json"));
     if (processRecord === null && !fact.started) continue;
     if (!await createMappingProcessLifecycle(fact.manifestPath, manifest, environment).confirmStopped(operation)) return false;

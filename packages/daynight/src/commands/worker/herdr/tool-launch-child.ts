@@ -6,7 +6,7 @@ import { createOperation } from "../../../api/operation.js";
 import { toolCommand, verifyToolLaunch } from "../../../platform/tool-executables.js";
 import { launchArgvDigest, mappingFiles, publishOwnedJson, readToolManifest, toolManifestEnvironment } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchIntent } from "./tool-launch-protocol.js";
-import { createControllerJob } from "../../controller/windows-job.js";
+import { establishCurrentHerdrHelperJob } from "./tool-launch-windows-job.js";
 
 const decode = (value: string): string => {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value) || value.length > 2 * 1024 * 1024) throw new TypeError("Invalid encoded Herdr tool launch data.");
@@ -33,7 +33,7 @@ try {
   const command = toolCommand(manifest.launch, parsed.args), files = mappingFiles(parsed.manifestPath);
   const intent: HerdrToolLaunchIntent = { schemaVersion: 1, owner: manifest.owner, nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey,
     logicalArgvDigest: launchArgvDigest(parsed.agent, parsed.args), file: command.file, prefixArgs: [...manifest.launch.command.prefixArgs], helperPid: process.pid };
-  if (process.platform === "win32") await createControllerJob(manifest.nonce, process.pid);
+  if (process.platform === "win32") await establishCurrentHerdrHelperJob(parsed.manifestPath, manifest, operation);
   await publishOwnedJson(files.intent, intent);
   operation.check();
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["PATH", toolManifestEnvironment, "DAYNIGHT_HERDR_SHELL_NONCE"].includes(name.toUpperCase())));

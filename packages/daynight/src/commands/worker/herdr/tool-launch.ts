@@ -13,7 +13,9 @@ import { canonicalResourceOwner, resourceOwnerKey, sameResourceOwner } from "../
 import type { HerdrExecutionOwner } from "./agents.js";
 import { assertOwnedDirectory, launchArgvDigest, mappingFiles, optionalOwnedJson, parseToolReceipt, publishOwnedFile, publishOwnedJson, readToolManifest, toolManifestEnvironment } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
-import { createMappingProcessLifecycle, runWindowsToolMetadataCommand } from "./tool-launch-lifecycle.js";
+import { createMappingProcessLifecycle } from "./tool-launch-lifecycle.js";
+import { releaseHerdrJobObserver, retainHerdrJobObserver } from "./tool-launch-windows-job.js";
+import { readWindowsProcessMetadata } from "./windows-process-metadata.js";
 
 export type { HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
 export type HerdrToolLaunchMapping = {
@@ -108,6 +110,7 @@ const createMapping = async (input: {
     if (retired !== null) {
       const original = await readToolManifest(manifestPath);
       if (JSON.stringify(retired) !== JSON.stringify({ nonce: original.nonce, selectionKey: original.launch.selectionKey, owner: original.owner })) throw new Error("The original Herdr mapping retirement proof is invalid.");
+      if (original.platform === "win32") releaseHerdrJobObserver(manifestPath, original);
       directory = path.join(registry, randomUUID()); manifestPath = path.join(directory, "manifest.json");
     }
   }
@@ -181,8 +184,7 @@ const createMapping = async (input: {
         if (value !== null) {
           const row = value as Record<string, unknown>;
           if (row.nonce !== manifest.nonce || row.pid !== shellPid || typeof row.executable !== "string" || row.executable.toLowerCase() !== windowsCommand[0]!.toLowerCase() || typeof row.startToken !== "string" || !/^\d+$/.test(row.startToken)) throw new Error("The original PowerShell readiness does not match the owned root pane.");
-          const result = await runWindowsToolMetadataCommand({ file: windowsCommand[0]!, args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", `$p=Get-Process -Id ${shellPid} -ErrorAction Stop; @{executable=$p.Path;startToken=$p.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json -Compress`], environment: input.nativeEnvironment }, active);
-          const observed = JSON.parse(result.stdout) as Record<string, unknown>;
+          const observed = await readWindowsProcessMetadata(shellPid, active);
           if (observed.executable !== row.executable || observed.startToken !== row.startToken) throw new Error("The original PowerShell root process identity changed.");
           return;
         }
@@ -196,6 +198,7 @@ const createMapping = async (input: {
         const receipt = await readReceipt(active);
         if (receipt !== null) {
           if (receipt.logicalArgvDigest !== launchArgvDigest(manifest.launch.tool, args)) throw new Error("The original Herdr tool launch receipt has different logical arguments.");
+          if (manifest.platform === "win32") (await retainHerdrJobObserver(manifestPath, manifest, receipt, active)).check();
           return receipt;
         }
         await delay(10, undefined, { signal: active.signal });
