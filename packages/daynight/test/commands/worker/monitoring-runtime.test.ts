@@ -479,6 +479,7 @@ describe("worker runtime monitoring isolation", () => {
       const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
       await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "project" })));
       const failure = monitor.capture("1").currentFailures.find(item => item.component === "project")!;
+      if (!fallback) await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "scheduled" })));
       if (fallback) firstTick.resolve();
       await vi.advanceTimersByTimeAsync(fallback ? 60_000 : 5_000); await retryStarted.promise;
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running" }));

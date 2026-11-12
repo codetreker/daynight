@@ -695,9 +695,12 @@ describe("Worker cloud configuration application", () => {
   it("cancels obsolete preparation and installs a newer target above the report item limit", async () => {
     const first = await fixture({ persist: persistLifecycleCache });
     await first.manager.receive(desired()); await first.manager.settle(); await first.manager.stop();
-    const saved = await legacyCache(first.file);
-    for (let n = 0; n < 1018; n++) saved.items.push({ value: { key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
-    await writeFile(first.file, JSON.stringify(saved));
+    const saved = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
+    const pendingRemovals = Array.from({ length: 1018 }, (_, n) => ({ recordId: `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+      origin: { generation: saved.authority.generation, targetRevision: "1", source: "application" as const },
+      value: { key: { kind: "projectRemoval" as const, projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "pending" as const, error: null, lastFailure: null, nextAttemptAt: null },
+      backoffStep: 0, failureId: null, started: false, nativeMode: null, actualSource: null, blockedByRemovalId: null }));
+    await writeFile(first.file, JSON.stringify({ ...saved, currentItems: [...saved.currentItems, ...pendingRemovals] }));
     const entered = deferred(), released = deferred(), cancelled = deferred();
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, persist: persistLifecycleCache });
     fixtures.push({ manager: reopened, directory: first.directory });
