@@ -185,7 +185,7 @@ Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP �
 均禁止 NUL。未知、重复字段、错误类型、非法 Unicode、query、version、目标身份、email 及
 emailVerified 均拒绝。解码字段或完整候选资料超过容量时返回 400 invalid_input，写入整体回滚；
 正文超过 1 MiB 时返回 413。读取期限为 15 秒；解析完成后的写操作另有继承父取消的
-15 秒期限。Session 和 PAT 只修改实际凭据的本人，Cookie 写请求沿用精确主站 Origin 校验。
+15 秒期限。Session、PAT 和固定 API OAuth 只修改实际凭据的本人，Cookie 写请求沿用精确主站 Origin 校验。
 
 并发更新不同字段时，保留各自未提交字段的最新值。完整 profile 不超过 1 MiB，完整本人表示不超过
 2 MiB；完整 Personal Team 必须有效。写入、容量与完整性校验、等待后的新鲜凭据有效性检查和提交
@@ -203,7 +203,7 @@ Personal Team。初始化失败整体回滚，提交结果未知停止后继操�
 
 Team 的身份是规范小写 UUID，名称只用于展示。Team 元数据与当前主体真实成员关系分开版本化；
 项目中的 `TeamRef` 仍只有 `{id,kind,name}`，不能作为 Team 设置或目录的读取凭据。
-Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-User-ID`、
+Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验、`Daynight-User-ID`、
 `Cache-Control: no-store` 和 JSON 错误 envelope。仅当前 Team 成员能读取详情；
 不存在或不可见的 Team 都返回 `404 not_found`，只有项目单独授权不授予 Team 访问权。
 
@@ -522,12 +522,64 @@ GET 都执行鉴权。会话失效返回明确的 401，不将登录 HTML 当成
 继续一次一个文件、bucket/path 和原预算。文件系统与 PG 非原子性保留 K1，普通
 IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的文件操作。
 
+## 用户应用授权 API
+
+固定应用为 `societas-bot` / `Societas Bot`，resource 为已配置 `PublicOrigin + "/api/v1"`，
+scope 为 `daynight:api`。access 使用 `dnapi_`、refresh 使用 `dnapr_` 前缀，后缀均为
+32 随机字节的 canonical raw base64url。真实 Principal 仍是 user UUID、access UUID 和 OAuth kind。
+应用调用现有用户 REST，沿用原业务权限、版本、事务与资源生命周期；不增加 system 身份或全局管理权。
+MCP 的 `/mcp`、scope、客户端和原有效期策略保持独立，MCP token 不可用于 REST，API token 不可用于 MCP。
+
+`POST /api/v1/oauth/s2s/token` 接受唯一 `Authorization: S2S <shared-key>`，JSON 为
+`{externalUserId,profile?:{name?:string|null,avatarUrl?:string|null}}`，不接受 query、自选用户 UUID、
+应用、resource 或 scope。externalUserId 遵守完整用户初始化的规范化与容量规则，输入 profile 仅初始化新用户，
+不覆盖已有资料。未知或重复字段、错误类型、非法 Unicode、NUL 和身份控制字符明确拒绝。
+JSON 正文最多 1 MiB、读取最多 15 秒；解码后操作另有继承请求和停机取消的 15 秒预算。
+
+`s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` 空值关闭签发；非空必须是 32–256 个 visible ASCII
+bytes（0x21–0x7e），无空白或必需前缀。无效配置启动失败且诊断不泄露值。密钥只在启动加载，
+修改后重启；恒定时间比较。缺失、畸形、错误或未配置密钥返回 401，且不能初始化用户。
+签发不提供浏览器 CORS，共享密钥不用于业务、refresh 或用户 Session 通道。
+
+密钥和输入准入后，先独立确认完整用户、Personal Team 与 owner admin，再原子提交独立应用 family。
+family 失败可以保留已经完整建立的账号。只有确认 family 提交后才返回 200、no-store/no-cache 与以下精确字段：
+`access_token,token_type,expires_in,access_expires_at,refresh_token,grant_expires_at,scope,resource,client_id,grant_id,user_id`。
+`token_type` 为 `Bearer`，`expires_in` 为整数 3600；期限是非空 UTC RFC3339，最多 6 位小数。
+秘密和实际 ID/binding 均非空；不返回虚构 grant 详情 Location。metadata 不能恢复明文。
+
+REST 明确 `Authorization: Bearer dnapi_...` 选择固定 API verifier，验证实际 access、grant、user、
+client/resource/scope、撤销及期限后调用原用户业务。显式 Authorization 优先，重复、格式错误或无效值
+返回 401，不回退 Cookie。Session/PAT 保留原路径，Cookie 写仍校验主站 Origin。应用不能管理 PAT 或全部
+OAuth grants，不能代替 device/browser consent，也不能替代 Worker/Controller、parent PAT、录制或归档生产者凭据。
+
+`POST /oauth/token` 的 form 接受 `grant_type=refresh_token`、`client_id=societas-bot`、固定 `resource`、
+`refresh_token=dnapr_...`；scope 可省略或精确为 `daynight:api`。沿用 public-none 客户端认证，不额外要求 S2S
+密钥；API 不开放 authorization_code。form 最多 64 KiB、读取 15 秒，decode 后 refresh 操作另有 15 秒预算。
+缺失、重复、query 或 code 混用按原 OAuth 错误拒绝，scope 错误为 invalid_scope，family 无效为 invalid_grant。
+API 成功返回与签发相同的精确 DTO；MCP 成功保持原五字段响应。
+
+access 有效 60 分钟。首次 grant/refresh 截止为发行时间加 30 天；每次确认成功的 API refresh 原子消费旧 refresh，
+将 grant 与新 refresh 截止更新为取得原锁后的数据库续期时间加 30 天，新 access 为该时刻加 60 分钟。
+原 grant 创建时间、旧 access 和旧 consumed refresh 截止保持。普通业务、lastUsedAt、失败或 unknown 不延长授权。
+尚在原有效期内的正确重放撤销 family 后拒绝；过期重放仅拒绝，不撤销已续期 family。同一旧 refresh 不会双成功。
+
+`POST /oauth/revoke` 沿用 form token/client_id，可撤销匹配的 API access/refresh family，包括仍保留的过期 token；
+不存在、不匹配或已撤销统一 200 空正文，不接受任意 userId/grantId。原生主站会话继续通过原 OAuth grant 列表读取真实
+应用、resource/scope、滚动期限与状态，并通过原 owner revoke 撤销；不新增详情 GET 或应用管理全部授权的能力。
+撤销不删除原用户资源或取消已派发执行。用户明确重新连接可签发新 grant ID；普通 401/refresh 失败不自动重新签发。
+
+签发或刷新提交未知返回 OAuth `503 outcome_unknown`，不返回秘密；普通业务保留 `503 write_outcome_unknown`。
+已确认提交后的响应发送失败保持 response unknown，不伪造回滚，不重做操作。重复明确申请可以创建独立 family；
+本接口不提供通用创建去重或结果恢复。日志不包含密钥、token、hash、外部身份或 profile。
+成功 REST/用户 WS 认证按实际 grant 记录一次 `http_oauth`，确认 refresh 记录 `oauth_refresh`；发行、poll、内部
+复核、失败及 unknown 不伪造使用事件，元数据故障不改变原认证或业务结果。
+
 ## 应用浏览器读取用户 REST
 
 `s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` 可配置一个 canonical exact HTTPS
 origin，无 userinfo、路径、query、fragment 或通配符；HTTP 应用 origin 仅在
 `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` 时接受 literal localhost 或数值 loopback IP。
-非法配置启动失败，空值关闭应用浏览器 CORS，保留无 Origin REST、内部签发和原 public
+非法配置启动失败，空值关闭应用浏览器 CORS，保留无 Origin REST、受信签发和 public
 refresh。修改配置后重启。
 
 合法 Origin 可读取现有用户 REST 的正常、认证、业务、路径、404 和 405 响应及必要协议头。

@@ -16,14 +16,15 @@ The existing OAuth family stores both fixed profiles. MCP keeps its resource,
 recorded client, scope, secret prefixes, client metadata, authorization-code and
 PKCE behavior, and absolute deadline. The API profile fixes the Societas client,
 API resource, scope and secret prefixes. It stores only the true client ID and
-name in its snapshot. The [authentication design](../../../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与内部-api-能力)
+name in its snapshot. The [authentication design](../../../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与-api-授权)
 owns their exact values and current operation contracts.
 
 Internal API issuance, authentication, rotation and revocation are real family
 operations. The service issuer confirms its transaction before returning secrets.
-Public REST authentication still uses PATs or browser Cookies. The S2S issuance
-route is not exposed, and existing public OAuth refresh/revoke adapters admit
-only the MCP profile. User WebSocket marker authentication uses the narrow
+Public REST admits the fixed API profile alongside PATs and browser Cookies.
+Trusted S2S issuance and public API refresh/revoke use the existing family
+operations; the [public authorization decision](2026-11-13-public-api-authorization.md)
+owns their adapters, configuration and assembly. User WebSocket marker authentication uses the narrow
 application authentication operation and its effective expiry; the
 [user WebSocket decision](2026-11-12-api-user-websocket.md) owns its carrier,
 Origin and connection lifecycle. The API profile uses the same real user and

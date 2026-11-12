@@ -14,6 +14,7 @@ import (
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
 	oauthauthorization "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/authorization"
 	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
+	s2shttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/s2s"
 	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
@@ -83,7 +84,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
 	web := webhttp.New(app.Web)
 	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
-	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants, Logger: logger}
+	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", APIResource: config.Server.PublicOrigin + "/api/v1", Codes: profile.Authorizations, Grants: profile.Grants, Logger: logger}
+	mux.Handle("/api/v1/oauth/s2s/token", s2shttp.New(app.APIIssuer, config.S2S.SharedKey, logger))
 	mux.Handle("/oauth/register", oauthhttp.Handler(profile.Clients))
 	mux.HandleFunc("/oauth/authorize", authorization.Start)
 	mux.HandleFunc("/oauth/token", tokens.Token)

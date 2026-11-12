@@ -233,7 +233,7 @@ func configureRedemption(f *oauthFixture, s *Authorizations, in RedeemInput, rec
 		finalErr = model.ErrNotFound
 		outcome = store.TransactionUnknown
 	case "expired code", "DCR expiry", "expired grant", "invalid snapshot":
-		callbackErr = core.ErrInvalidGrant
+		callbackErr = &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: core.ErrInvalidGrant}
 		finalErr = core.ErrInvalidGrant
 		outcome = store.TransactionNotCommitted
 	case "unknown":
@@ -364,7 +364,7 @@ func TestCodeAdmissionRunsAfterLookupCompletionWithStoredClient(t *testing.T) {
 			outcome := store.TransactionCommitted
 			switch phase {
 			case "binding refusal":
-				callbackErr = core.ErrInvalidGrant
+				callbackErr = &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: core.ErrInvalidGrant}
 				finalErr = core.ErrInvalidGrant
 				outcome = store.TransactionNotCommitted
 			case "lookup unknown":
@@ -480,7 +480,7 @@ func TestAuthorizationCodeRetryRequiresUncommittedScopeAndStopsAtTwo(t *testing.
 					outcome = store.TransactionCommitted
 				}
 				if mismatch {
-					callbackErr = core.ErrInvalidGrant
+					callbackErr = &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: core.ErrInvalidGrant}
 					finalErr = core.ErrInvalidGrant
 				}
 				if mode == "unknown race" {

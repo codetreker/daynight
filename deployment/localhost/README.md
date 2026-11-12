@@ -38,6 +38,17 @@ server loads `config.yml`, then optional `config.local.yml`, then explicitly
 set environment variables. Restart the server after changing files. Keep the
 public directory at mode `0755` and its file at `0644` so UID 10001 can read
 them. Protect any local override and do not commit secrets.
+Optional `DAYNIGHT_S2S_SHARED_KEY` enables trusted application issuance when set
+to 32–256 visible ASCII bytes; its empty template value disables issuance.
+`DAYNIGHT_S2S_ALLOWED_ORIGIN` separately enables exact application browser CORS
+and user WebSocket Origin admission. Keep the key private. Both optional Compose
+entries preserve absence, explicit empty and nonempty values: absence from the
+host and private `.env` retains YAML, empty overrides YAML with the disabled
+value, and nonempty overrides it. The host environment takes precedence over
+`.env`. Restart after changing either setting; replacing the key does not revoke
+existing application grants. The [authentication contract](../../docs/spec/daynight-auth.md#用户应用授权-api)
+owns issuance, refresh and revocation behavior.
+
 Required authentication environment bindings remain mandatory even when a
 local YAML override is present. The image sets the three image tool paths and
 the root-relative staging path `storage/.image-validation` through environment

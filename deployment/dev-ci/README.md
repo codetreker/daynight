@@ -16,6 +16,14 @@ Set it to a positive Go duration such as `250ms`, `30s` or `1m30s` when exercisi
 a different task-sync lookback window. Invalid, zero and negative values fail
 server startup. The window is server configuration; clients cannot override it.
 
+Optional `DAYNIGHT_S2S_SHARED_KEY` and `DAYNIGHT_S2S_ALLOWED_ORIGIN` pass through
+to the server with their original presence. An absent value retains the loaded
+YAML setting, an explicitly empty value disables its capability, and a nonempty
+value overrides YAML. The host environment takes precedence over the private
+environment file. A shared key enables only trusted S2S issuance; the origin
+enables application browser CORS and user WebSocket Origin admission. Keep keys
+private and follow the [authentication contract](../../docs/spec/daynight-auth.md#用户应用授权-api).
+
 The runner requires Bash, standard shell utilities, Node.js 24, Docker Engine 28
 or newer, Linux containers and Docker Compose 2.20.2 or newer. Linux Docker engines
 on `amd64` and `arm64`, including Docker Desktop Linux containers on macOS, are

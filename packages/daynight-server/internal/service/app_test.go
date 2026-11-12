@@ -64,7 +64,7 @@ func TestOAuthProfileComposition(t *testing.T) {
 		"known": []byte(`{"client_id":"known","redirect_uris":["https://client.example/callback"]}`),
 	}}}
 	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
-	if app.OAuthError != nil || app.OAuthProfile == nil {
+	if app.OAuthError != nil || app.OAuthProfile == nil || app.APIIssuer == nil {
 		t.Fatalf("valid OAuth profile: %v", app.OAuthError)
 	}
 	client, err := app.OAuthProfile.Clients.Resolve(context.Background(), "known", "https://client.example/callback")
@@ -79,7 +79,7 @@ func TestOAuthProfileComposition(t *testing.T) {
 		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example/path"}},
 	} {
 		app := NewModules(invalid, compositionOnlyStore{}, nil, nil, nil)
-		if app.OAuthProfile != nil || app.OAuthError == nil {
+		if app.OAuthProfile != nil || app.APIIssuer != nil || app.OAuthError == nil {
 			t.Fatal("invalid OAuth configuration produced a public profile")
 		}
 		if err := app.Close(context.Background()); err != nil {

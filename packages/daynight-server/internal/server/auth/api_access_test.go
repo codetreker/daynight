@@ -174,3 +174,99 @@ func TestNativeRequestAuthenticationIgnoresBoundAPIVerifier(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIRESTBearerDispatchPreservesIdentityAndContext(t *testing.T) {
+	for _, applicationOrigin := range []string{"", "https://application.example"} {
+		t.Run(applicationOrigin, func(t *testing.T) {
+			identity := applicationIdentity()
+			request := httptest.NewRequest(http.MethodPost, "/protected", nil)
+			ctx := context.WithValue(request.Context(), struct{}{}, "REST context")
+			request = request.WithContext(ctx)
+			request.Header.Set("Authorization", "bEaReR dnapi_application-secret")
+			request.AddCookie(&http.Cookie{Name: "daynight_session", Value: "competing-cookie"})
+			request.Header.Set("Origin", "https://unrelated.example")
+			calls := 0
+			h := &RequestAuthentication{authenticate: func(context.Context, model.CredentialKind, string) (model.Principal, error) {
+				t.Fatal("explicit API bearer reached native credentials")
+				return model.Principal{}, nil
+			}}
+			h.BindAPIAccess(func(got context.Context, token string) (store.OAuthAccessIdentity, error) {
+				calls++
+				if got != ctx || token != "dnapi_application-secret" || calls != 1 {
+					t.Fatal("API REST verifier inputs changed")
+				}
+				return identity, nil
+			}, applicationOrigin)
+			got, err := h.AuthenticateRequest(request)
+			if err != nil || got != identity.Principal || calls != 1 {
+				t.Fatalf("REST application authentication = %+v %v calls=%d", got, err, calls)
+			}
+		})
+	}
+}
+
+func TestAPIRESTBearerRefusalNeverFallsBack(t *testing.T) {
+	failure := errors.New("API verifier failure")
+	for _, test := range []struct {
+		name          string
+		authorization []string
+		bound         bool
+		calls         int
+		want          error
+	}{
+		{name: "missing verifier", authorization: []string{"Bearer dnapi_invalid"}},
+		{name: "verifier failure", authorization: []string{"Bearer dnapi_invalid"}, bound: true, calls: 1, want: failure},
+		{name: "duplicate", authorization: []string{"Bearer dnapi_invalid", "Bearer dnapi_other"}, bound: true},
+		{name: "comma combined", authorization: []string{"Bearer dnapi_invalid, Bearer dnapi_other"}, bound: true},
+		{name: "wrong scheme", authorization: []string{"S2S dnapi_invalid"}, bound: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			h := &RequestAuthentication{authenticate: func(context.Context, model.CredentialKind, string) (model.Principal, error) {
+				t.Fatal("API refusal fell back to native credentials")
+				return model.Principal{}, nil
+			}}
+			if test.bound {
+				h.BindAPIAccess(func(context.Context, string) (store.OAuthAccessIdentity, error) {
+					calls++
+					return applicationIdentity(), failure
+				}, "")
+			}
+			request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			request.Header["Authorization"] = test.authorization
+			request.AddCookie(&http.Cookie{Name: h.SessionCookieName(), Value: "competing-cookie"})
+			got, err := h.AuthenticateRequest(request)
+			if got != (model.Principal{}) || calls != test.calls || err == nil || test.want != nil && err != test.want {
+				t.Fatalf("refusal=%+v %v calls=%d", got, err, calls)
+			}
+		})
+	}
+}
+
+func TestAPIRESTBearerHTTPPreservesFailureClassification(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "invalid family", err: model.Unauthenticated(&store.Error{MissingRow: true, Cause: model.ErrNotFound}), status: http.StatusUnauthorized},
+		{name: "database", err: &store.Error{DatabaseFailure: true, SQLState: "08006", Cause: errors.New("database failure")}, status: http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := &RequestAuthentication{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			h.BindAPIAccess(func(context.Context, string) (store.OAuthAccessIdentity, error) {
+				return applicationIdentity(), test.err
+			}, "")
+			request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			request.Header.Set("Authorization", "Bearer dnapi_private-secret")
+			response := httptest.NewRecorder()
+			h.Require(func(http.ResponseWriter, *http.Request, model.Principal) {
+				t.Fatal("failed verifier reached business handler")
+			})(response, request)
+			if response.Code != test.status || response.Header().Get("Daynight-User-ID") != "" || strings.Contains(logs.String()+response.Body.String(), "dnapi_private-secret") {
+				t.Fatalf("status=%d body=%s logs=%s", response.Code, response.Body.String(), logs.String())
+			}
+		})
+	}
+}

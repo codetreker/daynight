@@ -21,7 +21,7 @@ func (d *DAO) LockClientCapacity(ctx context.Context) error {
 func (d *DAO) FreshTime(ctx context.Context, now time.Time) (time.Time, error) {
 	var fresh time.Time
 	err := d.tx.QueryRow(ctx, `SELECT GREATEST($1::timestamptz,clock_timestamp())`, now).Scan(&fresh)
-	return fresh, pg.AuthQueryError("read OAuth client time", err)
+	return fresh.UTC().Truncate(time.Microsecond), pg.AuthQueryError("read OAuth client time", err)
 }
 func (d *DAO) InsertClient(ctx context.Context, c store.OAuthClient, limit int, now time.Time) (bool, error) {
 	if limit <= 0 {

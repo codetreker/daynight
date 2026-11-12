@@ -25,6 +25,7 @@ uniauth:
   allow_loopback_http: false
 
 s2s:
+  shared_key: ""
   allowed_origin: ""
 
 mcp:

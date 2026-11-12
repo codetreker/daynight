@@ -42,6 +42,7 @@ type App struct {
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
 	DirectMembers        *team.DirectMembers
+	APIIssuer            *oauthservice.UserAPIIssuer
 	ImageValidationError error
 	oauthMaintenance     *oauthservice.MaintenanceRunner
 
@@ -107,9 +108,15 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 			if authErr != nil {
 				app.OAuthError = authErr
 			} else {
-				grants := coreoauth.NewGrantLifecycle(database)
-				app.OAuthProfile = &OAuthProfile{Admission: admission, Clients: clients, Authorizations: authorizations, Grants: grants,
-					Maintenance: oauthservice.NewMaintenance(database, authorizations, grants)}
+				issuer, issuerErr := oauthservice.NewUserAPIIssuer(database, app.Identity.EnsureUser, c.Server.PublicOrigin)
+				if issuerErr != nil {
+					app.OAuthError = issuerErr
+				} else {
+					app.APIIssuer = issuer
+					grants := coreoauth.NewGrantLifecycle(database)
+					app.OAuthProfile = &OAuthProfile{Admission: admission, Clients: clients, Authorizations: authorizations, Grants: grants,
+						Maintenance: oauthservice.NewMaintenance(database, authorizations, grants)}
+				}
 			}
 		}
 	}

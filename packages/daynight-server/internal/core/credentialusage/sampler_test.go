@@ -373,7 +373,7 @@ func TestSafeDiagnosticVocabulary(t *testing.T) {
 			t.Fatalf("cause %d = %q", value, got)
 		}
 	}
-	sources := map[Source]string{SourceHTTPPAT: "http_pat", SourceMCPPAT: "mcp_pat", SourceMCPOAuth: "mcp_oauth", SourceOAuthRefresh: "oauth_refresh", 0: ""}
+	sources := map[Source]string{SourceHTTPPAT: "http_pat", SourceMCPPAT: "mcp_pat", SourceMCPOAuth: "mcp_oauth", SourceOAuthRefresh: "oauth_refresh", SourceHTTPOAuth: "http_oauth", 0: ""}
 	for value, want := range sources {
 		if got := value.String(); got != want {
 			t.Fatalf("source %d = %q", value, got)
@@ -700,4 +700,17 @@ func TestNewRejectsMissingClock(t *testing.T) {
 		}
 	}()
 	_ = New(nil)
+}
+
+func TestHTTPOAuthObservationRetainsGrantIdentity(t *testing.T) {
+	s, clock := newSampler()
+	o := obs(1, clock.now)
+	o.Event.Kind = model.UsageSubjectOAuthGrant
+	o.Source = SourceHTTPOAuth
+	record(t, s, o, Accepted)
+	batch := take(t, s, 1)
+	if len(batch.Observations) != 1 || batch.Observations[0] != o {
+		t.Fatalf("HTTP OAuth observation changed: %+v", batch.Observations)
+	}
+	complete(t, s, batch, Committed, Failure{})
 }

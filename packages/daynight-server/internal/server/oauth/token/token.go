@@ -10,13 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/tokenresponse"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
@@ -32,11 +37,12 @@ type GrantLifecycle interface {
 // PublicTokens exposes the complete public token and revocation adapters. The
 // owner mounts them only when the complete OAuth profile is available.
 type PublicTokens struct {
-	Admission core.PublicAdmission
-	Resource  string
-	Codes     TokenCodes
-	Grants    GrantLifecycle
-	Logger    *slog.Logger
+	Admission   core.PublicAdmission
+	Resource    string
+	APIResource string
+	Codes       TokenCodes
+	Grants      GrantLifecycle
+	Logger      *slog.Logger
 }
 
 func publicHeaders(w http.ResponseWriter) {
@@ -63,7 +69,7 @@ func publicPost(w http.ResponseWriter, r *http.Request) bool {
 }
 func publicForm(w http.ResponseWriter, r *http.Request) (url.Values, bool, error) {
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if r.URL.RawQuery != "" || err != nil || media != "application/x-www-form-urlencoded" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
+	if r.URL.RawQuery != "" || r.URL.ForceQuery || err != nil || media != "application/x-www-form-urlencoded" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
 		httpx.CloseUnreadBody(w, r)
 		return nil, false, nil
 	}
@@ -79,21 +85,24 @@ func publicForm(w http.ResponseWriter, r *http.Request) (url.Values, bool, error
 		if len(entries) != 1 || !utf8.ValidString(key) || !utf8.ValidString(entries[0]) || strings.ContainsRune(key, 0) || strings.ContainsRune(entries[0], 0) {
 			return nil, false, nil
 		}
-		if entries[0] == "" {
-			values.Del(key)
-		}
 	}
 	return values, true, nil
 }
 func publicError(w http.ResponseWriter, err error) {
+	facts := operation.CompletionFacts(err)
+	databaseFailure, _ := store.DatabaseErrorFacts(err)
 	switch {
+	case facts.CleanupFailed:
+		writeError(w, http.StatusInternalServerError, "server_error")
+	case facts.Outcome == store.TransactionUnknown || errors.Is(err, core.ErrAuthorizationUnknown):
+		writeError(w, http.StatusServiceUnavailable, "outcome_unknown")
+	case databaseFailure || facts.Outcome == store.TransactionCommitted || facts.Phase != "" && facts.Phase != "operation":
+		writeError(w, http.StatusInternalServerError, "server_error")
 	case errors.Is(err, core.ErrRateLimited):
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "slow_down")
 	case errors.Is(err, core.ErrInvalidGrant):
 		writeError(w, http.StatusBadRequest, "invalid_grant")
-	case errors.Is(err, core.ErrAuthorizationUnknown):
-		writeError(w, http.StatusServiceUnavailable, "outcome_unknown")
 	default:
 		writeError(w, http.StatusInternalServerError, "server_error")
 	}
@@ -111,6 +120,7 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 	permit, allowed, err := h.Admission.TakeToken(r.Context(), source)
 	if err != nil {
 		httpx.CloseUnreadBody(w, r)
+		h.logFailure(r, "token_admission", err)
 		publicError(w, err)
 		return
 	}
@@ -128,9 +138,17 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if v.Get("resource") != h.Resource || h.Resource == "" {
+	apiRequest := h.APIResource != "" && v.Get("resource") == h.APIResource
+	if !apiRequest && (v.Get("resource") != h.Resource || h.Resource == "") {
 		publicError(w, core.ErrInvalidGrant)
 		return
+	}
+	if !apiRequest {
+		for key, entries := range v {
+			if entries[0] == "" {
+				v.Del(key)
+			}
+		}
 	}
 	admit := func(ctx context.Context, id string) error {
 		ok, err := permit.TakeClient(ctx, id)
@@ -143,8 +161,13 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 	var result service.TokenResult
+	var apiResult api.OAuthAPITokens
 	switch v.Get("grant_type") {
 	case "authorization_code":
+		if apiRequest {
+			publicError(w, core.ErrInvalidGrant)
+			return
+		}
 		if v.Get("code") == "" || v.Get("redirect_uri") == "" || v.Get("code_verifier") == "" || v.Has("refresh_token") || v.Has("scope") {
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
@@ -155,27 +178,48 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		if v.Has("scope") && v.Get("scope") != core.Scope {
+		scope := core.Scope
+		if apiRequest {
+			scope = core.APIScope
+			if v.Get("client_id") != core.APIClientID || !secret.Valid(v.Get("refresh_token"), core.APIRefreshPrefix) {
+				publicError(w, core.ErrInvalidGrant)
+				return
+			}
+		}
+		if v.Has("scope") && v.Get("scope") != scope {
 			writeError(w, http.StatusBadRequest, "invalid_scope")
 			return
 		}
 		var rotated core.RotatedTokens
-		rotated, err = h.Grants.Rotate(r.Context(), v.Get("refresh_token"), v.Get("client_id"), v.Get("resource"), admit)
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		rotated, err = h.Grants.Rotate(ctx, v.Get("refresh_token"), v.Get("client_id"), v.Get("resource"), admit)
 		logger := h.Logger
 		if logger == nil {
 			logger = slog.Default()
 		}
 		_ = httpx.PublishCredentialUsageFaults(logger, r.Context())
-		result = service.TokenResult{AccessToken: rotated.AccessToken, RefreshToken: rotated.RefreshToken, TokenType: "Bearer", Scope: core.Scope, ExpiresIn: rotated.ExpiresIn}
+		if err == nil {
+			if apiRequest {
+				apiResult = api.OAuthAPITokens{AccessToken: rotated.AccessToken, TokenType: "Bearer", ExpiresIn: rotated.ExpiresIn, AccessExpiresAt: rotated.AccessExpiresAt, RefreshToken: rotated.RefreshToken, GrantExpiresAt: rotated.Grant.ExpiresAt, Scope: rotated.Grant.Scope, Resource: rotated.Grant.Resource, ClientID: rotated.Grant.ClientID, GrantID: rotated.Grant.ID, UserID: rotated.Grant.UserID}
+			} else {
+				result = service.TokenResult{AccessToken: rotated.AccessToken, RefreshToken: rotated.RefreshToken, TokenType: "Bearer", Scope: core.Scope, ExpiresIn: rotated.ExpiresIn}
+			}
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
 	if err != nil {
+		h.logFailure(r, "token", err)
 		publicError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, struct {
+	if apiRequest {
+		tokenresponse.Write(w, r, h.Logger, apiResult)
+		return
+	}
+	tokenresponse.Write(w, r, h.Logger, struct {
 		AccessToken  string `json:"access_token"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int64  `json:"expires_in"`
@@ -199,11 +243,12 @@ func (h *PublicTokens) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := v.Get("token")
-	if !secret.Valid(token, model.OAuthAccessPrefix) && !secret.Valid(token, core.RefreshPrefix) {
+	if !secret.Valid(token, model.OAuthAccessPrefix) && !secret.Valid(token, core.RefreshPrefix) && !secret.Valid(token, core.APIAccessPrefix) && !secret.Valid(token, core.APIRefreshPrefix) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if err := h.Grants.RevokePublic(r.Context(), token, v.Get("client_id")); err != nil {
+		h.logFailure(r, "revoke", err)
 		publicError(w, err)
 		return
 	}
@@ -219,4 +264,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (h *PublicTokens) logFailure(r *http.Request, phase string, err error) {
+	logger := h.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	httpx.LogFailure(logger, r.Context(), "oauth", phase, err)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -33,6 +34,15 @@ func (h *Routes) requireUserChannel(next httpx.AuthenticatedHandler, test bool) 
 			}
 		}
 		if !application {
+			// API channels require the marker path to bind their Origin and expiry.
+			for _, value := range r.Header.Values("Authorization") {
+				parts := strings.Fields(value)
+				if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && strings.HasPrefix(parts[1], oauth.APIAccessPrefix) {
+					w.Header().Set("Cache-Control", "no-store")
+					h.Failure(w, r, model.Unauthenticated(nil))
+					return
+				}
+			}
 			h.auth.Require(next)(w, r)
 			return
 		}

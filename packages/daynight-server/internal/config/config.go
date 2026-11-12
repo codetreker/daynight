@@ -7,7 +7,6 @@ import (
 	redisconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis/config"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
-	corsconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/cors/config"
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
@@ -25,7 +24,7 @@ type MCPConfig struct {
 	Transfer transferconfig.Config `yaml:",inline"`
 }
 type Config struct {
-	S2S                 corsconfig.Config                `yaml:"s2s"`
+	S2S                 S2SConfig                        `yaml:"s2s"`
 	LocalOverrideLoaded bool                             `yaml:"-"`
 	Server              serverconfig.Config              `yaml:"server"`
 	Database            databaseconfig.Config            `yaml:"database"`
