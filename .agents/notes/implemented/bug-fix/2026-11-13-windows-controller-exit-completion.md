@@ -54,7 +54,11 @@ unproven descendant boundary still refuse complete stop. No new Job framework
 or persistent process-handle registry is introduced.
 
 The original absolute deadline governs acquisition, termination and waits;
-individual handles and polls do not renew it. A running kernel call is joined
+individual handles and polls do not renew it. A timed native wait derives its
+remaining duration from one clock read, rejects a nonpositive duration before
+the uint32 call, and caps the positive allowance. Deadline admission and timeout
+calculation cannot use separate reads that let a negative duration wrap to
+Windows INFINITE. A running kernel call is joined
 before releasing its handle. Every acquired process handle is released once,
 including partial acquisition, failure and timeout; release failures preserve
 both the primary error and each close error. Complete stop records retain their

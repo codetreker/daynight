@@ -442,6 +442,24 @@ describe("Windows original handles through complete Job stop", () => {
     expect(f.close.mock.calls).toEqual([[nativeHandle], [controllerHandle]]);
     expect(f.terminate).not.toHaveBeenCalled();
   });
+  it("never sends a negative native wait when consecutive clock reads cross the original deadline", async () => {
+    originalHandles();
+    let stopped = false, completionReads = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => !stopped || ++completionReads < 3 ? 4999 : 5001);
+    const error = await withStopHandles([proof, native], 5000, async () => { stopped = true; }).catch(error => error);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toMatch(/deadline/);
+    expect(f.wait.mock.calls.every(call => call[1] >= 0 && call[1] <= 2_147_483_647)).toBe(true);
+    expect(f.wait.mock.calls).toEqual([[controllerHandle, 0], [nativeHandle, 0], [controllerHandle, 1]]);
+    expect(f.close.mock.calls).toEqual([[nativeHandle], [controllerHandle]]);
+  });
+  it("closes all original handles without starting a timed wait when the remaining budget expires", async () => {
+    originalHandles();
+    let stopped = false, completionReads = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => !stopped || ++completionReads < 2 ? 4999 : 5000);
+    await expect(withStopHandles([proof, native], 5000, async () => { stopped = true; })).rejects.toThrow(/deadline/);
+    expect(f.wait.mock.calls).toEqual([[controllerHandle, 0], [nativeHandle, 0]]);
+    expect(f.close.mock.calls).toEqual([[nativeHandle], [controllerHandle]]);
+  });
   it("keeps changed-exit-status originals pinned until signaled even after Job stop succeeds", async () => {
     f.exitCode.mockImplementation((_handle, code: Buffer) => { code.writeUInt32LE(1); return 1; });
     f.wait.mockReturnValue(258);

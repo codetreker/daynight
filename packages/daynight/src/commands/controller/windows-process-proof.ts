@@ -166,9 +166,11 @@ const inspectHandle = (api: ProcessKernel, handle: unknown, proof: ProcessProof,
   return "running";
 };
 const waitForOriginalExit = (api: ProcessKernel, handle: unknown, deadline: number, checkDeadline: () => void): void => {
-  checkDeadline();
-  const remaining = Math.min(2_147_483_647, deadline - Date.now());
-  if (!api.wait(handle, remaining)) throw new Error("The original Windows process did not finish exiting by its deadline.");
+  // Admission and the uint32 native timeout use one clock read; a negative
+  // duration can wrap to INFINITE and defeat the original deadline.
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error("The original Windows process did not finish exiting by its deadline.");
+  if (!api.wait(handle, Math.min(2_147_483_647, remaining))) throw new Error("The original Windows process did not finish exiting by its deadline.");
   checkDeadline();
 };
 const retainOriginalHandle = (api: ProcessKernel, proof: ProcessProof, checkDeadline: () => void): unknown | undefined => {
