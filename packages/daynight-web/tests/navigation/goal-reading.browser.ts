@@ -1495,6 +1495,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const overflow = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: window.innerWidth, scrollX: window.scrollX, elements: [...document.querySelectorAll("body *")].map(element => ({ tag: element.tagName, className: element.className, right: element.getBoundingClientRect().right + window.scrollX })).filter(element => element.right > window.innerWidth + 1).slice(0, 30) }));
   expect(overflow, JSON.stringify(overflow)).toMatchObject({ width: width, viewport: width });
   await page.screenshot({ path: testInfo.outputPath('goal-list.png') });
+  await page.reload();
+  await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
   expect(errors).toEqual([]);
 });
 
