@@ -114,7 +114,12 @@ recognition or changing upstream Herdr.
 Independent Windows CIM and console acceptance queries own their execution
 environment. They inherit explicit system variables, use private user and
 temporary directories under the test root, and load system PowerShell 5 modules.
-Their scripts, original target PIDs, deadline and close requirements remain
+Queries use non-detached children without `windowsHide`, which otherwise selects
+[`CREATE_NO_WINDOW` with redirected streams](https://github.com/nodejs/node/blob/e63cab040c09d43ceef8cb35508c40044614e906/deps/uv/src/win/process.c#L1033-L1051).
+This matches the successful harness inventory's console creation flag without
+changing stdin handling. Fixed checkpoints locate stalled query stages; they
+neither establish the cause of a timeout nor replace OS results and close proof.
+Query semantics, original target PIDs, deadline and close requirements remain
 unchanged. ExternalScript discovery and official hook checks retain the native
 environment; an observer cannot repair or replace that environment.
 

@@ -72,4 +72,4 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程、legacy endpoint 和旧 attach。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
 
-Windows 的独立 CIM/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，模块路径限定系统 PowerShell 5 的模块。它们继续查询原 shell/helper/native 的实际 PID，保留原脚本、10 秒预算和进程树及输出流关闭要求；关闭未知时保留目录并使独立清理检查失败。ExternalScript 发现和官方 hook 探测仍使用被测环境，native 与 daemon 的环境不因观察器而改变。
+Windows 的独立 CIM/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，模块路径限定系统 PowerShell 5 的模块。查询子进程非 detached，且不通过 `windowsHide` 设置 `CREATE_NO_WINDOW`；输入流处理保持不变。它们继续查询原 shell/helper/native 的实际 PID，保留原查询逻辑、10 秒预算和进程树及输出流关闭要求；关闭未知时保留目录并使独立清理检查失败。固定阶段标记只辅助定位查询停点，不能代替查询结果或关闭证明。ExternalScript 发现和官方 hook 探测仍使用被测环境，native 与 daemon 的环境不因观察器而改变。

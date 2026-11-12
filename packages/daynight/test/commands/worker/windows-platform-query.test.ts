@@ -1,8 +1,10 @@
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createOperation } from "../../../src/api/operation.js";
-import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
+import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
 
 const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
 
@@ -122,4 +124,41 @@ test("keeps cleanup unknown without serializing an unsafe raw error cause", asyn
     expect(error.message).not.toContain(secret); expect(error.cause).toBeUndefined();
     expect(observations).toMatchObject([{ closed: false, cleanupConfirmed: false, errorType: "HerdrCommandCleanupError" }]);
   } finally { active.dispose(); }
+});
+
+
+test("keeps only complete fixed stage checkpoints across stderr chunks", () => {
+  const checkpoints: string[] = [], observe = createWindowsQueryCheckpointObserver("processes", value => checkpoints.push(value));
+  observe(Buffer.from("DAYNIGHT_QUERY:ent")); expect(checkpoints).toEqual([]);
+  observe(Buffer.from("ry\r\nDAYNIGHT_QUERY:cim-complete\n"));
+  observe(Buffer.from("DAYNIGHT_QUERY:projection-complete\nDAYNIGHT_QUERY:json-complete\n"));
+  expect(checkpoints).toEqual(["entry", "cim-complete", "projection-complete", "json-complete"]);
+});
+
+test("rejects unknown, cross-stage, embedded and oversized stderr without retaining private output", () => {
+  const checkpoints: string[] = [], observe = createWindowsQueryCheckpointObserver("console", value => checkpoints.push(value));
+  for (const value of ["private-value\n", "DAYNIGHT_QUERY:cim-complete\n", "private-DAYNIGHT_QUERY:entry\n", "DAYNIGHT_QUERY:unknown-private-value\n", "x".repeat(100_000), "DAYNIGHT_QUERY:entry\n", "DAYNIGHT_QUERY:entry\0\n", "DAYNIGHT_QUERY:entryé\n"]) observe(Buffer.from(value));
+  expect(checkpoints).toEqual([]);
+  observe(Buffer.from("DAYNIGHT_QUERY:type-complete\nDAYNIGHT_QUERY:attach-complete\n"));
+  expect(checkpoints).toEqual(["type-complete", "attach-complete"]);
+});
+
+test.each(["win32", "linux"])("changes only the Windows query console flag and existing detached override (%s)", async platform => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!, active = createOperation(), observations: WindowsQueryObservation[] = [];
+  const environment = { PRIVATE_MARKER: "not-logged" }, options: SpawnOptions = { env: environment, cwd: "/owned", detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] };
+  const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false }) as unknown as ChildProcess;
+  const spawn = vi.spyOn(command, "spawnHerdrProcess").mockReturnValue(child);
+  vi.spyOn(command, "runHerdrCommand").mockImplementation(async (_input, _operation, start) => {
+    start!("powershell", ["fixed-arguments"], options);
+    child.stderr!.emit("data", Buffer.from("DAYNIGHT_QUERY:entry\n"));
+    child.emit("close", 0, null);
+    return { stdout: "{}", stderr: "" };
+  });
+  try {
+    Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+    expect(await runWindowsPlatformQuery("processes", { file: "powershell", args: [], environment }, active, observations)).toBe("{}");
+    expect(spawn).toHaveBeenCalledWith("powershell", ["fixed-arguments"], { ...options, ...(platform === "win32" ? { detached: false, windowsHide: false } : {}) });
+    expect(options).toMatchObject({ detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    expect(observations).toMatchObject([{ lastCheckpoint: "entry", closed: true, cleanupConfirmed: true }]);
+  } finally { Object.defineProperty(process, "platform", descriptor); active.dispose(); }
 });

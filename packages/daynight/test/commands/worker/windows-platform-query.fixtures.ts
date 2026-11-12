@@ -4,7 +4,29 @@ import { performance } from "node:perf_hooks";
 import type { Operation } from "../../../src/api/operation.js";
 import type { HerdrCommand, HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 type Stage = "external-script" | "processes" | "console";
-export type WindowsQueryObservation = { stage: Stage; elapsedMs: number; code: number | string | null; killed: boolean | null; signal: string | null; stdoutBytes: number; stderrBytes: number; closed: boolean; cleanupConfirmed: boolean; errorType: string | null };
+type Checkpoint = "entry" | "cim-complete" | "projection-complete" | "type-complete" | "attach-complete" | "json-complete";
+/** Diagnostics never supply OS evidence. Retain only a complete allowlisted line,
+ * with bounded storage even when stderr contains an unterminated private value.
+ */
+export const createWindowsQueryCheckpointObserver = (stage: Stage, checkpoint: (value: Checkpoint) => void): ((chunk: Buffer) => void) => {
+  const allowed: readonly Checkpoint[] = stage === "processes" ? ["entry", "cim-complete", "projection-complete", "json-complete"] : stage === "console" ? ["entry", "type-complete", "attach-complete", "json-complete"] : [];
+  let line = "", discarded = false;
+  return chunk => {
+    for (const byte of chunk) {
+      if (byte === 10) {
+        if (!discarded) {
+          const value = line.replace(/\r$/, "");
+          for (const known of allowed) if (value === `DAYNIGHT_QUERY:${known}`) checkpoint(known);
+        }
+        line = ""; discarded = false;
+      } else if (!discarded) {
+        if (line.length >= 80 || (byte !== 13 && (byte < 32 || byte > 126))) { line = ""; discarded = true; }
+        else line += String.fromCharCode(byte);
+      }
+    }
+  };
+};
+export type WindowsQueryObservation = { stage: Stage; elapsedMs: number; code: number | string | null; killed: boolean | null; signal: string | null; stdoutBytes: number; stderrBytes: number; closed: boolean; cleanupConfirmed: boolean; errorType: string | null; lastCheckpoint?: Checkpoint | null };
 /** Observer execution belongs to the test harness. Native/daemon environments
  * remain inputs under test; provider and agent configuration is never copied.
  */
@@ -58,12 +80,13 @@ export const decodeWindowsExternalScript = (stdout: string, observations: Window
  */
 export const runWindowsPlatformQuery = async (stage: Stage, input: HerdrCommand, operation: Operation, observations: WindowsQueryObservation[]): Promise<string> => {
   const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
-  const observation: WindowsQueryObservation = { stage, elapsedMs: 0, code: null, killed: null, signal: null, stdoutBytes: 0, stderrBytes: 0, closed: false, cleanupConfirmed: false, errorType: null };
+  const observation: WindowsQueryObservation = { stage, elapsedMs: 0, code: null, killed: null, signal: null, stdoutBytes: 0, stderrBytes: 0, closed: false, cleanupConfirmed: false, errorType: null, lastCheckpoint: null };
   const started = performance.now();
+  const observeCheckpoint = createWindowsQueryCheckpointObserver(stage, value => { observation.lastCheckpoint = value; });
   const start: HerdrSpawn = (file, args, options) => {
-    const child = command.spawnHerdrProcess(file, args, { ...options, ...(process.platform === "win32" ? { detached: false } : {}) });
+    const child = command.spawnHerdrProcess(file, args, { ...options, ...(process.platform === "win32" ? { detached: false, windowsHide: false } : {}) });
     child.stdout?.on("data", (value: Buffer) => { observation.stdoutBytes += value.length; });
-    child.stderr?.on("data", (value: Buffer) => { observation.stderrBytes += value.length; });
+    child.stderr?.on("data", (value: Buffer) => { observation.stderrBytes += value.length; observeCheckpoint(value); });
     child.once("close", (code, signal) => { observation.closed = true; if (typeof observation.code !== "string") observation.code = code; observation.signal = signal; observation.killed = child.killed; });
     child.once("error", error => { const code = (error as NodeJS.ErrnoException).code; if (typeof code === "string" && /^E[A-Z0-9_]{1,63}$/.test(code)) observation.code = code; });
     return child;
