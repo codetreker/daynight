@@ -7,7 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
 )
 
-const MaxDependencies = 15
+const MaxDependencies = 30
 
 // AdmitDependencies bounds the complete dependency set; external dependencies
 // are already a subset and do not receive a separate allowance.

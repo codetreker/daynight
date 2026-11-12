@@ -11,13 +11,13 @@ import (
 )
 
 func TestCandidateSizePolicy(t *testing.T) {
-	candidate := store.TaskWrite{Title: "Task", DependsOn: make([]string, 15)}
+	candidate := store.TaskWrite{Title: "Task", DependsOn: make([]string, 30)}
 	if err := task.AdmitCandidate(candidate); err != nil {
 		t.Fatal(err)
 	}
 	candidate.DependsOn = append(candidate.DependsOn, "extra")
 	var v *limit.Violation
-	if err := task.AdmitCandidate(candidate); !errors.As(err, &v) || v.Field != "dependsOn" || v.Actual != 16 || v.Max != 15 || v.Unit != "items" {
+	if err := task.AdmitCandidate(candidate); !errors.As(err, &v) || v.Field != "dependsOn" || v.Actual != 31 || v.Max != 30 || v.Unit != "items" {
 		t.Fatalf("%v", err)
 	}
 	candidate.DependsOn = nil

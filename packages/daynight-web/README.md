@@ -1282,11 +1282,12 @@ including multi-day values on narrow screens. Rows share the existing project
 clock without per-row timers or requests. Chain headers never claim an individual
 task's duration as aggregate execution time.
 
-While membership loads, the project heading reserves complete action geometry,
-including localized links and the wider administrator badge. Its inaccessible
-placeholder is replaced by authorized actions without narrowing the title or
-moving the restored page position. The
-[header-layout decision](../../.agents/notes/archived/bug-fix/2026-10-23-project-header-layout-shift.md) records the rationale for that geometry; the existing
+While access initially loads, the project heading reserves the geometry of the
+localized members and settings links. Its inaccessible placeholder is replaced
+by the links without narrowing the title or moving the restored page position.
+The header does not display the current user's role; the members page retains
+role details. The
+[header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
 
 ## Languages
@@ -2069,8 +2070,14 @@ and explicit exit/return controls remain available.
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
-`tab=overview|attachments|discussion|session` can explicitly select a tab;
-Session falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
+`tab=overview|description|attachments|steps|discussion|session` enters shared
+navigation. A Goal presents Description, Tasks, Attachments and Discussion in that
+order, with `overview` selecting the default Tasks panel. Description uses the
+Goal’s Markdown and attachment owner and shows the existing empty state when
+empty. Description and Tasks scroll independently; the four panels remain mounted
+across tab changes, refreshes and fullscreen transitions. Ordinary Tasks do not
+have a Description tab and fall back to Overview for `tab=description`; Session
+falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
 URL with `?tab=attachments`; a hidden file selection can remain in an attachment
 path with `?tab=overview`. `taskDetailUrl` builds those URLs from
 `TaskDetailNavigation`. The app observes both pathname and search, and login
