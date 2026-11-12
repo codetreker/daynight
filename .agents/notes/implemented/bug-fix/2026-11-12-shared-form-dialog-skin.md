@@ -31,6 +31,9 @@ being necessary to repair the shared form.
 
 ## Consequences
 
-All four form entry points share the same bounded presentation without changing
-their business operations. The scoped skin must be maintained alongside the
-other dialog skins when the product's visual language changes.
+The project Task creation and Goal creation forms share the same bounded
+presentation without changing their business operations. The skin originally
+also served Goal detail Task creation and add-existing forms; the [Goal Task
+entrance decision](../simplification/2026-11-12-goal-task-entrances.md) removed
+those entrances. The scoped skin must be maintained alongside the other dialog
+skins when the product's visual language changes.
