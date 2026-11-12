@@ -43,6 +43,21 @@ test("imports a private resource file without replacing a saved original and det
   expect(() => openPendingContent(journal, session, db)).toThrow("incomplete");
 });
 
+test("current timeline references protect a resource until the entry no longer refers to it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "dn-resource-reference-")); roots.push(root);
+  const journal = path.join(root, "journal.sqlite"), session = randomUUID(), bytes = Buffer.from("original");
+  const resource = descriptor(bytes), db = database(journal), content = openPendingContent(journal, session, db);
+  content.writeResource(resource, bytes);
+  const entry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "user_message" as const, imageProjectionError: null, content: [{ type: "image" as const, imageId: randomUUID(), resourceId: resource.resourceId, label: "original" }] };
+  db.transaction(() => content.saveEntry(entry)).immediate();
+  expect(() => content.releaseResource(resource.resourceId)).toThrow("Resource is referenced by session history");
+  const lease = content.acquireResource(resource.resourceId);
+  try { expect(lease.read("0", bytes.length)).toEqual(bytes); } finally { lease.close(); }
+  db.transaction(() => content.saveEntry({ ...entry, revision: "2", content: [{ type: "text" as const, text: "image removed" }] })).immediate();
+  content.releaseResource(resource.resourceId);
+  expect(openPendingContent(journal, session, db).resources.has(resource.resourceId)).toBe(false);
+});
+
 test("admits the exact complete timeline budget and preserves it when a revision exceeds the limit", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "dn-budget-")); roots.push(root);
   const journal = path.join(root, "journal.sqlite"), session = randomUUID();
