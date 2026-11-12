@@ -309,8 +309,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 
 PAT 和 OAuth grant 各自持有可空 `last_used_at timestamptz`，表示已记录的真实合格事件时间。
 新建和升级数据均初始为 NULL，不设置默认值或回填历史。领域元数据的 `LastUsedAt` 对应此列；
-现有列表和 PAT 期限修改读取它，但现有 HTTP DTO 显式投影原表示，不公开新字段。认证和续期入口
-尚不产生或提交使用事件；存储能力不自行推断事件。
+现有列表和 PAT 期限修改读取它，但现有 HTTP DTO 显式投影原表示，不公开新字段。存储能力不自行推断事件。
 
 共享事件以 kind、user ID、PAT ID 或 grant ID 和真实 UTC 微秒时间标识；OAuth 使用 grant ID，
 不使用 access token 或 client ID。窄 writer 接受非空、最多 128 个、按 kind/user ID/subject ID
@@ -325,6 +324,22 @@ UPDATE，因为前台可能按相反顺序持有凭据共享锁。独立事务�
 writer 返回不证明 pgx 内部异步连接销毁结束，`persistence.Close` 负责等待连接池关闭。
 [持久化决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-persistence.md)
 记录取舍和范围。
+
+### 真实凭据使用事件
+
+HTTP 的 PAT 认证成功后立即以服务端 UTC 微秒时间记录该 PAT；直接调用
+`AuthenticateRequest` 也经过这一边界。MCP 在 PAT 或 OAuth 凭据、resource 和 scope
+验证成功后、解析正文和业务处理前记录一次；OAuth 事件归属 grant ID。后续业务拒绝、
+响应失败或客户端断开不撤回已发生的事件。浏览器 Session、内部父凭据重验和纯心跳不产生事件。
+
+刷新轮换只在最终事务的 `RotateRefresh` 成功后建立 grant/user/数据库时间候选；writer 返回后、
+原完成结果映射前观察该候选。确认提交（包括附带 cleanup 错误）接纳事件；未提交不接纳；
+提交结果未知只发布关联 grant 和请求的安全故障，不能推断提交或回滚。确认提交后的响应丢失
+仍是成功使用。初次颁发、重放撤销和失败轮换不生成事件。两个生产 GrantLifecycle 实例显式
+使用同一个 recorder，token endpoint 在原响应或错误处理前发布故障。记录与日志故障不改变
+原认证、授权、续期或业务结果，也不重放刷新。受控直接调用须提供 request ID 和 collector。
+[事件边界决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-events.md)
+记录事件选择及提交结果的取舍。
 
 ### 凭据使用事件采样规则
 
@@ -343,7 +358,7 @@ Seal 拒绝新事件并使待处理事件可强制 flush。固定阶段和错误
 revision，确认旧 revision 不会抹掉期间新增的故障。采样器不保存请求 context 或记录日志。
 
 在调度检查不超过一秒、每个成功批次不超过两秒的条件下，满载首次事件和冷却后事件的调度
-预算分别为 17 秒和 37 秒；这是规则上界，不是生产时延测量。认证入口与应用生命周期接线仍由各自的组件负责。
+预算分别为 17 秒和 37 秒；这是规则上界，不是生产时延测量。认证入口与应用生命周期接线由各自的组件负责。
 [采样决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-sampling.md)
 记录其取舍。
 
@@ -376,8 +391,7 @@ HTTP `RequestLogging` 在 request ID 后建立固定 collector。协议入口可
 仍待确认，日志失败也保留原版本。故障字段位于请求日志的 `credential_usage` 子对象，保留
 subject/user、phase/error_code、source、原始 request/event 时间、固定类别计数及 revision，
 不输出原始错误、请求正文、URL 或秘密。normal、panic 和 abort 出口补发尚未确认版本；
-panic/abort 保持原中止语义，abort 另有安全请求日志。真实认证和续期事件的接入由各协议
-成功边界负责，单独启用 recorder 不产生认证事件。
+panic/abort 保持原中止语义，abort 另有安全请求日志。
 [记录器决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-recorder.md)
 记录其取舍。
 

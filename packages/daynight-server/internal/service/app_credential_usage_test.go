@@ -20,11 +20,19 @@ import (
 
 type usageAppBackend struct {
 	*appBackend
-	write func(context.Context, []model.CredentialUsageEvent) (store.Completion, error)
+	write    func(context.Context, []model.CredentialUsageEvent) (store.Completion, error)
+	rotation func(context.Context, func(store.GrantLifecycleDAO) error) (store.Completion, error)
 }
 
 func (b *usageAppBackend) WriteCredentialUsage(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
 	return b.write(ctx, events)
+}
+
+func (b *usageAppBackend) WriteGrantLifecycle(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error) {
+	if requestid.From(ctx) != "" && b.rotation != nil {
+		return b.rotation(ctx, fn)
+	}
+	return b.appBackend.WriteGrantLifecycle(ctx, fn)
 }
 
 func openUsageApp(t *testing.T, write func(context.Context, []model.CredentialUsageEvent) (store.Completion, error), loggers ...*slog.Logger) (*App, *usageAppBackend) {

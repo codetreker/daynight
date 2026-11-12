@@ -60,6 +60,13 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := handler.(interface{ Shutdown(context.Context) error }).Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 	instance.Config.Handler = httpx.RequestLogging(logger, handler)
 	instance.Start()
 	browser := testauth.Browser(t)

@@ -34,6 +34,7 @@ type PublicTokens struct {
 	Resource  string
 	Codes     TokenCodes
 	Grants    GrantLifecycle
+	Logger    *slog.Logger
 }
 
 func publicHeaders(w http.ResponseWriter) {
@@ -158,6 +159,11 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 		}
 		var rotated core.RotatedTokens
 		rotated, err = h.Grants.Rotate(r.Context(), v.Get("refresh_token"), v.Get("client_id"), v.Get("resource"), admit)
+		logger := h.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		_ = httpx.PublishCredentialUsageFaults(logger, r.Context())
 		result = service.TokenResult{AccessToken: rotated.AccessToken, RefreshToken: rotated.RefreshToken, TokenType: "Bearer", Scope: core.Scope, ExpiresIn: rotated.ExpiresIn}
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported_grant_type")
