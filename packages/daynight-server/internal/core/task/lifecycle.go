@@ -64,6 +64,14 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 		return values, true, nil
 	}
 	if current.Status == input.Status {
+		if input.ClaimID != nil {
+			if worker == nil || worker.State != model.WorkerCompleted || worker.ClaimID != *input.ClaimID {
+				return store.TaskWrite{}, false, ClaimConflict()
+			}
+			if worker.UserID != principal.UserID {
+				return store.TaskWrite{}, false, &model.Fault{Code: "forbidden", Message: "Only the current execution owner may complete worker execution."}
+			}
+		}
 		return store.TaskWrite{}, false, nil
 	}
 	if current.Status == model.TaskCancelled {
@@ -102,9 +110,6 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 	} else {
 		if input.ClaimID != nil {
 			return store.TaskWrite{}, false, ClaimConflict()
-		}
-		if worker != nil && worker.State == model.WorkerReleased && input.Status != model.TaskCancelled {
-			return store.TaskWrite{}, false, &model.Fault{Code: "invalid_transition", Message: "Released worker execution requires a controlled continuation of its original worktree."}
 		}
 	}
 	values.Status = input.Status

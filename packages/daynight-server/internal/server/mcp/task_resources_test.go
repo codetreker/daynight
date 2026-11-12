@@ -404,26 +404,20 @@ func TestMCPTaskCancellationPreservesReadabilityAndSatisfiesDependencies(t *test
 	}
 }
 
-func TestMCPTaskCancellationRequiresReleaseAndRetainsClaimHistory(t *testing.T) {
+func TestMCPTaskCancellationRequiresReleaseAndClearsClaim(t *testing.T) {
 	f := newTaskResourceFixture(t)
 	current := taskFixtureTask()
 	current.Version, current.AllowAgents, current.Status = 3, true, model.TaskInProgress
 	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 3, Status: model.TaskCancelled}, current, taskResourceFault("invalid_transition"))
 	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "3"}, "invalid_transition")
-	claim := uuid.NewString()
-	worker, err := json.Marshal(map[string]any{"claimId": claim, "state": "released"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	cancelled := current
 	stamp := current.UpdatedAt.Add(time.Minute)
 	cancelled.Version, cancelled.Status, cancelled.CancelledAt = 5, model.TaskCancelled, &stamp
-	cancelled.Properties = model.TaskProperties{"worker": worker}
+	cancelled.Properties = model.TaskProperties{}
 	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 4, Status: model.TaskCancelled}, cancelled, nil)
 	resource := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "4", "returnView": "full"})
-	history := object(t, object(t, resource["properties"])["worker"])
-	if resource["status"] != "cancelled" || resource["allowAgents"] != true || history["state"] != "released" || history["claimId"] != claim {
-		t.Fatalf("released cancellation history: %#v", resource)
+	if resource["status"] != "cancelled" || resource["allowAgents"] != true || object(t, resource["properties"])["worker"] != nil {
+		t.Fatalf("released cancellation retained ownership: %#v", resource)
 	}
 }
 
@@ -629,7 +623,7 @@ func TestMCPTaskWriteAdmission(t *testing.T) {
 	expectTaskGet(t, f, current, nil)
 	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Description: taskResourceString(strings.Repeat("d", 65537))}, nil, nil, current, taskResourceFault("invalid_input"))
 	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "description": strings.Repeat("d", 65537)}, "invalid_input")
-	dependencies := make([]string, 16)
+	dependencies := make([]string, 31)
 	for i := range dependencies {
 		dependencies[i] = uuid.NewString()
 	}

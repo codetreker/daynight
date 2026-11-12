@@ -150,7 +150,7 @@ func TestGoalDeleteInvalidatesEpochWithoutChildOrExecutionEffects(t *testing.T) 
 	}
 }
 
-func TestGoalEndRejectsFreshClaimButAllowsReleasedResume(t *testing.T) {
+func TestGoalEndRejectsFreshClaim(t *testing.T) {
 	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			owner := workerServicePrincipal()
@@ -175,28 +175,6 @@ func TestGoalEndRejectsFreshClaimButAllowsReleasedResume(t *testing.T) {
 				t.Fatalf("claim refusal returned %+v", got)
 			}
 
-			old := workerDescriptor()
-			released := current
-			previous := &model.WorkerClaim{ClaimID: old.ClaimID, WorkerID: old.WorkerID, UserID: owner.UserID, Machine: old.Machine, Platform: old.Platform, Agent: old.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: old.WorktreeID, State: model.WorkerReleased, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
-			released.Properties = testWithWorker(t, current.Properties, previous)
-			f = workerMockWrite(t, released, owner)
-			f.Task.ParentTaskFn = func(context.Context, string) (model.Task, error) {
-				t.Fatal("resume applied fresh claim parent gate")
-				return model.Task{}, nil
-			}
-			claimedAt := released.UpdatedAt.Add(time.Second)
-			f.Task.ObservedAtFn = func(context.Context) (time.Time, error) { return claimedAt, nil }
-			worker := &model.WorkerClaim{ClaimID: fresh.ClaimID, WorkerID: fresh.WorkerID, UserID: owner.UserID, Machine: fresh.Machine, Platform: fresh.Platform, Agent: fresh.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: fresh.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
-			resumed := workerTestResult(released)
-			resumed.Status, resumed.Ready, resumed.StartedAt = model.TaskInProgress, false, &claimedAt
-			resumed.Properties = testWithWorker(t, released.Properties, worker)
-			values := taskcore.CurrentWrite(released)
-			values.Status, values.Properties = resumed.Status, resumed.Properties
-			workerExpectUpdate(t, f, values, resumed)
-			got, err = f.Tasks.ResumeWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: fresh}, PreviousClaimID: old.ClaimID})
-			if err != nil || !reflect.DeepEqual(got, resumed) {
-				t.Fatalf("resume %+v %v", got, err)
-			}
 		})
 	}
 }

@@ -148,7 +148,6 @@ daynight worker repo remove [--project <project-id>]
 daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
-daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -951,8 +950,7 @@ requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
 validated before configuration or network access, is rejected for other targets,
 and is never inferred from a task or environment. Without it, ordinary status
-setting is unchanged. Release and continuation of released work use their protected
-operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
+setting is unchanged. Release uses its protected operation; a later execution uses ordinary claim eligibility. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
 without it, the CLI reads the target before submitting. No write retries
 occur. A controller-bounded worker assignment executes its supplied claim in the
@@ -962,8 +960,8 @@ checked before same-state handling: current same-state keeps
 version, update time and timing unchanged; actual changes increment once.
 Actual cancellation records required nullable `cancelledAt`, preserves existing
 execution times and materials, and satisfies dependencies without deleting edges.
-Active ownership must first be released; cancelled tasks cannot resume or withdraw
-back to todo.
+Active ownership must first be released; cancelled tasks cannot be claimed or
+withdrawn back to todo.
 
 Entering in_progress or done requires all direct prerequisites, ordinary and
 external, to be done or cancelled. Reopening done requires no direct in-progress or done
@@ -1060,8 +1058,7 @@ The permission switch has confirmation in both directions, remains false by
 default and is locked against actual changes while in_progress. It governs
 automatic discovery; explicit task execution may use either value. Rows and graph
 nodes display each task's own permission. Permission does not control worker
-ownership; ordinary status setting cannot release active execution or resume
-released resources. Claim-bound done validates ownership. None of these
+ownership; ordinary status setting cannot release active execution. Claim-bound done validates ownership. None of these
 operations stops a remote process or replaces PR review and delivery authority.
 The [status decision](../../.agents/notes/archived/architecture/2026-10-24-task-status-assignment.md)
 records migration and shared-session trade-offs.
@@ -2228,26 +2225,17 @@ The shared resolver owns existence, executable format and interpreter checks.
 For resolver callers, automatic Codex and Herdr selection searches the captured
 Worker PATH. Automatic Copilot selects the bundled native runtime in Web context
 and the captured PATH in Herdr context; explicit choices select only that entry's
-installation. Supported Node entries use the frozen Worker Node executable, so
-an nvm CLI path does not select the Node beside it. Standard npm Node shims are
-validated as complete known templates and unpacked without executing shell code.
+installation. Node entries use the frozen Worker Node executable. npm Node shims
+are mapped to their target from a bounded snapshot without executing shell text;
+comments and harmless formatting changes do not require a registered template.
 Official Copilot entries resolve the native package within that installation.
-Official Codex entries retain their loader and record its selected native; the
-registered loader bytes cover releases 0.142.5, 0.145.0 and 0.156.1. Unknown loader
-or shim formats fail with `unsupported_launcher`; a supported Node entry or
-native executable can be selected directly.
+Codex JavaScript entries run as ordinary Node scripts; the loader selects its own
+native program. Actual file, permission, launch and protocol failures remain visible.
 
-Official Codex launches use the frozen Worker Node with
-`["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`.
-The loader bytes remain unchanged. These Node options prevent `NODE_PATH` and
-symlink-preserving module resolution from changing which native package the
-loader selects. Ordinary Node scripts retain Node plus their canonical script
-path. Static package lookup follows the actual loader directory's ancestor
-`node_modules` directories and builds the native path from the canonical package
-manifest location; a candidate from another installation is rejected. Before
-launch, verification repeats this static selection from the frozen entry as well
-as checking recorded files, so installing a higher-priority package invalidates
-the selection even when the previous vendor binary remains unchanged.
+When a cached candidate's identity changes, a new preparation or execution first
+reconciles the previous probe's cleanup, then resolves and probes the current
+choice within the same operation. Unconfirmed cleanup blocks the new probe. This
+refresh does not replace the frozen recipe of an existing execution.
 
 New Web executions freeze the complete tool recipe and its observed version before
 submission. Target or PATH changes affect future executions. Recovery verifies the
@@ -2354,7 +2342,8 @@ false application value means disabled; null means no confirmed application.
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
 only acquires ready, permitted tasks compatible with its actual platform; WSL is
-Linux. It never enables permission itself. Released tasks wait for explicit resume.
+Linux. It never enables permission itself. Released tasks return to ordinary acquisition. The original Worker remains subject to its own retained
+resource barriers.
 
 ```bash
 daynight worker run
@@ -2447,15 +2436,15 @@ existing executions retain their recovery and cleanup authority. New candidates
 combine assignedTo=me, ready, automatic permission and actual platform before
 server pagination; the claim transaction rechecks the assignee against the
 authenticated user ID. Unassigned tasks and tasks assigned to another account
-are ineligible for automatic acquisition. Explicit manual resume retains its
-original execution-owner/admin rules. Still-owned local active tasks are queued for fresh target
-observation and recovery before global Git discovery, so a sibling checkout's
-filesystem error does not block an already-reserved task. New pending startup and new claims require complete claim inventory, target
+are ineligible for automatic acquisition. Still-owned local active tasks are
+queued for fresh target observation and recovery before global Git discovery, so
+a sibling checkout's filesystem error does not block an already-reserved task.
+New pending startup and new claims require complete claim inventory, target
 repository discovery and a reliable execution-capacity observation. A localized
 format failure closes that repository's file gate while independent prepared
 repositories remain eligible. Failed or partial reads are errors, not an empty
-inventory. Resources from unqueried or
-unmapped Projects are preserved with a diagnostic.
+inventory. Resources from unqueried or unmapped Projects are preserved with a
+diagnostic.
 
 Capacity is the claim-deduplicated union of active rows, actual owned resources,
 already selected cleanup responsibilities and adapter stop confirmations still
@@ -2470,9 +2459,8 @@ A candidate with retained same-task resources is skipped before remote claim.
 An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
 request. A late grant can remain pending while local active slots are full. On
-macOS, only a grant confirmed in its original acquisition or manual resume
-operation can register fresh launch provenance. An inventory-recovered claim
-without that durable record remains unknown; empty remote summaries cannot
+macOS, only a grant confirmed in its original acquisition can register fresh
+launch provenance. An inventory-recovered claim without that durable record remains unknown; empty remote summaries cannot
 authorize another launch.
 
 Each reconciliation round acquires at most one new task across all configured
@@ -2528,6 +2516,11 @@ On macOS, shell-readiness retries stay inside the same durable launch intent.
 They do not create another generation or send the assignment. A successful
 launch still requires durable native process identity before input admission;
 an unknown response or a crash cannot authorize another launch or replay.
+
+The full startup prompt states that the task has sufficient authorization for
+completion and instructs the agent not to ask again about procedural authorization,
+such as whether merging the PR is authorized. Task scope, independent pauses or
+revocations, and CI, review and merge gates still apply.
 
 Startup, macOS recovery or continuation, and periodic ping prompts share an
 autonomous execution policy. The agent checks the task, repository constraints
@@ -2979,8 +2972,10 @@ the owned execution. Once the service confirms shutdown, the launcher uploads
 its recorded timeline and resources to file storage for read-only access. The
 service database stores archive metadata, not conversation payloads. Service
 unavailability does not prevent local process cleanup; failed uploads retain
-their private local source. The current directory and user files are never
-removed by the launcher.
+their private local source. The Controller stores resource descriptors, blobs,
+pins and leases through its resource file owner. The pending-content composition
+checks timeline and native input references before removing a resource. The
+current directory and user files are never removed by the launcher.
 
 Retry a failed upload without starting or resuming the Agent:
 
@@ -3019,9 +3014,9 @@ the supported behavior and verification boundary.
 
 ## Worker manual management
 
-Stop `daynight worker run` before retry, release, resume or resource management.
+Stop `daynight worker run` before retry, release or resource management.
 Each command acquires the same instance lock; an occupied lock returns an
-instruction to stop the runner. Retry, release and resume synchronously handle
+instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue. Resource disposal
 persists its explicit decision so an interrupted deletion can resume against
 the original identity.
@@ -3129,30 +3124,22 @@ daynight worker release <task-id> --claim-id <claim-id> --if-version <version> \
   --project <project-id>
 ```
 
-Release returns the task to todo and clears its execution interval. Ordinary
-automatic acquisition skips released tasks until explicitly resumed:
-
-```bash
-daynight worker resume <task-id> --claim-id <released-claim-id> --if-version <version> \
-  --project <project-id>
-```
-
-Resume requires the previous released claim, ready task and original owner/admin.
+Release returns the task to todo, clears its execution interval and removes
+worker and sessionStartup. Session and archive history retain their original identities. Eligible tasks participate in ordinary automatic acquisition,
+with the usual assignee, permission, platform, dependency and Goal checks.
 Remote Worker control reads the caller's current `/projects/{id}/access`
 projection for administrator authority and verifies its project/principal binding;
 member profile reads retain their separate directory responsibility. Grant
 versions preserve the full positive int64 range.
-An original Herdr archive/worktree reservation rejects resume before a remote
-claim is submitted. Otherwise it preserves the explicit manual
-permission/platform exception, obtains fresh
-claim/worktree identities with current settings, and registers pending with a
-NULL native session ID. On macOS, the confirmed new grant also records fresh
-launch provenance; any retained old worktree still blocks replacement until its
-cleanup conditions are met. Start run to execute an eligible pending claim.
+
+Release submits one remote request after confirming the source has stopped. A
+valid response confirms release; a lost or invalid response remains unknown and
+is neither replayed nor inferred from a later Task read. Source completion runs
+only after a valid response. If completion fails, release remains confirmed and
+the original resources need cleanup by a later run.
 
 Web task details show the current claiming user, machine, agent and phase. The
-original owner or a project admin can confirm **Force withdraw** for active or
-released ownership. This submits the reviewed claim ID and exact version,
+original owner or a project admin can confirm **Force withdraw** for active ownership. This submits the reviewed claim ID and exact version,
 atomically clears worker ownership, returns the task to `todo`, clears both
 execution timestamps and sets `allowAgents=false`. Other task materials remain.
 It requires no stopped confirmation and does not guarantee that the remote agent

@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
@@ -55,7 +56,7 @@ export const ManagementDialog = ({ title, children, footer, onClose, busy = fals
   }, [suspended, initialFocus]);
   return createPortal(<div className="auth-modal-backdrop" hidden={suspended} inert={suspended} onClick={(event) => { if (closeOnBackdrop && !busy && event.target === event.currentTarget) onClose(); }}>
     <section className="auth-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={busy} tabIndex={-1} ref={dialog}>
-      <header className="dialog-header"><h2 id={titleId}>{title}</h2><button className="close-button" type="button" ref={close} aria-label={common.closeDialog} disabled={busy} onClick={onClose}>×</button></header>
+      <header className="dialog-header"><h2 id={titleId}>{title}</h2><AccountRefreshNotice /><button className="close-button" type="button" ref={close} aria-label={common.closeDialog} disabled={busy} onClick={onClose}>×</button></header>
       <div className="dialog-body">{children}</div>
       <footer className="dialog-footer">{footer}</footer>
     </section>

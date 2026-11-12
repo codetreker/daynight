@@ -12,10 +12,10 @@ import (
 )
 
 func TestCancellationAndWorkerOperationsUseScopedVersion(t *testing.T) {
-	for _, operation := range []string{"claim", "resume", "withdraw"} {
+	for _, operation := range []string{"claim", "withdraw"} {
 		for _, decision := range []string{"cancel", operation} {
 			t.Run(operation+"/"+decision, func(t *testing.T) {
-				state := model.WorkerReleased
+				state := model.WorkerActive
 				if operation == "claim" {
 					state = ""
 				}

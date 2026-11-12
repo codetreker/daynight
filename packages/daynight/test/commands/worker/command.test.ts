@@ -33,7 +33,7 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -105,10 +105,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'retry' 'release' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'retry' 'release')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderZshCompletion(commandTree)).toContain("repo:Prepare local repository selections before cloud management");
     expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");
@@ -168,7 +168,7 @@ describe("worker command", () => {
     for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
-  it.each(["retry", "release", "resume"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {
+  it.each(["retry", "release"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     const deps = dependencies();
@@ -186,12 +186,15 @@ describe("worker command", () => {
     ["retry", taskId, "--claim-id", claimId, "--if-version", "1"],
     ["release", taskId, "--claim-id", claimId], ["resume", taskId, "--claim-id", claimId, "--if-version", "0"],
     ["release", taskId, "--claim-id", claimId, "--if-version", "9223372036854775808"],
-    ["resume", taskId, "--claim-id", claimId, "--if-version", "1", "--continuity-confirmed"],
+    ["resume", taskId, "--claim-id", claimId, "--if-version", "1"],
+    ["unknown", taskId],
     ["transfer", taskId, "--claim-id", claimId, "--if-version", "1"],
   ])("rejects unsafe management syntax before inspecting home or loading a controller %j", async (...args) => {
     const { cli } = context();
     const deps = dependencies();
+    const home = vi.fn(() => path.resolve("worker-home")); cli.homeDirectory = home;
     await expect(runWorkerCommand(args, cli, deps)).rejects.toThrow();
+    expect(home).not.toHaveBeenCalled();
     expect(deps.run).not.toHaveBeenCalled();
     expect(deps.manage).not.toHaveBeenCalled();
   });

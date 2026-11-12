@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
-import { authRequestsPaused } from '../../api/client';
+import { authRequestsPaused, subscribeAuthPause } from '../../api/client';
 import { browserNavigation } from '../../app/navigation';
 import { parseAuthRoute } from '../../app/router';
 import type { BotSessionBinding } from '../../api/sessions';
@@ -26,10 +26,15 @@ export function useBotSessionCache(): BotSessionCache {
   }, [scope]);
   useEffect(() => {
     const abort = () => cache.invalidate();
+    const stop = () => { for (const pane of cache.snapshot()) pane.client.suspendForAccountRefresh(); };
+    const unsubscribePause = subscribeAuthPause(stop);
+    // A pane created while the document is paused must stop before it can start work.
+    const unsubscribePanes = cache.subscribe(() => { if (authRequestsPaused()) stop(); });
+    if (authRequestsPaused()) stop();
     scope.signal.addEventListener('abort', abort, { once: true });
     const timer = setInterval(cache.syncAvailability, 250);
     if (scope.signal.aborted) abort(); else cache.syncAvailability();
-    return () => { scope.signal.removeEventListener('abort', abort); clearInterval(timer); cache.close(); };
+    return () => { scope.signal.removeEventListener('abort', abort); clearInterval(timer); unsubscribePause(); unsubscribePanes(); cache.close(); };
   }, [cache, scope]);
   useLayoutEffect(() => {
     const navigation = browserNavigation();

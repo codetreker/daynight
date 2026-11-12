@@ -852,16 +852,25 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.shutdown();
   });
 
-  it("skips a new remote claim while the same task retains durable archive responsibility", async () => {
-    const f = await fixture();
+  it("admits a released task after its retained archive and worktree responsibility ends", async () => {
+    const f = await fixture(2);
     const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(951), worktreeId: uuid(952) };
+    f.candidates[0] = { ...f.candidates[0]!, properties: {} };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
-    Object.assign(f.herdr, { lifecycle: { registerClaim: () => {}, responsibilities: () => [owner], isStopped: () => true, assertCanAdvance: () => {} } });
+    let retained = true;
+    Object.assign(f.herdr, { lifecycle: { registerClaim: () => {}, responsibilities: () => retained ? [owner] : [], isStopped: () => true, assertCanAdvance: () => {} } });
     await f.coordinator.tick();
     expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([f.candidates[1]!.id]);
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringMatching(/archive.*worktree|worktree.*archive/i) }));
     expect(f.worktrees.has(owner.claimId)).toBe(true);
+    retained = false;
+    f.worktrees.delete(owner.claimId);
+    await f.coordinator.tick();
+    const calls = vi.mocked(f.remote.claim).mock.calls;
+    expect(calls.map(([candidate]) => candidate.id)).toEqual([f.candidates[1]!.id, owner.taskId]);
+    expect(calls[1]![1].claimId).not.toBe(owner.claimId);
+    expect(calls[1]![1].worktreeId).not.toBe(owner.worktreeId);
     await f.coordinator.shutdown();
   });
 

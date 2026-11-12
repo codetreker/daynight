@@ -17,7 +17,7 @@ const result: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
   dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 };
 const worker: WorkerClaim = {
-  claimId, state: 'released', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },
+  claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },
   platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: time,
 };
 const signal = () => new AbortController().signal;

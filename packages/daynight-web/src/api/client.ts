@@ -162,8 +162,10 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   networkSignal.throwIfAborted();
   responseSignals.set(response, networkSignal);
   if (response.status === 401 && generation === authGeneration) {
-    onUnauthorized?.();
     for (const listener of unauthorizedListeners) listener();
+    // A newer account marker turns this response into a retained pause; its
+    // old operation must not clear recovery state for the displayed account.
+    if (!authRequestsPaused()) onUnauthorized?.();
   }
   networkSignal.throwIfAborted();
   return response;

@@ -69,7 +69,7 @@ export type PullRequestProperty = {
   readonly title: string;
 };
 
-export type WorkerState = "active" | "released" | "completed";
+export type WorkerState = "active" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
 export type WorkerAgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";

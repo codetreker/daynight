@@ -141,7 +141,7 @@ export const canEditGoal = (state: DetailState): boolean => canMutate(state) && 
 export const canWithdrawClaim = (state: DetailState): boolean => {
   if (!canMutate(state) || state.detail!.status === "cancelled") return false;
   const worker = readWorkerClaim(state.detail!.properties);
-  return worker !== undefined && worker.state !== "completed";
+  return worker?.state === "active";
 };
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));

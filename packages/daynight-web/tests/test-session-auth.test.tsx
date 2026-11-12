@@ -48,7 +48,7 @@ it('renders the shared session after authentication and removes it on sign-out',
   expect(await screen.findByText('Private test conversation')).toBeVisible();
   expect(await screen.findByRole('link', { name: 'Session test project' })).toHaveAttribute('href', '/projects/00000020-1111-4111-8111-111111111111');
   expect(screen.getByRole('link', { name: 'Test Sessions' })).toHaveAttribute('aria-current', 'page');
-  expect(screen.getByRole('link', { name: 'My projects' })).not.toHaveAttribute('aria-current');
+  expect(screen.getByRole('link', { name: 'Projects' })).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Uncertain input' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
@@ -120,62 +120,36 @@ function focusSession() {
   return { sockets, fetcher, leave, returnToPage, finish, meCalls: () => meCalls, stream: () => sockets[0]!.receive({ protocol: snapshot.protocol, type: 'event', cursor: 'one', event: { protocol: snapshot.protocol, sessionId, testExecutionId: snapshot.testExecutionId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: { kind: 'assistant_message', entryId: '00000013-1111-4111-8111-111111111111', entrySeq: '2', revision: '1', content: [{ type: 'text', text: 'Buffered focus update' }] } } }) };
 }
 
-it.each(['focus', 'focus-first', 'visibility-first'] as const)('reuses a Test Session through delayed same-account verification (%s)', async order => {
+it.each(['focus', 'focus-first', 'visibility-first'] as const)('retains a healthy Test Session on foreground return (%s)', async order => {
   const f = focusSession(); render(<AuthenticatedApp />);
   await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
   fireEvent.change(textbox, { target: { value: 'Unsent focus draft' } });
-  await waitFor(() => {
-    expect(textbox).toHaveValue('Unsent focus draft');
-    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
-  });
-  const timeline = document.querySelector('.session-timeline')!;
-  f.leave(order !== 'focus');
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
-  act(() => f.stream());
-  expect(f.sockets[0]!.close).not.toHaveBeenCalled();
-  expect(screen.queryByText('Buffered focus update')).toBeNull();
-  f.returnToPage(order);
-  await waitFor(() => expect(f.meCalls()).toBe(2));
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
-  expect(screen.getByRole('textbox', { name: 'Message' })).toBe(textbox);
-  expect(textbox).toHaveValue('Unsent focus draft');
-  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
-  fireEvent.keyDown(textbox, { key: 'Enter' });
-  expect(f.fetcher.mock.calls.some(([url]) => url.endsWith('/commands'))).toBe(false);
-  expect(screen.queryByText('Restoring session')).toBeNull();
-  expect(f.sockets[0]!.close).not.toHaveBeenCalled();
-  await act(async () => f.finish('same'));
-  await screen.findByText('Buffered focus update');
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+  const timeline = document.querySelector('.session-timeline')!;
+  f.leave(order !== 'focus'); f.returnToPage(order);
+  expect(f.meCalls()).toBe(1);
   expect(screen.getByRole('textbox', { name: 'Message' })).toBe(textbox);
   expect(textbox).toHaveValue('Unsent focus draft');
   expect(document.querySelector('.session-timeline')).toBe(timeline);
-  expect(screen.queryByText('Restoring session')).toBeNull();
-  expect(f.sockets).toHaveLength(1);
   expect(f.sockets[0]!.close).not.toHaveBeenCalled();
   expect(f.fetcher.mock.calls.filter(([url]) => url.includes('/timeline?'))).toHaveLength(1);
-  expect(f.fetcher.mock.calls.filter(([url]) => url === `/api/v1/test-sessions/${sessionId}`)).toHaveLength(1);
 });
 
-it.each(['changed', 'expired'] as const)('clears the retained Test Session when foreground verification is %s', async outcome => {
+it.each(['00000019-1111-4111-8111-111111111111', null] as const)('retains the Test Session and stops transport on shared account change (%s)', async next => {
   const f = focusSession(); render(<AuthenticatedApp />);
-  await screen.findByText('Private focus conversation');
+  const message = await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
   fireEvent.change(textbox, { target: { value: 'Private retained draft' } });
-  expect(Object.keys(window.sessionStorage).some(key => key.startsWith(`daynight:session-draft:${owner}:`))).toBe(true);
-  f.leave(true);
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
-  act(() => f.stream());
-  f.returnToPage('visibility-first');
-  await waitFor(() => expect(f.meCalls()).toBe(2));
-  expect(screen.queryByText('Buffered focus update')).toBeNull();
-  await act(async () => f.finish(outcome));
-  await waitFor(() => expect(screen.queryByText('Private focus conversation')).toBeNull());
-  expect(screen.queryByText('Buffered focus update')).toBeNull();
-  expect(textbox.isConnected).toBe(false);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+  act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(next)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
+  await screen.findByText('Account changed');
+  expect(screen.getByText('Private focus conversation')).toBe(message);
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBe(textbox);
+  expect(textbox).toHaveValue('Private retained draft');
   expect(f.sockets[0]!.close).toHaveBeenCalled();
-  expect(Object.keys(window.sessionStorage).filter(key => key.startsWith(`daynight:session-draft:${owner}:`))).toEqual([]);
-  if (outcome === 'changed') expect(await screen.findByRole('button', { name: 'Account menu: Other' })).toBeVisible();
-  else expect(await screen.findByRole('button', { name: /GitHub/ })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  act(() => f.stream()); expect(screen.queryByText('Buffered focus update')).toBeNull();
+  expect(f.meCalls()).toBe(1);
+  expect(Object.keys(window.sessionStorage).some(key => key.startsWith(`daynight:session-draft:${owner}:`))).toBe(true);
 });

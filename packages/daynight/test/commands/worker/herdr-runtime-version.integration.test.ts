@@ -99,9 +99,9 @@ describe("read-only durable Herdr runtime versions", () => {
     expect(sample.telemetry.versions.herdr).toMatchObject({ state: "ok", value: "0.9.5" });
     expect(sample.telemetry.assistantHost).toEqual(assistantHost);
     expect(assistant.collect.mock.calls[0]?.[0]).toBe(parent);
-    expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent, {
+    expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent, expect.objectContaining({
       observe: expect.any(Function), assertAvailable: expect.any(Function), revision: expect.any(Function), close: expect.any(Function),
-    });
+    }));
     expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(record)]);
     expect(readFileSync(f.journal)).toEqual(original);
     expect(mocks.execution).not.toHaveBeenCalled();

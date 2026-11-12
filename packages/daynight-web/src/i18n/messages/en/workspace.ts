@@ -6,7 +6,7 @@ const { number } = getFormats("en");
 export const workspace: WorkspaceMessages = {
   app: {
     skipToContent: "Skip to main content", workspaceNavigation: "Workspace navigation", projectHome: "Daynight project home", mainNavigation: "Main navigation",
-    workspace: "Workspace", projects: "Projects", projectTasks: "Project tasks", localWorkspace: "Local workspace", localWorkspaceDetail: "Tasks and dependencies at a glance",
+    workspace: "Workspace", my: "My", tools: "Tools", projects: "Projects", projectTasks: "Project tasks", localWorkspace: "Local workspace", localWorkspaceDetail: "Tasks and dependencies at a glance",
     localLabel: "Workspace · Local", breadcrumb: "Breadcrumb", notFound: "Page not found", notFoundDetail: "Check the page address or return to the project list.", returnToProjects: "Back to projects",
     documentTitle: { task: "Task details · Daynight", attachment: "Task details · Daynight", projects: "Projects · Daynight", project: "Project tasks · Daynight", notFound: "Page not found · Daynight" },
   },

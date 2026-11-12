@@ -1,3 +1,4 @@
+import { useTeamForeground } from "./useTeamForeground";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, readAuthRequestGeneration, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { browserNavigation } from "../../app/navigation";
@@ -9,7 +10,7 @@ import { TaskCacheLifecycleChanged } from "../task-cache/project-cache";
 import { TeamIdCopy } from "./TeamIdCopy";
 
 const messages = (zh: boolean) => zh ? {
-  create: "创建 Team", name: "Team 名称", edit: "修改", editName: "修改 Team 名称", createHint: "你将成为新 Team 的 Admin。", cancel: "取消", close: "关闭", save: "保存修改", saving: "正在提交", invalid: "请输入有效且不全为空白的名称。", failed: "操作失败，请检查后重试。", unknown: "结果未知。请核对当前状态；无法确认原操作是否成功。", check: "查看当前状态", checking: "正在读取", checkFailed: "无法读取当前状态。", storageError: "无法读取或清除已保存的 Team 选择，请重试。", observed: "当前 Team", more: "加载更多", settings: "Team 设置", basic: "基本信息", description: "Team 名称展示在导航和项目归属中。", id: "Team ID", personal: "个人", readOnly: "只有普通 Team 的 admin 可以修改设置。", delete: "删除 Team", deleteHint: "删除前必须转出全部项目。", confirm: "输入 Team 名称确认", mismatch: "输入的 Team 名称不匹配。", conflict: "Team 已变化。请核对当前名称和版本后重新操作。", notEmpty: "Team 仍有项目，请先转出全部项目。", unavailable: "此 Team 不可用或你没有访问权限。", saved: "已保存", retry: "重试", created: "当前可访问的 Team", confirmedCreate: "已创建 Team", idLabel: "请求 ID："
+  create: "创建 Team", name: "Team 名称", edit: "修改", editName: "修改 Team 名称", createHint: "你将成为新 Team 的 Admin。", cancel: "取消", close: "关闭", save: "保存修改", saving: "正在提交", invalid: "请输入有效且不全为空白的名称。", failed: "操作失败，请检查后重试。", unknown: "结果未知。请核对当前状态；无法确认原操作是否成功。", check: "查看当前状态", checking: "正在读取", checkFailed: "无法读取当前状态。", storageError: "无法读取或清除已保存的 Team 选择，请重试。", observed: "当前 Team", more: "加载更多", settings: "团队设置", basic: "基本信息", description: "Team 名称展示在导航和项目归属中。", id: "Team ID", personal: "个人", readOnly: "只有普通 Team 的 admin 可以修改设置。", delete: "删除 Team", deleteHint: "删除前必须转出全部项目。", confirm: "输入 Team 名称确认", mismatch: "输入的 Team 名称不匹配。", conflict: "Team 已变化。请核对当前名称和版本后重新操作。", notEmpty: "Team 仍有项目，请先转出全部项目。", unavailable: "此 Team 不可用或你没有访问权限。", saved: "已保存", retry: "重试", created: "当前可访问的 Team", confirmedCreate: "已创建 Team", idLabel: "请求 ID："
 } : {
   create: "Create Team", name: "Team name", edit: "Edit", editName: "Edit Team name", createHint: "You will become an admin of the new Team.", cancel: "Cancel", close: "Close", save: "Save changes", saving: "Submitting", invalid: "Enter a valid name that is not all whitespace.", failed: "The operation failed. Check the details and try again.", unknown: "The result is unknown. Check the current state; it cannot confirm the original operation.", check: "Check current state", checking: "Loading", checkFailed: "Unable to read the current state.", storageError: "Unable to read or clear the saved Team selection. Try again.", observed: "Current Team", more: "Load more", settings: "Team settings", basic: "General", description: "The Team name appears in navigation and project ownership.", id: "Team ID", personal: "Personal", readOnly: "Only an admin of an ordinary Team can change its settings.", delete: "Delete Team", deleteHint: "Move all projects out before deleting this Team.", confirm: "Enter the Team name to confirm", mismatch: "The Team name does not match.", conflict: "The Team changed. Review its current name and version before trying again.", notEmpty: "This Team still has projects. Move them out first.", unavailable: "This Team is unavailable or you do not have access.", saved: "Saved", retry: "Retry", created: "Currently accessible Teams", confirmedCreate: "Created Team", idLabel: "Request ID: "
 };
@@ -249,6 +250,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
     void load(initial ? "initial" : "background", initial);
     return () => read.current?.abort();
   }, [load, active, admissionBlocked]);
+  useTeamForeground(active && !admissionBlocked, () => { void load("background"); });
   const editable = team?.kind === "ordinary" && team.membership.role === "admin";
   const unknown = op.result?.kind === "unknown";
   const unavailable = accessDenied || preferenceDenied;

@@ -174,7 +174,7 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   const create = page.getByRole('dialog');
   await create.getByLabel('Team name').fill('  Alpha\nTeam  ');
   await create.getByRole('button', { name: 'Create Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha Team' })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Alpha Team', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(teamId);
   expect(api.writes[0]).toEqual({ method: 'POST', body: { name: '  Alpha\nTeam  ', expectedUserId: userId } });
   await settings(page);
@@ -191,7 +191,7 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   expect(api.writes).toHaveLength(2);
   await dialog.getByLabel('Enter the Team name to confirm').fill('  Renamed\nTeam  ');
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.writes[2]).toEqual({ method: 'DELETE', body: { name: '  Renamed\nTeam  ', version: 2, expectedUserId: userId } });
 });
@@ -272,7 +272,7 @@ test('Personal settings remain read-only, and a version conflict requires a fres
   api.refusal = null;
   await dialog.getByLabel('Enter the Team name to confirm').fill('New name');
   await dialog.getByRole('button', { name: 'Delete Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   expect(api.writes[1]).toEqual({ method: 'DELETE', body: { name: 'New name', version: 2, expectedUserId: userId } });
 });
 

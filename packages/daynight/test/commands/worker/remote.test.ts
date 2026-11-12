@@ -472,16 +472,16 @@ describe("worker remote API", () => {
     await expect((await verifiedRemote(serverUrl)).resolveProject({ repoUrl: project().repoUrl, projectId }, signal())).rejects.toMatchObject({ phase: "protocol" });
   });
 
-  it("skips released candidates through later pages while preserving service order", async () => {
+  it("yields unowned candidates and later pages in service order", async () => {
     const urls: URL[] = [];
     const serverUrl = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost"); urls.push(url);
       const later = url.searchParams.has("cursor");
-      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" })];
+      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId), task(uuid(10))];
       respond(response, { items: candidates.map((candidate) => ({ ...candidate, assignedTo: worker.userId })), nextCursor: later ? null : "candidate cursor+/=" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
-    expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);
+    expect(result.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9), uuid(8)]);
     expect(urls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
       { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
       { ready: "true", allowAgents: "true", automaticCandidate: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
@@ -493,13 +493,18 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       const query = new URL(request.url!, "http://localhost").searchParams; queries.push(query);
       const later = query.has("cursor");
-      respond(response, { items: [{ ...task(later ? uuid(9) : taskId, later ? undefined : { ...worker, state: "released" }), assignedTo: worker.userId, requiredPlatform: platformSpecific ? "macos" : null }], nextCursor: later ? null : "next-tier" });
+      respond(response, { items: [{ ...task(later ? uuid(9) : taskId), assignedTo: worker.userId, requiredPlatform: platformSpecific ? "macos" : null }], nextCursor: later ? null : "next-tier" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "macos", signal(), platformSpecific));
-    expect(result.map(({ id }) => id)).toEqual([uuid(9)]);
+    expect(result.map(({ id }) => id)).toEqual([taskId, uuid(9)]);
     expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true"]);
     expect(queries.map(query => query.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
     expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
+  });
+
+  it("rejects an active candidate as a protocol error", async () => {
+    const serverUrl = await listen((_request, response) => respond(response, { items: [{ ...task(taskId, worker), assignedTo: worker.userId }], nextCursor: null }));
+    await expect(Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()))).rejects.toMatchObject({ phase: "protocol", cause: expect.objectContaining({ message: "Task does not match the requested filters." }) });
   });
 
   it("selects the authenticated account's candidates before the service page limit", async () => {

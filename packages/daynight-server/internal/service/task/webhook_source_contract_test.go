@@ -407,7 +407,7 @@ func sourceWorker(t *testing.T, state model.WorkerState, claimID, worktreeID str
 }
 
 func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
-	for _, mode := range []string{"claim", "release", "resume", "withdraw", "phase", "complete", "wrong completion"} {
+	for _, mode := range []string{"claim", "reclaim", "release", "withdraw", "phase", "complete", "wrong completion"} {
 		t.Run(mode, func(t *testing.T) {
 			current := sourceTask(model.TaskInProgress)
 			current.AssignedTo, current.AllowAgents = sourcePointer(sourceUserID), true
@@ -419,16 +419,16 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 			case "claim":
 				current.Status, current.Properties = model.TaskTodo, model.TaskProperties{}
 				updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
-			case "release":
-				updated.Status = model.TaskTodo
-				updated.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
-			case "withdraw":
-				updated.Status, updated.AllowAgents, updated.Properties = model.TaskTodo, false, model.TaskProperties{}
-			case "resume":
+			case "reclaim":
 				current.Status = model.TaskTodo
-				current.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
+				current.Properties = model.TaskProperties{}
 				descriptor.ClaimID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 				updated.Properties = sourceWorker(t, model.WorkerActive, descriptor.ClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
+			case "release":
+				updated.Status = model.TaskTodo
+				updated.Properties = model.TaskProperties{}
+			case "withdraw":
+				updated.Status, updated.AllowAgents, updated.Properties = model.TaskTodo, false, model.TaskProperties{}
 			case "phase":
 				updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerExecuting, current.CreatedAt)
 			case "complete", "wrong completion":
@@ -436,16 +436,14 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 				updated.Properties = sourceWorker(t, model.WorkerCompleted, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
 			}
 			db, record, ctx, _ := newSourceWrite(t, current, updated)
-			db.scope.tasks.allowClock = mode == "claim" || mode == "resume"
+			db.scope.tasks.allowClock = mode == "claim" || mode == "reclaim"
 			s := NewTasks(db, record)
 			var err error
 			switch mode {
-			case "claim":
+			case "claim", "reclaim":
 				_, err = s.ClaimWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ClaimWorker{Version: 7, WorkerDescriptor: descriptor})
 			case "release":
 				_, err = s.ReleaseWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ReleaseWorker{Version: 7, ClaimID: sourceClaimID, StoppedConfirmed: true})
-			case "resume":
-				_, err = s.ResumeWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: 7, WorkerDescriptor: descriptor}, PreviousClaimID: sourceClaimID})
 			case "withdraw":
 				_, err = s.WithdrawWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.WithdrawWorker{Version: 7, ClaimID: sourceClaimID})
 			case "phase":

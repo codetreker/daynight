@@ -79,7 +79,8 @@ describe("worker synchronous management runtime ownership", () => {
     expect(resolveProject).toHaveBeenCalledOnce();
     expect(resolveProject.mock.calls[0]![0].projectId).toBe(f.project.projectId);
     expect(mocks.submit).toHaveBeenCalledOnce();
-    await expect(runWorkerControl({ ...f, request: { ...request, projectId: unavailable.projectId } })).rejects.toThrow("Project unavailable");
+    await expect(runWorkerControl({ ...f, request: { ...request, projectId: unavailable.projectId } })).rejects.toThrow("original unfinished local execution");
+    expect(resolveProject).toHaveBeenCalledOnce();
   });
   it("submits once under the instance lock and leaves sibling resources and shared Herdr intact", async () => {
     const f = await fixture();
@@ -205,13 +206,13 @@ describe("worker synchronous management runtime ownership", () => {
     expect(observed).toEqual(configuration); expect(f.store.getTask(f.task)).toEqual(f.task);
   });
 
-  it.each(["retry", "resume"] as const)("uses applied cloud settings for Herdr %s even when its project is excluded from automatic selection", async kind => {
+  it("uses applied cloud settings for Herdr retry even when its project is excluded from automatic selection", async () => {
     const f = await fixture();
     await writeFile(f.paths.configFile, staleManagedSource());
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue({ desired: cloudTarget(false), observationRevision: "0", observation: null });
-    mocks.submit.mockResolvedValueOnce({ task: f.task, message: `${kind} completed` });
-    const request = kind === "resume" ? { kind, taskId: f.task.taskId, claimId: f.task.claimId, version: 5n } : { kind, taskId: f.task.taskId, claimId: f.task.claimId };
+    mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
+    const request = { kind: "retry" as const, taskId: f.task.taskId, claimId: f.task.claimId };
     await runWorkerControl({ ...f, request });
     expect(remote.configuration).toHaveBeenCalledExactlyOnceWith(uuid(4), expect.any(AbortSignal));
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;

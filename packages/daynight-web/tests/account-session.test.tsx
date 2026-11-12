@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { request, readAuthRequestGeneration } from "../src/api/client";
 import { AccountSessionProvider, useAccountSession } from "../src/app/AccountSessionProvider";
 
 const KEY = "daynight.activeUser";
@@ -16,22 +17,22 @@ class Channel extends EventTarget {
   static openError: unknown;
   postMessage = vi.fn<(message: unknown) => void>();
   close = vi.fn();
-  constructor(_name: string) {
+  constructor(name: string) {
     super();
-    if (Channel.openError) throw Channel.openError;
-    Channel.instances.push(this);
+    if (name === "daynight-identity" && Channel.openError) throw Channel.openError;
+    if (name === "daynight-identity") Channel.instances.push(this);
   }
   emit() { this.dispatchEvent(new MessageEvent("message", { data: "identity-changed" })); }
 }
 
 function Consumer() {
-  const { session, sync, requiresRefresh, retryInitialization, retryPublication } = useAccountSession();
+  const { session, sync, requiresRefresh, retryInitialization, retryPublication, signOut } = useAccountSession();
   return <>
     <output data-testid="session">{session.status === "authenticated" ? `${session.status}:${session.user.id}:${session.generation}` : session.status}</output>
     <output data-testid="refresh">{String(requiresRefresh)}</output>
     <output data-testid="sync">{sync.status === "error" ? `${sync.issue.phase}:${sync.persisted}` : sync.status}</output>
     <output data-testid="cause">{sync.status === "error" && sync.issue.cause instanceof Error ? sync.issue.cause.message : ""}</output>
-    <button onClick={retryInitialization}>initialize</button><button onClick={retryPublication}>publish</button>
+    <button onClick={retryInitialization}>initialize</button><button onClick={retryPublication}>publish</button><button onClick={() => signOut()}>sign out</button>
   </>;
 }
 const mount = () => render(<AccountSessionProvider><Consumer /></AccountSessionProvider>);
@@ -197,10 +198,13 @@ describe("account session owner", () => {
     vi.stubGlobal("fetch", fetcher); mount();
     await waitFor(() => expect(sync()).toBe("complete"));
     const failure = new Error("observation failed");
+    const diagnostic = vi.spyOn(console, "warn").mockImplementation(() => {});
     const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw failure; });
     act(() => window.dispatchEvent(new Event("focus")));
     expect(sync()).toBe("read:false");
     expect(screen.getByTestId("cause")).toHaveTextContent("observation failed");
+    expect(diagnostic).toHaveBeenCalledWith({ component: "account-sync", phase: "read", source: "foreground", category: "Error" });
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("observation failed");
     get.mockRestore(); localStorage.removeItem(KEY);
     const set = vi.spyOn(Storage.prototype, "setItem");
     fireEvent.click(screen.getByText("publish"));
@@ -253,14 +257,54 @@ describe("account session owner", () => {
     expect(sync()).toBe("parse:false");
     localStorage.removeItem(KEY);
     const failure = new Error("read failed");
+    const diagnostic = vi.spyOn(console, "warn").mockImplementation(() => {});
     const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw failure; });
     fireEvent.click(screen.getByText("publish"));
     expect(sync()).toBe("read:false");
     expect(screen.getByTestId("cause")).toHaveTextContent("read failed");
+    expect(diagnostic).toHaveBeenCalledWith({ component: "account-sync", phase: "read", source: "bootstrap", category: "Error" });
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("read failed");
     expect(session()).toBe(`authenticated:${A}:1`);
     get.mockRestore();
     fireEvent.click(screen.getByText("publish"));
     expect(sync()).toBe("complete");
     expect(localStorage.getItem(KEY)).toBe(JSON.stringify(A));
   });
+  it("retains A and the network generation when an old 401 sees B before notification", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn((url: string) => url === "/api/v1/me" ? Promise.resolve(response(user(A))) : pending.promise);
+    vi.stubGlobal("fetch", fetcher); mount();
+    await waitFor(() => expect(session()).toBe(`authenticated:${A}:1`));
+    const generation = readAuthRequestGeneration();
+    const operation = request("/api/v1/projects", new AbortController().signal).catch(error => error);
+    localStorage.setItem(KEY, JSON.stringify(B));
+    await act(async () => { pending.resolve(unauthorized()); await operation; });
+    expect(refresh()).toBe("true");
+    expect(session()).toBe(`authenticated:${A}:1`);
+    expect(readAuthRequestGeneration()).toBe(generation);
+    expect(localStorage.getItem(KEY)).toBe(JSON.stringify(B));
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+  });
+
+  it("clears the current expired account and publishes null", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(user(A)) : unauthorized())));
+    mount(); await waitFor(() => expect(session()).toBe(`authenticated:${A}:1`));
+    await act(async () => { await request("/api/v1/projects", new AbortController().signal); });
+    expect(session()).toBe("anonymous");
+    expect(refresh()).toBe("false");
+    expect(localStorage.getItem(KEY)).toBe("null");
+  });
+
+  it("does not dispatch logout when a newer account is already recorded", async () => {
+    const fetcher = vi.fn(async () => response(user(A)));
+    vi.stubGlobal("fetch", fetcher); mount();
+    await waitFor(() => expect(session()).toBe(`authenticated:${A}:1`));
+    localStorage.setItem(KEY, JSON.stringify(B));
+    fireEvent.click(screen.getByText("sign out"));
+    expect(refresh()).toBe("true");
+    expect(session()).toBe(`authenticated:${A}:1`);
+    expect(localStorage.getItem(KEY)).toBe(JSON.stringify(B));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
 });

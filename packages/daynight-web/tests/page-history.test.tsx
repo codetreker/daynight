@@ -38,6 +38,12 @@ describe('standalone resource reading history', () => {
     ]) expect(() => readResourceHistory(bad, user, project, root)).toThrow('Invalid resource navigation state.');
   });
 
+  it('restores a description selection on an external Goal', () => {
+    const description = { ...selection, externalGoal: { ...selection.externalGoal!, navigation: { tab: 'description', path: null } } } as const;
+    const state = resourceHistory(user, project, root, description);
+    expect(readResourceHistory(state, user, project, root)).toEqual(description);
+  });
+
   it('initializes URL entries before pushing nested selections and restores the source', () => {
     history.replaceState(null, '', path);
     const navigation = browserNavigation();
@@ -136,6 +142,11 @@ describe('Project reading history', () => {
       { ...selection, detail: { ...selection.detail, insideProjectGraph: 'yes' } },
       { ...selection, detail: { ...selection.detail, goalChildren: { graphRootId: null, task: { id: child, navigation: { tab: 'attachments', path: '../secret' } } } } },
     ]) expect(() => readProjectHistory({ ...state, selection: bad }, user, project)).toThrow('Invalid project navigation state.');
+  });
+
+  it('restores a Goal description selection in project history', () => {
+    const description = { ...selection, detail: { ...selection.detail!, navigation: { tab: 'description', path: null } } } as const;
+    expect(readProjectHistory(projectHistory(user, project, description), user, project)).toEqual(description);
   });
 
   it('initializes, traverses and deduplicates without replaying commit callbacks', () => {

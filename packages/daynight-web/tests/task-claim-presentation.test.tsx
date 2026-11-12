@@ -23,7 +23,6 @@ describe('claim ownership presentation', () => {
     expect(mayWithdrawClaim(worker, id(10), "admin")).toBe(true);
     expect(mayWithdrawClaim(worker, id(10), "member")).toBe(false);
     expect(mayWithdrawClaim(worker, worker.userId, null)).toBe(false);
-    expect(mayWithdrawClaim({ ...worker, state: 'released' }, worker.userId, "member")).toBe(true);
     expect(mayWithdrawClaim({ ...worker, state: 'completed' }, worker.userId, "member")).toBe(false);
   });
 
@@ -43,11 +42,11 @@ describe('claim ownership presentation', () => {
     expect(screen.getByRole('button', { name: '强制撤回' })).toBeVisible();
   });
 
-  it.each([['copilot', 'Copilot'], ['claude', 'Claude Code']] as const)('represents released %s claims and former owners by their actual identity', (agent, label) => {
-    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'released', agent }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
-    expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(worker.userId);
+  it.each([['copilot', 'Copilot'], ['claude', 'Claude Code']] as const)('represents active %s claims and former owners by their actual identity', (agent, label) => {
+    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'active', agent }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
+    expect(screen.getByRole('region', { name: 'Claimed by' })).toHaveTextContent(worker.userId);
     expect(screen.getByText('Former project member')).toBeVisible();
-    expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(label);
+    expect(screen.getByRole('region', { name: 'Claimed by' })).toHaveTextContent(label);
     expect(screen.queryByRole('button', { name: 'Force withdraw' })).toBeNull();
   });
 

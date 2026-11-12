@@ -105,6 +105,7 @@ type httpTestStore struct {
 	WriteOAuthClientsCall       func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
 	WriteAuthorizationsCall     func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
 	WriteCredentialFamilyCall   func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
+	WriteCredentialUsageCall    func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
 	WriteGrantLifecycleCall     func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
 	ReadTaskSearchCall          func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
 	WriteWebhookCall            func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
@@ -237,6 +238,13 @@ func (s *httpTestStore) WriteAuthorizations(ctx context.Context, fn func(store.A
 		unexpectedHTTPCall(s.t, "WriteAuthorizations")
 	}
 	return s.WriteAuthorizationsCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteCredentialUsage(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+	if s.WriteCredentialUsageCall == nil {
+		unexpectedHTTPCall(s.t, "WriteCredentialUsage")
+	}
+	return s.WriteCredentialUsageCall(ctx, events)
 }
 
 func (s *httpTestStore) WriteCredentialFamily(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {

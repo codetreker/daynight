@@ -1,9 +1,10 @@
 export type PollingIntervals = {
   readonly taskSync: number;
+  readonly taskSyncInactive: number;
 };
 
 export const pollingIntervalsKey = 'daynight.pollingIntervals';
-const defaults: PollingIntervals = { taskSync: 15_000 };
+const defaults: PollingIntervals = { taskSync: 15_000, taskSyncInactive: 300_000 };
 
 export const pollingInterval = (name: keyof PollingIntervals): number => {
   const overrides: unknown = Reflect.get(globalThis, Symbol.for(pollingIntervalsKey));

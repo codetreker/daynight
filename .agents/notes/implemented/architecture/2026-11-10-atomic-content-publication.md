@@ -18,6 +18,8 @@ candidate file. After the candidate is durable, the same SQLite transaction
 commits its file pointer, identity, length and hashes with the source outbox.
 Every reader uses its own SQLite snapshot to select content. Directory scans
 account for physical bytes; they never publish uncommitted candidates.
+The [resource ownership decision](2026-11-12-session-resource-files.md) separates
+resource files from this timeline owner while retaining its reference guard.
 
 The named native input publication operation validates the original accepted
 observation and canonical input. It applies the association to the current entry,

@@ -3,6 +3,7 @@ import type { AuthMessages } from "../auth";
 export const auth: AuthMessages = {
   completion: { title: "Completing sign-in", loading: "Confirming your account…", syncError: "Sign-in completed, but account synchronization failed.", retrySync: "Retry account synchronization", refreshRequired: "Refresh this page to continue." },
   accountChange: { message: "Account changed", reload: "Refresh page" },
+  accountSync: { error: "Account synchronization failed.", retry: "Retry account synchronization" },
   roles: { admin: "Administrator", member: "Member" },
   shell: {
     sidebar: {
@@ -12,12 +13,10 @@ export const auth: AuthMessages = {
       writeError: "The sidebar preference has not been saved. You can keep using this layout and retry saving.",
       retrySave: "Retry saving sidebar preference",
     },
-    myProjects: "My projects",
     accountSettings: "Account settings",
     workers: "My Workers", worker: "Worker",
     projectSettings: "Project settings",
     members: "Project members",
-    teamWorkspace: "Team workspace",
     accountMenu: ({ name }) => `Account menu: ${name}`,
     currentAccount: "Current account",
     genericProject: "Project",
@@ -36,11 +35,6 @@ export const auth: AuthMessages = {
     startFreshLogin: "Open sign-in",
     invitationStorageError: "This browser could not save the invitation. Open the invitation link again after signing in.",
     invitationCleanupError: "This browser could not clear the temporary invitation. Close this tab to clear it.",
-    revalidationLabel: "Confirm current account",
-    revalidationLoading: "Confirming current account…",
-    revalidationError: "The current account could not be confirmed",
-    revalidationRetained: "Your work is preserved. Confirm your account to continue.",
-    revalidationRetry: "Confirm account again",
     notice: {
       expired: "Your session has expired. Sign in again to access your projects.",
       signedOut: "You have signed out.",
@@ -51,7 +45,7 @@ export const auth: AuthMessages = {
       workers: "My Workers · Daynight", worker: "Worker · Daynight",
       setup: "Setup guide · Daynight",
       loading: "Checking sign-in · Daynight", error: "Sign-in unavailable · Daynight", login: "Sign in · Daynight",
-      device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", teamInvitations: "Team invitation · Daynight", projects: "My projects · Daynight", project: "Project tasks · Daynight",
+      device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", teamInvitations: "Team invitation · Daynight", projects: "Projects · Daynight", project: "Project tasks · Daynight",
       settings: "Project settings · Daynight", members: "Project members · Daynight", account: "Account settings · Daynight", notFound: "Page not found · Daynight",
     },
   },
@@ -86,7 +80,7 @@ export const auth: AuthMessages = {
     approved: "CLI authorized", approvedDetail: "Return to your terminal to finish signing in. You can close this page.",
     denied: "Request denied", deniedDetail: "This request cannot sign the CLI in. You can close this page.",
     expired: "Sign-in request expired", expiredDetail: "Run daynight login again in your terminal to get a new authorization code.", restart: "Enter another code",
-    accountSettings: "Manage CLI access", returnToProjects: "Back to my projects",
+    accountSettings: "Manage CLI access", returnToProjects: "Back to projects",
   },
   invitation: {
     loading: "Loading project invitation", unavailable: "Invitation unavailable",
@@ -100,7 +94,7 @@ export const auth: AuthMessages = {
     acceptUnknown: "The result is unknown. Check your project access before trying again.", checkAccess: "Check project access",
     currentDirectRole: "Current direct role", preserveDirect: "Your direct role remains unchanged and this invitation will not be consumed.", inheritedAdmin: "You will add a direct member role while keeping your inherited administrator access.",
     currentlyUnavailable: "The invitation is currently unavailable. The original result is still unknown.",
-    accepting: "Joining…", accept: "Accept invitation and join", open: "Open project", cancel: "Not now", returnToProjects: "Back to my projects",
+    accepting: "Joining…", accept: "Accept invitation and join", open: "Open project", cancel: "Not now", returnToProjects: "Back to projects",
   },
   teamInvitation: {
     loading: "Loading Team invitation", unavailableDetail: "This invitation may have expired, been revoked, or already been used. Ask a Team administrator for a new invitation.",

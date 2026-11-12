@@ -49,7 +49,7 @@
 只登记 repo 地址，不触发 clone、GitHub 请求、review 启动或 CLI 配置修改。
 客户端的[需求](daynight.md)与 review 的[需求](daynight-review.md)分别由其自身文档定义。
 
-受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
+受保护 worker 属性、原子认领/更新/释放/强制撤回由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
 
 ## HTTP 输入边界
 
@@ -139,7 +139,7 @@ Task 包含以下持久化字段：
 
 Task 响应还包含 `dependsOn`、`externalDependsOn`、`blockedBy` 和 `ready`：
 
-- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 15 项，external 不另占额度。
+- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 30 项，external 不另占额度。
 - `externalDependsOn` 是其中标记为外部的 ID 子集，必填、无重复且按 ID 升序；空子集为 `[]`。
 - `blockedBy` 是其中尚未处于done或cancelled的task ID，按 ID 升序返回。
 - `ready` 当且仅当本 task 为 `todo` 且 `blockedBy` 为空时为 `true`。
@@ -164,8 +164,8 @@ status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents �
 `1..9223372036854775807`；拒绝缺失、null、字符串、非整数、越界、重复或未知字段及 query。
 只接受 `proposed`、`todo`、`in_progress`、`done`、`cancelled`。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。
 
-没有 active/released 执行归属的普通任务可在 proposed/todo/in_progress/done 之间直接设置状态，无需经过固定阶段，并允许进入不可恢复的cancelled；受控执行另有[认领保护](../design/daynight-worker-claims.md)。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
-同状态返回当前完整资源，不写持久化字段、版本、updatedAt 或计时；过期同状态仍返回
+没有 active 执行归属的普通任务可在 proposed/todo/in_progress/done 之间直接设置状态，无需经过固定阶段，并允许进入不可恢复的cancelled；受控执行另有[认领保护](../design/daynight-worker-claims.md)。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
+同状态返回当前完整资源，不写持久化字段、版本、updatedAt 或计时；附带 claimId 的 done 同状态须匹配 completed 记录及其 owner。过期同状态仍返回
 `409 version_conflict`。实际改变增加一次版本，原子更新状态、时间与 updatedAt。
 实际进入 in_progress/done 要求全部普通和外部直接前置为done或cancelled；done 退回 proposed/todo/in_progress
 要求没有 in_progress/done 直接后继，否则 `409 dependency_unsatisfied` 返回稳定排序的阻塞 ID。
@@ -174,7 +174,7 @@ status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents �
 执行时间由锁后的数据库 statement 时间产生：进入 in_progress 替换起点并清空终点；
 退回 proposed/todo 清空两端；in_progress→done 保留可空起点并写终点；proposed/todo→done 的起点为 null，
 仅写真实终点。取消写入cancelledAt并保留执行起止；done→cancelled保留原completedAt。普通编辑和同状态保留时间，未知历史起点不从其他时间戳推算。
-状态写入保留标题、正文、PR、allowAgents、requiredPlatform、assignedTo、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。active取消须先解除归属；released可以取消，取消后不能认领、resume或withdraw恢复。普通状态写入不能替代active释放或released接续，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
+状态写入保留标题、正文、PR、allowAgents、requiredPlatform、assignedTo、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。active 取消须先解除归属；release 后任务可取消，取消后不能认领或 withdraw 恢复。普通状态写入不能替代 active 释放；release 后普通认领可创建新执行，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
 
 历史迁移014将proposed改为todo，只对转换行增加一次 version 并更新 updatedAt，
 保留其他字段及历史起止时间。归类迁移不调用运行时 todo 清空规则；其他状态行保持不变。
@@ -320,7 +320,7 @@ Task 更新示例：
 Team、Project 和 Task 列表按请求条数读取一批候选，并以一项 lookahead 判断续页；cursor 指向最后返回项。普通资源直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域或共享 MCP 读取响应字节预算。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
-Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
 Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为

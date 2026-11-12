@@ -35,7 +35,7 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 		operation, mode string
 		state           model.WorkerState
 	}{
-		{"claim", "web", model.WorkerActive}, {"update", "web", model.WorkerActive}, {"release", "web", model.WorkerReleased}, {"resume", "herdr", model.WorkerActive}, {"complete", "web", model.WorkerCompleted},
+		{"claim", "web", model.WorkerActive}, {"update", "web", model.WorkerActive}, {"release", "web", model.WorkerActive}, {"complete", "web", model.WorkerCompleted},
 	} {
 		t.Run(tc.operation, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
@@ -67,22 +67,14 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 					return returned, nil
 				}
 			case "release":
+				returned.Status = model.TaskTodo
+				returned.Properties = workerHTTPProperties(t, returned.Properties, nil)
 				path += "/release"
 				body = map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "stoppedConfirmed": true}
 				h.Tasks.ReleaseWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ReleaseWorker) (model.Task, error) {
 					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 					if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || !input.StoppedConfirmed {
 						t.Fatalf("release web input: %+v", input)
-					}
-					return returned, nil
-				}
-			case "resume":
-				path += "/resume"
-				body["previousClaimId"] = "abcdefab-5555-4555-8555-555555555555"
-				h.Tasks.ResumeWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ResumeWorker) (model.Task, error) {
-					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-					if input.Version != returned.Version-1 || input.PreviousClaimID != body["previousClaimId"] || input.AgentControlMode != model.AgentControlModeHerdr {
-						t.Fatalf("omitted mode resume input: %+v", input)
 					}
 					return returned, nil
 				}
@@ -100,6 +92,12 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 			}
 			response := protocolRequest(h, method, path, jsonBody(t, body), "2")
 			got := decodeResponse[api.Task](t, response, http.StatusOK)
+			if tc.operation == "release" {
+				if apiWorker(t, got.Properties) != nil {
+					t.Fatal("release retained worker")
+				}
+				return
+			}
 			assertHTTPWorkerMode(t, got, tc.mode)
 			if got.Version != returned.Version || apiWorker(t, got.Properties).ClaimID != worker.ClaimID || apiWorker(t, got.Properties).Agent != "claude" {
 				t.Fatal("HTTP response changed mode or ownership facts")
@@ -129,23 +127,16 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 }
 
 func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
-	for _, operation := range []string{"claim", "resume"} {
-		for _, mode := range []any{nil, false, "", "WEB", "other", "web "} {
-			t.Run(operation+"/"+jsonBody(t, mode), func(t *testing.T) {
-				h := newHTTPFixture(t, io.Discard)
-				body := workerClaimBody(1)
-				body["agentControlMode"] = mode
-				path := workerHTTPPath()
-				if operation == "resume" {
-					path += "/resume"
-					body["previousClaimId"] = workerHTTPClaimID
-				}
-				assertProjectError(t, protocolRequest(h, http.MethodPost, path, jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
-				if h.Tasks.TotalCalls() != 0 {
-					t.Fatal("invalid mode reached service")
-				}
-			})
-		}
+	for _, mode := range []any{nil, false, "", "WEB", "other", "web "} {
+		t.Run("claim/"+jsonBody(t, mode), func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			body := workerClaimBody(1)
+			body["agentControlMode"] = mode
+			assertProjectError(t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
+			if h.Tasks.TotalCalls() != 0 {
+				t.Fatal("invalid mode reached service")
+			}
+		})
 	}
 	t.Run("unsupported provider", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
@@ -174,38 +165,21 @@ func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
 	})
 }
 
-func TestWorkerHTTPCopilotWebClaimAndResume(t *testing.T) {
-	for _, operation := range []string{"claim", "resume"} {
-		t.Run(operation, func(t *testing.T) {
-			h := newHTTPFixture(t, io.Discard)
-			returned, worker := workerHTTPTask(t, model.AgentCopilot, model.AgentControlModeWeb, model.WorkerActive)
-			body := workerClaimBody(returned.Version - 1)
-			body["agent"], body["agentControlMode"] = "copilot", "web"
-			path := workerHTTPPath()
-			if operation == "claim" {
-				h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
-					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-					if !reflect.DeepEqual(input.WorkerDescriptor, workerHTTPDescriptor(body)) {
-						t.Fatalf("Copilot claim: %+v", input)
-					}
-					return returned, nil
-				}
-			} else {
-				path += "/resume"
-				body["previousClaimId"] = "abcdefab-5555-4555-8555-555555555555"
-				h.Tasks.ResumeWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ResumeWorker) (model.Task, error) {
-					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-					if !reflect.DeepEqual(input.WorkerDescriptor, workerHTTPDescriptor(body)) || input.PreviousClaimID != body["previousClaimId"] {
-						t.Fatalf("Copilot resume: %+v", input)
-					}
-					return returned, nil
-				}
-			}
-			got := decodeResponse[api.Task](t, protocolRequest(h, http.MethodPost, path, jsonBody(t, body), "2"), http.StatusOK)
-			assertHTTPWorkerMode(t, got, "web")
-			if apiWorker(t, got.Properties).Agent != "copilot" || apiWorker(t, got.Properties).ClaimID != worker.ClaimID {
-				t.Fatal("Copilot response changed provider or claim")
-			}
-		})
+func TestWorkerHTTPCopilotWebClaim(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	returned, worker := workerHTTPTask(t, model.AgentCopilot, model.AgentControlModeWeb, model.WorkerActive)
+	body := workerClaimBody(returned.Version - 1)
+	body["agent"], body["agentControlMode"] = "copilot", "web"
+	h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
+		assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
+		if !reflect.DeepEqual(input.WorkerDescriptor, workerHTTPDescriptor(body)) {
+			t.Fatalf("Copilot claim: %+v", input)
+		}
+		return returned, nil
+	}
+	got := decodeResponse[api.Task](t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusOK)
+	assertHTTPWorkerMode(t, got, "web")
+	if apiWorker(t, got.Properties).Agent != "copilot" || apiWorker(t, got.Properties).ClaimID != worker.ClaimID {
+		t.Fatal("Copilot response changed provider or claim")
 	}
 }

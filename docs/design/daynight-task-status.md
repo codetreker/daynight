@@ -63,15 +63,15 @@ status 输入接受五态，不增加审批动作或阶段顺序。claimId 仅�
 | done | 检查后继 | 检查后继 | 检查前置与后继 | 无修改 | 允许 |
 | cancelled | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 无修改 |
 
-表中实际转换还受 Worker 归属保护。released 历史只允许保留在 todo/cancelled；退回 proposed 不绕过受控接续。active claim 不能取消，须先完成现有 release 或合法解除归属，再读取新版本。released→cancelled 是受控接续保护中的明确例外，保留 released 历史而无需新执行。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
+表中实际转换还受 Worker 归属保护。active claim 不能取消，须先完成 release 或合法解除归属，再读取新版本。release 清除当前归属后，任务遵循普通状态规则。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
 
-退出 cancelled 的拒绝必须在所有业务入口成立。WithdrawableWorker/WithdrawCandidate 是独立于状态 setter 的 todo-producing 路径，因此明确拒绝 cancelled；不能依赖数据库时间约束报存储错误。认领、resume 与 claim-bound 完成也拒绝取消任务。Web 对取消记录不提供对应恢复动作。
+退出 cancelled 的拒绝必须在所有业务入口成立。WithdrawableWorker/WithdrawCandidate 是独立于状态 setter 的 todo-producing 路径，因此明确拒绝 cancelled；不能依赖数据库时间约束报存储错误。认领与 claim-bound 完成也拒绝取消任务。Web 对取消记录不提供对应恢复动作。
 
 ## 依赖、查询与同步
 
 普通和外部依赖使用相同前置满足判断。所有 full Task、ready、priority list、search ready 过滤中的 SQL 共用 done/cancelled 条件；状态规则仅要求 in_progress/done 的全部前置满足。取消不删除边、不级联改变节点、不传递重连，也不增加后继版本。
 
-项目锁串行化 cancel/claim/resume/withdraw 和边修改，一份精确版本不能同时取消并产生有效执行。done 重开仍保护真实 in_progress/done 后继；取消后继不要求前置持续满足。
+项目锁串行化 cancel/claim/withdraw 和边修改，一份精确版本不能同时取消并产生有效执行。done 重开仍保护真实 in_progress/done 后继；取消后继不要求前置持续满足。
 
 各查询保留原默认范围：普通 HTTP 列表返回全部业务状态，CLI 默认未完成和 MCP 默认优先列表排除终态，搜索默认全状态。精确 proposed/cancelled 过滤及 all 包含相应节点。优先列表显式按 in_progress、ready todo、blocked todo、proposed、终态分组；proposed 属于默认未完成范围。取消与 done 共用原终态优先级，不新增分页排序档位。Project 删除预览的 unfinished 数排除两种终态。
 
@@ -105,7 +105,7 @@ CLI 通过既有 set-status 提交 cancelled，继续支持 daynight/dn、项目
 
 MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_list/task_set_status 识别相应状态，状态写入复用同一 service 事务，claimId⇒done 条件保持。普通 Task 的取消不增加新的工具或操作流程往返。
 
-CLI/Web 解析器接受 released+cancelled 并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
+服务端不再产生 released；CLI/Web 读端只接受 active/completed，并拒绝未知状态及 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 
 仓库流程默认登记 proposed；内部已确认的方案后继和交付拆分显式创建 todo。明确授权的普通执行可从 proposed 直接进入 in_progress，不要求先确认到 todo；自动调度仍只选择 ready todo。仓库流程把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
 
@@ -115,7 +115,7 @@ Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足�
 
 持久缓存的必需字段变化通过显式 schema 升级重建受影响的 Project、summary 和 detail 记录；未改变的 profile 格式保留。不能用缺 cancelledAt→null 兼容旧缓存。既有用户/项目 generation、历史 fence、高版本合并和同版本不一致拒绝继续适用。
 
-五态均有独立本地化文字与样式，proposed 显示为“待确认”/“Proposed”。未取消任务的菜单提供cancelled目标，并使用既有状态确认与action:status通道；已取消状态无reopen/resume/withdraw动作，资料继续可读。active claim下取消项以aria-disabled标记并通过既有TaskControlTip在悬停/焦点时说明release要求，实际提交仍由服务端保护。确认展示不可恢复、资料可读和本任务作为前置时的满足后果，不引入原因表单或远端停止动作。
+五态均有独立本地化文字与样式，proposed 显示为“待确认”/“Proposed”。未取消任务的菜单提供cancelled目标，并使用既有状态确认与action:status通道；已取消状态无reopen或withdraw动作，资料继续可读。active claim下取消项以aria-disabled标记并通过既有TaskControlTip在悬停/焦点时说明release要求，实际提交仍由服务端保护。确认展示不可恢复、资料可读和本任务作为前置时的满足后果，不引入原因表单或远端停止动作。
 
 TaskDetailSession以原审阅身份、version与cacheGeneration核验取消。validStatusTiming显式要求实际取消保留startedAt/completedAt、新cancelledAt非空；不能落入done时间分支。成功精确+1，同状态+0；无效完整响应进入既有未知核对，后续仅GET、不重放。旧历史迟到结果不能覆盖新操作、解锁较新防重或设置删除终态。
 
@@ -125,7 +125,7 @@ Goal以ended/total显示进度，同时区分done/cancelled结果。UI汇总类�
 
 ## Worker 与资源清理
 
-WorkerReady 要求 todo，ReleasedWorker 先核验该资格。取消无法认领或 resume；withdraw 另有取消保护。release 已让原 claim 退出有效自有清单，取消不会再创建一次所有权丢失事件。
+WorkerReady 要求 todo。取消无法认领；withdraw 另有取消保护。release 已让原 claim 退出有效自有清单，取消不会再创建一次所有权丢失事件。
 
 Task 普通修改后的 FreezeTaskSessions 只保留 in_progress+active Web claim，其他状态进入既有冻结规则。旧执行不能继续被接受为有效执行者，历史和归档阅读仍保留。
 
@@ -133,6 +133,6 @@ Worker 仅凭成功完整自有 inventory 中 claim 缺席确认所有权丢失�
 
 ## 验证与发布边界
 
-真实数据库验证默认 proposed 与显式 todo 创建、迁移资料保全、五态组合、blocked 取消、released 取消、active/恢复/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/resume/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
+真实数据库验证默认 proposed 与显式 todo 创建、迁移资料保全、五态组合、blocked 取消、release 后取消、active/claim/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
 
 CLI native 验证两种 launcher 与严格解析，Web验证显式schema重建、双图投影、持久读取、ended统计、取消确认/筛选、active项禁派发、未知结果及旧历史保护。服务端与第一方读取必要修改以同一可运行修订交付，配套server、CLI和内置Web组合验收。普通实现不隐含npm发布或生产部署权限，不回退新状态以兼容旧客户端。模块门禁、覆盖率、必要CI和真实独立批准保持。

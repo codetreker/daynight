@@ -84,7 +84,7 @@ describe("public setup guide", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     renderWithLocale(<AuthenticatedApp />, { locale: "zh-CN" });
-    await screen.findByRole("heading", { name: "个人" });
+    await screen.findByText("个人", { selector: ".project-list-information .eyebrow" });
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/v1/me");
     const link = screen.getByRole("link", { name: "使用引导" });
@@ -98,7 +98,7 @@ describe("public setup guide", () => {
       expect(fireEvent.click(link, options)).toBe(true);
     }
     expect(window.location.pathname).toBe("/projects");
-    expect(screen.getByRole("heading", { name: "个人" })).toBeVisible();
+    expect(screen.getByText("个人", { selector: ".project-list-information .eyebrow" })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(before);
   });
 });

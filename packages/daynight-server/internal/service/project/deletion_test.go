@@ -42,7 +42,7 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 		exec(`INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,$3,CASE WHEN $4=1 THEN 'done' ELSE 'todo' END,CASE WHEN $4=3 THEN now() END)`, id, project.ID, fmt.Sprintf("Task %d", i), i)
 		claim.State = model.WorkerActive
 		if i == 1 {
-			claim.State = model.WorkerReleased
+			claim.State = model.WorkerCompleted
 		}
 		raw, err := taskproperty.EncodeWorker(&claim)
 		if err != nil {

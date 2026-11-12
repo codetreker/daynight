@@ -133,10 +133,12 @@ Older started records acquire the same conservative cleanup obligation on recove
 `media.adoptCaptureResource(captureId, attemptId, resource)` requires a durable
 committed receipt matching the original request, occurrence and complete resource,
 and checks every validated metadata field. It takes a shared IO slot and admits
-the third saved-copy peak before `pending-content.importResourceFile` imports
+the third saved-copy peak before `ResourceFiles.importResourceFile` imports
 the validated file in 512 KiB blocks. An existing saved original is verified
 in place; missing or corrupt bytes cannot be repaired from staging or an old
 source. This keeps local adoption from silently replacing committed history.
+The [resource ownership decision](2026-11-12-session-resource-files.md) describes
+the file owner and the guarded deletion used during import cleanup.
 
 Source retry is one operation on an already-registered occurrence. Unknown
 captures are observed under their original identity. Only a confirmed failed,

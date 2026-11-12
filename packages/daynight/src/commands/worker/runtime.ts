@@ -1066,7 +1066,8 @@ export const runWorkerControl = async (options: {
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
-    const targetProjectId = sources[0]?.projectId ?? options.request.projectId;
+    if (sources.length === 0 || sources[0]!.status === "done") throw new Error("Management requires the original unfinished local execution.");
+    const targetProjectId = sources[0]!.projectId;
     const frozenRetry = options.request.kind === "retry" && sources.length === 1 && sources[0]!.agentControlMode === "web";
     if (options.request.kind !== "release" && !frozenRetry) {
       let resource: WorkerCloudResource;
@@ -1079,7 +1080,6 @@ export const runWorkerControl = async (options: {
       if (resource.desired === null) {
         const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
         const repositories: WorkerRepositoryAssignment[] = [];
-        if (targetProjectId === undefined && initial.repositories.length > 1) throw new Error("This claim has no local execution; supply --project to resume it explicitly.");
         for (const repository of initial.repositories) {
           if (targetProjectId !== undefined && repository.projectId !== undefined && repository.projectId !== targetProjectId) continue;
           try {
@@ -1186,9 +1186,8 @@ export const runWorkerControl = async (options: {
       },
     };
     const result = await submitWorkerControl({
-      store, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories: coordinatorConfiguration.repositories,
-      request: options.request, signal, coordinator: controlCoordinator, verifyWebServer: web.verifyWebServer,
-      emit: diagnostics.emit,
+      store, remote, serverOrigin: serverUrl, workerId,
+      request: options.request, signal, coordinator: controlCoordinator,
     });
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
   } catch (error) { failures.push(error); }

@@ -41,6 +41,7 @@ export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatfor
   return [
     "The current execution environment is worker-managed.",
     "This is a background task. Make decisions autonomously within this assignment and its existing authorization.",
+    "You already have sufficient authorization to complete this task; do not ask the user again for authorization on procedural matters, such as whether merging the PR is authorized.",
     assignmentInstruction,
     autonomousExecutionInstruction,
     humanInterventionInstruction,

@@ -2733,7 +2733,7 @@ Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
 candidates require all predecessors done or cancelled; proposed, todo and cancelled may have unfinished predecessors.
 
-Ordinary tasks without active/released worker ownership retain the original
+Ordinary tasks without active worker ownership retain the original
 direct transitions across proposed/todo/in_progress/done without a mandatory stage and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
@@ -2743,10 +2743,9 @@ done or cancelled, including external edges; reopening done refuses sorted direc
 dependent IDs. No dependent is changed. Status preserves requiredPlatform, assignedTo, PRs,
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
-returns to todo only through release. Released tasks may become cancelled without
-new execution; cancelled tasks cannot resume or withdraw to todo. Released todo tasks begin a new execution through eligible automatic acquisition or
-explicit owner/admin resume, with fresh claim and worktree IDs. The
-old four lifecycle routes are removed.
+returns to todo only through release. Release removes current ownership; cancelled tasks cannot be claimed or withdrawn to todo.
+Released todo tasks begin a new execution through eligible automatic acquisition, with
+fresh claim and worktree IDs. The old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to proposed or todo
@@ -2789,7 +2788,7 @@ automatic discovery requires true and assignedTo matching the authenticated
 local user ID. Unassigned or other-user tasks fail automatic claim with
 409 invalid_transition, preserving fields, version and timestamps. Worker
 candidates use assignedTo=me before pagination; complete claim inventory omits
-assignment filtering, and explicit manual resume retains its owner/admin rules.
+assignment filtering so established executions retain their ownership rules.
 The [claim foundation](../../docs/design/daynight-worker-claims.md)
 rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
@@ -3169,14 +3168,12 @@ Worker operations return complete Task resources with 200 and no-store, preservi
 existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
 ID cannot be reused while retained, and current-owner writes must match the claim.
-Release retains the last resource fields as history after source cleanup. Manual
-resume requires source owner/admin, previousClaimId and fresh claim/worktree IDs
-while retaining the explicit manual eligibility exception. Force withdrawal accepts
-the exact version and matching active/released claim ID from its original owner
+Release removes worker and sessionStartup after confirmed source stop; Session and
+archive history retain their own identities. Force withdrawal accepts
+the exact version and matching active claim ID from its original owner
 or a project admin who remains a member. It atomically clears worker, returns
 todo, clears execution timing and sets allowAgents=false, preserving other
-materials. Cancelled tasks explicitly refuse withdrawal; retained released
-history cannot restore a cancelled task. It requires no stoppedConfirmed and does not guarantee immediate
+materials. Cancelled tasks explicitly refuse withdrawal. It requires no stoppedConfirmed and does not guarantee immediate
 remote process stopping; the original worker discovers absence through its
 complete own-claim inventory and performs terminal cleanup.
 Deprecated continuityConfirmed input is rejected rather than ignored. The
@@ -3200,8 +3197,7 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, atomic automatic acquisition |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/withdraw` | `200`, owner/admin clears active/released ownership, returns todo and disables automatic execution |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/withdraw` | `200`, owner/admin clears active ownership, returns todo and disables automatic execution |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform`, `assignedTo` and `properties`; omitted
@@ -3242,7 +3238,7 @@ selection is enabled.
 
 Full read `properties` is a generic object of defined property names to complete
 JSON values. Keys may be absent; no default PR array or worker:null is injected.
-A retained worker is a typed active/released/completed claim object. Public
+A retained worker is a typed active/completed claim object. Public
 create/PATCH and single-property mutations reject worker, even unchanged.
 PR edits and internal worker mutations preserve each other and all other keys. Each PR item
 requires exactly string fields `url` and `title`. Strings preserve their decoded
@@ -3391,3 +3387,15 @@ were removed. Their recorded results and the
 [historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 remain bound to their original source; they are not current module checks. CLI
 native validation and independent Web browser fixtures retain their own scopes.
+
+### Worker release protocol cutover
+
+Stop old server instances and managing Workers and suspend release management
+writes before running migrations. Start the new server after migration succeeds,
+then run the matching CLI build. The migration lock does not prevent an old
+server from writing released ownership again. A failed migration rolls back its
+changes and checksum; do not start new business traffic until it succeeds. After
+success, do not restore the old release writer. Existing Web readers accept a
+missing worker, but an old CLI cannot validate the new release response. The
+migration preserves task status, timing, ordinary materials and Session/archive
+history while updating affected task versions and project cache epochs.

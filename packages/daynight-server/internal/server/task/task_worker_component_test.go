@@ -583,32 +583,29 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	after, secondClaim := claimResult(current, body, member.principal.UserID)
 	apply(member, model.ProjectMemberRole, 1, http.MethodPost, path, body, after, &claimedAt)
 	current = after
-	released := secondClaim
-	released.State = model.WorkerReleased
 	after = current
 	after.Status, after.Ready, after.StartedAt = model.TaskTodo, true, nil
 	after.Version, after.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
-	after.Properties = workerHTTPProperties(t, current.Properties, &released)
+	after.Properties = workerHTTPProperties(t, current.Properties, nil)
 	apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/release", map[string]any{"version": current.Version, "claimId": secondClaim.ClaimID, "stoppedConfirmed": true}, after, nil)
 	current = after
 	claimedAt = current.UpdatedAt.Add(time.Minute)
-	resume := workerCredentialClaimBody(current.Version)
-	resume["previousClaimId"] = released.ClaimID
-	refusal(outsider, model.ProjectMemberRole, 1, http.MethodPost, path+"/resume", resume, http.StatusNotFound, "not_found")
-	request(nil, nil, http.MethodPost, path+"/resume", resume, "", http.StatusUnauthorized, "unauthenticated")
-	after, resumedClaim := claimResult(current, resume, admin.principal.UserID)
-	task = apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/resume", resume, after, &claimedAt)
+	body = workerCredentialClaimBody(current.Version)
+	after, reclaimed := claimResult(current, body, member.principal.UserID)
+	task = apply(member, model.ProjectMemberRole, 1, http.MethodPost, path, body, after, &claimedAt)
 	current = after
-	if claim := apiWorker(t, task.Properties); claim == nil || claim.UserID != admin.principal.UserID || claim.ClaimID != resume["claimId"] {
-		t.Fatal("manual resume did not establish the authorized caller's new claim")
+	if claim := apiWorker(t, task.Properties); claim == nil || claim.UserID != member.principal.UserID || claim.ClaimID != body["claimId"] {
+		t.Fatal("ordinary reclaim did not establish the assigned user's new claim")
 	}
-	withdraw := map[string]any{"version": current.Version, "claimId": resumedClaim.ClaimID}
-	refusal(member, model.ProjectMemberRole, 2, http.MethodPost, path+"/withdraw", withdraw, http.StatusForbidden, "forbidden")
+	withdraw := map[string]any{"version": current.Version, "claimId": reclaimed.ClaimID}
+	other := bearer
+	other.principal.UserID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	refusal(other, model.ProjectMemberRole, 2, http.MethodPost, path+"/withdraw", withdraw, http.StatusForbidden, "forbidden")
 	after = current
 	after.Status, after.AllowAgents, after.Ready, after.StartedAt, after.CompletedAt = model.TaskTodo, false, true, nil, nil
 	after.Version, after.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
 	after.Properties = workerHTTPProperties(t, current.Properties, nil)
-	task = apply(admin, model.ProjectAdmin, 1, http.MethodPost, path+"/withdraw", withdraw, after, nil)
+	task = apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/withdraw", withdraw, after, nil)
 	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" {
 		t.Fatal("administrator withdrawal retained ownership")
 	}

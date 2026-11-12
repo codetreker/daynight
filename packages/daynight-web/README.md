@@ -172,7 +172,7 @@ the live conversation and do not establish that physical clearing succeeded.
 Startup success is not proof of a connected Session or permission to send. Use the
 error's own retry or check action: history failures retain readable messages,
 unknown sends check the original operation without resending, and recovery errors
-retain their specific reason. Background identity checks preserve confirmed
+retain their specific reason. Account-change waiting preserves confirmed
 content and local editing while remote operations remain gated; confirmed access
 loss clears the affected private state. Archived history is read-only and has no
 composer. Delete assistant is available in list-row actions and details, with a
@@ -195,7 +195,7 @@ is not available.
 The public `/` page explains the shared work layer for developers, teams and their
 coding agents. Its primary action opens a local interactive example; onboarding
 continues through `/setup`. The introduction remains available when signed in.
-A cancellable, read-only identity hint changes only the login/workspace navigation;
+The document account owner supplies the identity hint for login/workspace navigation;
 loading or failure does not block the public content or authorize private data.
 
 `features/landing/` owns the page, bounded example data and interaction. Typed
@@ -233,8 +233,7 @@ output for the selected launcher and User/Project scope.
 localized title, breadcrumb, skip link and language selector. It derives the MCP
 endpoint from the current origin; the CLI's default login service remains
 `https://daynight.cc`. Direct access, reloads, in-page navigation, client and locale
-changes, copying and focus/visibility restoration make zero API, fetch or XHR
-requests. No identity, provider, task cache or business-resource lifecycle mounts.
+changes, copying and focus/visibility restoration make no additional requests. The document owner performs one initial `/me`; the guide mounts no provider discovery, task cache or business-resource lifecycle.
 Project and account links navigate to a new document and normal authentication.
 
 Command blocks retain selectable source text, exact newlines and argument quotes.
@@ -273,8 +272,15 @@ It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` provides a Team selector, the selected Team's project links,
-Shared with me and My Workers in its scrollable upper region. The Team trigger
+`WorkspaceSidebar` groups navigation by the current Team or Personal space, My,
+and Tools in one scrollable region. The current scope contains the Team selector,
+Projects tree and Team settings; My contains Shared with me, My Workers and
+Assistants; Tools contains Webhooks and Test sessions. Webhooks starts at
+`/webhooks?owner=personal` and retains its independent owner selection and catalog
+gate. The selector shows the known Team or Personal space type above its name; an
+unknown type leaves that line empty. Project list headings and document titles use
+Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
+not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
 without shifting navigation or changing the sidebar state. It preserves native
 Team links, keyboard access, pagination and recoverable errors. On a fresh
@@ -306,7 +312,7 @@ mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
 
-The sidebar toggle stays in the footer. Desktop widths are 190px expanded and
+Only the sidebar toggle stays in the footer. Desktop widths are 190px expanded and
 68px collapsed. The footer stays reachable on long pages and short viewports;
 icon entries retain accessible names, hover titles and selected route styling.
 The topbar avatar opens an account menu whose Account settings item navigates to
@@ -332,10 +338,9 @@ open state is temporary and never overwrites the desktop choice. The overlay
 contains keyboard focus, isolates the background and shares the reference-counted
 body scroll lock with the graph and task detail. Escape and backdrop dismissal
 restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, identity loss, blocking recovery
-and unmount close the overlay and release its own isolation and lock. Normal
-identity verification keeps the overlay open with its focus containment and
-scroll lock; blocking recovery releases it before the recovery dialog takes focus.
+Route changes, the desktop breakpoint, actual identity loss and unmount close
+the overlay and release its isolation and lock. Account-change waiting keeps it
+open with its focus containment and scroll lock.
 Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
 [sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries; the
@@ -380,27 +385,12 @@ conflicts require a fresh observation and unknown results require an actual task
 read before another write. Close/reopen and navigation preserve the original
 request owner, so late responses cannot change another task. Platform updates
 preserve status, permission, assignee, dependencies, properties and execution times.
-Same-user verification and project navigation retain it; identity replacement,
-logout and anonymous state dispose it so old results cannot reach a new identity. Identity changes invalidate outstanding requests
-and unmount user-owned content; a project 404 stays a resource error. Returning
-from a hidden or unfocused top-level page checks `/me` in the background while
-keeping the workspace visible and interactive. Pending verification preserves
-focus, dialogs, the narrow navigation overlay, drafts, scroll and embedded
-documents throughout the wait and recovery reads. Display retention does not
-grant request, publication or mutation permission. Each new qualifying return
-aborts and replaces pending verification, so earlier responses cannot overwrite
-the latest identity decision. A failed check retains state behind the blocking
-retry overlay until a successful check. The native modal inherits the current language,
-contains no language selector or preference feedback, and cannot be dismissed with
-Escape; recovery attempts to restore focus if the original element remains connected.
-The same user keeps their forms and view,
-while a changed user remounts user-owned content. Previously loaded content stays
-visible until identity loss, a different identity or a verification error is
-confirmed. Leaving the top-level page pauses new API reads and writes before
-any visibility-triggered refresh can dispatch. An authenticated mount that is
-already away applies the pause before child request effects. Returning confirms
-identity: same-user success resumes requests, while identity replacement or
-session loss cancels queued requests from the previous session. Identity checks and logout bypass this wait.
+Project navigation and account-change waiting retain it; real logout and session expiry dispose it so old results cannot reach a new identity. A project 404 stays a resource error.
+
+Each document confirms its account once with `/me`; ordinary route changes, focus and visibility events do not repeat it or pause healthy work. The root account owner listens for same-origin changes and rereads the current marker. A known different account, a trusted principal mismatch or a changed user fence enters a sticky refresh-required state. The original account, scope, content, drafts, focus and decoded images remain; remote reads, writes, controls and media stop, and in-flight network work is cancelled. Local editing, copying and selection remain available. The active header offers a keyboard-accessible reload that retains the full URL, including in native dialogs and fullscreen views. A later return to the original marker does not resume automatically.
+
+The marker is only a hint, not authentication. Missing or invalid storage does not prove logout; storage and channel failures are visible and retry their failed local stage. Before a current 401 or logout clears state or publishes null, the owner checks the source and marker to avoid overwriting a newer account. Cancellation does not establish server rollback. The [account synchronization decision](../../.agents/notes/implemented/architecture/2026-11-11-document-account-sync.md) records the trade-offs.
+
 The `/me` request alone uses browser HTTP revalidation with `cache: no-cache`.
 Successful responses carry `private, no-cache` and a strong ETag over the complete
 identity-bound representation. An unchanged authenticated response is bodyless
@@ -408,6 +398,7 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
+
 Team settings share a heading, the current Team name, and horizontal General and
 Members & invitations links. Native links preserve direct access, reload and browser
 history; the navigation wraps on narrow screens. General displays the saved name
@@ -429,8 +420,14 @@ Leaving or deleting a Team returns to Personal only when the live browser locati
 still shows either settings section for that Team, preserving unrelated destinations
 and later Team choices.
 
+On a healthy return from hidden or unfocused state, the account signal first
+rereads the shared marker. Team owners then refresh the current selection, loaded
+directory prefix and active settings section; the invitation list refreshes only
+after membership and management permission are confirmed. A sticky account-change
+pause prevents these reads, and foreground return does not repeat `/me`.
+
 Team settings and invitations retain loaded content, the invitation area, drafts
-and open confirmations throughout ordinary identity checks and same-account
+and open confirmations during account-change waiting and ordinary
 background reads, without loading rows or disabling local editing. Initial reads
 and actual errors retain their own feedback. Writes require fresh Team, membership
 and invitation admission; explicit reconciliation retains the original operation
@@ -443,10 +440,8 @@ Confirmed one-time invitation receipts remain bound to the original identity and
 available until closed even if resource access changes. Invitation directories
 and new management operations still require current authorization. Actual failures
 and access loss retain their existing handling.
-A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
-records this presentation policy. Ordinary same-origin
-iframe focus changes do not count as top-level returns. Requests
-use same-origin browser credentials and preserve request IDs, cancellation and
+
+Requests use same-origin browser credentials and preserve request IDs, cancellation and
 explicit failures. Member and project-settings versions remain `bigint` from
 JSON decoding through mutation encoding, including values above the safe
 JavaScript integer range.
@@ -557,7 +552,7 @@ minimum-version or semantic-version check.
 `api/workers.ts` decodes the account snapshot contract and admits the principal
 before parsing either a successful response or a resource error, including 404.
 `useWorkers`, `useWorker` and `useWorkerObservation` retain only page-local memory.
-They reuse TaskCacheScope for authenticated lifetime, foreground admission and
+They reuse TaskCacheScope for authenticated lifetime, account admission and
 Project withdrawal generations; Worker data never enters the project cache,
 IndexedDB or a global registry. Independent reads capture generations before
 requesting data, withdraw matching private projections on access-negative events
@@ -565,9 +560,7 @@ and fence late responses. A Worker detail filters affected task rows; a list
 invalidates counts without per-project provenance until an authoritative reread.
 Reads and publication both wait for identity confirmation, and abort signals,
 resource identity and request generations fence late results. The shell's
-`readEnabled` pauses private work during identity checking and blocking recovery.
-Same-account verification retains the last observation but rereads it; account
-replacement destroys the old workspace and its memory.
+`readEnabled` pauses private work when an account change requires refresh, retaining the last observation and workspace memory until reload.
 
 The visible Worker snapshot channel owns a 30-second single-flight refresh
 and a one-second ticker. The list traverses every cursor privately and replaces the collection
@@ -580,9 +573,8 @@ an expired runtime overview becomes unavailable. This does not clear or block
 the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 
-Read failure, hidden state and identity checking freeze the last published
-server time and mark retained content stale. Visibility return or same-account
-recovery starts a fresh read; only success recalibrates the anchor and resumes
+Read failure, hidden state and account-change waiting freeze the last published
+server time and mark retained content stale. Visibility return starts a fresh read when admitted; only success recalibrates the anchor and resumes
 the ticker. Normal checks retain the displayed resources, source times, focus
 and last-confirmed labels without inserting a warning or moving the content.
 Badges reserve the intrinsic size of their localized last-confirmed label so
@@ -646,7 +638,7 @@ the dirty tab, or the last edited tab when both are dirty, and restores focus.
 The page owner stays retained while either resource has a pending or uncertain
 write or a configuration receipt awaits publication, without aborting or replaying an already dispatched prompt PUT.
 
-Background identity checks retain the editor, dialogs, local input and unapplied
+Account-change waiting retains the editor, dialogs, local input and unapplied
 Project selection while private requests and new saves remain gated. In-flight
 saves retain their submitted snapshot and result classification until admission
 resumes. Background directory reads preserve the complete loaded collection,
@@ -729,7 +721,7 @@ Confirmed Project revocation hides private data and invalidates reads without
 cancelling a dispatched save; its result waits for renewed access. Identity scope
 termination rejects old results, and cancellation never proves that a committed
 write was rolled back. The existing
-foreground identity guard preserves same-user drafts and focus. Ordinary access
+account-change pause preserves drafts and focus. Ordinary access
 checks do not reload the settings resource; Save waits for the current check and
 verifies the role, ownership and observed settings version before dispatch. Ending
 the original identity or Project scope invalidates its requests and results.
@@ -780,11 +772,11 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 10 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 10 rebuilds incompatible project, summary and detail records and their
-watermarks for required type, parentId and dependency states, preserving user
-fences, profiles and compatible Session-history formats. Upgrades from schema 1
-through 4 rotate user fences; schema 7 Session records lack the complete-empty
+schema 11 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 11 clears project, summary and
+detail records and their watermarks before strict parsing, preserving user fences,
+profiles and compatible Session-history formats. A full snapshot can clear the
+refetchable Session catalogue. Upgrades from schema 1 through 4 rotate user fences; schema 7 Session records lack the complete-empty
 proof and are cleared. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
@@ -839,12 +831,11 @@ publication does not authorize detail bodies or task writes: summary-backed deta
 visibility gate local and leaves shared session observation unchanged, so an
 already accepted operation can finish preparation in its original authorized
 history; this mount's first live receipt still requires its own opening GET. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
-mutation responses. A verified different principal synchronously releases old content
-and starts identity verification. Headerless or malformed-principal errors retain
+mutation responses. A verified different principal synchronously pauses remote work and retains the old content until reload. Headerless or malformed-principal errors retain
 valid cached content. Project-sync not_found withdraws matching project admission. A trusted Task GET or write not_found withdraws that detail and revalidates project access; Task absence alone does not establish project denial. Captured ticket checks
 prevent an old-generation response from clearing a replacement generation. Scope invalidation aborts current work and releases memory before its
 user-specific persistent purge; ordinary disposal closes resources and preserves
-the durable base. Foreground gating covers durable reads and positive publication;
+the durable base. Account-change gating covers durable reads and positive publication;
 negative access events hide content immediately while persistence waits for the
 gate. `canRevokeProject` and `revokeProject` check the captured user fence/generation,
 retire local reuse synchronously, and purge only the matching durable generation
@@ -873,7 +864,7 @@ scope records are repaired in one shared-cache transaction: replace the fence,
 clear only that user's summaries/details/profiles and invalidate its project baselines.
 The repair never parses or reuses the damaged fence. For that user-corruption
 repair, memory binding, scope retirement and hints wait for commit; a cold scope can then bind the replacement,
-while an already-bound scope retires and requests identity verification. A failed
+while an already-bound scope signals the root owner and waits for reload. A failed
 repair rolls back without retiring the detecting scope, exposing a retryable
 storage error. Other users remain intact, and stale tickets fail against the new
 fence before publication. There is no silent network-only fallback. `Task sync` diagnostics report cycle/project IDs,
@@ -904,9 +895,8 @@ PR data and loadedRevision, cancel old reads/pending bodies and reset freshness
 and committed-version floors. Render-time generation checks suppress old content
 before effects, even when the replacement GET hangs or fails. Operation intent
 and confirmed/unknown phases survive, while canceled reconciliation becomes
-retryable; only same-generation refresh failures retain the successful body. During foreground auth pauses, rendering getters retain only
-previously observed memory values; requests, transactions and new-mount admission
-still wait for identity verification.
+retryable; only same-generation refresh failures retain the successful body. During account-change pauses, rendering getters retain only previously observed
+memory values; requests, transactions and new-mount admission remain blocked until reload.
 
 `readCachedDetail` touches lastUsedAt on a real cache read. `saveDetail` skips
 identical persistent content and returns matching/older/newer admission. The
@@ -1135,7 +1125,7 @@ Their local gates supplement the server owner check.
 
 Hidden terminal views close their viewer channel and release the browser lease; Worker recording
 continues independently. Controls become available only after Worker confirmation.
-During visibility or identity checks, the last confirmed screen, draft and
+During hidden state or account-change waiting, the last confirmed screen, draft and
 same-control confirmation remain in place while input, receipt polling and lease
 renewal pause. A recovery read alone does not permit input: a fresh channel
 observation matching the current fence and control epoch is also required.
@@ -1146,7 +1136,7 @@ separate decisions. Unknown manual input is never automatically resent.
 The main Session tab automatically follows the task's actual claim and lifecycle,
 without an execution-record selector or catalogue refresh row. Active claims keep
 their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed and released claims resolve their original Session through a
+an older Session. Completed claims resolve their original Session through a
 read-only current request and display fixed history without input or control
 operations. Task completion does not imply archive readiness: pending, failed and
 unavailable archives retain their status and recovery action. Opening, refreshing
@@ -1221,8 +1211,7 @@ line breaks and local code/table scrolling without raw HTML or remote image
 loads. Reply previews use a known parent directly; an out-of-window parent loads
 only on demand with at most two bounded list reads and an exact target check.
 Message details use a nested native dialog that owns Escape/Tab and restores
-focus within page, modal and fullscreen task details. Document hiding and ordinary
-identity checks retain the same dialog, reading position, reply and editable draft
+focus within page, modal and fullscreen task details. Document hiding and account-change waiting retain the same dialog, reading position, reply and editable draft
 while reads, sending and publication remain gated. Actual scope retirement clears them.
 The controlled-browser regression runs with `pnpm exec playwright test --config
 tests/navigation/discussion-identity-playwright.config.ts` from this package; it
@@ -1300,11 +1289,12 @@ including multi-day values on narrow screens. Rows share the existing project
 clock without per-row timers or requests. Chain headers never claim an individual
 task's duration as aggregate execution time.
 
-While membership loads, the project heading reserves complete action geometry,
-including localized links and the wider administrator badge. Its inaccessible
-placeholder is replaced by authorized actions without narrowing the title or
-moving the restored page position. The
-[header-layout decision](../../.agents/notes/archived/bug-fix/2026-10-23-project-header-layout-shift.md) records the rationale for that geometry; the existing
+While access initially loads, the project heading reserves the geometry of the
+localized members and settings links. Its inaccessible placeholder is replaced
+by the links without narrowing the title or moving the restored page position.
+The header does not display the current user's role; the members page retains
+role details. The
+[header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
 
 ## Languages
@@ -1584,8 +1574,8 @@ database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
-phase; released claims are labeled, while completed history is not a current
-claim. Project participant profiles supply nullable names and email addresses,
+phase; completed history and a missing worker are not a current claim. Project
+participant profiles supply nullable names and email addresses,
 independently of the current-access owner that authorizes controls. The profile
 reader retains loading, request errors and retry; a former participant remains
 identified by its real user ID. A missing canonical profile is a roster error,
@@ -1599,7 +1589,7 @@ standalone pages also compact the auxiliary navigation bar spacing so complete
 return links and language controls fit together at 320px in both languages
 without consuming the attachment reading area. Keyboard
 focus can reveal the withdrawal control within that region. Only
-the original owner or a project admin sees **Force withdraw** for active/released
+the original owner or a project admin sees **Force withdraw** for active
 ownership; the service rechecks membership and authority.
 
 Withdrawal confirmation freezes the task, claim and precise version. It explains
@@ -1634,9 +1624,9 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 
 In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`
-map from the existing fifteen-second task-sync. Reliable pending Sessions retain
-the same shortcut without an annotation. Child status controls open that Task's
-Session tab; titles still open Overview, and chain status controls only expand
+map from the existing visible-page fifteen-second task-sync. Reliable pending
+Sessions retain the same shortcut without an annotation. Child status controls
+open that Task's Session tab; titles still open Overview, and chain status controls only expand
 members. Collapsed chains and assignee-filtered chains include every ordinary
 member, including the root; external chains do not contribute.
 
@@ -1782,9 +1772,13 @@ marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
-An open project automatically requests task-sync every fifteen seconds while the
-document is visible. Hidden documents start no periodic reads; returning requests
-immediately unless a sync is already active. Automatic ticks skip active syncs.
+While a project remains mounted and the browser permits execution, task-sync runs
+every fifteen seconds when the document is visible and every five minutes when
+hidden. Visibility transitions reset the interval from the transition; hiding
+does not request or cancel a read, and returning attempts a read immediately.
+Focus alone does not change the interval. Browser throttling or freezing makes
+the background interval nominal. Automatic ticks and visibility recovery skip
+active syncs.
 Manual refresh cancels the active read and starts immediately. Every successful
 response updates the mount's clock receipt, including duplicate-only responses.
 Detail content follows its own summary business version and project generation;
@@ -2087,8 +2081,14 @@ and explicit exit/return controls remain available.
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
-`tab=overview|attachments|discussion|session` can explicitly select a tab;
-Session falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
+`tab=overview|description|attachments|steps|discussion|session` enters shared
+navigation. A Goal presents Description, Tasks, Attachments and Discussion in that
+order, with `overview` selecting the default Tasks panel. Description uses the
+Goal’s Markdown and attachment owner and shows the existing empty state when
+empty. Description and Tasks scroll independently; the four panels remain mounted
+across tab changes, refreshes and fullscreen transitions. Ordinary Tasks do not
+have a Description tab and fall back to Overview for `tab=description`; Session
+falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
 URL with `?tab=attachments`; a hidden file selection can remain in an attachment
 path with `?tab=overview`. `taskDetailUrl` builds those URLs from
 `TaskDetailNavigation`. The app observes both pathname and search, and login
@@ -2111,7 +2111,7 @@ tab/file route change keeps the shared surface and attachment controller mounted
 disclosure, sidebar scroll and upload drafts. Task and authenticated-identity
 changes preserve the existing cancellation and state-isolation rules.
 
-The page opens its complete Task through a direct live observation. A separate local task-chain graph supplies available relation titles and ordinary successors; graph failure does not block the rest of the detail. External successors may lie outside that projection. Each window reads its own resources and opening, with no Task objects or confirmations transferred from the opener. Visible direct details refresh every fifteen seconds and pause while hidden. A successful write remains confirmed but cannot enable another write until a fresh Task observation reaches its committed version; failed refreshes remain visible and retryable without replay. Same-identity foreground verification retains existing page interaction, while history or access retirement unmounts the reading resources.
+The page opens its complete Task through a direct live observation. A separate local task-chain graph supplies available relation titles and ordinary successors; graph failure does not block the rest of the detail. External successors may lie outside that projection. Each window reads its own resources and opening, with no Task objects or confirmations transferred from the opener. Visible direct details refresh every fifteen seconds and pause while hidden. A successful write remains confirmed but cannot enable another write until a fresh Task observation reaches its committed version; failed refreshes remain visible and retryable without replay. Account-change waiting retains existing page interaction, while history or access retirement unmounts the reading resources.
 
 The [inspection requirements](../../docs/spec/daynight-task-inspection.md#独立完整任务详情),
 [design](../../docs/design/daynight-task-inspection.md#独立完整任务详情) own

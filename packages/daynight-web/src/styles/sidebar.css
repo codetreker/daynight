@@ -23,13 +23,14 @@
 .auth-shell .sidebar-project-action:hover { color: #fff; }
 .auth-shell .sidebar-project-action:disabled { opacity: .6; cursor: wait; }
 .auth-shell .sidebar-bottom { display: block; flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
-.auth-shell .sidebar-workspace { padding: 14px 12px 0; }
+.auth-shell .sidebar-group + .sidebar-group { border-top: 1px solid #ffffff1a; margin-top: 16px; padding-top: 16px; }
+.auth-shell .sidebar .nav-label { margin: 0; padding: 0 14px 8px; }
 .auth-shell .sidebar-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid #ffffff24; border-radius: 6px; background: transparent; color: #b1bdd0; font-size: 11px; }
 .auth-shell .sidebar-toggle > :first-child { font-size: 23px; line-height: 20px; }
 .auth-shell .sidebar-toggle:hover { background: #ffffff0a; color: #fff; }
 .auth-shell.sidebar-collapsed .sidebar { padding: 26px 10px 18px; }
 .auth-shell.sidebar-collapsed .sidebar .brand { padding: 0 0 32px; justify-content: center; }
-.auth-shell.sidebar-collapsed .sidebar :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: none; }
+.auth-shell.sidebar-collapsed .sidebar :is(.brand-name, .nav-label, .nav-text, .collapse-label) { display: none; }
 .auth-shell.sidebar-collapsed .sidebar .nav-button { padding: 12px 8px; justify-content: center; }
 .auth-shell .sidebar-preference-notice { margin-bottom: 22px; }
 .sidebar-backdrop { position: fixed; inset: 0; z-index: 41; background: #141b2c66; border: 0; padding: 0; }
@@ -40,12 +41,12 @@
   .auth-shell .sidebar, .auth-shell.sidebar-collapsed .sidebar { position: sticky; top: 0; width: 60px; height: 100vh; height: 100dvh; padding: 24px 8px 16px; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; }
   .auth-shell .sidebar .brand, .auth-shell.sidebar-collapsed .sidebar .brand { padding: 0 0 30px; justify-content: center; }
   .auth-shell .sidebar .brand-mark { width: 24px; height: 24px; }
-  .auth-shell .sidebar :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: none; }
+  .auth-shell .sidebar :is(.brand-name, .nav-label, .nav-text, .collapse-label) { display: none; }
   .auth-shell .sidebar .nav-button { padding: 12px 8px; justify-content: center; margin: 0; }
   .auth-shell .sidebar .sidebar-bottom { display: block; margin-top: auto; }
   .auth-shell .sidebar.sidebar-drawer-open { position: fixed; inset: 0 auto 0 0; width: 220px; z-index: 42; padding: 24px 14px 16px; }
   .auth-shell .sidebar.sidebar-drawer-open .brand { justify-content: flex-start; padding-left: 12px; }
-  .auth-shell .sidebar.sidebar-drawer-open :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: block; }
+  .auth-shell .sidebar.sidebar-drawer-open :is(.brand-name, .nav-label, .nav-text, .collapse-label) { display: block; }
   .auth-shell .sidebar.sidebar-drawer-open .nav-button { justify-content: flex-start; padding: 12px 14px; }
   .auth-shell .topbar { padding: 12px 18px; gap: 10px; }
   .auth-shell .account-actions { max-width: 100%; }
@@ -57,7 +58,9 @@
 .auth-shell .team-switch { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px; border: 1px solid #ffffff24; border-radius: 7px; background: transparent; color: #eef0fa; text-align: left; font: inherit; cursor: pointer; }
 .auth-shell .team-switch:focus-visible, .auth-shell .team-options a:focus-visible, .auth-shell .team-options button:focus-visible { outline: 2px solid #a3a3ff; outline-offset: 2px; }
 .auth-shell .team-avatar { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: #7373df30; color: #c5c5ff; }
-.auth-shell .team-switch-text { flex: 1; min-width: 0; overflow: hidden; white-space: pre; text-overflow: ellipsis; font-size: 12px; }
+.auth-shell .team-switch-text { flex: 1; min-width: 0; font-size: 12px; }
+.auth-shell .team-switch-type { display: block; min-height: 14px; color: #a7b0c2; font-size: 10px; line-height: 14px; }
+.auth-shell .team-switch-name { display: block; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
 .auth-shell .team-options { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: 292px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid #ffffff24; border-radius: 8px; background: #252e45; box-shadow: 0 12px 36px #07101f55; color: #e4e9f4; font-size: 12px; overflow-wrap: anywhere; }
 .auth-shell .team-options a, .auth-shell .team-options button { display: block; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; text-decoration: none; font: inherit; white-space: pre-wrap; cursor: pointer; }
 .auth-shell .team-options a:hover, .auth-shell .team-options a[aria-current] { background: #ffffff19; }
@@ -70,7 +73,7 @@
 }
 
 .auth-shell .team-switch:hover, .auth-shell .team-switch[aria-expanded="true"] { background: #ffffff0d; }
-.auth-shell .team-chevron { color: #a7b0c2; font-size: 15px; }
+.auth-shell .team-chevron { flex: none; color: #a7b0c2; font-size: 15px; }
 .auth-shell .team-options .team-option { display: flex; align-items: center; gap: 10px; padding: 9px 10px; min-height: 44px; white-space: normal; }
 .auth-shell .team-options .menu-avatar { display: grid; place-items: center; flex: none; width: 27px; height: 27px; border: 1px solid #ffffff15; background: #7373df30; border-radius: 6px; color: #c5c5ff; font-size: 11px; }
 .auth-shell .team-options .menu-personal .menu-avatar { border-radius: 50%; }

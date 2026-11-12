@@ -41,7 +41,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
   const archive = (item: SessionHistoryItem): SessionArchive => ({ schemaVersion: 1, sessionId: item.sessionId, claimId: item.claimId, executionGeneration: item.executionGeneration,
     controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
     provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId, entries: entries(item.sessionId), resources: [] });
-  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdIdentity: null as Promise<void> | null, holdHistory: null as Promise<void> | null, items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
+  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
   await page.addInitScript(({ locale, key, item }) => { localStorage.setItem('daynight.web.locale', locale); sessionStorage.setItem(key, JSON.stringify(item)); sessionStorage.setItem('unrelated-session-key', 'preserve'); }, { locale, key: `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`, item: other });
   await page.routeWebSocket('**/channel*', socket => { state.channels++; socket.onMessage(message => state.sent.push(String(message))); socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })); });
   await page.route('**/api/v1/**', async route => {
@@ -49,7 +49,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const failure = (status: number) => send({ error: { code: status === 403 ? 'permission_denied' : 'internal', message: 'Fixture read rejected', requestId: source.sessionId } }, status);
-    if (path === '/api/v1/me') { state.identityReads++; if (state.holdIdentity) await state.holdIdentity; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
+    if (path === '/api/v1/me') { state.identityReads++; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
@@ -145,9 +145,11 @@ test('confirmed empty history hides Session; failed and first reads stay disting
   expect(state.writes).toEqual([]);
 });
 
-test('released claim in todo automatically reads the latest real history without writes', async ({ page }) => {
+test('todo without a current claim automatically reads the latest real history without writes', async ({ page }) => {
   const state = await install(page, 'history'); await navigate(page);
   await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+  await expect(page.locator('.task-claim')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Force withdraw' })).toHaveCount(0);
   await noSelector(page); await readonly(page); expect(state.currentReads).toBe(0); expect(state.writes).toEqual([]);
 });
 
@@ -171,18 +173,17 @@ for (const status of ['pending', 'failed', 'unavailable'] as const) test(`comple
   expect(state.writes).toEqual([]);
 });
 
-test('working refresh and background identity checks preserve the draft and rendered reading state', async ({ page }) => {
+test('working refresh and a healthy foreground return preserve the draft and rendered reading state', async ({ page }) => {
   const state = await install(page, 'working'); await navigate(page);
   const input = page.getByRole('textbox', { name: 'Message', exact: true }); await input.fill('Retained unsent draft');
   await noSelector(page);
   await input.evaluate(node => { node.setAttribute('data-retained-input', 'yes'); });
   const message = page.getByText(savedText(record.sessionId), { exact: true }); await message.evaluate(node => node.setAttribute('data-retained-message', 'yes'));
-  const pending = Promise.withResolvers<void>(); state.holdIdentity = pending.promise; const before = state.identityReads;
+  const before = state.identityReads;
   await returnToPage(page);
-  await expect.poll(() => state.identityReads).toBeGreaterThan(before);
   await expect(input).toHaveValue('Retained unsent draft'); await expect(input).toHaveAttribute('data-retained-input', 'yes');
   await expect(message).toHaveAttribute('data-retained-message', 'yes');
-  state.holdIdentity = null; pending.resolve();
+  expect(state.identityReads).toBe(before);
   await expect(input).toHaveValue('Retained unsent draft');
   await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(input).toHaveValue('Retained unsent draft');

@@ -181,26 +181,19 @@ func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testin
 			}
 			_, err = tasks.ReleaseWorker(ctx, principal, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version - 1, ClaimID: "invalid", StoppedConfirmed: true})
 			requireFault(t, err, "invalid_input")
-			released := workerProtocolTask(t, principal, descriptor, model.WorkerReleased)
+			released := workerProtocolTask(t, principal, descriptor, model.WorkerActive)
 			t.Run("delete", func(t *testing.T) {
 				fixture := workerMockWrite(t, released, principal)
 				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
 				err := fixture.Tasks.Delete(fixture.Context, principal, released.ProjectID, released.ID, taskcore.DeleteTask{Version: released.Version})
 				requireFault(t, err, "invalid_transition")
 			})
-			for _, next := range []taskcore.WorkerDescriptor{descriptor, workerDescriptor()} {
-				if next.ClaimID == descriptor.ClaimID {
-					_, err = tasks.ResumeWorker(ctx, principal, released.ProjectID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-					requireFault(t, err, "invalid_transition")
-					continue
-				}
-				t.Run("resume", func(t *testing.T) {
-					fixture := workerMockWrite(t, released, principal)
-					fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
-					_, err := fixture.Tasks.ResumeWorker(fixture.Context, principal, released.ProjectID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-					requireFault(t, err, "invalid_transition")
-				})
-			}
+			t.Run("reclaim", func(t *testing.T) {
+				fixture := workerMockWrite(t, released, principal)
+				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
+				_, err := fixture.Tasks.ClaimWorker(fixture.Context, principal, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()})
+				requireFault(t, err, "invalid_transition")
+			})
 		})
 	}
 }

@@ -663,9 +663,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	released.Status = model.TaskTodo
 	released.Ready = true
 	released.StartedAt = nil
-	releasedWorker := *testWorker(t, active.Properties)
-	releasedWorker.State = model.WorkerReleased
-	released.Properties = testWithWorker(t, active.Properties, &releasedWorker)
+	released.Properties = testWithWorker(t, active.Properties, nil)
 	t.Run("release", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
@@ -681,7 +679,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	reassigned := released
 	reassigned.AssignedTo = &bob
 	reassigned.AllowAgents = false
-	t.Run("reassign retained execution", func(t *testing.T) {
+	t.Run("reassign released task", func(t *testing.T) {
 		f := newAssignmentFixture(t, released, nil)
 		f.expectTarget(bob, nil)
 		v := taskcore.CurrentWrite(released)
@@ -691,20 +689,17 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		f.expectUpdate(v, after)
 		got, err := f.tasks.Update(f.ctx, owner, f.project.ID, released.ID, taskcore.UpdateTask{Version: released.Version, AssignedTo: assignmentChange(&bob)})
 		assertReturned(t, got, after, err)
-		if testWorker(t, got.Properties).UserID != owner.UserID || got.AllowAgents {
-			t.Fatal("reassignment transferred execution ownership")
+		if testWorker(t, got.Properties) != nil || got.AllowAgents {
+			t.Fatal("reassignment restored execution ownership")
 		}
 	})
 	next := workerDescriptor()
 	next.AgentControlMode = model.AgentControlModeHerdr
-	t.Run("assignee cannot resume another owner", func(t *testing.T) {
-		actor := owner
-		actor.UserID = bob
-		f := workerMockWrite(t, reassigned, actor)
-		f.ExpectedAccessCalls = 2
-		_, err := f.Tasks.ResumeWorker(f.Context, actor, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		requireFault(t, err, "forbidden")
-	})
+	for _, caller := range []model.Principal{owner, {UserID: bob, CredentialID: owner.CredentialID, Kind: owner.Kind}} {
+		f := workerMockWrite(t, reassigned, caller)
+		_, err := f.Tasks.ClaimWorker(f.Context, caller, reassigned.ProjectID, reassigned.ID, taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next})
+		requireFault(t, err, "invalid_transition")
+	}
 	resumed := reassigned
 	resumed.Status = model.TaskInProgress
 	resumed.Ready = false
@@ -712,28 +707,6 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	clock := reassigned.UpdatedAt.Add(time.Second)
 	resumedWorker.ClaimedAt = clock
 	resumed.Properties = testWithWorker(t, reassigned.Properties, &resumedWorker)
-	t.Run("original owner resumes", func(t *testing.T) {
-		f := workerMockWrite(t, reassigned, owner)
-		v := taskcore.CurrentWrite(reassigned)
-		v.Status = model.TaskInProgress
-		v.Properties = resumed.Properties
-		after := assignmentResult(reassigned, v)
-		after.UpdatedAt = clock
-		after.StartedAt = &clock
-		f.Task.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			if ctx != f.Context {
-				t.Fatal("resume clock scope")
-			}
-			return clock, nil
-		}
-		f.ExpectUpdate(v, after)
-		workerProtocolCapture(f, reassigned, after)
-		got, err := f.Tasks.ResumeWorker(f.Context, owner, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		assertReturned(t, got, after, err)
-		if got.AllowAgents {
-			t.Fatal("manual resume changed automatic permission")
-		}
-	})
 	completed := resumed
 	completed.Status = model.TaskDone
 	completed.Ready = false

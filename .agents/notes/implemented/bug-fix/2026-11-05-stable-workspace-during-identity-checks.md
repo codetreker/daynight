@@ -38,6 +38,8 @@ and [foreground verification](../../archived/bug-fix/2026-10-23-silent-foregroun
 decisions, and extends the [authenticated workspace](../../archived/feature/2026-10-22-web-auth-workspace.md)
 presentation policy.
 
+The later [document account synchronization decision](../architecture/2026-11-11-document-account-sync.md) replaces foreground identity revalidation and its blocking recovery overlay; the earlier rationale below is retained as decision history.
+
 ## Alternatives
 
 **Close the navigation overlay at the start of every check.** The original

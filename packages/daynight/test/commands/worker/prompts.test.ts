@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { appendWorkerPrompts, buildWorkerPrompt, workerCleanupPrompt, workerContinuationPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 
+const authorizationInstruction = "You already have sufficient authorization to complete this task; do not ask the user again for authorization on procedural matters, such as whether merging the PR is authorized.";
+const expectStartupAuthorization = (prompt: string) => {
+  expect(prompt).toContain(`This is a background task. Make decisions autonomously within this assignment and its existing authorization.\n\n${authorizationInstruction}\n\nPreserve the supplied service, Project, Task, original claim`);
+};
+
 const uuid = (number: number) => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const fixture = () => {
   const repositoryPath = path.resolve("isolated-project-without-repository-skills");
@@ -32,6 +37,7 @@ describe("worker managed prompts", () => {
     expect(prompt).not.toContain("autopilot-managed-task");
     expect(prompt).toContain("This is a background task.");
     expect(prompt).toContain("Make decisions autonomously within this assignment and its existing authorization.");
+    expectStartupAuthorization(prompt);
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).toEqual({ serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform: "linux", nativeSessionId: null, configuration: task.configuration });
   });
@@ -46,6 +52,7 @@ describe("worker managed prompts", () => {
   it("identifies a known native conversation when resuming", async () => {
     const { task, build } = fixture(); task.sessionId = uuid(6);
     const prompt = build(task, "windows"); expect(prompt).toContain("original native conversation");
+    expectStartupAuthorization(prompt);
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!).nativeSessionId).toBe(uuid(6));
   });
   it("does not serialize unrelated credential fields from the caller into the assignment", async () => {

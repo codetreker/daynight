@@ -70,14 +70,32 @@ const retirement = async (f: ReturnType<typeof fixture>, owner: ResourceOwner, v
   const operation = createOperation();
   try { await f.herdr.lifecycle!.neverStarted!.retire(owner, operation, verify); } finally { operation.dispose(); }
 };
-it.each(["active", "wrong-user", "wrong-worker", "wrong-worktree", "missing-claim", "hidden-404"])("retains unknown or unauthorized original ownership: %s", async kind => {
+it.each(["active", "wrong-user", "wrong-worker", "wrong-worktree", "wrong-task", "wrong-project", "hidden-404"])("retains unknown or unauthorized original ownership: %s", async kind => {
   const f = fixture(), owner = f.register(0); if (kind !== "active") f.end(owner);
   const task = f.tasks.get(owner.taskId)!;
   if (kind === "wrong-user") vi.mocked(f.remote.currentUserId).mockResolvedValue(uuid(900));
   if (kind === "wrong-worker" || kind === "wrong-worktree") f.tasks.set(owner.taskId, { ...task, properties: { worker: { ...(task.properties.worker as object), [kind === "wrong-worker" ? "workerId" : "worktreeId"]: uuid(901) } } });
-  if (kind === "missing-claim") f.tasks.set(owner.taskId, { ...task, properties: {} });
+  if (kind === "wrong-task" || kind === "wrong-project") f.tasks.set(owner.taskId, { ...task, [kind === "wrong-task" ? "id" : "projectId"]: uuid(902), properties: {} });
   if (kind === "hidden-404") vi.mocked(f.remote.readTask).mockRejectedValue(new ApiError({ operation: "task.show", projectId: owner.projectId, taskId: owner.taskId }, "response", { status: 404, serverError: { code: "not_found", message: "Hidden", requestId: "fixture" }, cause: new Error("Hidden") }));
   await expect(retirement(f, owner)).rejects.toThrow();
+  expect(f.herdr.lifecycle!.responsibilities()).toHaveLength(1);
+});
+it("retires an unstarted claim when the correct task has no current worker", async () => {
+  const f = fixture(), owner = f.register(0), task = f.tasks.get(owner.taskId)!;
+  f.tasks.set(owner.taskId, { ...task, status: "todo", properties: {} });
+  await f.coordinator().tick();
+  expect(f.herdr.lifecycle!.neverStarted!.retired()).toHaveLength(1);
+  expect(f.herdr.lifecycle!.responsibilities()).toEqual([]);
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+it("keeps an unstarted claim with no current worker until its owner and local absence are verified", async () => {
+  const f = fixture(), owner = f.register(0), task = f.tasks.get(owner.taskId)!;
+  f.tasks.set(owner.taskId, { ...task, status: "todo", properties: {} });
+  vi.mocked(f.remote.currentUserId).mockResolvedValueOnce(uuid(900));
+  await expect(retirement(f, owner)).rejects.toThrow(/authenticated owner/);
+  mkdirSync(f.read(owner).cwd, { recursive: true });
+  await expect(retirement(f, owner)).rejects.toThrow(/resources/);
+  expect(f.herdr.lifecycle!.neverStarted!.retired()).toEqual([]);
   expect(f.herdr.lifecycle!.responsibilities()).toHaveLength(1);
 });
 it.each(["cwd", "source", "archive", "symlink"])("retains a never-started registration with %s resources", async kind => {

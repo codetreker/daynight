@@ -6,7 +6,7 @@ import { navigate } from "../../app/router";
 import { useTeams } from "./TeamsProvider";
 import { useTeamMessages } from "./messages";
 
-export const TeamSelector = ({ personalId, selectedId, onNavigate, onCreate }: { readonly personalId: string; readonly selectedId: string | null; readonly onNavigate: () => void; readonly onCreate?: () => void }) => {
+export const TeamSelector = ({ personalId, selectedId, visibilityTeamId, onNavigate, onCreate }: { readonly personalId: string; readonly selectedId: string | null; readonly visibilityTeamId: string | null; readonly onNavigate: () => void; readonly onCreate?: () => void }) => {
   const teams = useTeams(), m = useTeamMessages();
   const { messages: { common } } = useI18n();
   const location = useBrowserLocation();
@@ -20,6 +20,8 @@ export const TeamSelector = ({ personalId, selectedId, onNavigate, onCreate }: {
   const detail = (error: unknown) => <><span>{error instanceof ApiError && error.kind === "network" ? m.network : m.readError}</span>{error instanceof ApiError && error.requestId !== null && <span> {common.requestId}<code>{error.requestId}</code></span>}</>;
   const selected = teams.detail.status === "ready" ? teams.detail.team : undefined;
   const title = selected?.kind === "ordinary" ? selected.name! : selected?.kind === "personal" ? m.personal : teams.detail.status === "loading" ? m.loading : m.failed;
+  const type = selected ? selected.kind === "personal" ? m.personalSpace : m.team : visibilityTeamId === null ? null : visibilityTeamId === personalId ? m.personalSpace : m.team;
+  const label = `${m.switchTeam}: ${type === null ? "" : `${type}, `}${title}`;
   const avatar = Array.from(title.trimStart())[0];
   const items = () => Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)') ?? []);
   const close = (restore: boolean) => { setOpenedAt(null); if (restore) trigger.current?.focus({ preventScroll: true }); };
@@ -81,7 +83,7 @@ export const TeamSelector = ({ personalId, selectedId, onNavigate, onCreate }: {
     navigate(event.currentTarget.pathname); onNavigate();
   };
   return <div className="team-selector" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
-    <button ref={trigger} type="button" className="team-switch" aria-label={`${m.switchTeam}: ${title}`} title={`${m.switchTeam}: ${title}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+    <button ref={trigger} type="button" className="team-switch" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
       onClick={() => open ? close(false) : show()} onKeyDown={(event) => {
         if (event.key === "Escape" && open) { event.preventDefault(); event.stopPropagation(); close(true); }
         else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -90,7 +92,7 @@ export const TeamSelector = ({ personalId, selectedId, onNavigate, onCreate }: {
           if (open) { const options = items(); (edge === "last" ? options[options.length - 1] : options[0])?.focus(); }
           else show(edge);
         }
-      }}><span className="team-avatar" aria-hidden="true">{avatar}</span><span className="team-switch-text">{title}</span><span className="team-chevron" aria-hidden="true">⌄</span></button>
+      }}><span className="team-avatar" aria-hidden="true">{avatar}</span><span className="team-switch-text"><span className="team-switch-type">{type}</span><span className="team-switch-name">{title}</span></span><span className="team-chevron" aria-hidden="true">⌄</span></button>
     {open && <div className="team-options" id={menuId} ref={menu} role="menu" aria-label={m.switchTeam} popover="auto" onKeyDown={(event) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {

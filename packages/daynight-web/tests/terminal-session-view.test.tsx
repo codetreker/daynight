@@ -78,19 +78,20 @@ describe('terminal production view', () => {
     view.rerender(f.element(false)); await waitFor(() => expect(f.close).toHaveBeenCalled());
     view.rerender(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledTimes(2));
   });
-  it('survives temporary identity verification and resumes observation without automatic input', async () => {
+  it('stops observation immediately on account pause and does not reconnect', async () => {
     const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce()); f.show();
-    const resume = pauseAuthRequests(); await waitFor(() => expect(f.close).toHaveBeenCalledOnce()); resume();
-    await waitFor(() => expect(f.api.channel).toHaveBeenCalledTimes(2)); expect(f.api.command).not.toHaveBeenCalled();
+    let resume = () => {};
+    try { act(() => { resume = pauseAuthRequests(); expect(f.close).toHaveBeenCalledOnce(); }); }
+    finally { resume(); }
+    expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
   });
-  it('keeps the frame, draft, focus and checked confirmation through a paused identity check and reconnect', async () => {
+  it('keeps the frame, draft, focus and checked confirmation while account refresh is required', async () => {
     const f = fixture(); const rendered = render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
     const suspended = structuredClone(f.get()); suspended.control = { ...suspended.control!, controlEpoch: '3', state: 'suspended', initialAssignment: 'transport_completed', availableActions: ['resume_automation', 'acquire_control'] };
     f.set(suspended); fireEvent.click(screen.getByRole('button', { name: 'Resume automatic execution' })); fireEvent.click(screen.getByRole('checkbox'));
     const screenNode = screen.getByRole('region', { name: /terminal/i }); const draft = screen.getByRole('textbox', { name: 'Terminal input' }) as HTMLTextAreaElement;
     fireEvent.change(draft, { target: { value: 'local draft' } }); draft.focus(); draft.setSelectionRange(2, 6); screenNode.scrollTop = 42;
     const checkbox = screen.getByRole('checkbox'); const confirm = screen.getByRole('button', { name: 'Confirm' });
-    let resolve!: (value: TerminalSessionState) => void; vi.mocked(f.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
     const stable = () => {
       expect(screen.getByRole('region', { name: /terminal/i })).toBe(screenNode); expect(screen.getByRole('textbox', { name: 'Terminal input' })).toBe(draft);
       expect(draft).toHaveValue('local draft'); expect(document.activeElement).toBe(draft); expect([draft.selectionStart, draft.selectionEnd]).toEqual([2, 6]); expect(screenNode.scrollTop).toBe(42);
@@ -98,10 +99,13 @@ describe('terminal production view', () => {
       expect(screen.queryByText('Loading session…')).not.toBeInTheDocument(); expect(screen.queryByText('This screen may be out of date.')).not.toBeInTheDocument();
       expect(f.api.command).not.toHaveBeenCalled();
     };
-    stable(); const resume = pauseAuthRequests(); rendered.rerender(f.element(true, false)); await waitFor(() => expect(f.close).toHaveBeenCalledOnce()); stable(); expect(confirm).toBeDisabled();
-    resume(); rendered.rerender(f.element()); await waitFor(() => expect(f.api.state).toHaveBeenCalledOnce()); stable(); expect(confirm).toBeDisabled();
-    await act(async () => { resolve(structuredClone(suspended)); }); await waitFor(() => expect(f.api.channel).toHaveBeenCalledTimes(2)); stable(); expect(confirm).toBeDisabled();
-    f.set(structuredClone(suspended)); stable(); expect(confirm).toBeEnabled();
+    stable(); let resume = () => {};
+    try {
+      act(() => { resume = pauseAuthRequests(); expect(f.close).toHaveBeenCalledOnce(); });
+      rendered.rerender(f.element(true, false)); stable(); expect(confirm).toBeDisabled();
+      resume(); rendered.rerender(f.element()); stable(); expect(confirm).toBeDisabled();
+      expect(f.api.channel).toHaveBeenCalledOnce();
+    } finally { resume(); }
   });
   it('keeps the confirmed control label during a pause while refusing input', async () => {
     const f = fixture(); const rendered = render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());

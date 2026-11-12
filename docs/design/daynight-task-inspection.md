@@ -111,7 +111,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
 `tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|attachments|steps|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
+默认为附件；显式 `tab=overview|description|attachments|steps|discussion|session` 进入共享导航准入。Goal 的 `description` 选择描述页签，`overview` 仍选择默认 Task 页签；普通 Task 只接受自身支持的页签，`description` 回退概览。Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。
@@ -124,7 +124,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 预览的新标签入口也进入完整详情并定位该文件。两个窗口不交换任务对象、图快照、
 草稿或确认状态。
 
-`TaskDetailPage` 使用当前 opening 的 direct Task 观察读取完整正文与写入基线；页面恢复可见时立即重读 Task，以更新写入资格和 Session 生命周期。关系另行读取局部任务链，局部投影不承诺包含外部后续。关系在页面可见时独立周期刷新，不依赖项目同步；普通失败或超时保留已显示的关系并提供重试，可信拒绝和历史退休撤回关系。单次网络读取有界，隐藏时取消并暂停，恢复可见后重读。该观察与项目同步共享 epoch 历史退休机制，但不依赖项目图、摘要或持久缓存。成功写入后保留确认及版本下界，新的实时 GET 达到下界后才重新允许写入；冲突和未知结果只读核对。同用户的普通前台身份核验保持页面可见与可交互，沿用认证外壳的请求暂停/恢复和身份替换边界。
+`TaskDetailPage` 使用当前 opening 的 direct Task 观察读取完整正文与写入基线；页面恢复可见时立即重读 Task，以更新写入资格和 Session 生命周期。关系另行读取局部任务链，局部投影不承诺包含外部后续。关系在页面可见时独立周期刷新，不依赖项目同步；普通失败或超时保留已显示的关系并提供重试，可信拒绝和历史退休撤回关系。单次网络读取有界，隐藏时取消并暂停，恢复可见后重读。该观察与项目同步共享 epoch 历史退休机制，但不依赖项目图、摘要或持久缓存。成功写入后保留确认及版本下界，新的实时 GET 达到下界后才重新允许写入；冲突和未知结果只读核对。账户变化等待刷新保持页面可见与本地交互，沿用认证外壳的远程暂停和真实失效边界。
 
 主体保持外层容器；`TaskDetailReading` 按身份、project、task、history 和 opening 绑定。历史退休时卸载阅读资源。同任务的 query、页签和
 附件路径变化保持挂载，所以目录展开、上传草稿、预览与滚动状态按原规则保留；

@@ -201,7 +201,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"", "/release", "/withdraw", "/resume"} {
+	for _, path := range []string{"", "/release", "/withdraw"} {
 		t.Run("method/"+path, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			response := projectRequest(h, http.MethodGet, workerHTTPPath()+path, "")
@@ -258,7 +258,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 			}
 		})
 	}
-	for _, suffix := range []string{"", "/release", "/withdraw", "/resume"} {
+	for _, suffix := range []string{"", "/release", "/withdraw"} {
 		t.Run("query/"+suffix, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			for _, q := range []string{"?", "?unexpected=1"} {
@@ -275,7 +275,6 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	}{
 		{"/release", map[string]any{"version": 1, "claimId": workerHTTPClaimID}},
 		{"/release", map[string]any{"version": 1}},
-		{"/resume", workerClaimBody(1)},
 	} {
 		t.Run("missing action field/"+tc.suffix+jsonBody(t, tc.body), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
@@ -322,7 +321,10 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	}
 	t.Run("release", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerReleased)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		returned.Status = model.TaskTodo
+		returned.StartedAt, returned.CompletedAt = nil, nil
+		returned.Properties = workerHTTPProperties(t, returned.Properties, nil)
 		h.Tasks.ReleaseWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ReleaseWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || !input.StoppedConfirmed {
@@ -331,36 +333,14 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 			return returned, nil
 		}
 		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPost, workerHTTPPath()+"/release", jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
-		if got.Status != "todo" || apiWorker(t, got.Properties).State != "released" || apiWorker(t, got.Properties).WorktreeID != worker.WorktreeID || got.StartedAt != nil || got.CompletedAt != nil {
+		if got.Status != "todo" || apiWorker(t, got.Properties) != nil || got.StartedAt != nil || got.CompletedAt != nil {
 			t.Fatal("released service facts changed")
-		}
-	})
-	t.Run("manual resume", func(t *testing.T) {
-		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCopilot, model.AgentControlModeHerdr, model.WorkerActive)
-		returned.AllowAgents = false
-		windows := model.PlatformWindows
-		returned.RequiredPlatform = &windows
-		body := workerClaimBody(returned.Version - 1)
-		body["agent"] = "copilot"
-		body["previousClaimId"] = "abcdefab-5555-4555-8555-555555555555"
-		h.Tasks.ResumeWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ResumeWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			want := taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: returned.Version - 1, WorkerDescriptor: workerHTTPDescriptor(body)}, PreviousClaimID: body["previousClaimId"].(string)}
-			if !reflect.DeepEqual(input, want) {
-				t.Fatalf("manual resume: %+v", input)
-			}
-			return returned, nil
-		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPost, workerHTTPPath()+"/resume", jsonBody(t, body)), http.StatusOK)
-		if got.Status != "in_progress" || got.AllowAgents || got.RequiredPlatform == nil || *got.RequiredPlatform != "windows" || apiWorker(t, got.Properties).Platform != "linux" || apiWorker(t, got.Properties).ClaimID != worker.ClaimID || apiWorker(t, got.Properties).Agent != "copilot" {
-			t.Fatal("manual resume HTTP response changed supplied eligibility or identity")
 		}
 	})
 }
 
 func TestWorkerHTTPRejectsDeprecatedContinuityInputs(t *testing.T) {
-	for _, suffix := range []string{"", "/withdraw", "/resume"} {
+	for _, suffix := range []string{"", "/withdraw"} {
 		for _, value := range []any{nil, false, true, "true"} {
 			t.Run(suffix+"/"+jsonBody(t, value), func(t *testing.T) {
 				h := newHTTPFixture(t, io.Discard)
@@ -407,5 +387,13 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 				t.Fatalf("withdrawal correlation: %s", &logs)
 			}
 		})
+	}
+}
+
+func TestWorkerHTTPResumeRouteRemoved(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	response := projectRequest(h, http.MethodPost, workerHTTPPath()+"/resume", jsonBody(t, workerClaimBody(1)))
+	if response.Code != http.StatusNotFound || h.Tasks.TotalCalls() != 0 {
+		t.Fatalf("removed route: status=%d calls=%d", response.Code, h.Tasks.TotalCalls())
 	}
 }

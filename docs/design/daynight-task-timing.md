@@ -14,7 +14,7 @@
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)
 读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
-Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每 15 秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
+Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 可见时每 15 秒、隐藏时每 5 分钟读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
 最新服务端样本由独立 `GraphSnapshot.observedAt` 保存，因此仅时钟变化时复用图与索引仍能取得新样本。
 [TaskNode](../../packages/daynight-web/src/features/task-graph/TaskNode.tsx) 已将检查任务的主体按钮和打开详情的 Details 按钮分开。
 `GraphIndex` 拥有任务与统计，布局来自投影和展开状态；项目设置与每秒计时不应成为这些计算的输入。
@@ -127,11 +127,11 @@ const currentServerTime = (anchor: ClockAnchor) =>
 仅时钟或设置变化都不重建 `GraphIndex`。
 时钟与阈值不得进入投影、节点位置或边路由的 memo 依赖。
 
-`TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。
+`TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。项目任务区由 `ProjectTaskWorkspace` 提供该上下文；Goal 详情属于独立的详情树，由 `GoalDetailSurface` 在已有非空项目快照的任务链对话框分支提供同样的上下文。该 Provider 包含整个图 portal，覆盖普通成员和直接外部前置，使用完整 `GraphSnapshot` 的最新时间样本与项目阈值。图关闭时卸载时钟；同项目快照更新只更新稳定 store，不重挂图或 Goal 的草稿、附件与阅读内容。带计时字段的任务缺少 Provider 仍抛出装配错误，不以客户端墙钟或空耗时掩盖缺失上下文。
 仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅、实际服务端样本且页面可见时才有一个一秒定时器。没有服务端样本时不显示运行中耗时或可能卡住提醒；已完成任务仍按持久起止端点计算耗时。
 完成任务只订阅设置变化以更新说明，不订阅时钟；未知计时无活动订阅。隐藏页暂停 ticker，恢复可见时立即发布单调差值结果，
 既有项目摘要同步随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
-API 读取沿既有前台身份 guard、AbortController 和 generation，旧响应不能更新新项目时钟或阈值。
+API 读取沿既有账户准入、AbortController 和 generation，旧响应不能更新新项目时钟或阈值。
 单调差值包含接收到提交的 UI 延迟；服务端采样至接收/解析完成的网络与解析延迟仍是估计精度边界，不通过客户端 Date.now 补偿。
 运行同提交暂态的负估计只在显示层限为零，完成态始终使用持久化起止差。
 
@@ -159,7 +159,7 @@ time 使用 `PT<秒数>S` 语义时长；可见文字对小于一分钟及 d/h/m
 独立行的可见新元数据对名称计算隐藏，计时 tick 不改变按钮名称；没有 alert/status/live-region 逐秒广播。
 完成、未知与进行中都保留现有焦点和控制；显式外部边、链外卡片及选中/前置强调不被琥珀提醒覆盖。
 
-`ChainList` 的 memoized `GoalTaskRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
+共享的 memoized `ChainMemberRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
 `todo`、未知起点及完成态未知终点由共享计时判定返回 null，不补造元数据时间；完成值只取持久端点差。
 标题保持独立 `.root-title` 文本，后接 `TaskExecutionDuration`，两者使用行内排版；空间不足时自然换行，耗时允许内部换行且不省略文本，状态及箭头保留各自空间。
 耗时外层对按钮名称计算隐藏，`time` 保留机器可读时长；`tooltip="duration"` 仅显示格式化耗时，避免把图卡片和独立行的阈值或提醒说明带入子任务行。

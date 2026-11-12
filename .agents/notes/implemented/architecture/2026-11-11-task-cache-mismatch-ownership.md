@@ -13,9 +13,7 @@ it blocks further remote work.
 
 The cache synchronously notifies its account owner before rejecting a principal
 mismatch or a transaction observing a replacement user fence. It neither clears
-its projection nor adopts the replacement fence on those paths. The current root
-owner invalidates the scope and starts identity verification; an owner that
-retains content must synchronously pause admission. After notification, a
+its projection nor adopts the replacement fence on those paths. The root owner retains displayed content and synchronously pauses admission until reload. After notification, a
 permanent mismatch fence ends admission waiters, aborts uncommitted ordinary
 transactions, and prevents late success or denial from
 publishing against the retained scope. Confirmed writes remain recorded. A
@@ -44,6 +42,5 @@ without clearing the page.
 ## Consequences
 
 The owner must enforce its chosen admission and cleanup policy synchronously.
-The current root retains its destructive behavior, while another owner can pause
-without losing the projection. Retaining content does not authorize new durable
+The root pauses without losing the projection; true revocation and session expiry retain their own cleanup paths. Retaining content does not authorize new durable
 reads or publication across a changed fence.
