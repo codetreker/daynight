@@ -2643,7 +2643,7 @@ describe("terminal cleanup retry scheduling", () => {
       f.clock(1000 + wait); await coordinator.tick();
       await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
       expect(archive).toHaveBeenCalledTimes(2);
-      expect(f.store.getCleanupSchedule(owner)).toBeNull();
+      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
       expect(f.worktrees.has(owner.claimId)).toBe(false);
       await coordinator.tick();
       expect(coordinator.archiveYield()).toBe(false);

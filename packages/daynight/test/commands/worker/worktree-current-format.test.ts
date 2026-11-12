@@ -10,6 +10,7 @@ import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/m
 
 const roots: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
+const worktreePaths = (cwd: string): string[] => git(cwd, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
 const emptySources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
 const fixture = async () => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
@@ -121,7 +122,7 @@ it("does not restore a checkout that disappears after a live execution was obser
     await rm(path.join(f.repository, ".worktrees"), { recursive: true });
     await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath, true, undefined, false)).rejects.toThrow(/may still be running/);
     await expect(lstat(path.join(f.repository, ".worktrees"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(git(f.repository, "worktree", "list", "--porcelain")).toContain(binding.worktreePath);
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
     expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath, true)).toEqual(binding);
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
@@ -170,7 +171,7 @@ it("rejects a conflicting retained binding before creating a checkout", async ()
     const binding = { repositoryPath: f.repository, commonDirectory: repository.commonDirectory, worktreePath: cwd, branch: `daynight/${f.owner.taskId}` };
     await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, cwd, true, { ...binding, commonDirectory: f.root })).rejects.toThrow(/binding differs/);
     expect(await f.adapter.resolveWorktreeBinding(f.project, f.owner, operation)).toBeNull();
-    expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain(cwd);
+    expect(worktreePaths(f.repository)).not.toContain(path.normalize(cwd));
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 

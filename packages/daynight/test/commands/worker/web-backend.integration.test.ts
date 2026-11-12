@@ -58,7 +58,7 @@ it("retries the same unsubmitted generation after launch preparation fails and t
 it("keeps an allocated native retry through a transient worktree failure and store reopen without consuming another attempt", async () => {
   const f = await recoveryFixture();
   f.store.beginRecovery(f.task, 8);
-  vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Worktree temporarily unavailable."));
+  vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Worktree temporarily unavailable."));
   await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Worktree temporarily");
   const allocated = f.store.getTask(f.task)!;
   expect(allocated.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: true });
@@ -216,7 +216,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   const backend = createWebExecutionBackend(options);
   await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
   expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
-  vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Temporary worktree deviation."));
+  vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Temporary worktree deviation."));
   await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Temporary worktree");
   const before = f.store.getOrchestrationBlocker(task)!;
   expect(before.identity.nativeSessionId).toBeNull();

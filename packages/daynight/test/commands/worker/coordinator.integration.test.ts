@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import Database from "better-sqlite3";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
@@ -1244,16 +1245,16 @@ it("uses the stopped original when cleanup finishes after the resource snapshot"
   const original = f.store.listTasks()[0]!;
   f.grants.clear();
   const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
-  const observerEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const scanEntered = Promise.withResolvers<void>(), finishScan = Promise.withResolvers<void>();
   const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
   vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
     removeEntered.resolve(); await finishRemoval.promise; operation.check(); await remove(project, owner, operation);
   });
-  const observe = f.tasks.observeExecutionStop.getMockImplementation()!;
-  let holdObservation = false;
-  f.tasks.observeExecutionStop.mockImplementation(async target => {
-    const result = await observe(target);
-    if (holdObservation) { observerEntered.resolve(); await finishObservation.promise; }
+  const scan = f.git.scanWorktrees.bind(f.git);
+  let holdScan = false;
+  vi.spyOn(f.git, "scanWorktrees").mockImplementation(async (...args) => {
+    const result = await scan(...args);
+    if (holdScan) { scanEntered.resolve(); await finishScan.promise; }
     return result;
   });
   try {
@@ -1261,17 +1262,133 @@ it("uses the stopped original when cleanup finishes after the resource snapshot"
     await removeEntered.promise;
     expect(wake).toHaveBeenCalled();
     const notifications = wake.mock.calls.length;
-    holdObservation = true;
+    holdScan = true;
     const nextRound = coordinator.tick();
-    await observerEntered.promise;
+    await scanEntered.promise;
     finishRemoval.resolve();
     await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
-    await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
-    finishObservation.resolve();
+    await eventually(() => {
+      const schedule = f.store.getCleanupSchedule(original);
+      if (schedule !== null) throw new Error(`Cleanup schedule remains: ${JSON.stringify(schedule)}; events: ${JSON.stringify(f.events, (_key, value) => value instanceof Error ? { message: value.message, stack: value.stack, cause: value.cause } : value)}`);
+    });
+    finishScan.resolve();
     await nextRound;
     await eventually(() => expect([...f.grants.values()].some(task => task.id === uuid(101))).toBe(true));
+    expect(f.store.getCleanupSchedule(original)).toBeNull();
+    expect(f.git.removeWorktree).toHaveBeenCalledOnce();
     expect(wake).toHaveBeenCalledTimes(notifications);
-  } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
+  } finally { finishRemoval.resolve(); finishScan.resolve(); await coordinator.shutdown(); }
+});
+
+it("does not recreate cleanup from a stale rowless workspace snapshot", async () => {
+  const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(800), claimId: uuid(801), worktreeId: uuid(802) };
+  f.candidates.splice(0);
+  const binding = { session: "w", workspaceId: "old", paneId: "p", terminalId: "t" };
+  f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: null, stateChangeSeq: 1, completionSeq: 0 }] });
+  const staleWorkspace = structuredClone([...f.resources.values()]);
+  f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+  f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
+  const list = f.tasks.listResources.getMockImplementation()!;
+  f.tasks.listResources.mockImplementationOnce(async () => { const result = await list(); f.resources.clear(); return result; });
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const scanEntered = Promise.withResolvers<void>(), finishScan = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, target, operation) => { removeEntered.resolve(); await finishRemoval.promise; await remove(project, target, operation); });
+  const scan = f.git.scanWorktrees.bind(f.git); let holdScan = false;
+  vi.spyOn(f.git, "scanWorktrees").mockImplementation(async (...args) => { const result = await scan(...args); if (holdScan) { scanEntered.resolve(); await finishScan.promise; } return result; });
+  try {
+    await f.coordinator.tick(); await removeEntered.promise;
+    expect(f.store.getTask(owner)).toBeNull();
+    f.tasks.listResources.mockResolvedValueOnce(staleWorkspace).mockResolvedValueOnce(staleWorkspace);
+    holdScan = true; const nextRound = f.coordinator.tick(); await scanEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    finishScan.resolve(); await nextRound;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+    expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    f.resources.set(owner.claimId, staleWorkspace[0]!);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
+  } finally { finishRemoval.resolve(); finishScan.resolve(); await f.coordinator.shutdown(); }
+});
+
+it("keeps a workspace first observed after cleanup while an earlier request is in flight", async () => {
+  const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(800), claimId: uuid(801), worktreeId: uuid(802) };
+  f.candidates.splice(0);
+  const binding = { session: "w", workspaceId: "old", paneId: "p", terminalId: "t" };
+  f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: null, stateChangeSeq: 1, completionSeq: 0 }] });
+  const workspace = structuredClone([...f.resources.values()]);
+  f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) }); f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
+  const list = f.tasks.listResources.getMockImplementation()!;
+  f.tasks.listResources.mockImplementationOnce(async () => { const result = await list(); f.resources.clear(); return result; });
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observationEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, target, operation) => { removeEntered.resolve(); await finishRemoval.promise; await remove(project, target, operation); });
+  try {
+    await f.coordinator.tick(); await removeEntered.promise;
+    f.tasks.listResources.mockResolvedValueOnce(workspace).mockImplementationOnce(async () => { observationEntered.resolve(); await finishObservation.promise; return list(); });
+    const nextRound = f.coordinator.tick(); await observationEntered.promise;
+    finishRemoval.resolve(); await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    f.resources.set(owner.claimId, workspace[0]!); finishObservation.resolve(); await nextRound;
+    await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await f.coordinator.shutdown(); }
+});
+
+it.each(["backend conflict", "recheck failure", "web enumeration failure"] as const)("handles a %s after Web cleanup before another project can claim", async variant => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(3), webStore = openWebExecutionStore(createMemoryDatabase());
+  const owner = { projectId: f.project.projectId, taskId: uuid(800), claimId: uuid(801), worktreeId: uuid(802) };
+  const config = { ...configuration, args: [], agentControlMode: "web" as const }, worktree = f.bind(owner);
+  const healthy: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/healthy.git", localPath: path.join(f.root, "healthy") };
+  f.store.registerProject(healthy); await mkdir(healthy.localPath, { recursive: true });
+  f.options.repositories.push({ project: healthy, configuration: config });
+  f.candidates.splice(0);
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  const healthyOwner = { projectId: healthy.projectId, taskId: uuid(851), claimId: uuid(852), worktreeId: uuid(853) };
+  if (variant !== "backend conflict") {
+    f.grant(task(healthy.projectId, healthyOwner.taskId), { claimId: healthyOwner.claimId, worktreeId: healthyOwner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.store.activateTask(f.store.registerPending({ ...healthyOwner, agent: "codex", agentControlMode: "web" }));
+    webStore.register({ ...healthyOwner, project: healthy, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  }
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.bindWorktree(record, worktree, 2);
+  record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 3);
+  f.worktrees.set(owner.claimId, { owner, binding: worktree }); f.manifests.set(owner.claimId, { owner, binding: worktree });
+  const cleanupEntered = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
+  const scanEntered = Promise.withResolvers<void>(), finishScan = Promise.withResolvers<void>();
+  const scan = f.git.scanWorktrees.bind(f.git); let holdScan = false;
+  vi.spyOn(f.git, "scanWorktrees").mockImplementation(async (...args) => { const result = await scan(...args); if (holdScan) { scanEntered.resolve(); await finishScan.promise; } return result; });
+  const cleanup = vi.fn(async (task: typeof record, request: import("../../../src/commands/worker/execution-stop.js").CleanupRequest) => {
+    if (request.kind !== "terminal") throw new Error("unexpected shutdown");
+    request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation: { kind: "not-started", owner, observedAt: 1000 } });
+    cleanupEntered.resolve(); await finishCleanup.promise; f.worktrees.delete(owner.claimId);
+    return { task, complete: true };
+  });
+  const advance = vi.fn(async (value: typeof record) => value);
+  const coordinator = createWorkerCoordinator({ ...f.options, webStore, webBackend: { observeExecutionStop: async () => ({ kind: "not-started", owner, observedAt: 1000 }), advance, cleanup }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  try {
+    await coordinator.tick(); await cleanupEntered.promise;
+    if (variant !== "backend conflict") await eventually(() => expect(advance).toHaveBeenCalled());
+    f.candidates.push(task(healthy.projectId, uuid(850)));
+    holdScan = true; const nextRound = coordinator.tick(); await scanEntered.promise;
+    finishCleanup.resolve(); await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    const pane = { session: "w", workspaceId: "conflict", paneId: "p", terminalId: "t" };
+    if (variant === "backend conflict") f.resources.set(owner.claimId, { owner, workspaceId: pane.workspaceId, panes: [{ binding: pane, cwd: worktree.worktreePath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: null, stateChangeSeq: 1, completionSeq: 0 }] });
+    else if (variant === "recheck failure") f.tasks.listResources.mockRejectedValueOnce(new Error("recheck unavailable"));
+    else vi.spyOn(webStore, "listUnfinishedTasks").mockImplementationOnce(() => { throw new Error("web enumeration unavailable"); });
+    finishScan.resolve();
+    await nextRound;
+    expect(f.resources.has(owner.claimId)).toBe(variant === "backend conflict");
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error", identity: expect.objectContaining(owner), error: expect.objectContaining({ message: variant === "backend conflict" ? "The original claim has conflicting backend responsibilities." : variant === "recheck failure" ? "recheck unavailable" : "web enumeration unavailable" }) }));
+    expect([...f.grants.values()].map(value => value.id)).toEqual(variant === "backend conflict" ? [uuid(850)] : [uuid(851)]);
+    if (variant !== "backend conflict") {
+      expect(f.store.getTask(healthyOwner)?.status).toBe("active");
+      await eventually(() => expect(advance.mock.calls.length).toBeGreaterThanOrEqual(2));
+    }
+  } finally { finishCleanup.resolve(); finishScan.resolve(); await coordinator.shutdown(); webStore.close(); }
 });
 
 it("does not yield archive maintenance for a stopped reservation left in a stale snapshot", async () => {

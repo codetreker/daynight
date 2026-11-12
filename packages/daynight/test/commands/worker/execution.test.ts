@@ -435,7 +435,8 @@ describe("execution from current Herdr resources", () => {
       await f.driver.advance(f.input);
       expect(f.calls.some(call => call.method === "workspace.close")).toBe(true);
       expect(f.launches).toHaveLength(1);
-      expect(git(repo, "worktree", "list", "--porcelain")).toContain(f.context.cwd);
+      const registered = git(repo, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
+      expect(registered).toContain(path.normalize(f.context.cwd));
     } finally { operation.dispose(); await adapter.dispose(); }
   }, 30_000);
 
