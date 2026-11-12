@@ -1,5 +1,6 @@
 import { parseProviderArguments } from "../controller/providers/projection.js";
 import path from "node:path";
+import { retainedWorktreePathInScope } from "./worktrees/paths.js";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
@@ -23,7 +24,7 @@ export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatfor
   }
   if (!["linux", "macos", "windows"].includes(platform)) throw new Error("Managed execution requires a supported actual platform.");
   const { configuration, worktree } = task;
-  if (!path.isAbsolute(worktree.repositoryPath) || worktree.worktreePath !== path.join(worktree.repositoryPath, ".worktrees", "daynight", task.taskId) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment must use the task's fixed worktree and branch.");
+  if (!path.isAbsolute(worktree.repositoryPath) || !retainedWorktreePathInScope(worktree.repositoryPath, task, worktree.worktreePath) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment must use the task's fixed worktree and branch.");
   if (configuration.agent !== task.agent) throw new Error("The managed assignment configuration must use its recorded agent.");
   if (configuration.agentControlMode === "web") parseProviderArguments(task.agent, configuration.args);
   else validateHerdrAgentArguments(task.agent, configuration.args);

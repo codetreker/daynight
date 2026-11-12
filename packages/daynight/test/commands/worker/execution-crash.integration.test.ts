@@ -14,7 +14,7 @@ it.skipIf(process.platform === "win32")("reattaches the original native session 
   const root = await mkdtemp(path.join(scratch, "run-"));
   const owner = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
   const project = { projectId: owner.projectId, repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") };
-  const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.taskId);
+  const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.worktreeId);
   await mkdir(cwd, { recursive: true });
   const nativeId = uuid(7), events: { method: string; params: Record<string, unknown> }[] = [];
   const workspaces: Record<string, unknown>[] = [], panes: Record<string, unknown>[] = [], agents: Record<string, unknown>[] = [], tabs: Record<string, unknown>[] = [];
@@ -36,7 +36,7 @@ let task=store.getTask(c.owner);
 if(task===null){store.registerPending({...c.owner,agent:'codex'});task=store.activateTask(c.owner);}
 const manager=createHerdrAgentManager({rpc,session:'w',preflight:{verifyStart:async()=>{}},workspaceEnvironment:{XDG_CONFIG_HOME:'',XDG_STATE_HOME:''},pollIntervalMs:1});
 const worktree={repositoryPath:c.project.localPath,commonDirectory:c.project.localPath+'/.git',worktreePath:c.cwd,branch:'daynight/'+c.owner.taskId};
-const git={prepareWorktree:async()=>worktree,verifyWorktree:async()=>worktree};
+const git={resolveWorktreeBinding:async()=>worktree,prepareWorktree:async()=>worktree,verifyWorktree:async()=>worktree};
 const driver=createExecutionDriver({store,git,herdr:{tasks:manager},readTask:async()=>{throw new Error('Unexpected ownership request')},platform:'linux',workerId:c.workerId,serverOrigin:'https://daynight.example',buildPrompt:()=>c.prompt,emit:()=>{},now:Date.now});
 const result=await driver.advance({task,project:c.project,owner:c.owner,title:'Crash fixture',configuration:{agent:'codex',model:null,args:[],recoveryLimit:2}});
 if(result.kind!=='observed') throw new Error('Crash fixture unexpectedly waited for input');

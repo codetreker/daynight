@@ -1,11 +1,12 @@
 import { ensureCleanupSchedule } from "../../../src/commands/worker/cleanup-schedule.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { performance } from "node:perf_hooks";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
+import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -42,13 +43,15 @@ const fixture = () => {
   const submitPrompt = vi.fn<WorkerHerdrAdapter["tasks"]["submitPrompt"]>(async () => ({ submission: "submitted" as const, observation: observation("idle") }));
   const stopAndClose = vi.fn<WorkerHerdrAdapter["tasks"]["stopAndClose"]>(async () => { order.push("stop-close"); current = []; });
   const removeWorktree = vi.fn<WorkerGitManager["removeWorktree"]>(async () => { expect(current).toEqual([]); order.push("delete"); worktree = false; });
-  const findWorktree = vi.fn(async () => worktree ? { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` } : null);
+  const originalWorktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` };
+  const findWorktree = vi.fn(async () => worktree ? originalWorktree : null);
+  const resolveWorktreeBinding = vi.fn(async () => originalWorktree);
   const pendingStops = vi.fn(() => []);
   const observeExecutionStop = vi.fn<WorkerHerdrAdapter["tasks"]["observeExecutionStop"]>(async target => stopAndClose.mock.calls.length > 0 && current.length === 0
     ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "fixture" }, observedAt: time }
     : { kind: "unknown", target, error: new Error("Original stop receipt unavailable"), observedAt: time });
   const herdr = { tasks: { pendingStops, listResources, submitPrompt, stopAndClose, observeExecutionStop } } as unknown as WorkerHerdrAdapter;
-  const git = { removeWorktree, findWorktree } as unknown as WorkerGitManager;
+  const git = { removeWorktree, findWorktree, resolveWorktreeBinding } as unknown as WorkerGitManager;
   let time = 1_000;
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = () => createCleanupDriver(deps);
@@ -56,10 +59,19 @@ const fixture = () => {
   const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree
     ? { kind: "terminal", deadline: ensureCleanupSchedule(store, owner, time).deadline, immediateStop: false, scope: { attempt: { owner, attemptId: "fixture" }, onExecutionStopped }, ...(signal === undefined ? {} : { signal }) }
     : { kind: "shutdown", deadline: time + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
-  return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, observeExecutionStop, onExecutionStopped, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
+  return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, observeExecutionStop, onExecutionStopped, removeWorktree, findWorktree, resolveWorktreeBinding, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
 };
 
 describe("cleanup from resource observations", () => {
+  it("does not settle metadata if its original binding changes during removal", async () => {
+    const f = fixture();
+    const binding = await f.resolveWorktreeBinding();
+    f.resolveWorktreeBinding.mockResolvedValueOnce(binding).mockResolvedValueOnce({ ...binding, worktreePath: `${binding.worktreePath}-changed` });
+    await expect(f.advance()).rejects.toThrow("binding changed during cleanup");
+    expect(f.removeWorktree).toHaveBeenCalledOnce();
+    expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
+  });
+
   it("reports progress only after resource absence is confirmed", async () => {
     const f = fixture();
     const observe = vi.fn(); f.deps.observePhase = observe;
@@ -70,6 +82,20 @@ describe("cleanup from resource observations", () => {
     expect(observe).not.toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
     await f.advance();
     expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+  });
+
+  it("stops a migrated original pane using its unchanged aliased cwd", async () => {
+    const f = fixture();
+    const project = f.store.getProject(f.owner)!;
+    const real = path.join(project.localPath, ".worktrees", "daynight", f.owner.taskId);
+    mkdirSync(real, { recursive: true });
+    const aliasRoot = path.join(path.dirname(project.localPath), "old-repository-alias");
+    symlinkSync(project.localPath, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+    const originalCwd = path.join(aliasRoot, ".worktrees", "daynight", f.owner.taskId);
+    const list = f.listResources.getMockImplementation()!;
+    f.listResources.mockImplementation(async operation => (await list(operation)).map(workspace => ({ ...workspace, panes: workspace.panes.map(pane => ({ ...pane, cwd: originalCwd })) })));
+    await f.advance();
+    expect(f.stopAndClose).toHaveBeenCalledWith(expect.objectContaining({ cwd: originalCwd, worktreeId: f.owner.worktreeId }), expect.anything(), expect.anything());
   });
 
   it("keeps the original cleanup error and resources when monitoring throws", async () => {
@@ -116,10 +142,23 @@ describe("cleanup from resource observations", () => {
 
   it("cleans an already absent pane without inventing stop evidence", async () => {
     const f = fixture(); f.state(null);
+    f.observeExecutionStop.mockImplementation(async target => ({ kind: "unknown", target, error: new LegacyBindingUnavailableError("No original legacy binding"), observedAt: 1000 }));
     await f.advance();
     expect(f.submitPrompt).not.toHaveBeenCalled(); expect(f.stopAndClose).not.toHaveBeenCalled();
     expect(f.onExecutionStopped).not.toHaveBeenCalled();
     expect(f.order).toEqual(["delete"]);
+  });
+
+  it.each(["unknown", "running"] as const)("retains the worktree when an empty workspace has a %s stop observation", async kind => {
+    const f = fixture(); f.state(null);
+    const failure = new Error("stop observation failed");
+    f.observeExecutionStop.mockImplementation(async target => kind === "unknown"
+      ? { kind, target, error: failure, observedAt: 1000 }
+      : { kind, execution: { owner: f.owner, backend: "herdr-legacy", runKey: "fixture" }, observedAt: 1000 });
+    await expect(f.advance()).rejects.toThrow("stop is unconfirmed");
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.onExecutionStopped).not.toHaveBeenCalled();
+    expect(f.store.getCleanupSchedule(f.owner)).not.toBeNull();
   });
 
   it("notifies the matching legacy stop before worktree removal", async () => {

@@ -1,6 +1,7 @@
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { JsonValue, Task } from "../../../src/api/types.js";
@@ -15,6 +16,8 @@ import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/com
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
+import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 
@@ -104,7 +107,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   } };
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
   const events: WorkerEvent[] = [];
-  const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
+  const git = { resolveWorktreeBinding: vi.fn(async () => worktree), prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = { type: "task", parentId: null,
     projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
@@ -316,9 +319,126 @@ describe("execution from current Herdr resources", () => {
     Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { throw new Error("Original run is stop_unknown"); } } });
     await expect(f.driver.advance(f.input)).rejects.toThrow("stop_unknown");
     expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
-    expect(f.dependencies.git.verifyWorktree).not.toHaveBeenCalled();
-    expect(f.calls).toEqual([]);
+    expect(f.calls.filter(call => ["workspace.create", "workspace.close", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
+
+  it("retains a workspace with no original cwd or manifest without preparing a replacement", async () => {
+    const f = await fixture("codex", null);
+    const observed = await f.resources();
+    observed[0]!.panes[0]!.cwd = null;
+    vi.spyOn(f.manager, "listResources").mockResolvedValue(observed);
+    vi.mocked(f.dependencies.git.resolveWorktreeBinding).mockResolvedValue(null);
+    await expect(f.driver.advance(f.input)).rejects.toThrow("original Herdr workspace has no worktree path evidence");
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.calls.filter(call => ["workspace.create", "workspace.close", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it.each([null, staleId])("stops the original workspace before restoring its missing cwd (session %s)", async sessionId => {
+    const f = await fixture("codex", sessionId);
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+    await rm(f.context.cwd, { recursive: true });
+    vi.mocked(f.dependencies.git.prepareWorktree).mockImplementation(async () => {
+      expect(f.calls.some(call => call.method === "workspace.close")).toBe(true);
+      await mkdir(f.context.cwd, { recursive: true });
+      return { repositoryPath: f.input.project.localPath, commonDirectory: path.join(f.input.project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.input.owner.taskId}` };
+    });
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "workspace.close")).toHaveLength(1);
+    expect(f.launches).toHaveLength(1);
+    if (sessionId !== null) expect(f.launches[0]!.args).toContain(sessionId);
+  });
+
+  it("does not restore a missing cwd if the original workspace stop is unconfirmed", async () => {
+    const f = await fixture("codex", staleId);
+    await rm(f.context.cwd, { recursive: true });
+    vi.spyOn(f.manager, "stopAndClose").mockRejectedValue(new Error("stop unknown"));
+    await expect(f.driver.advance(f.input)).rejects.toThrow("stop unknown");
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+  });
+
+  it("retains an observed live binding when its workspace disappears without stop evidence", async () => {
+    const f = await fixture("codex", null);
+    await f.driver.advance(f.input);
+    f.workspaces.splice(0); f.panes.splice(0); f.agents.splice(0);
+    await rm(f.context.cwd, { recursive: true });
+    vi.mocked(f.dependencies.git.prepareWorktree).mockClear();
+    await expect(f.driver.advance(f.input)).rejects.toThrow("original Herdr execution stop is unconfirmed");
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.launches).toHaveLength(1);
+  });
+
+  it("requires durable stop and recovery admission before restoring a missing cwd", async () => {
+    const f = await fixture("codex", staleId);
+    await rm(f.context.cwd, { recursive: true });
+    let stopped = false;
+    const admission = vi.fn(() => { if (!stopped && admission.mock.calls.length > 1) throw new Error("stop proof missing"); });
+    const stop = vi.fn(async (_owner: ResourceOwner, _reason: "shutdown", operation: Parameters<typeof f.manager.stopAndClose>[2]) => {
+      await f.manager.stopAndClose(f.context, f.binding, operation); stopped = true;
+    });
+    Object.assign(f.dependencies.herdr, { lifecycle: { worktreePath: () => f.context.cwd, hasStarted: () => true, isStopped: () => stopped, assertCanAdvance: admission, hasPreparedRun: () => false, stop } });
+    vi.mocked(f.dependencies.git.prepareWorktree).mockImplementation(async () => {
+      expect(stopped).toBe(true); expect(admission).toHaveBeenCalledTimes(2);
+      await mkdir(f.context.cwd, { recursive: true });
+      return { repositoryPath: f.input.project.localPath, commonDirectory: path.join(f.input.project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.input.owner.taskId}` };
+    });
+    await f.driver.advance(f.input);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(f.launches).toHaveLength(1);
+  });
+
+  it.each([null, staleId])("prepares the original worktree after restart with session %s", async sessionId => {
+    const f = await fixture("codex", sessionId);
+    f.workspaces.splice(0); f.panes.splice(0);
+    const repo = f.input.project.localPath, root = path.dirname(repo);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
+    git(repo, "init", "--initial-branch=main");
+    git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+    git(root, "clone", "--bare", repo, "origin.git");
+    git(repo, "remote", "add", "origin", f.input.project.repoUrl);
+    git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
+    if (sessionId !== null) git(repo, "branch", `daynight/${f.input.owner.taskId}`);
+    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
+    const operation = createOperation();
+    try {
+      await adapter.prepareRepository(f.input.project, operation);
+      await mkdir(path.join(repo, ".worktrees", "daynight", f.input.owner.worktreeId), { recursive: true });
+      f.dependencies.git = adapter;
+      await f.driver.advance({ ...f.input, freshClaim: false });
+      const cwd = path.join(repo, ".worktrees", "daynight", f.input.owner.worktreeId);
+      expect(git(cwd, "branch", "--show-current")).toBe(`daynight/${f.input.owner.taskId}`);
+      expect(f.launches).toHaveLength(1);
+    } finally { operation.dispose(); await adapter.dispose(); }
+  }, 30_000);
+
+  it("stops the live workspace if its cwd disappears after observation", async () => {
+    const f = await fixture("codex", staleId);
+    const repo = f.input.project.localPath, root = path.dirname(repo);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
+    git(repo, "init", "--initial-branch=main");
+    git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+    git(root, "clone", "--bare", repo, "origin.git");
+    git(repo, "remote", "add", "origin", f.input.project.repoUrl);
+    git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
+    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
+    const operation = createOperation();
+    try {
+      await adapter.prepareRepository(f.input.project, operation);
+      await adapter.prepareWorktree(f.input.project, f.input.owner, operation, f.context.cwd);
+      const prepare = adapter.prepareWorktree;
+      vi.spyOn(adapter, "prepareWorktree")
+        .mockImplementationOnce(async (...args) => { await rm(f.context.cwd, { recursive: true }); return prepare(...args); })
+        .mockImplementationOnce(async (...args) => { expect(f.calls.some(call => call.method === "workspace.close")).toBe(true); return prepare(...args); });
+      f.dependencies.git = adapter;
+      f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+      await f.driver.advance(f.input);
+      expect(f.calls.some(call => call.method === "workspace.close")).toBe(true);
+      expect(f.launches).toHaveLength(1);
+      const registered = git(repo, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
+      expect(registered).toContain(path.normalize(f.context.cwd));
+    } finally { operation.dispose(); await adapter.dispose(); }
+  }, 30_000);
 
   it("finishes a pending durable stop before applying replacement admission", async () => {
     const f = await fixture("codex", null);
@@ -405,8 +525,7 @@ describe("execution from current Herdr resources", () => {
     expect(f.launches[1]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
     expect(f.launches[1]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(2);
-    expect(f.dependencies.git.verifyWorktree).toHaveBeenCalledTimes(2);
-    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.dependencies.git.prepareWorktree).toHaveBeenCalledTimes(2);
   });
 
   it.each(["codex", "copilot"] as const)("pings stopped %s turns once and resumes checking after native progress", async (agent) => {
@@ -556,8 +675,8 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture("copilot", staleId);
     const current: Entry = { ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: snapshotStatus, interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
     f.agents.push(current);
-    const verify = f.dependencies.git.verifyWorktree;
-    vi.mocked(f.dependencies.git.verifyWorktree).mockImplementationOnce(async (...args) => { current.agent_status = observedStatus; return verify(...args); });
+    const verify = f.dependencies.git.prepareWorktree;
+    vi.mocked(f.dependencies.git.prepareWorktree).mockImplementationOnce(async (...args) => { current.agent_status = observedStatus; return verify(...args); });
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(observedStatus === "idle" ? 1 : 0);
   });
@@ -849,6 +968,11 @@ describe("execution from current Herdr resources", () => {
     const otherOwner = { ...f.input.owner, taskId: uuid(11), claimId: uuid(12), worktreeId: uuid(13) };
     const otherContext = { ...f.context, ...otherOwner, cwd: path.join(f.input.project.localPath, ".worktrees", "daynight", otherOwner.taskId) };
     await mkdir(otherContext.cwd, { recursive: true });
+    const otherWorktree = { repositoryPath: f.input.project.localPath, commonDirectory: path.join(f.input.project.localPath, ".git"), worktreePath: otherContext.cwd, branch: `daynight/${otherOwner.taskId}` };
+    const originalResolve = vi.mocked(f.dependencies.git.resolveWorktreeBinding).getMockImplementation()!;
+    const originalVerify = vi.mocked(f.dependencies.git.prepareWorktree).getMockImplementation()!;
+    vi.mocked(f.dependencies.git.resolveWorktreeBinding).mockImplementation((project, owner, operation) => owner.claimId === otherOwner.claimId ? Promise.resolve(otherWorktree) : originalResolve(project, owner, operation));
+    vi.mocked(f.dependencies.git.prepareWorktree).mockImplementation((project, owner, operation) => owner.claimId === otherOwner.claimId ? Promise.resolve(otherWorktree) : originalVerify(project, owner, operation));
     f.store.registerPending({ ...otherOwner, agent: "codex", sessionId: staleId });
     const otherInput = { ...f.input, owner: otherOwner, task: f.store.activateTask(otherOwner) };
     f.workspaces.push({ workspace_id: "other-workspace", label: herdrExecutionLabel(otherContext, "Other task") });

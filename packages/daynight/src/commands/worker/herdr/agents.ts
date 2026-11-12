@@ -94,6 +94,9 @@ export class HerdrAgentActionError extends Error {
     this.promptSubmission = options?.promptSubmission === undefined ? null : options.promptSubmission;
   }
 }
+export class LegacyBindingUnavailableError extends Error {
+  override readonly name = "LegacyBindingUnavailableError";
+}
 export class HerdrInputWaitingError extends HerdrAgentActionError {
   constructor(readonly reason: "task_paused" | "control_suspended" | "native_blocked", message: string, options?: ErrorOptions) {
     super(message, "agent.prompt", "not-submitted", { ...options, promptSubmission: "not-submitted" });
@@ -352,7 +355,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const stoppedBinding = stoppedRuns.get(id);
         const active = activeBindings.get(id);
         const binding = stoppedBinding ?? active?.binding;
-        if (binding === undefined) throw new Error("No original legacy Herdr binding exists in this Worker run.");
+        if (binding === undefined) throw new LegacyBindingUnavailableError("No original legacy Herdr binding exists in this Worker run.");
         if ([...stoppingProcesses.values()].some(pending => sameResourceOwner(pending.context, owner))) throw new Error("The original Herdr stop has not joined.");
         const data = await snapshot(operation);
         if ([...stoppingProcesses.values()].some(pending => sameResourceOwner(pending.context, owner))) throw new Error("The original Herdr stop has not joined.");

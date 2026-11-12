@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWorkerResources } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -42,9 +42,12 @@ const fixture = () => {
   const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("Disposal cannot collect a new recording."); }, publishStopped: async () => {}, ...remote });
   mocks.durable.mockReturnValue({ lifecycle: { archive: resource, close: vi.fn() } });
   const removeWorktree = vi.fn(async () => { rmSync(cwd, { force: true, recursive: true }); });
-  mocks.git.mockReturnValue({ removeWorktree, findWorktree: async () => null, dispose: async () => {} });
+  const binding = { repositoryPath: localPath, commonDirectory: path.join(localPath, ".git"), worktreePath: cwd, branch: `daynight/${doc.owner.taskId}` };
+  const findWorktree = vi.fn(async (): Promise<typeof binding | null> => null);
+  const retireWorktreeManifest = vi.fn(async () => {});
+  mocks.git.mockReturnValue({ prepareRepository: async () => {}, resolveWorktreeBinding: async () => binding, removeWorktree, findWorktree, retireWorktreeManifest, dispose: async () => {} });
   const request = { kind: "dispose" as const, projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId, sessionId: doc.sessionId, operationId: "00000000-0000-4000-8000-000000000099", confirmed: true as const };
-  return { homeDirectory, request, resource, readTask, removeWorktree, active: () => { active = true; } };
+  return { homeDirectory, request, resource, readTask, removeWorktree, findWorktree, retireWorktreeManifest, cwd, binding, active: () => { active = true; } };
 };
 
 describe.skipIf(process.platform !== "darwin")("retained-resource runtime authorization", () => {
@@ -65,5 +68,26 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     const f = fixture(); f.active();
     await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} })).rejects.toThrow("original claim is still active");
     expect(f.readTask).toHaveBeenCalledOnce(); expect(f.removeWorktree).not.toHaveBeenCalled(); expect(f.resource.resources()[0]!.disposition).toBeNull();
+  });
+  it("does not remove a later checkout when retrying a completed disposal", async () => {
+    const f = fixture(), request = { ...f.request, action: "delete" as const };
+    f.retireWorktreeManifest.mockRejectedValueOnce(new Error("metadata retirement failed"));
+    await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request, output: () => {} })).rejects.toThrow("metadata retirement failed");
+    mkdirSync(f.cwd, { recursive: true });
+    writeFileSync(path.join(f.cwd, "successor"), "keep");
+    f.findWorktree.mockClear();
+    await runWorkerResources({ homeDirectory: f.homeDirectory, request, output: () => {} });
+    expect(f.removeWorktree).toHaveBeenCalledOnce();
+    expect(f.findWorktree).not.toHaveBeenCalled();
+    expect(f.retireWorktreeManifest).toHaveBeenCalledTimes(2);
+    expect(readFileSync(path.join(f.cwd, "successor"), "utf8")).toBe("keep");
+  });
+  it("accepts the original worktree through an equivalent repository alias", async () => {
+    const f = fixture(), alias = path.join(f.homeDirectory, "repo-alias");
+    symlinkSync(f.binding.repositoryPath, alias, "dir");
+    f.binding.worktreePath = path.join(alias, ".worktrees", "daynight", f.request.taskId);
+    await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} });
+    expect(f.removeWorktree).toHaveBeenCalledOnce();
+    expect(f.retireWorktreeManifest).toHaveBeenCalledOnce();
   });
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -108,9 +108,14 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   });
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected remote service operation."); };
   const sessionApi: WorkerSessionApi = { register, grant, supportsStartupReports: unexpected, verifySupport: unexpected, verifyUnregistered: unexpected };
-  const git = { verifyWorktree: vi.fn(async (_project: unknown, task: ClaimIdentity) => {
-    const binding = bindings.get(task.claimId); if (binding === undefined) throw new Error("Unknown fixture worktree binding."); return binding;
-  }), prepareWorktree: unexpected, prepareRepository: unexpected, findWorktree: unexpected, removeWorktree: unexpected, dispose: unexpected } as unknown as WorkerGitManager;
+  const git = { prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (project, task, operation, cwd, requireBranch, original) => {
+    const binding = bindings.get(task.claimId); if (binding === undefined) throw new Error("Unknown fixture worktree binding.");
+    operation.check();
+    expect(project).toMatchObject({ projectId: task.projectId, localPath: repository });
+    expect(cwd).toBe(binding.worktreePath); expect(requireBranch).toBe(true); expect(original).toEqual(binding);
+    expect((await lstat(binding.worktreePath)).isDirectory()).toBe(true);
+    return binding;
+  }), prepareRepository: unexpected, findWorktree: unexpected, removeWorktree: unexpected, dispose: unexpected } as unknown as WorkerGitManager;
   const buildPrompt = vi.fn((task: LocalTask) => `original assignment ${tasks.get(task.claimId)!.tool}`);
   const stack = () => {
     const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory, store, sessionApi, now: Date.now, selectToolLaunch, toolObservationFor: tools.toolObservationFor });

@@ -109,7 +109,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   expect(advance.mock.calls[0]![0].configuration).toEqual(frozen);
   expect(lifecycle.responsibilities).toHaveBeenCalled(); expect(mocks.durable).toHaveBeenCalledOnce();
   expect(mocks.probe).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled(); expect(remote.claim).not.toHaveBeenCalled();
-  expect(report).toHaveBeenCalled(); expect(prepareRepository).toHaveBeenCalledOnce();
+  expect(report).toHaveBeenCalled(); expect(prepareRepository).toHaveBeenCalledWith(project, expect.anything());
   const cache = JSON.parse(await readFile(paths.configurationFile, "utf8")) as { items: { value: { key: { kind: string }; state: string; appliedValue: unknown } }[] };
   expect(cache.items).toEqual(expect.arrayContaining([
     expect.objectContaining({ value: expect.objectContaining({ key: { kind: "native" }, state: "error", appliedValue: null }) }),

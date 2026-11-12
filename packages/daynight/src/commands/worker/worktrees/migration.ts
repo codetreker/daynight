@@ -352,8 +352,8 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
         if (commonPointer === null) throw new Error("Git registration has no common directory.");
         const actualCommon = entry.common ?? await resolveGitDirectory(entry.directory, commonPointer);
         if (await realpath(actualCommon) !== canonicalCommon) throw new Error("Git registration belongs to another repository.");
-        const head = await ordinaryFile(path.join(entry.directory, "HEAD"));
-        if (head !== `ref: refs/heads/daynight/${manifest.taskId}`) throw new Error("Worktree registration has an unexpected branch.");
+        const head = await gitRead([`--git-dir=${entry.directory}`, "symbolic-ref", "--quiet", "HEAD"]);
+        if (head !== `refs/heads/daynight/${manifest.taskId}`) throw new Error("Worktree registration has an unexpected branch.");
         if (leafIdentity !== null) {
           const reverse = await ordinaryFile(path.join(leaf, ".git"));
           if (reverse === null) {

@@ -19,9 +19,9 @@ it and flushes the containing directory. An identical visible record is reusable
 only after its file and directory barriers succeed. Removal compares the full
 expected record and retires only metadata. Inventory reads do not flush files.
 
-The shared durable JSON and directory primitives live in platform modules. The
-Worker continues to use its existing lock, physical identity and task directory;
-the manifest store does not activate a format or convert existing resources.
+The shared durable JSON and directory primitives live in platform modules. The Worker uses the store for current resource ownership and location; the
+[adoption decision](2026-11-12-worktree-manifest-adoption.md) owns allocation,
+conversion and retirement ordering.
 
 ## Alternatives
 
@@ -39,5 +39,4 @@ A failed barrier remains an error even if the record is visible, and a retry
 can establish durability without overwriting a different record. The store relies
 on the existing single-instance ownership and task gate rather than providing a
 cross-process transaction. Windows retains the existing limitations of directory
-synchronization. Adoption, conversion and retirement of the old ownership path
-remain separate work; a manifest alone does not authorize checkout deletion.
+synchronization. A manifest alone does not authorize checkout deletion.

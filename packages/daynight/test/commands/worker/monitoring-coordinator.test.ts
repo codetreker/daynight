@@ -1,4 +1,6 @@
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { ApiError } from "../../../src/api/client.js";
@@ -12,17 +14,22 @@ import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const project = { projectId: uuid(10), repoUrl: "https://example.test/a/b.git", localPath: "/isolated/repository" };
-const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(20), claimId: uuid(30), worktreeId: uuid(40) };
+let project = { projectId: uuid(10), repoUrl: "https://example.test/a/b.git", localPath: "" };
+const owner: ResourceOwner = { projectId: uuid(10), taskId: uuid(20), claimId: uuid(30), worktreeId: uuid(40) };
 const stores: ReturnType<typeof openWorkerStore>[] = [];
-afterEach(() => { for (const store of stores.splice(0)) store.close(); });
+const roots: string[] = [];
+afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 const fixture = (settings: { retained?: boolean; pending?: boolean; prepareProject?: () => Promise<void> } = {}) => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/monitoring-coordinator"); mkdirSync(base, { recursive: true });
+  const root = mkdtempSync(path.join(base, "case-")); roots.push(root);
+  project = { ...project, localPath: root };
+  const binding = { repositoryPath: root, commonDirectory: path.join(root, ".git"), worktreePath: path.join(root, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ runId: uuid(1), now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding: {} }] : []) } as unknown as WorkerGitManager;
-  const tasks = { pendingStops: vi.fn(() => settings.pending ? [{ context: { ...owner, cwd: "/isolated/repository" }, binding: {} }] : []), listResources: vi.fn(async () => settings.retained ? [{ owner, workspaceId: "workspace", panes: [] }] : []) };
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), listWorktreeManifests: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), resolveWorktreeBinding: vi.fn(async () => binding) } as unknown as WorkerGitManager;
+  const tasks = { pendingStops: vi.fn(() => settings.pending ? [{ context: { ...owner, cwd: binding.worktreePath }, binding: {} }] : []), listResources: vi.fn(async () => settings.retained ? [{ owner, workspaceId: "workspace", panes: [] }] : []) };
   const herdr = { tasks, ensureInstance: vi.fn(async () => {}) } as unknown as WorkerHerdrAdapter;
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });

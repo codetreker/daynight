@@ -1,15 +1,15 @@
-import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
+import { LegacyBindingUnavailableError } from "./herdr/agents.js";
 import type { WorkerAgent } from "../../api/types.js";
-import { actualTaskPane, executionContext, liveAgent, observeWorkerPhase, settleWorkerStops } from "./execution.js";
+import { actualTaskPane, executionContext, liveAgent, observeWorkerPhase, originalWorktreePath, sameClaim, settleWorkerStops } from "./execution.js";
 import type { ExecutionDependencies } from "./execution.js";
 import { workerCleanupPrompt } from "./prompts.js";
-import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { LocalTask, ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import type { CleanupRequest } from "./execution-stop.js";
 
-export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask };
+export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask; onLegacyResourcesAbsent?: () => void; onWorktreeSettled?: (binding: WorktreeBinding) => void };
 
 export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask">) => ({
   advance: async (input: CleanupInput, request: CleanupRequest): Promise<void> => {
@@ -29,14 +29,13 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
         deps.emit({ kind: "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: "Stopped the original Herdr run; its worktree and local source remain until archive finalization permits cleanup." });
         return;
       }
-      const stopContext = { ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId) };
       await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
       const observe = async () => actualTaskPane(input.owner, await cleanupOperation(operation => deps.herdr.tasks.listResources(operation), signal));
       let pane = await observe();
       if (pane !== undefined) {
         const agent: WorkerAgent | undefined = input.task?.agent ?? pane.kind ?? pane.nativeSession?.agent;
         if (agent !== undefined && liveAgent(pane) && deps.now() < deadline) {
-          const context = executionContext({ ...input, task: { agent } });
+          const context = executionContext({ ...input, task: { agent } }, await originalWorktreePath(input.project, input.owner, pane.cwd));
           deps.emit({ kind: "cleanup-started", ...(input.task === undefined ? {} : { task: input.task }), message: `Cleaning claim ${input.owner.claimId}; observing its resources until ${new Date(deadline).toISOString()}.` });
           // Herdr has no per-input operation lookup. The notification is advisory;
           // a restarted attempt observes resources again and may notify the surviving agent.
@@ -53,7 +52,10 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
           }
         }
         if (pane !== undefined) {
-          try { await cleanupOperation(operation => deps.herdr.tasks.stopAndClose(stopContext, pane!.binding, operation), signal); }
+          try {
+            const cwd = await originalWorktreePath(input.project, input.owner, pane.cwd);
+            await cleanupOperation(operation => deps.herdr.tasks.stopAndClose({ ...input.owner, cwd }, pane!.binding, operation), signal);
+          }
           catch (error) {
             signal?.throwIfAborted();
             if (await observe() !== undefined) throw error;
@@ -62,17 +64,26 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       }
       await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
       if (await observe() !== undefined) throw new Error("The original task pane still exists after cleanup.");
+      if (deps.herdr.tasks.pendingStops().some(stop => sameClaim(stop.context, input.owner))) throw new Error("The original Herdr stop remains pending.");
       if (request.kind === "terminal") {
         const observation = await cleanupOperation(operation => deps.herdr.tasks.observeExecutionStop(input.owner, operation), signal);
         if (observation.kind === "stopped" || observation.kind === "not-started") request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation });
+        else if (observation.kind === "unknown" && observation.error instanceof LegacyBindingUnavailableError) input.onLegacyResourcesAbsent?.();
+        else throw new Error("The original Herdr execution stop is unconfirmed; its resources are retained.", observation.kind === "unknown" ? { cause: observation.error } : undefined);
       }
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, true);
       stage = "worktree-removal";
       if (deleteWorktree) {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, false);
+        const binding = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
         await cleanupOperation(operation => deps.git.removeWorktree(input.project, input.owner, operation), signal);
         if (await cleanupOperation(operation => deps.git.findWorktree(input.project, input.owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+        const after = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
+        if (binding?.worktreePath !== after?.worktreePath || binding?.repositoryPath !== after?.repositoryPath || binding?.commonDirectory !== after?.commonDirectory || binding?.branch !== after?.branch) throw new Error("The original worktree binding changed during cleanup.");
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, true);
+        deps.emit({ kind: "cleaned", ...(input.task === undefined ? {} : { task: input.task }), message: "Confirmed task resources absent; the branch remains." });
+        if (binding !== null) input.onWorktreeSettled?.(binding);
+        return;
       }
       deps.emit({ kind: deleteWorktree ? "cleaned" : "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: deleteWorktree ? "Confirmed task resources absent; the branch remains." : "Confirmed task execution stopped and closed; its worktree remains." });
     } catch (error) { throw new WorkerCleanupError(stage, error); }
