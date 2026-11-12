@@ -1,13 +1,13 @@
 package testutil
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,14 +51,14 @@ func DecodeHistoricalProperties(data []byte) (model.TaskProperties, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
-	if bytes.Equal(bytes.TrimSpace(fields["worker"]), []byte("null")) {
-		delete(fields, "worker")
+	if _, exists := fields["worker"]; !exists {
+		fields["worker"] = json.RawMessage("null")
 	}
 	normalized, err := json.Marshal(fields)
 	if err != nil {
 		return nil, err
 	}
-	return taskproperties.Decode(normalized)
+	return migration026.DecodeLegacyProperties(normalized)
 }
 
 func CurrentTaskFacts(t *testing.T, pool *pgxpool.Pool) map[string]string {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -14,3 +15,8 @@ func SQL() string { return propertyRowsSQL }
 
 // TransformSource returns the source included in migration 026's checksum.
 func TransformSource() string { return propertyRowsTransformSource }
+
+// DecodeLegacyProperties exposes the frozen pre-row contract for historical fixtures.
+func DecodeLegacyProperties(raw []byte) (map[string]json.RawMessage, error) {
+	return decodeLegacyPropertyRows026(raw)
+}
