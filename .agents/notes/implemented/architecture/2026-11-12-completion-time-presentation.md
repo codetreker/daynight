@@ -12,8 +12,8 @@ existing row interaction and accessibility.
 
 ## Decision
 
-Task rows display a non-interactive completion label and attach the exact time
-to the existing row description; Task details expose the exact value. Chain
+Task and Goal rows display a non-interactive completion label and attach the exact time
+to the existing entry description; their details expose the exact value. Chain
 summaries use their complete scoped members and provide a separate time button
 alongside existing actions. Its tooltip remains in the owning DOM subtree and
 uses a manual popover to escape clipping without becoming a modal. The
@@ -36,5 +36,5 @@ clipping.
 
 Task navigation and chain expansion remain distinct from completion-time
 reading. Tooltip positioning, owner-aware Escape handling and cleanup add local
-interaction state. Task and chain consumers share this mechanism; real Goal
-presentation is not yet connected.
+interaction state. Task, chain and Goal consumers share this mechanism. Goal facts remain independent
+of child progress, and Goal chain summaries use only the displayed scope.
