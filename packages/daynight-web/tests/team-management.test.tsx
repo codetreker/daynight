@@ -1,9 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../src/api/client";
+import { ApiError, pauseAuthRequests } from "../src/api/client";
 import type { Team } from "../src/api/teams";
-import { CreateTeamDialog, TeamSettingsPanel } from "../src/features/teams/TeamManagement";
+import { CreateTeamDialog, TeamSettingsPanel, useOperation } from "../src/features/teams/TeamManagement";
 import type { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
+import { TaskCacheLifecycleChanged } from "../src/features/task-cache/project-cache";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 vi.mock("../src/api/teams", () => ({ getTeam: vi.fn(), listTeams: vi.fn(), createTeam: vi.fn(), renameTeam: vi.fn(), deleteTeam: vi.fn() }));
@@ -389,5 +390,131 @@ describe("Team ID copy", () => {
     expect(screen.queryByRole("button", { name: "Copy Team ID" })).toBeNull();
     await act(async () => result.resolve(team()));
     expect(await screen.findByRole("button", { name: "Copy Team ID" })).toBeInTheDocument();
+  });
+});
+
+
+describe("Team operation local settlement", () => {
+  const heldAdmission = () => {
+    const gate = Promise.withResolvers<void>();
+    let held = false;
+    const ready = vi.fn(async (signal: AbortSignal) => {
+      if (held) await new Promise<void>((resolve, reject) => {
+        const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener("abort", abort, { once: true });
+        void gate.promise.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+      });
+      signal.throwIfAborted();
+    });
+    return { gate, ready, hold: () => { held = true; }, release: () => { held = false; gate.resolve(); } };
+  };
+
+  it("settles a confirmed operation before admission and preserves a newer draft on publication", async () => {
+    const admission = heldAdmission(), receipt = Promise.withResolvers<Team>();
+    const checkedScope = { ...scope, ready: admission.ready } as unknown as TaskCacheScope;
+    vi.mocked(createTeam).mockImplementation(async (_id, _name, _signal, _mismatch, dispatch) => { dispatch(); return receipt.promise; });
+    render(<CreateTeamDialog admission={checkedScope} onIdentityMismatch={mismatch} onClose={closed} onCreated={created} />);
+    const name = screen.getByLabelText(/Team name/);
+    fireEvent.change(name, { target: { value: "X" } }); fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
+    await waitFor(() => expect(createTeam).toHaveBeenCalledOnce());
+    admission.hold(); await act(async () => receipt.resolve(team("X")));
+    await waitFor(() => expect(name).toBeEnabled());
+    expect(created).not.toHaveBeenCalled(); expect(listTeams).not.toHaveBeenCalled();
+    fireEvent.change(name, { target: { value: "Y" } });
+    await act(async () => admission.release());
+    await waitFor(() => expect(created).toHaveBeenCalledWith(expect.objectContaining({ name: "X" }), false));
+    expect(name).toHaveValue("Y"); expect(screen.getByRole("dialog")).toBeVisible(); expect(createTeam).toHaveBeenCalledOnce();
+  });
+
+  it("settles unknown and definite rejection without waiting for publication", async () => {
+    for (const [error, kind] of [[new TypeError("lost"), "unknown"], [new ApiError("server", 409, "version_conflict"), "rejected"]] as const) {
+      const admission = heldAdmission(), response = Promise.withResolvers<string>();
+      const checkedScope = { ...scope, ready: admission.ready } as unknown as TaskCacheScope;
+      const { result, unmount } = renderHook(() => useOperation(checkedScope));
+      const operation = vi.fn(async (_signal: AbortSignal, dispatch: () => void) => { dispatch(); return response.promise; });
+      let running!: Promise<void>;
+      act(() => { running = result.current.run(operation, vi.fn()); });
+      await waitFor(() => expect(operation).toHaveBeenCalledOnce());
+      admission.hold(); await act(async () => { response.reject(error); await running; });
+      expect(result.current.pending).toBe(false); expect(result.current.outcome).toBe(kind); expect(result.current.result?.kind).toBe(kind); expect(result.current.result?.error).not.toBe(error);
+      unmount(); admission.release();
+    }
+  });
+
+  it("cancels undispatched preparation on pause and does not replay after recovery", async () => {
+    const admission = heldAdmission(); admission.hold();
+    const checkedScope = { ...scope, ready: admission.ready } as unknown as TaskCacheScope;
+    const { result } = renderHook(() => useOperation(checkedScope));
+    const operation = vi.fn(async () => "value"), success = vi.fn(); let running!: Promise<void>;
+    act(() => { running = result.current.run(operation, success); });
+    let resume: (() => void) | undefined;
+    try {
+      await act(async () => { resume = pauseAuthRequests(); await running; });
+      expect(result.current.pending).toBe(false); expect(result.current.outcome).toBe("cancelled"); expect(operation).not.toHaveBeenCalled();
+      act(() => { resume?.(); resume = undefined; admission.release(); });
+      expect(operation).not.toHaveBeenCalled(); expect(success).not.toHaveBeenCalled();
+    } finally { resume?.(); admission.release(); }
+  });
+
+  it("cancels preparation on disposal without dispatch", async () => {
+    const admission = heldAdmission(); admission.hold();
+    const checkedScope = { ...scope, ready: admission.ready } as unknown as TaskCacheScope;
+    const { result, unmount } = renderHook(() => useOperation(checkedScope));
+    const operation = vi.fn(async () => "value"), success = vi.fn();
+    let running!: Promise<void>;
+    act(() => { running = result.current.run(operation, success); });
+    unmount(); await act(async () => { await running; });
+    expect(operation).not.toHaveBeenCalled(); expect(success).not.toHaveBeenCalled(); admission.release();
+  });
+
+  it("cancels an old publication when a newer operation supersedes it", async () => {
+    const admission = heldAdmission(), first = Promise.withResolvers<string>();
+    const checkedScope = { ...scope, ready: admission.ready } as unknown as TaskCacheScope;
+    const { result } = renderHook(() => useOperation(checkedScope)); const oldSuccess = vi.fn(), newSuccess = vi.fn();
+    let running!: Promise<void>;
+    act(() => { running = result.current.run(async (_signal, dispatch) => { dispatch(); return first.promise; }, oldSuccess); });
+    await waitFor(() => expect(result.current.pending).toBe(true));
+    admission.hold(); await act(async () => { first.resolve("old"); await running; });
+    expect(result.current.outcome).toBe("confirmed");
+    admission.release();
+    await act(async () => { await result.current.run(async (_signal, dispatch) => { dispatch(); return "new"; }, newSuccess); });
+    await waitFor(() => expect(newSuccess).toHaveBeenCalledWith("new"));
+    expect(oldSuccess).not.toHaveBeenCalled();
+  });
+
+  it("publishes the same receipt when a brief pause ends before admission rejects", async () => {
+    let calls = 0;
+    const checkedScope = { ...scope, ready: async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      if (++calls === 2) { const resume = pauseAuthRequests(); resume(); throw new TaskCacheLifecycleChanged(); }
+    } } as TaskCacheScope;
+    const { result } = renderHook(() => useOperation(checkedScope)); const success = vi.fn();
+    await act(async () => { await result.current.run(async (_signal, dispatch) => { dispatch(); return "confirmed"; }, success); });
+    await waitFor(() => expect(success).toHaveBeenCalledWith("confirmed"));
+    expect(result.current.outcome).toBe("confirmed"); expect(result.current.publicationError).toBeNull();
+  });
+
+  it("does not replay a publication callback that has already started and failed", async () => {
+    const { result } = renderHook(() => useOperation(scope));
+    const success = vi.fn(() => { throw new Error("partial publication"); });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await act(async () => { await result.current.run(async (_signal, dispatch) => { dispatch(); return "confirmed"; }, success); });
+      await waitFor(() => expect(result.current.publicationError).toMatchObject({ retryable: false }));
+      expect(result.current.outcome).toBe("confirmed");
+      act(() => result.current.retryPublication()); expect(success).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+
+  it("does not reclassify a confirmed receipt when publication admission fails", async () => {
+    const receipt = Promise.withResolvers<string>(); let calls = 0;
+    const checkedScope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (++calls > 1) throw new Error("publication failed"); } } as TaskCacheScope;
+    const { result } = renderHook(() => useOperation(checkedScope)); const success = vi.fn();
+    let running!: Promise<void>;
+    act(() => { running = result.current.run(async (_signal, dispatch) => { dispatch(); return receipt.promise; }, success); });
+    await waitFor(() => expect(result.current.pending).toBe(true));
+    await act(async () => { receipt.resolve("confirmed"); await running; });
+    expect(result.current.pending).toBe(false); expect(result.current.outcome).toBe("confirmed"); expect(result.current.result).toBeNull(); expect(success).not.toHaveBeenCalled();
   });
 });

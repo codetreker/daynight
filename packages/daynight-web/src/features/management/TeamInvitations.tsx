@@ -3,7 +3,7 @@ import { createTeamInvitation, listTeamInvitations, revokeTeamInvitation, type T
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { useOperation } from '../teams/TeamManagement';
+import { OperationPublicationError, useOperation } from '../teams/TeamManagement';
 import { InvitationList } from './InvitationList';
 import { ManagementDialog } from './ManagementDialog';
 import { ManagementError, SecretDialog } from './feedback';
@@ -44,7 +44,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const guard = useRef(onGuardChange); guard.current = onGuardChange;
   const unknown = op.result?.kind === 'unknown';
   const memberWithoutManagement = actorRole === 'member';
-  useEffect(() => { guard.current(op.pending || unknown || issue !== null || uncertain.size > 0 || secret !== null, op.pending || unknown && !memberWithoutManagement); }, [op.pending, unknown, issue, uncertain.size, secret, memberWithoutManagement]);
+  useEffect(() => { guard.current(op.pending || op.publicationPending || unknown || op.publicationError !== null || issue !== null || uncertain.size > 0 || secret !== null, op.pending || op.publicationError !== null || unknown && !memberWithoutManagement); }, [op.pending, op.publicationPending, unknown, op.publicationError, issue, uncertain.size, secret, memberWithoutManagement]);
   useEffect(() => {
     if (memberWithoutManagement) { loaded.current = false; fresh.current = false; setItems(null); if (unknown) setAction(null); }
   }, [unknown, memberWithoutManagement]);
@@ -83,11 +83,11 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   }, [needsRefresh, canRead, admissionBlocked, permissionReady, load]);
   const check = () => { void load().then((ok) => { if (ok && operation.current.result?.kind === 'unknown') { setIssue(operation.current.result.error); setObserved(true); operation.current.clear(); setAction(null); } }); };
   const open = (next: Action) => {
-    if (!active || !editable || loading || reconciling || op.pending || unknown || secret !== null || error !== null) return;
+    if (!active || !editable || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null) return;
     operation.current.clear(); setCompletedAction(null); setAction(next); setReceipt(null);
   };
   const submit = () => {
-    if (!action || action === completedAction || secret !== null || !active || !editable || authRequestsPaused() || !permissionReady || !fresh.current || loading || reconciling || op.pending || unknown || error !== null) return;
+    if (!action || action === completedAction || secret !== null || !active || !editable || authRequestsPaused() || !permissionReady || !fresh.current || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || unknown || op.publicationError !== null || error !== null) return;
     if (action.kind === 'revoke' && uncertain.has(action.invitation.id)) return;
     guard.current(true, true);
     const submitted = action, routeRevision = route.current.revision;
@@ -113,6 +113,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const isVisible = canRead;
   const currentIssue = unknown ? op.result?.error : issue;
   return <>
+    {action === null && <OperationPublicationError operation={op} zh={zh} />}
     {active && !isVisible && op.pending && <div role="status">{common.submitPending}</div>}
     {active && !isVisible && currentIssue !== null && currentIssue !== undefined && <div className="notice warning" role="alert"><p>{unavailable ? zh ? "邀请变更结果仍未确认；此 Team 不可用或你已无权访问。" : "The invitation change is still unconfirmed; this Team is unavailable or you no longer have access." : memberWithoutManagement ? zh ? "邀请变更结果仍未确认；你已无权读取此 Team 的邀请。" : "The invitation change is still unconfirmed; you no longer have permission to read this Team’s invitations." : observed && !unknown ? m.invitationObserved : m.invitationUnknown}</p>{currentIssue instanceof ApiError && currentIssue.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{currentIssue.requestId}</code></p>}</div>}
     {isVisible && <>
@@ -120,10 +121,11 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
       {error !== null && (error instanceof ApiError && error.kind === 'server' && (error.status === 403 || error.status === 404) ? <div className="notice error" role="alert"><p>{zh ? '无法读取此 Team 的邀请，请检查权限后重试。' : 'Unable to read invitations for this Team. Check your permissions and retry.'}</p>{error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{error.requestId}</code></p>}<button className="button" type="button" onClick={() => { permissionNotified.current = false; void load(); }}>{common.retry}</button></div> : <ManagementError error={error} retry={() => { permissionNotified.current = false; void load(); }} />)}
       {currentIssue !== null && currentIssue !== undefined && <div className="notice warning" role="alert"><p>{observed && !unknown ? m.invitationObserved : m.invitationUnknown}</p>{currentIssue instanceof ApiError && currentIssue.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{currentIssue.requestId}</code></p>}{unknown && <button className="button" type="button" disabled={loading || reconciling || op.pending} onClick={check}>{m.readCurrentInvitations}</button>}</div>}
       {receipt && <div className="notice" role="status">{receipt === 'revoked' ? zh ? '邀请已撤销。' : 'Invitation revoked.' : zh ? '邀请已经撤销。' : 'Invitation was already revoked.'}</div>}
-      <InvitationList invitations={items} disabled={!editable || loading || reconciling || op.pending || unknown || secret !== null || error !== null} canRevoke={(invitation) => !uncertain.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} action={<button className="button primary" type="button" disabled={!editable || loading || reconciling || op.pending || unknown || secret !== null || error !== null} onClick={() => open({ kind: 'create' })}>{m.invite}</button>} />
+      <InvitationList invitations={items} disabled={!editable || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null} canRevoke={(invitation) => !uncertain.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} action={<button className="button primary" type="button" disabled={!editable || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null} onClick={() => open({ kind: 'create' })}>{m.invite}</button>} />
     </>}
     {secret !== null && (action === null || action === secret.action || !isVisible) && <SecretDialog key={secret.link} kind="invitation" secret={secret.link} suspended={!active} onClose={() => { setSecrets(previous => previous.slice(1)); if (action === secret.action) setAction(null); }} />}
-    {action !== null && <ManagementDialog title={action.kind === 'create' ? zh ? '创建 Team 邀请链接' : 'Create Team invitation' : m.revokeTitle} busy={op.pending} suspended={!isVisible || secret !== null && action === secret.action} onClose={() => setAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => setAction(null)}>{common.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={check}>{m.readCurrentInvitations}</button> : <button className={`button ${action.kind === 'create' ? 'primary' : 'danger'}`} type="button" disabled={!editable || loading || reconciling || op.pending || action === completedAction || secret !== null || error !== null} onClick={submit}>{op.pending ? common.submitPending : action.kind === 'create' ? m.createInvite : m.revokeConfirm}</button>}</>}>
+    {action !== null && <ManagementDialog title={action.kind === 'create' ? zh ? '创建 Team 邀请链接' : 'Create Team invitation' : m.revokeTitle} busy={op.pending} suspended={!isVisible || secret !== null && action === secret.action} onClose={() => setAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => setAction(null)}>{common.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={check}>{m.readCurrentInvitations}</button> : <button className={`button ${action.kind === 'create' ? 'primary' : 'danger'}`} type="button" disabled={!editable || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || op.publicationError !== null || action === completedAction || secret !== null || error !== null} onClick={submit}>{op.pending ? common.submitPending : action.kind === 'create' ? m.createInvite : m.revokeConfirm}</button>}</>}>
+      <OperationPublicationError operation={op} zh={zh} />
       <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}><strong>{teamName}</strong></p>
       {action.kind === 'create' ? <><p>{zh ? '创建单次使用的链接，供受邀者登录并确认后加入 Team。' : 'Create a single-use link for someone to join this Team after signing in and confirming.'}</p><div className="notice">{m.inviteTerms}</div></> : <><p>{m.revokeBody}</p><code>{action.invitation.id}</code></>}
       {op.result !== null && <>{unknown ? <div className="notice warning" role="alert">{m.invitationUnknown}</div> : <ManagementError error={op.result.error} />}</>}
