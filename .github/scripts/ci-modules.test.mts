@@ -105,7 +105,6 @@ for (const [path, expected] of [
   ["patches/future-cli-dependency.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
   ["packages/future-module/src/main.ts", all],
   [".github/workflows/checks.yml", all],
-  [".github/workflows/shell-browser.yml", all],
   [".github/workflows/future.yml", all],
   [".github/scripts/ci-modules.mts", all],
   [".github/scripts/ci-modules.test.mts", all],

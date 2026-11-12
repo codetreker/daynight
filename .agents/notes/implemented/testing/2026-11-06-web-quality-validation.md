@@ -4,8 +4,7 @@ Status: implemented
 
 ## Problem
 
-The Web coverage process originally had insufficient time to finish on hosted
-runners. In
+The Web coverage process has insufficient time to finish on hosted runners. In
 [a main CI run](https://github.com/codetreker/daynight/actions/runs/42233822633/job/127946303415),
 all 5,466 tests passed with a reported duration of 298.31 seconds, but the process
 exceeded its five-minute limit before closing. Passing tests also produce
@@ -16,20 +15,14 @@ browser suite from running when an earlier quality stage fails.
 
 ## Decision
 
-Web selection starts `verify-web-quality` after module detection. It runs full
-Web typechecking, the tooling harness, the production Docker Web build, Vitest
-coverage and the statement checker with a 30-minute job limit.
-
-The original split also selected `verify-web-browser` for each affected PR,
-giving the assistant suite an independent runner so an earlier quality failure
-could not suppress its result. The
-[shell/browser workflow decision](2026-11-12-shell-browser-workflow.md)
-replaces that trigger and gate arrangement. `verify-web-browser` now runs on
-`main` pushes or manual dispatch with its locked Chromium, complete assistant
-suite, browser evidence and 20-minute limit. Both jobs still prepare their own
-checkout, Node and locked workspace dependencies. The browser configuration
-starts its own controlled Vite host; it needs no quality artifact or earlier
-quality result.
+Web selection starts two independent jobs after module detection.
+`verify-web-quality` runs full Web typechecking, the tooling harness, the
+production Docker Web build, Vitest coverage and the statement checker. `verify-web-browser` runs the existing assistant Playwright suite with
+its locked Chromium installation and browser evidence. Both jobs prepare their
+own checkout, Node and locked workspace dependencies. Quality has a 30-minute
+limit and browser validation has a 20-minute limit.
+The browser configuration starts its own controlled Vite host; it needs no
+quality artifact or earlier quality result.
 
 The quality runner gives the four-worker Vitest coverage process 15 minutes,
 including startup, reporting and exit. Tooling tests retain their three-minute
@@ -42,12 +35,10 @@ Vitest uses `silent: "passed-only"` to suppress console output from passing
 tests and retain output from failing tests. Tests still execute all console
 calls and can inspect their arguments. Production diagnostics remain available.
 
-The final `checks` job waits for Web quality. Its general status guard rejects
-failed or cancelled jobs, and its selected-Web guard requires actual quality
-success. Documentation-only selection can skip quality. The assistant browser
-job reports success or failure in its independent workflow and is not a PR
-`checks` dependency. Each job uploads its own evidence after its validation step,
-including failed runs.
+The final `checks` job waits for both Web jobs. Its general status guard rejects
+failed or cancelled jobs, and its selected-Web guard requires actual success
+from both jobs. Documentation-only selection can still skip both. Each job
+uploads its own evidence after its validation step, including failed runs.
 The [Web validation guide](../../../../packages/daynight-web/README.md#validation-and-build)
 owns commands and evidence paths.
 
@@ -78,9 +69,7 @@ Passing tests no longer flood ordinary output, including when they exercise
 error handling. Failed tests retain their console diagnostics without changing
 assertions or test exit status.
 
-Quality and browser results remain independent. Originally either failure
-blocked selected PR Web validation; the independent workflow now provides the
-browser result for its integrated or manually selected revision. Separate
-runners duplicate checkout and dependency installation; they share no mutable
-workspace or cross-job artifact dependency. The browser suite, worker count,
-retries and test deadlines remain unchanged.
+Quality and browser results are independent, and either failure blocks selected
+Web validation. Separate runners duplicate checkout and dependency installation;
+they share no mutable workspace or cross-job artifact dependency. This split
+does not change the browser suite, worker count, retries or test deadlines.
