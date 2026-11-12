@@ -9,7 +9,7 @@
 
 执行耗时是最后一次实际进入 `in_progress` 到当前时间或进入 `done` 的墙钟时间。
 进行中的任务持续显示耗时；完成时固定结果。早先尝试不累加，普通字段编辑不重置计时。
-计时不表示 CPU 时间、人工有效工作时间或持续收到进度信号的时间。
+计时不表示 CPU 时间、人工有效工作时间或持续收到进度信号的时间。完成时间表达何时完成，不要求已知起点；其展示由[完成时间需求](daynight-completion-time.md)拥有。
 
 状态由`task set-status`在proposed、todo、in_progress、done、cancelled间设置，普通元数据更新没有 status。
 同状态先核验精确版本并保持计时；实际进入 in_progress 开始新尝试，实际退回 proposed/todo 清空两端；

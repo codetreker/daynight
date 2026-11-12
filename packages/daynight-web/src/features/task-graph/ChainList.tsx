@@ -1,3 +1,8 @@
+import { latestScopedCompletion, completedAtFor } from "../task-completion/model";
+import { useCompletionTime } from "../task-completion/useCompletionTime";
+import { CompletionTimeLabel } from "../task-completion/CompletionTimeLabel";
+import { useCompletionHint } from "../task-completion/useCompletionHint";
+import { ChainCompletionTime } from "../task-completion/ChainCompletionTime";
 import { SessionStatus } from "../task-session-summary/SessionStatus";
 import { useChainSessionSummary, useSessionChainVisibility } from "../task-session-summary/TaskSessionSummaryProvider";
 import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds } from "../task-pause/TaskPause";
@@ -47,12 +52,20 @@ type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'workerMachine
   readonly onRevealed?: (id: string) => void;
 };
 
+const RepresentativeDetail = ({ task, rootId, title, onOpenTask }: { readonly task: import('../../api/types').GraphTask; readonly rootId: string; readonly title: string; readonly onOpenTask: (id: string, trigger: HTMLElement) => void }) => {
+  const { messages: { graph: m } } = useI18n();
+  const completion = useCompletionTime(completedAtFor(task));
+  const hint = useCompletionHint(completion);
+  return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}>{m.goalDetails}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
+};
+
 const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
   const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
+  const completion = useCompletionTime(latestScopedCompletion(index, [...component.memberIds]));
   const sessionIndicator = useChainSessionSummary(component.memberIds);
   const observeVisibility = useSessionChainVisibility(rootId, component.memberIds);
   const pausedTaskIds = usePausedTaskIds();
@@ -85,6 +98,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
       </button>
+      <ChainCompletionTime value={completion} title={title} />
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`}
         {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined}
@@ -95,7 +109,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
-        <button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
+        <RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} />
       </div>
       <ul className="goal-task-list">{members.map((member) => <ChainMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>

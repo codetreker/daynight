@@ -34,7 +34,7 @@ const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClock
     onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;
-const duration = (id: string) => row(id).querySelector('time');
+const duration = (id: string) => row(id).querySelector('.task-duration');
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 let monotonic = 0;
 
@@ -57,9 +57,9 @@ describe('Goal child execution duration', () => {
     const names = locale === 'en' ? ['manual Assignee: Unassigned Automatic execution off No machine record In progress', 'automatic Assignee: Unassigned Automatic execution on No machine record In progress'] : ['manual 负责人：未分配 自动执行已关闭 暂无执行机器记录 进行中', 'automatic 负责人：未分配 自动执行已开启 暂无执行机器记录 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
-      expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');
-      expect(element.querySelector('time svg')).toHaveAttribute('aria-hidden', 'true');
-      expect(element.querySelector('time')!.closest('[aria-hidden="true"]')).not.toBeNull();
+      expect(element.querySelector('.task-duration')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');
+      expect(element.querySelector('.task-duration svg')).toHaveAttribute('aria-hidden', 'true');
+      expect(element.querySelector('.task-duration')!.closest('[aria-hidden="true"]')).not.toBeNull();
     }
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(duration('completed')).toHaveAttribute('datetime', 'PT2700.000S');
@@ -69,11 +69,11 @@ describe('Goal child execution duration', () => {
     monotonic = 2_000;
     act(() => { vi.advanceTimersByTime(1_000); });
     for (const [index, element] of running.entries()) {
-      expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '1min' : '1 分钟');
-      expect(element.querySelector('time')).toHaveAttribute('datetime', 'PT61.000S');
-      expect(element.querySelector('time')).toHaveAttribute('title', locale === 'en' ? '1min' : '1 分钟');
+      expect(element.querySelector('.task-duration')).toHaveTextContent(locale === 'en' ? '1min' : '1 分钟');
+      expect(element.querySelector('.task-duration')).toHaveAttribute('datetime', 'PT61.000S');
+      expect(element.querySelector('.task-duration')).toHaveAttribute('title', locale === 'en' ? '1min' : '1 分钟');
       expect(element).toHaveAccessibleName(names[index]!);
-      expect(element).not.toHaveAttribute('aria-describedby');
+      expect(element).toHaveAttribute('aria-describedby');
       expect(element.querySelector('.task-stuck-label')).toBeNull();
     }
     expect(row('manual')).toBe(running[0]);
@@ -83,7 +83,7 @@ describe('Goal child execution duration', () => {
     expect(duration('completed')).toBe(finalTime);
     expect(finalTime).toHaveAttribute('datetime', 'PT2700.000S');
     expect(view.container.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
-    expect(document.getElementById('task-root-Goal')!.querySelector('time')).toBeNull();
+    expect(document.getElementById('task-root-Goal')!.querySelector('.task-duration')).toBeNull();
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -97,7 +97,7 @@ describe('Goal child execution duration', () => {
     ]);
     const view = renderWithLocale(content(value), { locale: 'zh-CN', taskCache: true });
     expand();
-    expect(view.container.querySelector('time')).toBeNull();
+    expect(view.container.querySelector('.task-duration')).toBeNull();
     expect(view.container.querySelectorAll('.goal-task-row')).toHaveLength(4);
   });
 

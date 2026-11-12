@@ -1,9 +1,11 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ChainList } from '../src/features/task-graph/ChainList';
+import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskExecutionClock';
+import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { ScopedTaskChainRow } from '../src/features/task-graph/ScopedTaskChainRow';
 import { scopedChainProgress } from '../src/features/task-graph/scoped-chain-progress';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
@@ -16,7 +18,7 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({
   TaskGraph: () => <div>Dependency graph canvas</div>,
 }));
 
-const render = createLocaleRender('zh-CN', { taskCache: true });
+const renderLocale = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ type: 'task', parentId: null, assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
@@ -42,6 +44,17 @@ const indexOf = (items = seeds): GraphIndex => {
     },
   };
   return buildGraphIndex(graph);
+};
+const clockGraph: TaskGraph = {
+  observedAt: '2026-10-25T12:00:00Z',
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
+  tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
+};
+const clockSnapshot: GraphSnapshot = { graph: clockGraph, index: buildGraphIndex(clockGraph), summaries: new Map(), workerMachines: new Map(), pausedTaskIds: new Set(), observedAt: clockGraph.observedAt, receivedAt: 0, receivedMonotonic: performance.now(), revision: 1 };
+const clock = (ui: ReactElement) => <TaskExecutionClockProvider projectId="project" snapshot={clockSnapshot}>{ui}</TaskExecutionClockProvider>;
+const render = (ui: ReactElement) => {
+  const view = renderLocale(clock(ui));
+  return { ...view, rerender: (next: ReactElement) => view.rerender(clock(next)) };
 };
 const noop = () => {};
 const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
@@ -70,6 +83,41 @@ describe('Goal task lists', () => {
     expect(rows[0]).toHaveTextContent('Inside');
     fireEvent.click(rows[0]!);
     expect(onOpenTask).toHaveBeenCalledWith('Inside', rows[0]);
+  });
+
+  it('uses the entire scoped member set, excluding the outside representative and external prerequisite', () => {
+    const outside = { ...task('Outside', 'done'), completedAt: '2026-10-24T12:00:00Z' };
+    const older = { ...task('Older', 'done', ['Outside']), completedAt: '2026-10-21T12:00:00Z' };
+    const newer = { ...task('Newer', 'done', ['Older', 'External'], ['External']), completedAt: '2026-10-22T12:00:00Z' };
+    const external = { ...task('External', 'done'), completedAt: '2026-10-25T10:00:00Z' };
+    const scoped = new Map([['Outside', ['Older', 'Newer']]]);
+    const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])}
+      representativeIds={['Outside']} allRepresentativeIds={['Outside']} scopedMembers={scoped} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
+    const view = render(tree(newer));
+    const aggregate = () => screen.queryByRole('button', { name: '查看 Outside 的完成时间' });
+    expect(aggregate()?.querySelector('time')).toHaveAttribute('datetime', newer.completedAt);
+    fireEvent.click(document.getElementById('task-root-Outside')!);
+    const known = () => document.getElementById('chain-task-Outside-Older')!;
+    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    view.rerender(tree({ ...newer, completedAt: null }));
+    expect(aggregate()).toBeNull();
+    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    view.rerender(tree({ ...newer, status: 'in_progress' }));
+    expect(aggregate()).toBeNull();
+    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    expect(document.getElementById('chain-task-Outside-Newer')!.querySelector('time.completion-time-label')).toBeNull();
+    expect(document.getElementById('task-root-Outside')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('shows a complete chain aggregate separately from its representative task time', () => {
+    const goal = { ...task('Goal', 'done'), completedAt: '2026-10-20T12:00:00Z' };
+    const child = { ...task('Child', 'done', ['Goal', 'External'], ['External']), completedAt: '2026-10-22T12:00:00Z' };
+    render(list(indexOf([goal, child, { ...task('External', 'done'), completedAt: '2026-10-25T10:00:00Z' }])));
+    expect(screen.getByRole('button', { name: '查看 Goal 的完成时间' }).querySelector('time')).toHaveAttribute('datetime', child.completedAt);
+    fireEvent.click(disclosure());
+    const representative = document.getElementById('chain-task-Goal-Goal')!;
+    expect(representative.querySelector('time.completion-time-label')).toHaveAttribute('datetime', goal.completedAt);
+    expect(representative.getAttribute('aria-describedby')).toBeTruthy();
   });
 
   it('reveals and focuses a scoped witness without resetting another expanded chain', () => {
@@ -304,6 +352,12 @@ describe('shared scoped chain presentation', () => {
     const firstTask = document.getElementById('chain-task-goal-a-chain-Older')!;
     const secondTask = document.getElementById('chain-task-goal-b-chain-Older')!;
     expect(firstTask).not.toBe(secondTask);
+    const firstDescription = firstTask.getAttribute('aria-describedby');
+    const secondDescription = secondTask.getAttribute('aria-describedby');
+    expect(firstDescription).toBeTruthy();
+    expect(secondDescription).toBeTruthy();
+    expect(firstDescription).not.toBe(secondDescription);
+    expect(document.getElementById(firstDescription!)?.textContent).toBe(document.getElementById(secondDescription!)?.textContent);
     fireEvent.click(secondTask);
     expect(onOpenTask).toHaveBeenLastCalledWith('Older', secondTask);
     const graph = document.getElementById('task-chain-graph-goal-b-chain')!;
