@@ -321,7 +321,10 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	}
 	t.Run("release", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerReleased)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		returned.Status = model.TaskTodo
+		returned.StartedAt, returned.CompletedAt = nil, nil
+		returned.Properties = workerHTTPProperties(t, returned.Properties, nil)
 		h.Tasks.ReleaseWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ReleaseWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || !input.StoppedConfirmed {
@@ -330,7 +333,7 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 			return returned, nil
 		}
 		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPost, workerHTTPPath()+"/release", jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
-		if got.Status != "todo" || apiWorker(t, got.Properties).State != "released" || apiWorker(t, got.Properties).WorktreeID != worker.WorktreeID || got.StartedAt != nil || got.CompletedAt != nil {
+		if got.Status != "todo" || apiWorker(t, got.Properties) != nil || got.StartedAt != nil || got.CompletedAt != nil {
 			t.Fatal("released service facts changed")
 		}
 	})

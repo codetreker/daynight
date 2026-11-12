@@ -850,9 +850,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           if (!options.currentUserId || await options.currentUserId(operation.signal) !== record.owner.ownerUserId) throw new Error("Never-started retirement requires the original authenticated owner.");
           try {
             const task = await options.readTask(owner.projectId, owner.taskId, operation.signal), claim = readWorkerClaim(task.properties);
-            if (task.projectId !== owner.projectId || task.id !== owner.taskId || !claim) throw new Error("The original task observation cannot prove claim termination.");
-            // An authorized successor claim also proves that the original claim lost ownership.
-            if (claim.claimId === record.claimId && (claim.state === "active" || claim.workerId !== record.owner.workerId || claim.worktreeId !== record.owner.worktreeId
+            if (task.projectId !== owner.projectId || task.id !== owner.taskId) throw new Error("The original task observation cannot prove claim termination.");
+            // An absent or successor claim proves that the original claim lost ownership.
+            if (claim && claim.claimId === record.claimId && (claim.state === "active" || claim.workerId !== record.owner.workerId || claim.worktreeId !== record.owner.worktreeId
               || claim.userId !== record.owner.ownerUserId || claim.agent !== record.owner.provider || claim.agentControlMode !== "herdr"
               || claim.nativeSessionId !== null || claim.herdr !== null)) throw new Error("The original never-started claim is not authoritatively terminal with matching ownership.");
           } catch (error) {

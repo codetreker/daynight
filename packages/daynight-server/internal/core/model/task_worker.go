@@ -6,12 +6,11 @@ type WorkerState string
 
 const (
 	WorkerActive    WorkerState = "active"
-	WorkerReleased  WorkerState = "released"
 	WorkerCompleted WorkerState = "completed"
 )
 
 func (state WorkerState) Valid() bool {
-	return state == WorkerActive || state == WorkerReleased || state == WorkerCompleted
+	return state == WorkerActive || state == WorkerCompleted
 }
 
 type WorkerAgent string

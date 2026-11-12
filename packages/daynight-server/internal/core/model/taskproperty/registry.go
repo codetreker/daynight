@@ -224,7 +224,7 @@ func pullRequestsSchema() json.RawMessage {
 }
 func workerSchema() json.RawMessage {
 	properties := map[string]any{
-		"claimId": uuidSchema(), "state": enumSchema("active", "released", "completed"), "userId": uuidSchema(), "workerId": uuidSchema(),
+		"claimId": uuidSchema(), "state": enumSchema("active", "completed"), "userId": uuidSchema(), "workerId": uuidSchema(),
 		"machine":  objectSchema(map[string]any{"id": uuidSchema(), "name": workerTextSchema()}, "id", "name"),
 		"platform": enumSchema("windows", "linux", "macos"), "agent": enumSchema("codex", "copilot", "claude"),
 		"agentControlMode": enumSchema("herdr", "web"), "worktreeId": uuidSchema(),

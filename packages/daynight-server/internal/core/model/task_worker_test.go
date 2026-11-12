@@ -8,7 +8,7 @@ func TestWorkerStateAcceptsOnlyOwnershipStates(t *testing.T) {
 		valid bool
 	}{
 		{wire: "active", valid: true},
-		{wire: "released", valid: true},
+		{wire: "released"},
 		{wire: "completed", valid: true},
 		{wire: "todo"},
 		{wire: "in_progress"},

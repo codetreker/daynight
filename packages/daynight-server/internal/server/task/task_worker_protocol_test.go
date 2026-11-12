@@ -232,7 +232,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 
 func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.T) {
 	unsupported := func(t *testing.T, index int) model.Task {
-		task, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerReleased)
+		task, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		task.ID = fmt.Sprintf("b2222222-b222-4222-8222-b2222222222%d", index)
 		return task
 	}

@@ -130,11 +130,11 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 			}
 		})
 	}
-	t.Run("released-worker", func(t *testing.T) {
+	t.Run("unowned-worker", func(t *testing.T) {
 		f := newTaskFailureFixture(t, t.Context(), store.TransactionCommitted)
 		target := f.target
 		target.Status = model.TaskInProgress
-		target.Properties = taskDeletionWorker(t, model.WorkerReleased)
+		target.Properties = model.TaskProperties{}
 		f.expectTask(t, target)
 		f.tasks.DependentIDsFn = func(context.Context, string) ([]string, error) { return []string{}, nil }
 		expectTaskDeletion(t, f, target, false)

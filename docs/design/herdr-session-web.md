@@ -4,7 +4,7 @@
 
 `TaskSessionHost` 按任务生命周期承接共同入口，不保存执行记录选择，也不渲染记录选择器和列表刷新行。活动 claim 继续使用 `TaskAgentSession` 或 `TerminalSessionView`，由各自 current 读取和连接逻辑核验原 claim；历史目录出现同一 Session 不再产生第二个主入口。完成或已释放的 claim 通过对应协议的 current GET 解析真实 Session，再交给固定归档阅读器；该读取只确定身份，不创建 native conversation、提交 assignment 或恢复输入。任务完成信号立即撤下写界面，归档是否可读仍取决于真实状态和内容校验。
 
-服务端 `task_sessions` 对 project/task/claim 保持唯一约束，Web 与 Herdr 使用同一 Session 命名空间。两种 current 均按 Worker claim 查询，completed 和 released Worker 仍保留身份；没有 Worker 时 current 为 not_applicable。无 claim 的主入口使用历史 API 中按创建时间和 Session ID 降序排列的首个实际条目，作为只读历史。当前 claim 尚未注册时不向旧历史回退。无 claim 的目录发现随可用任务详情读取，不依赖先打开尚未确定是否存在的 Session 页签；空页仍有 cursor 时继续读取，直到找到实际记录或确认完整为空。首次读取、失败与拒绝均保留可恢复状态；仅完整确认无 Session 时隐藏页签。
+服务端 `task_sessions` 对 project/task/claim 保持唯一约束，Web 与 Herdr 使用同一 Session 命名空间。两种 current 均按 Worker claim 查询，completed Worker 仍保留身份；release 清除当前 Worker；没有 Worker 时 current 为 not_applicable。无 claim 的主入口使用历史 API 中按创建时间和 Session ID 降序排列的首个实际条目，作为只读历史。当前 claim 尚未注册时不向旧历史回退。无 claim 的目录发现随可用任务详情读取，不依赖先打开尚未确定是否存在的 Session 页签；空页仍有 cursor 时继续读取，直到找到实际记录或确认完整为空。首次读取、失败与拒绝均保留可恢复状态；仅完整确认无 Session 时隐藏页签。
 
 `FixedSessionRecording` 接收由原 sessionId、claimId、executionGeneration 和模式构成的 `SessionRecordingReference`。历史条目已有的归档元信息继续作为校验约束，current 发现无需补造创建时间或历史条目。固定归档读取不创建实时连接或持有输入接口，pending 状态通过有界间隔的只读请求继续观察。Web 的 current 仍为 active/draining 时，暂时 unavailable 表示尚在准备，继续观察原 current 与归档；current 确认 archived 后，unavailable 保持真实终态和人工刷新入口。普通后台检查保留已有阅读器和已验证内容；相同身份和归档内容不因新的响应对象而重新挂载。实际身份、归档状态或权限变化分别处理，权限拒绝撤下内容。Web 归档沿用按账号和 Session 绑定的 Display 偏好，Herdr 使用原终端回放能力。主入口不恢复旧 `daynight:recording:<userId>:<projectId>:<taskId>` 选择键，只移除对应键，草稿与其他会话存储保持各自所有权。具体取舍见[自动 Session 入口决策](../../.agents/notes/implemented/simplification/2026-11-06-automatic-task-session-entry.md)。
 
@@ -14,7 +14,7 @@
 
 ## Task Current 的实际读取时机
 
-Task 详情仅在所选 Session tab 且文档可见时发起完整 current，涵盖活动 claim 与 completed/released claim 的原会话发现。未选中的 native reader 保持挂载但不抢先读取；其健康 channel 在隐藏期间保留，重新可见恢复既有 current 观察。读取可见性不替代当前执行、访问权限或身份准入；原生 60 秒身份 suspension 与应用的隐藏/离焦暂停仍保持。
+Task 详情仅在所选 Session tab 且文档可见时发起完整 current，涵盖活动 claim 与 completed claim 的原会话发现。未选中的 native reader 保持挂载但不抢先读取；其健康 channel 在隐藏期间保留，重新可见恢复既有 current 观察。读取可见性不替代当前执行、访问权限或身份准入；原生 60 秒身份 suspension 与应用的隐藏/离焦暂停仍保持。
 
 completed automatic 的原 claim 发现，在 `scope.ready` 后、发 HTTP 前和每次等待结束后检查实际可见性及请求归属。隐藏取消读取，未 settle 的请求保留名额；重开或 claim 更换等其 settle 后恢复原有发现，迟到结果不能发布到新 owner。归档内容仍由固定原 Session 阅读器校验，准备期间仅在可见 tab 内延续原 current 观察。无 claim 时用于确定入口存在性的历史目录读取保持其独立规则。
 

@@ -361,10 +361,24 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if actual.Body != message.Body || !actual.Author.Agent || actual.Author.UserID != f.userID || actual.Author.Execution == nil || actual.Author.Execution.ClaimID != claimID || actual.Author.Execution.WorkerID != workerID {
 			t.Fatalf("Agent attribution readback differs: %+v", actual)
 		}
-		done := setStatus(t, f, active, "done", &claimID)
+		released := requestJSON[api.Task](t, f, http.MethodPost, taskPath(active)+"/worker-claim/release", map[string]any{"version": active.Version, "claimId": claimID, "stoppedConfirmed": true}, http.StatusOK)
+		if released.Version != active.Version+1 || released.Status != "todo" || released.StartedAt != nil || released.CompletedAt != nil || released.Properties["worker"] != nil || released.Properties["sessionStartup"] != nil || !released.AllowAgents || released.AssignedTo == nil || *released.AssignedTo != f.userID {
+			t.Fatalf("release did not clear execution while preserving ordinary fields: %+v", released)
+		}
+		newClaimID, newWorkerID, newWorktreeID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		reclaimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(released)+"/worker-claim", map[string]any{"version": released.Version, "claimId": newClaimID, "workerId": newWorkerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Replacement machine"}, "platform": "linux", "agent": "codex", "worktreeId": newWorktreeID}, http.StatusOK)
+		if next := workerClaim(t, reclaimed); next.ClaimID != newClaimID || next.WorkerID != newWorkerID || next.WorktreeID != newWorktreeID || next.ClaimID == claimID {
+			t.Fatalf("reclaim inherited previous execution: %+v", next)
+		}
+		page = requestJSON[api.ThreadPage](t, f, http.MethodGet, path+"?details=true", nil, http.StatusOK)
+		actual = expectID(t, page.Items, message.ID, func(message api.ThreadMessage) string { return message.ID })
+		if actual.Author.Execution == nil || actual.Author.Execution.ClaimID != claimID || actual.Author.Execution.WorkerID != workerID {
+			t.Fatalf("reclaim changed historical attribution: %+v", actual.Author)
+		}
+		done := setStatus(t, f, reclaimed, "done", &newClaimID)
 		read = requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK)
 		assertTaskContent(t, read, done)
-		if actual := workerClaim(t, read); actual.State != "completed" || actual.ClaimID != claimID {
+		if actual := workerClaim(t, read); actual.State != "completed" || actual.ClaimID != newClaimID {
 			t.Fatalf("completed Worker claim readback differs: %+v", actual)
 		}
 	})
