@@ -41,7 +41,9 @@ unqualified selection.
 
 The [inspection design](../../../../docs/design/daynight-task-inspection.md#独立完整任务详情)
 owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
-owns indexed and native-history boundaries. This extends the shared entry model
+owns indexed and native-history boundaries. The [Goal description tab decision](2026-11-12-goal-description-tab.md) extends
+the eligible tab selections without changing the root and nested history boundary.
+This extends the shared entry model
 in the [account reading-history decision](2026-11-11-account-reading-history.md)
 and partially supersedes the dialog-local history boundary in the archived
 [standalone detail decision](../../archived/architecture/2026-10-24-standalone-task-detail.md).

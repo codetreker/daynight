@@ -14,6 +14,19 @@ const fixture = (): AttachmentApi => ({ list: vi.fn(async () => ({ items: [item]
 const panels = (api: AttachmentApi, task = 'first') => <TaskDetailPanels key={task} overview={<a href="#overview">Overview link</a>} attachments={<TaskAttachments projectId="project" taskId={task} api={api} urls={{ page: (path) => `/reader/${path}`, previewRoot: "/fixtures/", preview: (path) => `/fixtures/${path}`, download: (path) => `/fixtures/${path}` }} />} />;
 
 describe('task detail panels', () => {
+  it('normalizes a Goal-only description request to the ordinary Task overview', async () => {
+    const onChange = vi.fn();
+    render(<TaskDetailPanels active="description" onChange={onChange} overview="Overview content" attachments="Attachments content" />);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['概览', '附件', '步骤']);
+    const overview = screen.getByRole('tab', { name: '概览' });
+    expect(overview).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel', { name: '概览' })).toHaveTextContent('Overview content');
+    overview.focus();
+    await userEvent.setup().keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: '附件' })).toHaveFocus();
+  });
+
   it('associates panels, supports automatic arrow/Home/End activation and native Enter/Space, and excludes hidden controls', async () => {
     const view = render(panels(fixture()));
     const overview = screen.getByRole('tab', { name: '概览' });

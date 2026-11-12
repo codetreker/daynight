@@ -182,7 +182,7 @@ function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>, probe = false) {
   let setChecking!: (value: boolean) => void;
   function Harness() {
     const [checking, set] = useState(false); setChecking = set;
-    const [navigation, setNavigation] = useState<{ tab: 'overview' | 'attachments' | 'steps' | 'discussion' | 'session'; path: string | null }>({ tab: 'overview', path: null });
+    const [navigation, setNavigation] = useState<import('../src/app/router').TaskDetailNavigation>({ tab: 'overview', path: null });
     return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: null }} admissionBlocked={checking}>
       <TaskDetailSessionProvider><Capture />{probe ? <><DirectProbe /><CatalogueProbe /></> : <TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} />}</TaskDetailSessionProvider>
     </CurrentAccountProvider>;
