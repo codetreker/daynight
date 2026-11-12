@@ -176,7 +176,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
 
   await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${referenceId}?tab=attachments`);
   await expect(page.getByRole("heading", { name: referenceTitle, exact: true })).toBeVisible();
-  await expect(page.getByText("Original E2E worker", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".task-claim")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Force withdraw", exact: true })).toHaveCount(0);
   await expect(page.locator(".managed-session-list li button")).toHaveCount(1);
 
@@ -196,6 +196,6 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     expect(inspection).toMatchObject({ sessionId: session.sessionId, currentBinding, fence: { claimId: session.claimId } });
   }
   await page.reload();
-  await expect(page.getByText("New E2E worker", { exact: true })).toBeVisible();
-  await expect(page.getByText("Original E2E worker", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".task-claim")).toContainText("New E2E worker");
+  await expect(page.locator(".task-claim")).not.toContainText("Original E2E worker");
 });
