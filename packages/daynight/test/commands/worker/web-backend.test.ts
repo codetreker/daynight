@@ -1050,6 +1050,66 @@ it("does not settle Web cleanup when the effect diagnostic cancels the worker", 
   expect(f.store.getTask(task)?.status).toBe("active");
 });
 
+it("keeps the caller signal for archive and prevents deletion after archive cancellation", async () => {
+  const f = await fixture(), controller = new AbortController();
+  const binding = await f.git.prepareWorktree(f.identity, f.identity, {} as never);
+  const source = await cleanupSource(f, f.store.bindWorktree(f.identity, binding, 2));
+  const archive = vi.fn(async (_task: LocalTask, _journal: string, signal: AbortSignal) => {
+    expect(signal).toBe(controller.signal); controller.abort(new Error("shutdown"));
+  });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: false, signal: controller.signal, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "archive" });
+  expect(archive).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(source.task)?.status).toBe("active");
+});
+
+it("finishes an admitted controller stop after caller cancellation without archiving or deleting", async () => {
+  const f = await fixture(), controller = new AbortController(), cancellation = new Error("shutdown");
+  const binding = await f.git.prepareWorktree(f.identity, f.identity, {} as never);
+  const source = await cleanupSource(f, f.store.bindWorktree(f.identity, binding, 2));
+  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
+  source.stopped.mockResolvedValueOnce(false).mockResolvedValue(true);
+  source.request.mockImplementation(async (_ticket, _action) => ({ requestId: randomUUID(), ok: true, snapshot: source.snapshot }));
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let stopCompleted = false;
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => { entered.resolve(); await release.promise; stopCompleted = true; });
+  const archive = vi.fn(async () => {});
+  const jobLeases = { enabled: false, retain: vi.fn(), get: vi.fn(), release: vi.fn(async () => {}), close: vi.fn() };
+  const backendOptions = { homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request, jobLeases };
+  const backend = createWebExecutionBackend(backendOptions);
+  let settled = false;
+  const result = backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: true, signal: controller.signal, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } }).finally(() => { settled = true; });
+  try {
+    await entered.promise; controller.abort(cancellation);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(settled).toBe(false); expect(stopCompleted).toBe(false);
+  } finally { release.resolve(); }
+  const error = await result.catch(value => value);
+  const contains = (value: unknown): boolean => value === cancellation || value instanceof Error && (contains(value.cause) || value instanceof AggregateError && value.errors.some(contains));
+  expect(contains(error)).toBe(true);
+  expect(stop).toHaveBeenCalledOnce(); expect(stopCompleted).toBe(true);
+  expect(source.stopped).toHaveBeenCalledTimes(2);
+  // Controller stop persistence and lease release precede file cleanup when available.
+  if ("readCurrentControllerSnapshot" in lifecycle) {
+    expect(lifecycle.recordStoppedControllerGeneration).toHaveBeenCalledOnce();
+    expect(jobLeases.release).toHaveBeenCalledOnce();
+  }
+  expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(source.task)?.status).toBe("active");
+});
+
+it("does not start archive when its phase notification cancels the caller", async () => {
+  const f = await fixture(), controller = new AbortController();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
+  source.request.mockImplementation(async () => ({ requestId: randomUUID(), ok: true, snapshot: source.snapshot }));
+  const archive = vi.fn(async () => {});
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
+  backend.setMonitoringObserver({ observePhase: (_owner, phase) => { if (phase.kind === "cleanup" && phase.phase === "archive") controller.abort(new Error("shutdown")); } });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: true, signal: controller.signal, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "archive" });
+  expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(source.task)?.status).toBe("active");
+});
+
 it.each(["journal", "live"] as const)("preserves a native identity first learned from the %s during paused shutdown for explicit retry", async observedFrom => {
   const f = await fixture("codex", 0);
   const binding = await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never);

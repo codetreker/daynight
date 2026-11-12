@@ -264,7 +264,11 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  return { task, request: vi.fn<typeof requestController>().mockRejectedValue(new Error("Original controller is stopped.")) };
+  const request = vi.fn<typeof requestController>(async (_ticket, action) => {
+    if (action.kind !== "observe") throw new Error("Unexpected controller action in stopped execution fixture.");
+    return { requestId: uuid(704), ok: true, snapshot };
+  });
+  return { task, request };
 };
 
 const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) => {
@@ -1545,7 +1549,10 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
   webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 8);
   let archiveReady = false;
   const archive = vi.fn(async (task: WebTask) => { expect(task.webExecution?.sessionId).toBe(uuid(703)); if (!archiveReady) throw new Error("controlled archive receipt unavailable"); });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive });
+  // This integration owns cleanup and scheduling, with the original controller stop controlled at its backend boundary.
+  const jobLeases = { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} };
+  const backendOptions = { homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux" as const, buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive, jobLeases };
+  const backend = createWebExecutionBackend(backendOptions);
   const [originalCandidate, healthyCandidate] = f.candidates.splice(0); f.grants.clear();
   const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: backend, monitoring, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
