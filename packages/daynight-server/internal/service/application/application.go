@@ -139,12 +139,13 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		capturer = capture[0]
 	}
 	engine := sessioncore.NewEngine(files)
-	workerReadOnly := worker.NewReadOnly(database)
+	oauthAuthenticator := oauth.NewAuthenticator(database)
+	workerReadOnly := worker.NewReadOnly(database, oauthAuthenticator.RecheckAPIAccess)
 	sessions := session.New(database, engine)
 	inspection := session.NewInspection(database, engine)
 	return &Application{
 		Identity:         construct.identity(database, client, callbackURL),
-		OAuth:            oauth.NewAuthenticator(database),
+		OAuth:            oauthAuthenticator,
 		OAuthGrants:      oauthcore.NewGrantLifecycle(database),
 		Memberships:      project.NewMemberships(database),
 		Projects:         construct.projects(database, engine),
