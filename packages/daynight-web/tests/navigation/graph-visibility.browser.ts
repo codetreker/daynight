@@ -188,4 +188,11 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-title')).toHaveText('Standalone prerequisite');
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
+  await page.locator('.task-detail-dialog').getByRole('button', { name: 'Close task details', exact: true }).click();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => scrollY)).toBe(320);
+  await expect(original).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveValue(status);
+  await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
+  await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
 });

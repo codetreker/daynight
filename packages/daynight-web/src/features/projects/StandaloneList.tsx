@@ -48,7 +48,7 @@ export const StandaloneList = ({ projectId, index, taskIds, allTaskIds, onSelect
     }
   }, [taskIds]);
   return (
-    <section id="project-standalone-list" tabIndex={-1} aria-label={m.list} ref={container} onFocusCapture={(event) => { focusedControl.current = event.target; }}>
+    <section id="project-standalone-list" data-list-empty={allTaskIds.length === 0} tabIndex={-1} aria-label={m.list} ref={container} onFocusCapture={(event) => { focusedControl.current = event.target; }}>
       <div className="task-view-toolbar">
         <span className="task-view-summary" aria-label={m.summaryLabel({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}>{m.summary({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}</span>
       </div>

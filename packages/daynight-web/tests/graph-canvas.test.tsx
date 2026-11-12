@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
@@ -1103,13 +1103,14 @@ describe('task chain dialog entries', () => {
     const before = buildGraphIndex({ ...graph, tasks, summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
       summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
+    const restoreGraphFocus = () => document.getElementById('project-chain-list')?.focus({ preventScroll: true });
     const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} allRepresentativeIds={['A']}
-      representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+      representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(2));
     const focused = view.baseElement.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
     focused.focus();
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} allRepresentativeIds={[]}
-      representativeIds={[]} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+      representativeIds={[]} openChainId={null} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     expect(view.baseElement.querySelector('.completed-chain-control')).toBeNull();
     expect(focused.isConnected).toBe(false);
@@ -1187,7 +1188,8 @@ describe('task chain dialog entries', () => {
   it('opens one graph through its explicit action while preserving the task disclosure and list identity', async () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
+      const opener = useRef<HTMLElement | null>(null);
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)} onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={noop} />;
     };
     const { baseElement: container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
