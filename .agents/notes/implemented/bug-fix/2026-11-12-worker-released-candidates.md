@@ -27,7 +27,6 @@ service ordering and competition without resolving retained local resources.
 ## Consequences
 
 The original Worker can compete after its local responsibilities end; other
-Workers need not wait for that local barrier. Release still retains the released
-record. Ordinary eligibility and the existing resource fences continue to apply.
+Workers need not wait for that local barrier. Release now clears the current record; the [release ownership decision](../simplification/2026-11-12-release-clears-ownership.md) records that change. Ordinary eligibility and the existing resource fences continue to apply.
 The later [resume retirement decision](../simplification/2026-11-12-retire-worker-resume.md)
 removes the separate manual protocol.

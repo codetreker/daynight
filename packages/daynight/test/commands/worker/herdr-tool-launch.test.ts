@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
@@ -24,11 +25,13 @@ const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!
 const operation = (): Operation => { const value = createOperation({ limits: { totalMs: 10_000 } }); operations.push(value); return value; };
 const owner = { projectId: "00000000-0000-4000-8000-000000000001", taskId: "00000000-0000-4000-8000-000000000002", claimId: "00000000-0000-4000-8000-000000000003", worktreeId: "00000000-0000-4000-8000-000000000004" };
 const childEntry = path.resolve(import.meta.dirname, "../../../dist/commands/worker/herdr/tool-launch-child.js");
-const fixture = async (platform?: NodeJS.Platform) => {
+const fixture = async (platform?: NodeJS.Platform, loaderSource?: string) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-tools/mapping-tests");
   await mkdir(scratch, { recursive: true });
   const directory = await mkdtemp(path.join(scratch, "owner ' $; 中文-")); roots.push(directory);
-  const launch = await resolveToolLaunch({ tool: "codex", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: process.env, cwd: directory }, operation());
+  const entry = loaderSource === undefined ? process.execPath : path.join(directory, "codex.js");
+  if (loaderSource !== undefined) await writeFile(entry, loaderSource);
+  const launch = await resolveToolLaunch({ tool: "codex", context: "herdr", choice: { kind: "path", path: entry }, environment: process.env, cwd: directory }, operation());
   const input = { directory, owner, launch, nativeEnvironment: { ...process.env, ...(platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" } : {}), PATH: "/native/path", CODEX_HOME: "/native/home" }, childEntry, ...(platform === undefined ? {} : { platform }) };
   const mapping = await createToolLaunchMapping(input, operation());
   if (mapping === null) throw new Error("A new mapping was not created.");
@@ -266,6 +269,92 @@ describe("owned Herdr launch mapping", () => {
       await expect(recovered.verifyProcesses({ shellPid: shell.pid!, receipt: { ...receipt, helperPid: process.pid } }, operation())).rejects.toThrow("helper");
     } finally { clearTimeout(timer); if (shell.exitCode === null && shell.signalCode === null) kill(); await closed; }
   });
+
+  it.skipIf(process.platform === "win32")("retains a JavaScript loader and its native descendant in the original mapping across recovery and cleanup", async () => {
+    const loaderSource = `Promise.all([import("node:child_process"), import("node:readline")]).then(([{ spawn }, { createInterface }]) => {
+  const child = spawn(process.execPath, ["-e", process.argv[2], process.argv[3]], { stdio: ["ignore", "pipe", "inherit"] });
+  createInterface({ input: child.stdout }).once("line", marker => {
+    process.stdout.write(JSON.stringify({ loaderPid: process.pid, descendantPid: child.pid, marker }) + "\\n");
+  });
+  child.on("close", code => process.exit(code ?? 1));
+});`;
+    const f = await fixture(undefined, loaderSource), marker = `mapped-descendant-${f.mapping.nonce}`;
+    const args = ["process.stdout.write(process.argv[1]+'\\n');setInterval(()=>{},1000);", marker];
+    expect(f.launch.command).toEqual({ file: await realpath(process.execPath), prefixArgs: [await realpath(path.join(f.directory, "codex.js"))] });
+    expect(f.launch.interpreterPath).not.toBeNull();
+    expect(f.launch.artifacts.map(artifact => artifact.role).sort()).toEqual(["entry", "interpreter"]);
+    const script = "const {spawn}=require('node:child_process');process.stdin.once('data',()=>{spawn(process.execPath,JSON.parse(process.argv[1]),{stdio:['ignore','inherit','inherit']});});setInterval(()=>{},1000);";
+    const shell = spawn(process.execPath, ["-e", script, JSON.stringify([childEntry, f.mapping.manifestPath, "codex", "--", ...args])], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    let errors = "", cleanupFailure: unknown;
+    let cleanupProofs: processProofs.MappingProcessProof[] = [];
+    let watchdogCleanup: Promise<void> | undefined;
+    shell.stderr!.on("data", chunk => { errors += chunk; });
+    const closed = once(shell, "close"), lines = createInterface({ input: shell.stdout! });
+    const kill = async () => {
+      if (cleanupProofs.length === 0) {
+        // No launch was released before the shell's birth was registered.
+        if (shell.exitCode === null && shell.signalCode === null) shell.kill("SIGKILL");
+        return;
+      }
+      for (const proof of cleanupProofs) {
+        if (proof.processGroupId !== shell.pid || await processProofs.inspectMappingProcessForCleanup(proof) !== "running") continue;
+        try { process.kill(-proof.processGroupId, "SIGKILL"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+        return;
+      }
+    };
+    const waitForClose = async () => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("The owned loader process group did not close after cleanup.")), 2_000); })]); }
+      finally { clearTimeout(timeout); }
+    };
+    const timer = setTimeout(() => { watchdogCleanup = kill(); void watchdogCleanup.catch(cause => { cleanupFailure = cause; }); }, 8_000);
+    try {
+      cleanupProofs = [await captureMappingProcessProof(shell.pid!)];
+      await f.mapping.captureProcesses([shell.pid!], operation());
+      const ready = Promise.race([once(lines, "line", { signal: AbortSignal.timeout(8_000) }), closed.then(() => { throw new Error(`The mapped JavaScript loader exited before readiness: ${errors}`); })]);
+      shell.stdin!.write("go");
+      const [data] = await ready, started = JSON.parse(String(data)) as { loaderPid: number; descendantPid: number; marker: string };
+      cleanupProofs.push(await captureMappingProcessProof(started.loaderPid), await captureMappingProcessProof(started.descendantPid));
+      expect(started.marker).toBe(marker);
+      const receipt = await f.mapping.verifyReceipt(args, operation());
+      expect(receipt).toMatchObject({ file: f.launch.interpreterPath, prefixArgs: [f.launch.canonicalEntryPath], childPid: started.loaderPid });
+      expect(started.descendantPid).not.toBe(receipt.childPid);
+      const command = await execute("/bin/ps", ["-p", String(started.descendantPid), "-o", "command="]);
+      expect(command.code).toBe(0); expect(command.stdout).toContain(marker);
+      const foregroundPids = [receipt.helperPid, receipt.childPid, started.descendantPid];
+      await f.mapping.verifyProcesses({ shellPid: shell.pid!, receipt, foregroundPids }, operation());
+      const journal = path.join(path.dirname(f.mapping.manifestPath), "processes.json"), original = await readFile(journal, "utf8");
+      const { proofs } = JSON.parse(original) as { proofs: processProofs.MappingProcessProof[] };
+      cleanupProofs = proofs;
+      expect(proofs.map(proof => proof.pid)).toEqual([shell.pid, receipt.helperPid, receipt.childPid, started.descendantPid]);
+      for (let index = 0; index < proofs.length; index++) {
+        const proof = proofs[index]!;
+        expect(proof).toEqual(await captureMappingProcessProof(proof.pid));
+        expect(proof.startedAt).not.toBe("");
+        expect(proof.commandHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(proof.processGroupId).toBe(shell.pid);
+        if (index > 0) expect(proof.parentPid).toBe(proofs[index - 1]!.pid);
+      }
+      const recovered = (await createToolLaunchMapping({ ...f.input, existingOnly: true }, operation()))!;
+      expect(recovered.manifestPath).toBe(f.mapping.manifestPath);
+      expect(await recovered.verifyReceipt(args, operation())).toEqual(receipt);
+      await recovered.verifyProcesses({ shellPid: shell.pid!, receipt, foregroundPids }, operation());
+      expect(await readFile(journal, "utf8")).toBe(original);
+      expect(await recovered.captureProcesses([shell.pid!], operation(), true)).toEqual(proofs.map(proof => proof.pid));
+      await recovered.stopProcesses(operation());
+      await waitForClose();
+      expect(await recovered.confirmStopped(operation())).toBe(true);
+      const stopped = await execute("/bin/ps", ["-p", proofs.map(proof => proof.pid).join(","), "-o", "stat="]);
+      expect([0, 1]).toContain(stopped.code); expect(stopped.stderr).toBe("");
+      expect(stopped.stdout.trim().split(/\s+/).filter(Boolean).every(state => state.startsWith("Z"))).toBe(true);
+      await recovered.retire(operation());
+    } finally {
+      clearTimeout(timer);
+      try { await watchdogCleanup?.catch(() => {}); await kill(); await waitForClose(); if (cleanupFailure !== undefined) throw cleanupFailure; }
+      finally { lines.close(); }
+    }
+  }, 20_000);
 
   it.skipIf(process.platform === "win32").each(["intent", "receipt", "helper-only", "native-orphan"] as const)("keeps an orphan launch unknown when its declared roles lack durable birth proofs (%s)", async evidence => {
     const f = await fixture(), args = ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"];

@@ -3,6 +3,8 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskGraph as TaskGraphData } from "../src/api/types";
 import { StandaloneList } from "../src/features/projects/StandaloneList";
+import { StandaloneTaskRow } from "../src/features/projects/StandaloneTaskRow";
+import { TaskPauseProvider } from "../src/features/task-pause/TaskPause";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
 import { TaskExecutionClockProvider } from "../src/features/task-execution/TaskExecutionClock";
 import { TaskGraph } from "../src/features/task-graph/TaskGraph";
@@ -139,6 +141,32 @@ describe("task execution presentation", () => {
     expect(completed).not.toHaveClass("standalone-row-stuck");
     expect(running).toHaveFocus();
     expect(view.container.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
+  });
+
+  it("keeps repeated standalone task instances independently addressable", () => {
+    const item = task("repeated", { status: "in_progress", allowAgents: true, startedAt: start });
+    const rowGraph = { ...graph, tasks: [item], summary: { ...graph.summary, total: 1, inProgress: 1, done: 0 } };
+    const rowIndex = buildGraphIndex(rowGraph);
+    const select = vi.fn();
+    renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
+      <TaskPauseProvider taskIds={new Set([item.id])}><ul className="standalone-list">
+        <StandaloneTaskRow projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-one-task-repeated" onSelectTask={select} />
+        <StandaloneTaskRow projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-two-task-repeated" onSelectTask={select} />
+      </ul></TaskPauseProvider>
+    </TaskExecutionClockProvider>, { locale: "en", taskCache: true });
+    const first = document.getElementById("goal-one-task-repeated")!;
+    const second = document.getElementById("goal-two-task-repeated")!;
+    for (const row of [first, second]) {
+      const description = row.getAttribute("aria-describedby")!;
+      expect(description).toBe(`${row.id}-execution`);
+      expect(document.getElementById(description)).toHaveTextContent(start);
+      expect(row).toHaveAccessibleDescription(new RegExp(start.replaceAll(".", "\\.")));
+      expect(row).toHaveTextContent("Paused");
+      fireEvent.click(row);
+    }
+    expect(select.mock.calls).toEqual([[item.id, first], [item.id, second]]);
+    expect(document.querySelectorAll('[id="goal-one-task-repeated-execution"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[id="goal-two-task-repeated-execution"]')).toHaveLength(1);
   });
 
   it.each(["en", "zh-CN"] as const)("keeps overdue tasks without Agent permission timed and free of warnings in %s", async (locale) => {

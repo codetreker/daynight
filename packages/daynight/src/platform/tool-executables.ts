@@ -162,7 +162,7 @@ export const resolveToolLaunch = async (input: {
         throw error;
       }
     }
-    const command = interpreterPath === null ? { file: launcher.executablePath, prefixArgs: [] } : { file: interpreterPath, prefixArgs: [...(launcher.nodeArgs ?? []), launcher.executablePath] };
+    const command = interpreterPath === null ? { file: launcher.executablePath, prefixArgs: [] } : { file: interpreterPath, prefixArgs: [launcher.executablePath] };
     await executable(command.file, operation);
     const sources = [...launcher.artifacts, ...(interpreterEntry === null ? [] : [{ role: "interpreter" as const, path: interpreterEntry }])];
     const artifacts: ToolArtifact[] = [];
@@ -194,19 +194,9 @@ export const verifyToolLaunch = async (launch: ResolvedToolLaunch, operation: Op
       return;
     }
     if (await withinOperation(realpath(launch.entryPath), operation) !== launch.canonicalEntryPath) changed();
-    // A loader can select a newly installed, higher-priority platform package
-    // while every old file still exists. Recheck its static selection as well
-    // as the frozen bytes, without searching PATH or reading a new choice.
-    const launcher = await identifyToolLauncher(launch.entryPath, launch.tool, operation);
-    const command = launch.interpreterPath === null ? { file: launcher.executablePath, prefixArgs: [] } : { file: launch.interpreterPath, prefixArgs: [...(launcher.nodeArgs ?? []), launcher.executablePath] };
-    const mappings = (items: { role: string; path: string }[]) => items.map(item => `${item.role}\0${item.path}`).sort();
-    if (launcher.executablePath !== launch.executablePath || launcher.interpreterRequired !== (launch.interpreterPath !== null) || JSON.stringify(command) !== JSON.stringify(commandIdentity(launch.command)) ||
-      JSON.stringify(mappings(launcher.artifacts)) !== JSON.stringify(mappings(launch.artifacts.filter(item => item.role !== "interpreter")))) changed();
     for (const artifact of launch.artifacts) {
-      const parsed = launcher.artifacts.find(item => item.role === artifact.role && item.path === artifact.path);
-      const current = await fingerprintToolArtifact({ role: artifact.role, path: artifact.path, ...(parsed?.parsedPrefix === undefined ? {} : { parsedPrefix: parsed.parsedPrefix }) }, operation);
+      const current = await fingerprintToolArtifact({ role: artifact.role, path: artifact.path }, operation);
       if (current.realPath !== artifact.realPath || current.size !== artifact.size || current.sha256 !== artifact.sha256) changed();
-      if (parsed?.parsedSha256 !== undefined && parsed.parsedSha256 !== current.sha256) changed();
       if (artifact.role === "runtime") await executable(artifact.path, operation);
     }
     await executable(launch.command.file, operation);

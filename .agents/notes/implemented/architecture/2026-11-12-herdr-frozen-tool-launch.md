@@ -123,6 +123,13 @@ ownership could be established. It consumes the same
 [resolver](2026-11-11-worker-tool-path-resolution.md) without broadening loader
 recognition or changing upstream Herdr.
 
+The [launcher admission policy](2026-11-12-worker-launcher-admission.md) owns the
+files included in each recipe. New Codex Node recipes freeze the loader, Worker
+Node and recorded files without statically selecting a native dependency. Older
+recipes retain every recorded runtime, manifest and command argument. Herdr's
+process chain and official Session checks prove the running native identity;
+they do not establish a pre-launch fingerprint for an unrecorded dynamic native.
+
 Independent Windows WMI and console acceptance queries own their execution
 environment. They inherit explicit system variables, use private user and
 temporary directories under the test root, and provide the system PowerShell 5

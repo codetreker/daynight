@@ -245,7 +245,7 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
 实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回proposed/todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查与普通重新认领。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active；release 清除当前归属后普通状态规则生效，cancelled 不能恢复。[认领架构](daynight-worker-claims.md)拥有归属检查与普通重新认领。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人、Parent 和属性。完整候选校验保证
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
@@ -355,7 +355,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
-| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
+| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active，清除归属并关闭自动执行 |
 | `POST /api/v1/me/workers/{workerId}/report` | 原子保存账号级最新运行快照，不写 task |
 | `GET /api/v1/me/workers` | 近期 Worker 摘要、当前可见任务计数及稳定 cursor |
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |

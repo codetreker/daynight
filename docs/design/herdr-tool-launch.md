@@ -6,6 +6,8 @@
 
 新执行在创建资源前保存 Agent 与 Herdr 的完整 `ResolvedToolLaunch`，以及各自实际探测所得的 `{version,checkedAt}`。Task 配置、macOS preparation/run 和共享实例 journal 保持原选择；目标 revision、PATH 或当前 CLI 安装变化不能替换原 claim 的 recipe。新的 spawn 重新校验原文件及依赖；活进程的输入、停止和归档继续依赖原 endpoint 与进程证明，不要求重新启动旧 executable。
 
+recipe 的文件范围由共享解析器拥有。新的 Codex Node 入口冻结 loader、Worker Node 和解析器实际记录的文件，不静态推断 loader 动态选择的 native；原记录中的 runtime、manifest 和命令参数仍逐项核验，不能按新解析格式删减旧证明。实际启动后的 native、完整父子链与官方 Session 由本机制的进程证明和 integration 确认，不能把该运行时证明称为动态 native 文件已在启动前冻结。
+
 `HerdrInstanceManager` 将 daemon、版本查询和 attach client 绑定到同一 Herdr launch。实例握手确认实际 version/protocol，不能把当前目标路径与旧实例版本拼在一起。实例元数据还保留受控 shell 使用的原 Node 与 helper 入口，重连不能把后来安装的 helper 当成旧实例的启动代码。`worker attach` 只读原实例记录并核验原 launch；文件缺失或变化时明确失败，不使用新 client。
 
 macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选择新 Herdr，旧执行仍使用自己的实例；原 claim 恢复创建下一代 run 时仍使用原冻结选择。Linux/Windows 使用共享私有实例，其切换需要先清空旧责任，不能用独占实例的准入规则代替。

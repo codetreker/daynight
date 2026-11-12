@@ -663,9 +663,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	released.Status = model.TaskTodo
 	released.Ready = true
 	released.StartedAt = nil
-	releasedWorker := *testWorker(t, active.Properties)
-	releasedWorker.State = model.WorkerReleased
-	released.Properties = testWithWorker(t, active.Properties, &releasedWorker)
+	released.Properties = testWithWorker(t, active.Properties, nil)
 	t.Run("release", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
@@ -681,7 +679,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	reassigned := released
 	reassigned.AssignedTo = &bob
 	reassigned.AllowAgents = false
-	t.Run("reassign retained execution", func(t *testing.T) {
+	t.Run("reassign released task", func(t *testing.T) {
 		f := newAssignmentFixture(t, released, nil)
 		f.expectTarget(bob, nil)
 		v := taskcore.CurrentWrite(released)
@@ -691,8 +689,8 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		f.expectUpdate(v, after)
 		got, err := f.tasks.Update(f.ctx, owner, f.project.ID, released.ID, taskcore.UpdateTask{Version: released.Version, AssignedTo: assignmentChange(&bob)})
 		assertReturned(t, got, after, err)
-		if testWorker(t, got.Properties).UserID != owner.UserID || got.AllowAgents {
-			t.Fatal("reassignment transferred execution ownership")
+		if testWorker(t, got.Properties) != nil || got.AllowAgents {
+			t.Fatal("reassignment restored execution ownership")
 		}
 	})
 	next := workerDescriptor()

@@ -22,7 +22,7 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
     runtime.manager.snapshot(); expect(await readFile(receipt, "utf8")).toBe(before);
     expect(before.trim().split("\n")).toHaveLength(2);
     await rm(entry);
-    await expect(runtime.manager.prepare("codex", "web", operation)).rejects.toMatchObject({ code: "tool_identity_changed" });
+    await expect(runtime.manager.prepare("codex", "web", operation)).rejects.toMatchObject({ code: "not_found" });
     expect(runtime.manager.currentSelection("codex", "web")).toBeUndefined();
     await expect(runtime.hostInspector.check(configuration.toolLaunch!, operation)).rejects.toThrow("no current inspection proof");
     expect(await runtime.freezeConfiguration(configuration, operation.signal)).toBe(configuration);

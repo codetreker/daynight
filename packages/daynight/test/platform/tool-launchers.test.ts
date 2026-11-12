@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { renameSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, link, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,20 +35,20 @@ const copilotNative = async (directory: string, platform = "darwin", arch = "arm
   await manifest(path.join(packageRoot, "package.json"), { name: `@github/copilot-${platform}-${arch}`, exports: { ".": `./${path.basename(entry)}` } });
   return entry;
 };
-const codex = async (directory: string, version = "0.142.5") => {
+const codex = async (directory: string) => {
   const packageRoot = path.join(directory, "node_modules/@openai/codex");
-  const entry = await put(path.join(packageRoot, "bin/codex.js"), await readFile(new URL(`codex-${version}.js`, fixtures)));
-  await manifest(path.join(packageRoot, "package.json"), { name: "@openai/codex", version, bin: { codex: "bin/codex.js" } });
+  const entry = await put(path.join(packageRoot, "custom/loader.js"), `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
+const result = spawnSync(path.join(__dirname, "../different-layout/native", process.platform === "win32" ? "codex.exe" : "codex"), process.argv.slice(2), { stdio: "inherit" });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`);
+  await manifest(path.join(packageRoot, "package.json"), { name: "@openai/codex", bin: { codex: "custom/loader.js" } });
   return { packageRoot, entry };
 };
-const codexHost = () => ({ platform: process.platform, arch: process.arch, nonGlibcLinux: false });
-const codexTriple = () => `${process.arch === "x64" ? "x86_64" : "aarch64"}-${process.platform === "win32" ? "pc-windows-msvc" : process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl"}`;
-const codexRuntime = (packageRoot: string) => path.join(packageRoot, "vendor", codexTriple(), "bin", process.platform === "win32" ? "codex.exe" : "codex");
+const codexRuntime = (packageRoot: string) => path.join(packageRoot, "different-layout/native", process.platform === "win32" ? "codex.exe" : "codex");
 const copyNode = async (file: string) => { await mkdir(path.dirname(file), { recursive: true }); await copyFile(process.execPath, file); await chmod(file, 0o755); return file; };
-const runCodex = async (script: string, args: string[] = [], env = process.env) => {
-  const { stdout } = await promisify(execFile)(process.execPath, [...args, script, "--eval", "process.stdout.write(process.execPath)"], { timeout: 5000, maxBuffer: 4096, env });
-  return stdout;
-};
 
 afterEach(async () => { operations.splice(0).forEach(item => item.dispose()); await Promise.all(roots.splice(0).map(directory => removeFixtureRoot(directory))); });
 
@@ -159,12 +159,13 @@ describe("static tool launchers", () => {
       await copyNode(runtime);
     }
     let template = await readFile(new URL("copilot.cmd", fixtures), "utf8");
-    if (tool === "codex") template = template.replace("node_modules\\@github\\copilot\\npm-loader.js", "node_modules\\@openai\\codex\\bin\\codex.js");
+    if (tool === "codex") template = template.replace("node_modules\\@github\\copilot\\npm-loader.js", "node_modules\\@openai\\codex\\custom\\loader.js");
     await put(path.join(directory, `${tool}.cmd`), template);
     const environment = { ...process.env, PATH: directory, PATHEXT: ".CMD" };
     const launch = await resolveToolLaunch({ tool, context: "herdr", choice: { kind: "auto" }, cwd: directory, environment, workerNode: process.execPath }, operation());
     expect(launch.entryPath.endsWith(".CMD")).toBe(true);
-    expect(launch.artifacts.some(item => item.role === "runtime" && item.realPath === runtime)).toBe(true);
+    const expectedArtifact = tool === "codex" ? await realpath(path.join(directory, "node_modules/@openai/codex/custom/loader.js")) : runtime;
+    expect(launch.artifacts.some(item => item.role === (tool === "codex" ? "entry" : "runtime") && item.realPath === expectedArtifact)).toBe(true);
     const args = ["space and 中文", "%PATH%", "&", "$(echo unexpected)"];
     const command = toolCommand(launch, ["--eval", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", "--", ...args]);
     const { stdout } = await promisify(execFile)(command.file, command.args, { cwd: directory, env: environment, timeout: 5000, maxBuffer: 4096 });
@@ -186,116 +187,32 @@ describe("static tool launchers", () => {
     }
   }, 20_000);
 
-  it.each(["copilot", "copilot.cmd", "copilot.ps1"])("rejects an added command in %s even when read-cmd-shim recognizes its target", async name => {
-    const directory = await root(); await copilot(directory); await copilotNative(directory);
-    const shim = await put(path.join(directory, name), `${await readFile(new URL(name, fixtures), "utf8")}\necho injected\n`);
-    await expect(identifyToolLauncher(shim, "copilot", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
+  it.each(["copilot", "copilot.cmd", "copilot.ps1"])("accepts comments and CRLF in %s", async name => {
+    const directory = await root(); await copilot(directory); const runtime = await copilotNative(directory);
+    const original = await readFile(new URL(name, fixtures), "utf8");
+    const comment = name.endsWith(".cmd") ? "REM harmless comment" : "# harmless comment";
+    const shim = await put(path.join(directory, name), `${original.replace(/\r?\n/g, "\r\n")}\r\n${comment}\r\n`);
+    const result = await identifyToolLauncher(shim, "copilot", operation(), host);
+    expect(result.executablePath).toBe(runtime);
   });
 
-  it("rejects divergent branches and added Node flags in otherwise standard shims", async () => {
-    const directory = await root(); await copilot(directory); await copilotNative(directory);
-    const template = await readFile(new URL("copilot", fixtures), "utf8");
-    for (const text of [template.replace('exec node ', 'exec node --trace-warnings '), template.replace('exec node  "$basedir/node_modules/@github/copilot/npm-loader.js"', 'exec node  "$basedir/other.js"')]) {
-      const shim = await put(path.join(directory, "copilot"), text);
-      await expect(identifyToolLauncher(shim, "copilot", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
-    }
+  it("resolves a shim to a Node entry without requiring an official package or bin", async () => {
+    const directory = await root(), entry = await put(path.join(directory, "custom entry.js"), "#!/usr/bin/env node\nconsole.log('ok')\n");
+    const shim = await put(path.join(directory, "copilot.cmd"), '@echo off\r\n"%dp0%\\custom entry.js" %*\r\n');
+    const result = await identifyToolLauncher(shim, "copilot", operation(), host);
+    expect(result).toMatchObject({ executablePath: entry, interpreterRequired: true });
   });
 
-  it("requires a shim target to match its official manifest bin", async () => {
-    const directory = await root(), cli = await copilot(directory); await copilotNative(directory);
-    await manifest(path.join(cli.packageRoot, "package.json"), { name: "@github/copilot", bin: { copilot: "other.js" } });
-    const shim = await put(path.join(directory, "copilot.cmd"), await readFile(new URL("copilot.cmd", fixtures)));
-    await expect(identifyToolLauncher(shim, "copilot", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
-  });
-
-  it.each(["0.142.5", "0.145.0", "0.156.1"])("retains the official Codex %s loader and fingerprints its selected alias package native", async version => {
-    const directory = await root(), cli = await codex(directory, version);
-    const packageRoot = path.join(cli.packageRoot, "node_modules/@openai/codex-darwin-arm64");
-    await manifest(path.join(packageRoot, "package.json"), { name: "@openai/codex", version: `${version}-darwin-arm64` });
-    const runtime = await native(path.join(packageRoot, "vendor/aarch64-apple-darwin/bin/codex"));
+  it("uses an unregistered Codex loader in its own layout without interpreting its contents", async () => {
+    const directory = await root(), cli = await codex(directory), runtime = await copyNode(codexRuntime(cli.packageRoot));
+    await put(cli.entry, `${await readFile(cli.entry, "utf8")}\n// harmless comment\n`);
     const result = await identifyToolLauncher(cli.entry, "codex", operation(), host);
-    expect(result.executablePath).toBe(cli.entry); expect(result.interpreterRequired).toBe(true);
-    expect(result.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "runtime", path: runtime }), expect.objectContaining({ role: "manifest", path: path.join(packageRoot, "package.json") }),
-    ]));
-    const parsed = result.artifacts.find(item => item.path === cli.entry)!;
-    expect(parsed.parsedSha256).toBe(createHash("sha256").update(await readFile(cli.entry)).digest("hex"));
-  });
-
-  it.each([
-    { platform: "linux", arch: "x64", triple: "x86_64-unknown-linux-musl", file: "codex" },
-    { platform: "linux", arch: "arm64", triple: "aarch64-unknown-linux-musl", file: "codex" },
-    { platform: "darwin", arch: "x64", triple: "x86_64-apple-darwin", file: "codex" },
-    { platform: "darwin", arch: "arm64", triple: "aarch64-apple-darwin", file: "codex" },
-    { platform: "win32", arch: "x64", triple: "x86_64-pc-windows-msvc", file: "codex.exe" },
-    { platform: "win32", arch: "arm64", triple: "aarch64-pc-windows-msvc", file: "codex.exe" },
-  ] as const)("records the $platform/$arch Codex native from its documented vendor layout", async target => {
-    const directory = await root(), cli = await codex(directory);
-    const runtime = await native(path.join(cli.packageRoot, "vendor", target.triple, "bin", target.file));
-    const result = await identifyToolLauncher(cli.entry, "codex", operation(), { ...target, nonGlibcLinux: false });
-    expect(result.artifacts.find(item => item.role === "runtime")?.path).toBe(runtime);
-  });
-
-  it("uses the Codex root vendor only when no platform package resolves", async () => {
-    const directory = await root(), cli = await codex(directory);
-    const runtime = await native(path.join(cli.packageRoot, "vendor/aarch64-apple-darwin/bin/codex"));
-    expect((await identifyToolLauncher(cli.entry, "codex", operation(), host)).artifacts).toContainEqual(expect.objectContaining({ role: "runtime", path: runtime }));
-    const packageRoot = path.join(cli.packageRoot, "node_modules/@openai/codex-darwin-arm64");
-    await manifest(path.join(packageRoot, "package.json"), { name: "@openai/codex" });
-    await expect(identifyToolLauncher(cli.entry, "codex", operation(), host)).rejects.toMatchObject({ code: "incompatible_runtime" });
-  });
-
-  it("refuses an outer Codex package instead of pretending the root vendor will run", async () => {
-    const directory = await root(), cli = await codex(path.join(directory, "other"));
-    await native(path.join(cli.packageRoot, "vendor/aarch64-apple-darwin/bin/codex"));
-    await manifest(path.join(directory, "node_modules/@openai/codex-darwin-arm64/package.json"), { name: "@openai/codex" });
-    await expect(identifyToolLauncher(cli.entry, "codex", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
-  });
-
-  it("refuses an unregistered Codex loader even when it contains a known layout", async () => {
-    const directory = await root(), cli = await codex(directory);
-    await put(cli.entry, `${await readFile(cli.entry, "utf8")}\n// unregistered loader\n`);
-    await native(path.join(cli.packageRoot, "vendor/aarch64-apple-darwin/bin/codex"));
-    await expect(identifyToolLauncher(cli.entry, "codex", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
-  });
-
-  it("refuses an official Codex loader relocated outside its package bin directory", async () => {
-    const directory = await root(), cli = await codex(directory);
-    const relocated = await put(path.join(cli.packageRoot, "loader.js"), await readFile(cli.entry));
-    await manifest(path.join(cli.packageRoot, "package.json"), { name: "@openai/codex", bin: { codex: "loader.js" } });
-    await native(path.join(cli.packageRoot, "vendor/aarch64-apple-darwin/bin/codex"));
-    await expect(identifyToolLauncher(relocated, "codex", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
-  });
-
-  it("freezes the native selected from the actual Codex loader's nearest node_modules", async () => {
-    const directory = await root(), cli = await codex(directory);
-    const name = `@openai/codex-${process.platform}-${process.arch}`;
-    const outer = path.join(cli.packageRoot, "node_modules", name), nearest = path.join(cli.packageRoot, "bin/node_modules", name);
-    await manifest(path.join(outer, "package.json"), { name: "@openai/codex" }); await native(codexRuntime(outer));
-    await manifest(path.join(nearest, "package.json"), { name: "@openai/codex" }); const actual = await copyNode(codexRuntime(nearest));
-    const result = await identifyToolLauncher(cli.entry, "codex", operation(), codexHost());
-    expect(await runCodex(result.executablePath)).toBe(actual);
-    expect(result.artifacts.find(item => item.role === "runtime")?.path).toBe(actual);
-  });
-
-  it("refuses a platform manifest leaf symlink whose directory changes the official vendor lookup", async () => {
-    const directory = await root(), cli = await codex(directory);
-    const name = `@openai/codex-${process.platform}-${process.arch}`, selected = path.join(cli.packageRoot, "node_modules", name);
-    const elsewhere = path.join(directory, "elsewhere"); await manifest(path.join(elsewhere, "package.json"), { name: "@openai/codex" });
-    await native(codexRuntime(selected)); await native(codexRuntime(elsewhere));
-    await symlink(path.join(elsewhere, "package.json"), path.join(selected, "package.json"));
-    await expect(identifyToolLauncher(cli.entry, "codex", operation(), codexHost())).rejects.toMatchObject({ code: "unsupported_launcher" });
-  });
-
-  it("keeps the root vendor native when NODE_PATH and preserve-symlinks options offer another package", async () => {
-    const directory = await root(), cli = await codex(directory), expected = await copyNode(codexRuntime(cli.packageRoot));
-    const global = path.join(directory, "global"), other = path.join(global, `@openai/codex-${process.platform}-${process.arch}`);
-    await manifest(path.join(other, "package.json"), { name: "@openai/codex" });
-    const borrowed = codexRuntime(other); await mkdir(path.dirname(borrowed), { recursive: true }); await link(expected, borrowed);
-    const env = { ...process.env, NODE_PATH: global, NODE_OPTIONS: "--preserve-symlinks --preserve-symlinks-main" };
-    const result = await identifyToolLauncher(cli.entry, "codex", operation(), codexHost());
-    expect(await runCodex(cli.entry, [], env)).toBe(borrowed);
-    expect(await runCodex(result.executablePath, "nodeArgs" in result ? result.nodeArgs as string[] : [], env)).toBe(expected);
+    expect(result).toMatchObject({ executablePath: cli.entry, interpreterRequired: true });
+    expect(result.artifacts.map(item => item.role)).toEqual(["entry"]);
+    const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: cli.entry }, cwd: directory, environment: process.env }, operation());
+    const command = toolCommand(launch, ["--eval", "process.stdout.write(process.execPath)"]);
+    expect((await promisify(execFile)(command.file, command.args, { timeout: 5000 })).stdout).toBe(await realpath(runtime));
+    expect(command.args[0]).toBe(cli.entry);
   });
 
   it("refuses a truncated Node shebang instead of ignoring flags beyond the prefix limit", async () => {

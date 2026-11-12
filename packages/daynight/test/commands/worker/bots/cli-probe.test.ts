@@ -2,6 +2,7 @@ import { testIsolation } from "../../../../scripts/test-bootstrap.js";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveToolLaunch, toolCommand } from "../../../../src/platform/tool-executables.js";
 import { createOperation } from "../../../../src/api/operation.js";
 import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lease.js";
 import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
@@ -122,6 +123,31 @@ describe("owned Bot CLI capability probes", () => {
     controller.abort();
     await expect(result).rejects.toThrow(/cancel/);
     await f.scope.close(); await checkStopped(f.scope);
+  }, 120_000);
+
+  it.skipIf(process.platform === "win32")("cancels and cleans the owned process scope after a Node loader execve", async () => {
+    const controller = new AbortController();
+    const f = await fixture("", controller.signal, 15_000);
+    const receipt = path.join(f.root, "execve-receipt.json"), before = path.join(f.root, "before-execve");
+    const native = `const fs = require('node:fs');
+const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'});
+fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({pid:process.pid, child:child.pid, args:process.argv.slice(1)}));
+setInterval(() => {}, 1000);`;
+    await writeFile(f.file, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(before)}, String(process.pid));\nprocess.execve(process.execPath, [process.execPath, '-e', ${JSON.stringify(native)}, '--', ...process.argv.slice(2)], process.env);\n`);
+    const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: f.file }, cwd: f.root, environment: process.env }, f.operation);
+    const args = ["space and 中文", "$(literal)", "&"], command = toolCommand(launch, args);
+    const running = f.scope.run(command.file, command.args); void running.catch(() => {});
+    await vi.waitFor(async () => expect((await stat(receipt)).isFile()).toBe(true), { timeout: 10_000, interval: 20 });
+    const observed = JSON.parse(await readFile(receipt, "utf8")) as { pid: number; child: number; args: string[] };
+    expect(observed.pid).toBe(Number(await readFile(before, "utf8")));
+    expect(observed.args).toEqual(args);
+    const targetProof = await processProof.captureProcessProof(observed.pid);
+    const childProof = await processProof.captureProcessProof(observed.child);
+    controller.abort();
+    await expect(running).rejects.toThrow(/cancel/);
+    await f.scope.close(); await checkStopped(f.scope);
+    expect(await processProof.inspectProcessProof(targetProof)).toBe("stopped");
+    expect(await processProof.inspectProcessProof(childProof)).toBe("stopped");
   }, 120_000);
 
   it("retains typed process ownership and a working retry after unconfirmed cleanup", async () => {

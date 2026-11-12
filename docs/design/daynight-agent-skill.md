@@ -73,7 +73,7 @@ UTF-8、空白内容、标题冲突、未关闭代码围栏或无效内部引用
 
 blocked todo 在已确定的方案、详细设计、接口和集成步骤足以定义当前任务时可以预先移交，真实依赖继续阻止执行；前置仍要决定当前任务如何实现时不能通过内容审查。已有 true 的
 任务只读复审，失败保留许可并报告调度风险；不会把复审假定为暂停。撤销或停止按
-另外明确的授权及现有控制流程执行。in_progress的false不启用，done/cancelled按模式策略无需移交。Active worker 保留所有权和原资源；released 保留历史，符合普通资格时以新的 claim/worktree/native session 开始执行；启用许可不恢复原资源。
+另外明确的授权及现有控制流程执行。in_progress的false不启用，done/cancelled按模式策略无需移交。Active worker 保留所有权和原资源；release 清除当前归属，历史由原 Session/archive 保存；符合普通资格时以新的 claim/worktree/native session 开始执行；启用许可不恢复原资源。
 
 附件和跨任务文档不受目标 task version 保护。开启前核验所依赖的可变内容，执行时
 再次读取；资料变化后重新审查受影响部分。此边界只提供尽力核对，不引入审查令牌、

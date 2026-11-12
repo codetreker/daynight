@@ -181,7 +181,7 @@ func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testin
 			}
 			_, err = tasks.ReleaseWorker(ctx, principal, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version - 1, ClaimID: "invalid", StoppedConfirmed: true})
 			requireFault(t, err, "invalid_input")
-			released := workerProtocolTask(t, principal, descriptor, model.WorkerReleased)
+			released := workerProtocolTask(t, principal, descriptor, model.WorkerActive)
 			t.Run("delete", func(t *testing.T) {
 				fixture := workerMockWrite(t, released, principal)
 				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())

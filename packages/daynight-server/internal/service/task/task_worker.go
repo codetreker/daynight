@@ -74,7 +74,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
 			return taskcore.Mutation{}, err
 		}
-		values, err := taskcore.ReleaseCandidate(current, worker)
+		values, err := taskcore.ReleaseCandidate(current)
 		if err != nil {
 			return taskcore.Mutation{}, err
 		}
