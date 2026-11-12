@@ -343,9 +343,24 @@ Seal 拒绝新事件并使待处理事件可强制 flush。固定阶段和错误
 revision，确认旧 revision 不会抹掉期间新增的故障。采样器不保存请求 context 或记录日志。
 
 在调度检查不超过一秒、每个成功批次不超过两秒的条件下，满载首次事件和冷却后事件的调度
-预算分别为 17 秒和 37 秒；这是规则上界，不是生产时延测量。后台执行、故障发布和认证入口
-接线仍由各自的组件负责。
+预算分别为 17 秒和 37 秒；这是规则上界，不是生产时延测量。认证入口与应用生命周期接线仍由各自的组件负责。
 [采样决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-sampling.md)
+记录其取舍。
+
+### 凭据使用记录器
+
+`service/credentialusage` 显式启动后台记录器：一个数据库 worker 从采样器取出到期批次，
+每次写入使用独立工作 context 和两秒 deadline，完成后立即继续处理合格批次，空闲时至多一秒
+检查到期状态。事件的原始时间用于幂等重试；认证与续期操作本身不会重放。Record 仅复制安全的
+事件、来源和不超过 64 字节的请求标识，不持有请求 context，也不等待数据库或日志。同步拒绝
+写入调用者提供的固定容量 request-local collector，由协议边界发布，不在记录器中写协议日志。
+
+独立诊断 consumer 公平遍历 resident 故障摘要，复制 revision 后写结构化日志，再确认该版本；
+日志阻塞不会持有采样锁或阻塞 Record 和数据库 worker。未确认摘要占用采样容量，故障和过载
+可导致样本丢失。正常 drain 封闭接纳并强制待处理事件到期，等待 worker 和 consumer 退出；
+已退出但存在未落库样本时保留原因和数量并报告完成事实。超时不另起工作，后续调用继续等待
+同一工作。writer 返回不证明 pgx 内部异步资源已释放，连接池关闭由 persistence 负责。
+[记录器决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-recorder.md)
 记录其取舍。
 
 ## 数据与并发

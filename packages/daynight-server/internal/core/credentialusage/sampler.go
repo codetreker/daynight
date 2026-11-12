@@ -42,6 +42,8 @@ type entry struct {
 type Batch struct {
 	ID           uint64
 	Observations []Observation
+	// PendingAges corresponds to Observations and uses the scheduling clock.
+	PendingAges []time.Duration
 }
 
 // Outcome is the confirmed result of the entire atomic batch. Unknown must be
@@ -206,7 +208,7 @@ func (s *Sampler) TakeDue() Batch {
 	if s.nextBatch == 0 {
 		panic("credentialusage: batch ID exhausted")
 	}
-	batch := Batch{ID: s.nextBatch, Observations: make([]Observation, 0, len(choices))}
+	batch := Batch{ID: s.nextBatch, Observations: make([]Observation, 0, len(choices)), PendingAges: make([]time.Duration, 0, len(choices))}
 	keys := make([]Key, 0, len(choices))
 	for _, c := range choices {
 		e := s.entries[c.key]
@@ -215,6 +217,11 @@ func (s *Sampler) TakeDue() Batch {
 		e.inflight.attempts++
 		e.dispatched = now
 		batch.Observations = append(batch.Observations, e.inflight.observation)
+		age := now.Sub(e.inflight.born)
+		if age < 0 {
+			age = 0
+		}
+		batch.PendingAges = append(batch.PendingAges, age)
 		keys = append(keys, c.key)
 	}
 	s.batches[batch.ID] = keys
