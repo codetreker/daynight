@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { prepareWorkerWorktreeFormat } from "../../../src/commands/worker/repository-admission.js";
@@ -163,3 +163,46 @@ it("never treats a registered native Session as an unregistered Web claim", asyn
     expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
   } finally { f.close(); }
 });
+
+
+it("retains the old format when another project in the same repository has unobservable Herdr ownership", async () => {
+  const f = fixture();
+  try {
+    const otherProject = { ...f.project, projectId: randomUUID() };
+    const other = { projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID() };
+    f.store.registerProject(otherProject);
+    f.store.registerPending({ ...other, agent: "codex", agentControlMode: "herdr" });
+    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } })).rejects.toThrow("original Herdr backend cannot be observed");
+    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
+    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
+    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).toBeNull();
+  } finally { f.close(); }
+}, 30_000);
+
+it("does not infer an unrelated repository when an unfinished Herdr binding is missing", async () => {
+  const f = fixture();
+  try {
+    const otherProject = { ...f.project, projectId: randomUUID() };
+    const other = { projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID() };
+    f.store.registerProject(otherProject);
+    f.store.registerPending({ ...other, agent: "codex", agentControlMode: "herdr" });
+    const original = f.store.getProject;
+    vi.spyOn(f.store, "getProject").mockImplementation(identity => identity.projectId === otherProject.projectId ? null : original(identity));
+    await expect(prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } })).rejects.toThrow("unfinished Herdr task has no original repository binding");
+    expect(existsSync(path.join(f.admin, "locked"))).toBe(true);
+    expect(existsSync(path.join(f.commonDirectory, "daynight", "worktrees", "format.json"))).toBe(false);
+  } finally { vi.restoreAllMocks(); f.close(); }
+}, 30_000);
+
+it("does not block a repository for an unrelated Herdr task", async () => {
+  const f = fixture();
+  try {
+    const otherRoot = path.join(f.root, "other-repo"); mkdirSync(otherRoot);
+    const otherProject = { ...f.project, projectId: randomUUID(), localPath: otherRoot };
+    f.store.registerProject(otherProject);
+    f.store.registerPending({ projectId: otherProject.projectId, taskId: randomUUID(), claimId: randomUUID(), agent: "codex", agentControlMode: "herdr" });
+    await prepareWorkerWorktreeFormat({ ...f, platform: "macos", getHerdr: async () => { throw new Error("unexpected Herdr"); } });
+    expect(existsSync(path.join(f.admin, "locked"))).toBe(false);
+    expect(createWorktreeManifestStore(f.commonDirectory).read(f.owner.worktreeId)).not.toBeNull();
+  } finally { f.close(); }
+}, 30_000);

@@ -31,6 +31,7 @@ const fixture = async () => {
 };
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
 
+// Real Git setup and repository inspection use multiple subprocesses on every platform.
 it("gates current worktrees until real migration, creates unlocked worktree, and retires only metadata after deletion", async () => {
   const f = await fixture(), operation = createOperation();
   try {
@@ -52,7 +53,7 @@ it("gates current worktrees until real migration, creates unlocked worktree, and
     expect(createWorktreeManifestStore(repository.commonDirectory).read(f.owner.worktreeId)).toBeNull();
     expect(git(f.repository, "show-ref", "--verify", `refs/heads/${binding.branch}`)).toContain(`refs/heads/${binding.branch}`);
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
 
 it("uses a migrated taskId directory without rewriting the existing checkout", async () => {
   const f = await fixture(), operation = createOperation();
@@ -76,7 +77,7 @@ it("uses a migrated taskId directory without rewriting the existing checkout", a
       await adapter.retireWorktreeManifest(f.project, f.owner, operation);
     } finally { await adapter.dispose(); }
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
 
 it("retains unknown content and never treats a missing manifest as proof of absence", async () => {
   const f = await fixture(), operation = createOperation();
@@ -89,7 +90,7 @@ it("retains unknown content and never treats a missing manifest as proof of abse
     await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/not empty/);
     expect(await readFile(path.join(leaf, "important"), "utf8")).toBe("keep");
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
 
 it("retires an already settled manifest without touching a later occupant", async () => {
   const f = await fixture(), operation = createOperation();
@@ -102,7 +103,7 @@ it("retires an already settled manifest without touching a later occupant", asyn
     expect(await readFile(path.join(binding.worktreePath, "successor"), "utf8")).toBe("keep");
     expect(createWorktreeManifestStore(repo.commonDirectory).read(f.owner.worktreeId)).toBeNull();
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
 
 it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a worktree with %s registration damage", async damage => {
   const f = await fixture(), operation = createOperation();
@@ -125,7 +126,7 @@ it.each(["reverse", "common", "missing-pointer", "duplicate"]) ("retains a workt
     const scan = await f.adapter.scanWorktrees(f.project, operation);
     expect(scan.quarantined.length + scan.unknown.length).toBeGreaterThan(0);
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
 
 it("serializes concurrent repository format preparation and leaves a failed gate closed", async () => {
   const f = await fixture(), operation = createOperation();
@@ -144,7 +145,72 @@ it("serializes concurrent repository format preparation and leaves a failed gate
     expect(calls).toBe(1);
     await expect(adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/format has not been prepared/);
   } finally { release(); operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);
+
+it("keeps a prepared repository available while another caller repeats preparation", async () => {
+  const f = await fixture(), operation = createOperation();
+  let release!: () => void, entered!: () => void, calls = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-repeat"), prepareFormat: async (_project, repo, scoped) => {
+    calls++;
+    if (calls > 1) { entered(); await barrier; }
+    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
+  } });
+  try {
+    await adapter.prepareRepository(f.project, operation);
+    const repeated = adapter.prepareRepository(f.project, operation);
+    const repeatedHookStarted = await Promise.race([started.then(() => true), repeated.then(() => false)]);
+    if (repeatedHookStarted) {
+      const scan = await adapter.scanWorktrees(f.project, operation);
+      expect(scan.unknown).toEqual([]);
+    }
+    release(); await repeated;
+    expect(calls).toBe(1);
+    expect((await adapter.scanWorktrees(f.project, operation)).unknown).toEqual([]);
+  } finally { release(); operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("does not reuse a prepared gate for a different project binding", async () => {
+  const f = await fixture(), operation = createOperation();
+  let calls = 0;
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-mapping"), prepareFormat: async (_project, repo, scoped) => {
+    calls++;
+    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
+  } });
+  try {
+    await adapter.prepareRepository(f.project, operation);
+    const different = { ...f.project, projectId: randomUUID() };
+    await adapter.prepareRepository(different, operation);
+    expect(calls).toBe(2);
+    expect((await adapter.scanWorktrees(f.project, operation)).unknown[0]?.error).toMatchObject({ message: expect.stringContaining("format has not been prepared") });
+    expect((await adapter.scanWorktrees(different, operation)).unknown).toEqual([]);
+  } finally { operation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("keeps the original preparation alive when a joined caller is canceled", async () => {
+  const f = await fixture(), firstOperation = createOperation();
+  const cancellation = new AbortController(), secondOperation = createOperation({ signal: cancellation.signal });
+  let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-joined"), prepareFormat: async (_project, repo, scoped) => {
+    entered(); await barrier;
+    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: scoped, sources: emptySources });
+  } });
+  try {
+    const first = adapter.prepareRepository(f.project, firstOperation);
+    await started;
+    const second = adapter.prepareRepository(f.project, secondOperation);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const reason = new Error("joined caller canceled");
+    cancellation.abort(reason);
+    release();
+    await first;
+    await expect(second).rejects.toMatchObject({ kind: "cancelled", cause: reason });
+    expect((await adapter.scanWorktrees(f.project, firstOperation)).unknown).toEqual([]);
+  } finally { release(); firstOperation.dispose(); secondOperation.dispose(); await adapter.dispose(); await f.adapter.dispose(); }
+}, 30_000);
 
 it("settles only the exact empty unpublished reservation", async () => {
   const f = await fixture(), operation = createOperation();
@@ -163,4 +229,4 @@ it("settles only the exact empty unpublished reservation", async () => {
     await expect(f.adapter.removeUnpublishedReservation(f.project, f.owner, operation)).rejects.toThrow(/published manifest/);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   } finally { operation.dispose(); await f.adapter.dispose(); }
-});
+}, 30_000);

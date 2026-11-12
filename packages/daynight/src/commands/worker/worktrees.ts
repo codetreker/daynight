@@ -76,7 +76,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const prepared = new Set<string>();
   const preparationByPath = new Map<string, Promise<WorkerRepository>>();
   const migrationByCommon = new Map<string, Promise<void>>();
-  const preparedByPath = new Map<string, string>();
+  const preparedByPath = new Map<string, { repository: string; projectId: string; remote: string }>();
   const repositoryKey = (repository: WorkerRepository): string => JSON.stringify([repository.root, repository.commonDirectory, repository.rootIdentity, repository.commonIdentity]);
   const tracked = <T>(operation: Operation, action: (operation: Operation) => Promise<T>): Promise<T> => {
     if (closing.signal.aborted) return Promise.reject(closing.signal.reason);
@@ -158,7 +158,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   };
   const requirePrepared = async (project: WorkerProject, operation: Operation): Promise<WorkerRepository> => {
     const repository = await inspectRepository(project, operation);
-    if (!prepared.has(repositoryKey(repository))) throw new Error("The repository worktree format has not been prepared.");
+    const binding = preparedByPath.get(absolute(project.localPath, "Repository path"));
+    if (binding === undefined || binding.projectId !== uuid(project.projectId, "Project ID") || binding.remote !== repositoryIdentity(project.repoUrl)
+      || binding.repository !== repositoryKey(repository) || !prepared.has(binding.repository)) throw new Error("The repository worktree format has not been prepared.");
     return repository;
   };
   const manifestFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeManifest | null => {
@@ -472,13 +474,26 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   return {
     prepareRepository: (project: WorkerProject, operation: Operation) => tracked(operation, async scoped => {
       const key = absolute(project.localPath, "Repository path");
-      const prior = preparationByPath.get(key);
-      if (prior !== undefined) { const result = await prior; scoped.check(); return result; }
-      const previous = preparedByPath.get(key);
-      if (previous !== undefined) { prepared.delete(previous); preparedByPath.delete(key); }
-      const pending = manager.prepareRepository(project, scoped);
-      preparationByPath.set(key, pending);
-      try { const result = await pending; preparedByPath.set(key, repositoryKey(result)); return result; } finally { if (preparationByPath.get(key) === pending) preparationByPath.delete(key); }
+      const projectId = uuid(project.projectId, "Project ID"), remote = repositoryIdentity(project.repoUrl);
+      while (true) {
+        const prior = preparationByPath.get(key);
+        if (prior !== undefined) { await prior; scoped.check(); continue; }
+        const previous = preparedByPath.get(key);
+        if (previous !== undefined && previous.projectId === projectId && previous.remote === remote) {
+          const current = await inspectRepository(project, scoped);
+          scoped.check();
+          if (preparationByPath.has(key) || preparedByPath.get(key) !== previous) continue;
+          if (repositoryKey(current) === previous.repository && prepared.has(previous.repository)) return current;
+        }
+        if (previous !== undefined && preparedByPath.get(key) === previous) { prepared.delete(previous.repository); preparedByPath.delete(key); }
+        const pending = manager.prepareRepository(project, scoped);
+        preparationByPath.set(key, pending);
+        try {
+          const result = await pending;
+          preparedByPath.set(key, { repository: repositoryKey(result), projectId, remote });
+          return result;
+        } finally { if (preparationByPath.get(key) === pending) preparationByPath.delete(key); }
+      }
     }),
     prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped)),
     removeEmptyReservation: (project: WorkerProject, taskId: string, operation: Operation) => tracked(operation, scoped => manager.removeEmptyReservation(project, taskId, scoped)),

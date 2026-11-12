@@ -34,7 +34,12 @@ export const prepareWorkerWorktreeFormat = async (options: {
   const observeBackend = () => backend ??= (async () => {
     const journal = await exists(path.join(paths.workerDirectory, "herdr-executions.sqlite"));
     const legacySession = await exists(path.join(paths.herdrDirectory, "c", "herdr", "sessions", "w"));
-    const unfinishedLegacy = store.listUnfinishedTasks().some(task => task.projectId === project.projectId && task.agentControlMode !== "web");
+    const unfinishedLegacy = (await selected(store.listUnfinishedTasks().filter(task => task.agentControlMode !== "web"), async task => {
+      if (task.projectId === project.projectId) return true;
+      const binding = store.getProject(task);
+      if (binding === null) throw new Error("An unfinished Herdr task has no original repository binding.");
+      return sameRepository(binding.localPath);
+    })).length > 0;
     if (journal && options.platform !== "macos") throw new Error("A native Herdr lifecycle journal cannot be observed on this platform.");
     if (unfinishedLegacy && !journal && !legacySession) throw new Error("The original Herdr backend cannot be observed for worktree migration.");
     const herdr = journal || legacySession ? await options.getHerdr() : undefined;
