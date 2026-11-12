@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createOperation } from "../../../src/api/operation.js";
-import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
+import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsProcessQuery, decodeWindowsProcessQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
 
 const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
 
@@ -161,4 +161,51 @@ test.each(["win32", "linux"])("changes only the Windows query console flag and e
     expect(options).toMatchObject({ detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     expect(observations).toMatchObject([{ lastCheckpoint: "entry", closed: true, cleanupConfirmed: true }]);
   } finally { Object.defineProperty(process, "platform", descriptor); active.dispose(); }
+});
+
+
+const wmiBirth = "20260102030405.123456+060", wmiTicks = "639029162451234560";
+const wmiRow = (pid: number, patch: Partial<{ parent: string; executable: string; command: string; birth: string; ticks: string }> = {}) => {
+  const row = { parent: "400", executable: "C:\\task's 空间 📖\\native.exe", command: "native.exe --literal 'quoted'\nsecond line", birth: wmiBirth, ticks: wmiTicks, ...patch };
+  return [String(pid), row.parent, Buffer.from(row.executable).toString("base64"), Buffer.from(row.command).toString("base64"), row.birth, row.ticks].join("\t");
+};
+const wmiFrame = (rows = [wmiRow(401), wmiRow(402), wmiRow(403)]) => ["DAYNIGHT_WINDOWS_WMI_V1", Buffer.from("5.1.26100.33648").toString("base64"), ...rows].join("\n");
+
+test("decodes only original WMI processes with lossless Unicode, command lines and offset microsecond birth", () => {
+  const output = decodeWindowsProcessQuery(wmiFrame([wmiRow(401), wmiRow(402, { birth: "20260102010405.123456-060" }), wmiRow(403, { birth: "20260102020405.123456+000" })]), [401, 402, 403]);
+  expect(output.version).toBe("5.1.26100.33648"); expect(output.processes).toHaveLength(3);
+  expect(output.processes[0]).toEqual({ ProcessId: 401, ParentProcessId: 400, ExecutablePath: "C:\\task's 空间 📖\\native.exe", CommandLine: "native.exe --literal 'quoted'\nsecond line", CreationDate: wmiBirth, CreationDateTicks: wmiTicks });
+  expect(decodeWindowsProcessQuery(wmiFrame([wmiRow(403), wmiRow(401), wmiRow(402)]), [401, 402, 403]).processes.map(row => row.ProcessId)).toEqual([403, 401, 402]);
+});
+
+test.each([
+  [wmiRow(401), wmiRow(402)], [wmiRow(401), wmiRow(402), wmiRow(403), wmiRow(404)],
+  [wmiRow(401), wmiRow(401), wmiRow(403)], [wmiRow(401), wmiRow(402), wmiRow(404)],
+  [wmiRow(401, { parent: "-1" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { executable: "" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { executable: "relative.exe" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { executable: "\\rooted-but-unqualified.exe" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { command: "" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { command: "   " }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { birth: "20260102030405.******+060" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { birth: "20260230030405.123456+060" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401, { ticks: "639029162451234561" }), wmiRow(402), wmiRow(403)],
+  [wmiRow(401).replace(/\t[^\t]+$/, ""), wmiRow(402), wmiRow(403)],
+  [wmiRow(401).replace(Buffer.from("C:\\task's 空间 📖\\native.exe").toString("base64"), "/w=="), wmiRow(402), wmiRow(403)],
+].map(rows => [rows]))("rejects incomplete or inconsistent independent WMI fields without exposing process data (%#)", rows => {
+  const observations: WindowsQueryObservation[] = [{ stage: "processes", elapsedMs: 1, code: 0, killed: false, signal: null, stdoutBytes: 1, stderrBytes: 0, closed: true, cleanupConfirmed: true, errorType: null }];
+  let failure: unknown;
+  try { decodeWindowsProcessQuery(wmiFrame(rows), [401, 402, 403], observations); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error); expect((failure as Error).message).not.toContain("native.exe"); expect((failure as Error).cause).toBeUndefined();
+  expect(observations[0]).toMatchObject({ errorType: "InvalidWindowsProcesses", cleanupConfirmed: true, closed: true });
+});
+
+test.each([[401, 401, 403], [401, 402], [401, 402, -1], [401, 402, 4294967296], [401, 402, 3.5]].map(pids => [pids]))("refuses an unsafe or incomplete independent WMI target set (%j)", pids => {
+  expect(() => windowsProcessQuery(pids)).toThrow();
+  expect(() => decodeWindowsProcessQuery(wmiFrame(), pids)).toThrow();
+});
+
+
+test.each(["", wmiFrame().replace("DAYNIGHT_WINDOWS_WMI_V1", "private-header"), wmiFrame().replace(Buffer.from("5.1.26100.33648").toString("base64"), Buffer.from("7.4.0").toString("base64")), wmiFrame().replace(Buffer.from("C:\\task's 空间 📖\\native.exe").toString("base64"), "not-base64!")])("refuses an invalid WMI envelope or encoded field (%#)", output => {
+  expect(() => decodeWindowsProcessQuery(output, [401, 402, 403])).toThrow("independent Windows process proof is incomplete");
 });

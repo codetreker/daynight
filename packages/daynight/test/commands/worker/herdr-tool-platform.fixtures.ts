@@ -17,7 +17,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
-import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery } from "./windows-platform-query.fixtures.js";
+import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery, windowsProcessQuery, decodeWindowsProcessQuery } from "./windows-platform-query.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
@@ -192,8 +192,9 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     } else {
       const observerEnvironment = await prepareWindowsObserverEnvironment(root, process.env);
       const powershell = path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
-      const script = `[Console]::Error.WriteLine('DAYNIGHT_QUERY:entry'); [Console]::Error.Flush(); $ids=@(${before.shellPid},${receipt.helperPid},${receipt.childPid}); $all=@(Get-CimInstance Win32_Process); [Console]::Error.WriteLine('DAYNIGHT_QUERY:cim-complete'); [Console]::Error.Flush(); $selected=@($all | Where-Object {$ids -contains $_.ProcessId} | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate); [Console]::Error.WriteLine('DAYNIGHT_QUERY:projection-complete'); [Console]::Error.Flush(); $json=@{version=$PSVersionTable.PSVersion.ToString();processes=$selected} | ConvertTo-Json -Depth 4 -Compress; [Console]::Error.WriteLine('DAYNIGHT_QUERY:json-complete'); [Console]::Error.Flush(); $json`;
-      evidence.windowsProcesses = decodeWindowsPlatformJson("processes", await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
+      const processTargets = [before.shellPid, receipt.helperPid, receipt.childPid];
+      const script = windowsProcessQuery(processTargets);
+      evidence.windowsProcesses = decodeWindowsProcessQuery(await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), processTargets, evidence.cleanup.windowsQueries);
       evidence.windowsRootCommand = mapping.windowsCommand;
       const consoleScript = `[Console]::Error.WriteLine('DAYNIGHT_QUERY:entry'); [Console]::Error.Flush(); Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class NativeConsole { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint id); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); }'; [Console]::Error.WriteLine('DAYNIGHT_QUERY:type-complete'); [Console]::Error.Flush(); [NativeConsole]::FreeConsole() | Out-Null; $attached=[NativeConsole]::AttachConsole(${receipt.childPid}); $errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); [Console]::Error.WriteLine('DAYNIGHT_QUERY:attach-complete'); [Console]::Error.Flush(); $ids=New-Object uint[] 256; $count=if($attached){[NativeConsole]::GetConsoleProcessList($ids,256)}else{0}; $result=@{attached=$attached;errorCode=$errorCode;processIds=@($ids | Select-Object -First $count)}; [NativeConsole]::FreeConsole() | Out-Null; $json=$result | ConvertTo-Json -Compress; [Console]::Error.WriteLine('DAYNIGHT_QUERY:json-complete'); [Console]::Error.Flush(); $json`;
       evidence.windowsConsole = decodeWindowsPlatformJson("console", await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
@@ -240,6 +241,9 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     } else {
       assert.match(evidence.windowsProcesses.version, /^5\.1\./);
       const processes = evidence.windowsProcesses.processes;
+      // Both independent WMI observations retain microsecond precision. These
+      // tokens are not the production readiness reader's 100 ns FILETIME proof.
+      for (const row of processes) assert.equal(row.CreationDateTicks, allProcesses.find(process => process.pid === row.ProcessId)?.token, "The independent WMI process birth must match its original inventory identity.");
       assert.equal(processes.find((process: any) => process.ProcessId === before.shellPid).ExecutablePath.toLowerCase(), mapping.windowsCommand![0]!.toLowerCase());
       evidence.nativeExecutable = processes.find((process: any) => process.ProcessId === receipt.childPid).ExecutablePath;
       assert.equal(evidence.nativeExecutable.toLowerCase(), receipt.file.toLowerCase());

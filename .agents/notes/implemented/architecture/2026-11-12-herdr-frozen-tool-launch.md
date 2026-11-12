@@ -111,7 +111,7 @@ ownership could be established. It consumes the same
 [resolver](2026-11-11-worker-tool-path-resolution.md) without broadening loader
 recognition or changing upstream Herdr.
 
-Independent Windows CIM and console acceptance queries own their execution
+Independent Windows WMI and console acceptance queries own their execution
 environment. They inherit explicit system variables, use private user and
 temporary directories under the test root, and load system PowerShell 5 modules.
 Queries use non-detached children without `windowsHide`, which otherwise selects
@@ -119,9 +119,17 @@ Queries use non-detached children without `windowsHide`, which otherwise selects
 This matches the successful harness inventory's console creation flag without
 changing stdin handling. Fixed checkpoints locate stalled query stages; they
 neither establish the cause of a timeout nor replace OS results and close proof.
-Query semantics, original target PIDs, deadline and close requirements remain
-unchanged. ExternalScript discovery and official hook checks retain the native
-environment; an observer cannot repair or replace that environment.
+Process observation directly loads .NET `System.Management` and queries
+`Win32_Process` for exactly the original shell, helper and native PIDs. A fixed
+field envelope preserves parent IDs, executable paths, command lines, raw DMTF
+births and corresponding UTC ticks. Decoding validates complete unique rows and
+the raw birth/ticks relationship before comparing with the independent inventory.
+Those WMI tokens have microsecond precision and cannot replace the readiness
+check's full 100ns precision. All WMI objects, enumerator, collection and searcher
+must be disposed before output is published. Original target PIDs, deadline,
+console APIs and close requirements remain unchanged. ExternalScript discovery
+and official hook checks retain the native environment; an observer cannot repair
+or replace that environment.
 
 ## Alternatives
 
@@ -175,6 +183,14 @@ CIM queries timed out there while the same execution's harness-environment CIM
 inventory succeeded. The specific environment dependency was not established.
 The observer owns its own isolated Windows environment so its query dependencies
 do not alter the program under test or inherit Provider credentials.
+
+**Keep CimCmdlets as the process oracle.** Private observer directories and an
+ordinary console creation flag did not resolve its timeout. Fixed checkpoints
+showed that the script entered but `Get-CimInstance` did not return before the
+deadline; projection and JSON serialization had not started. Direct
+`System.Management` retains an independent OS/WMI observation without that cmdlet
+dependency. This does not identify the internal cause of its stall or relax the
+deadline and required identity fields.
 
 ## Consequences
 
