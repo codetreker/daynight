@@ -18,7 +18,9 @@ transaction DAOs, allowing code consumption and family creation to commit or
 roll back together. The grant retains the validated client snapshot, resource,
 scope and absolute expiry. Access authentication checks its resource and scope;
 the principal identifies the access credential while the MCP authority reference
-identifies the stable grant.
+identifies the stable grant. Nullable grant usage metadata persists independently
+of access and refresh rotation; its [persistence decision](2026-11-12-credential-usage-persistence.md)
+describes its write and lock isolation.
 
 The initial business adapters locked the access row without acquiring a grant
 lock in reverse order. Thread and Bot checks retain that protocol, and family

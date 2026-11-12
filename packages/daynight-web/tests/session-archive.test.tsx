@@ -45,6 +45,21 @@ it.each([false, true])('renders completed history without a live controller (sta
   await expect(f.client.cancel()).rejects.toThrow();
   expect(f.api.command).not.toHaveBeenCalled();
 });
+it('renders Daynight notifications from read-only archived history', async () => {
+  const f = fixture('archived', true);
+  vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, entries: [
+    { entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'user_message', origin: 'daynight', content: [{ type: 'text', text: 'Archived notification body.' }] },
+  ] });
+  await f.client.start();
+  const view = render(<SessionView userId={userId} client={f.client} active current />);
+  const details = screen.getByText('Daynight notification').closest('details')!;
+  expect(view.container.querySelector('.session-message.user_message')).toBeNull();
+  expect(screen.queryByText('Archived notification body.')).toBeNull();
+  details.open = true; fireEvent(details, new Event('toggle'));
+  expect(await screen.findByText('Archived notification body.')).toBeVisible();
+  expect(f.api.channel).not.toHaveBeenCalled();
+  expect(f.api.command).not.toHaveBeenCalled();
+});
 it.each([false, true])('allows reading resolved and expired requests in archived history (standalone=%s)', async standalone => {
   const f = fixture('archived', standalone);
   vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, entries: [

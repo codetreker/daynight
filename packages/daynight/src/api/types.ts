@@ -213,7 +213,7 @@ export type PullRequestProperty = {
   readonly title: string;
 };
 
-export type WorkerState = "active" | "released" | "completed";
+export type WorkerState = "active" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
 export type ThreadReadQuery = { readonly beforeId?: string; readonly afterId?: string; readonly count: number; readonly details: boolean };
 export type PostThreadMessageInput = { readonly body: string; readonly replyTo?: string; readonly claimId?: string };

@@ -362,3 +362,46 @@ it("does not publish an already-read preview after access is withdrawn before hy
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledOnce());
   expect(result.current).toMatchObject({ status: "error", snapshot: null });
 });
+
+it('retains a failed sync and an in-flight retry when cache events publish the authorized snapshot', async () => {
+  const cache = scope();
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(taskSyncFromGraph(graph(), { versionForTask: () => 1n })));
+  const { result } = mount(cache);
+  await waitFor(() => expect(result.current.snapshot?.revision).toBeGreaterThan(0));
+  const signal = new AbortController().signal;
+  const ticket = await cache.beginSync(projectId, signal);
+  const pending = deferred<TaskSync>();
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await pending.promise));
+  act(() => result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
+  expect(result.current.refreshing).toBe(true);
+
+  const ready = cache.ready.bind(cache); const release = deferred<void>(); const entered = deferred<void>();
+  const readySpy = vi.spyOn(cache, 'ready').mockImplementation(async (waitSignal) => { entered.resolve(); await release.promise; return ready(waitSignal); });
+  const authorized = vi.spyOn(cache, 'getAuthorizedProject');
+  act(() => cache.reportTaskNotFound(projectId));
+  await entered.promise;
+  const failure = new ApiError('network');
+  await act(async () => { pending.reject(failure); });
+  await waitFor(() => expect(result.current).toMatchObject({ status: 'ready', refreshing: false, error: failure }));
+  const beforeRelease = authorized.mock.calls.length;
+  await act(async () => { release.resolve(); });
+  await waitFor(() => expect(authorized.mock.calls.length).toBeGreaterThan(beforeRelease));
+  readySpy.mockRestore();
+  expect(result.current).toMatchObject({ status: 'ready', refreshing: false, error: failure });
+  expect(result.current.snapshot?.index.nodes.has(taskId)).toBe(true);
+
+  const retry = deferred<TaskSync>();
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(await retry.promise));
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.refreshing).toBe(true));
+  const beforeEvents = authorized.mock.calls.length;
+  act(() => {
+    cache.sessionHistorySettled(ticket, taskId, 'history-token', 'failed', signal);
+    cache.sessionHistoryCleared(ticket, taskId, 'history-token', signal);
+  });
+  await waitFor(() => expect(authorized.mock.calls.length).toBeGreaterThanOrEqual(beforeEvents + 2));
+  expect(result.current).toMatchObject({ status: 'ready', refreshing: true, error: failure });
+  await act(async () => { retry.resolve(sync(graph())); });
+  await waitFor(() => expect(result.current).toMatchObject({ status: 'ready', refreshing: false, error: null }));
+});

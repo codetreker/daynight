@@ -47,7 +47,7 @@ export const readWorkerClaim = (properties: TaskProperties): WorkerClaim | undef
   try { agent = validateWorkerAgentMode(data.agent, agentControlMode); } catch { return malformed(); }
   if (agentControlMode === "web" && data.herdr !== null) return malformed();
   return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
     agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),

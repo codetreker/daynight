@@ -40,8 +40,17 @@ retains CLI selection. The strict version-only CLI manifest exception remains.
 CI workflow, routing and unknown paths select every module, API integration and
 product E2E. Complete merge-base diffs retain deletions and both sides of renames;
 every main push runs them all. Final checks retain failure and cancellation
-propagation and explicitly require selected Go module, startup/shutdown, API,
-Web and product E2E jobs to succeed.
+propagation and explicitly require selected CLI, Go module, startup/shutdown,
+API, Web quality and product E2E jobs to succeed.
+
+This routing originally selected real-shell completion with CLI and assistant
+browser validation with Web. The
+[independent shell/browser workflow](2026-11-12-shell-browser-workflow.md)
+replaces that scheduling: both complete suites run on `main` pushes or manual
+dispatch, outside PR module selection and final `checks`. CLI completion unit
+tests and Web quality retain module selection. The new workflow file follows
+the existing CI-path rule and therefore selects all ordinary application jobs
+when changed in a PR; it does not add a selector exception or alter product E2E.
 
 The [README routing table](../../../../README.md#ci-selection) owns the directory
 map, and the [development guide](../../../../docs/development.md#ci-selection)
@@ -67,4 +76,6 @@ directory also changes in the PR. Production cross-client integration is checked
 by the independent E2E job when its inputs change. API integration validates the
 assembled Go API and its production Server build without coupling that build to
 module coverage. Mixed module changes still select every affected module, and
-unknown inputs retain full validation until their ownership is defined.
+unknown inputs retain full ordinary validation until their ownership is defined.
+Shell and assistant-browser regressions have no automatic per-PR hosted gate;
+their independent results belong to the integrated or manually selected revision.

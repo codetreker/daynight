@@ -555,14 +555,14 @@ describe("execution from current Herdr resources", () => {
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
   });
 
-  it.each(["missing", "released", "claim", "worker", "worktree", "local completed"])("does not ping when the original active ownership is %s", async (change) => {
+  it.each(["missing", "completed", "claim", "worker", "worktree", "local completed"])("does not ping when the original active ownership is %s", async (change) => {
     const f = await fixture("copilot", staleId);
     f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
     const original = readWorkerClaim(f.remoteTask.properties)!;
     f.readTask.mockImplementationOnce(async () => {
       if (change === "missing") delete f.remoteTask.properties.worker;
       else if (change === "local completed") f.store.completeTask(f.input.task);
-      else f.remoteTask.properties.worker = { ...original, ...(change === "released" ? { state: "released" } : change === "claim" ? { claimId: uuid(20) } : change === "worker" ? { workerId: uuid(21) } : { worktreeId: uuid(22) }) };
+      else f.remoteTask.properties.worker = { ...original, ...(change === "completed" ? { state: "completed" } : change === "claim" ? { claimId: uuid(20) } : change === "worker" ? { workerId: uuid(21) } : { worktreeId: uuid(22) }) };
       return f.remoteTask;
     });
     if (change === "local completed") await expect(f.driver.advance(f.input)).rejects.toThrow("already done");

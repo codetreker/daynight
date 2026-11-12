@@ -63,7 +63,7 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 	cause := &pgconn.PgError{Code: "08006", Message: "connection failure"}
 	fail := databaseStep{err: cause}
 	ok := databaseStep{}
-	grant := databaseStep{values: []any{"grant", "user", "client", []byte(`{}`), "resource", "scope", now.Add(-time.Hour), now.Add(time.Hour), nil}}
+	grant := databaseStep{values: []any{"grant", "user", "client", []byte(`{}`), "resource", "scope", now.Add(-time.Hour), now.Add(time.Hour), nil, nil}}
 	expiredClient := databaseStep{values: []any{"client", []byte(`{}`), now.Add(-9 * 24 * time.Hour), now.Add(-8 * 24 * time.Hour), now.Add(-24 * time.Hour)}}
 	activeClient := databaseStep{values: []any{"client", []byte(`{}`), now, now, now.Add(7 * 24 * time.Hour)}}
 	fresh := databaseStep{values: []any{now}}

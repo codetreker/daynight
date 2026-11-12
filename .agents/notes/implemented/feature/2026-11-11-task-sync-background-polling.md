@@ -36,4 +36,7 @@ the [list admission decision](../architecture/2026-11-08-task-sync-session-list.
 and unrelated features retain their own visibility rules. Each mounted tab still
 polls independently; no cross-tab leader is introduced. Five minutes is a nominal
 interval: browser throttling, freezing or discard can delay or prevent a read.
-Returning visible attempts a fresh read without replaying missed ticks.
+Returning visible attempts a fresh read without replaying missed ticks. A cache
+notification can update the displayed snapshot without proving a failed sync
+has recovered. Its asynchronous publication retains the current sync error and
+manual refresh state; a successful sync clears that error.

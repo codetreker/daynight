@@ -292,7 +292,6 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (worker?.state === "released" && parsed.status !== "todo" && parsed.status !== "cancelled") return malformed();
   return parsed;
 };
 

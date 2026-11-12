@@ -479,6 +479,13 @@ driver 错误或完整请求体。成功日志提供方法、路由模板、状�
 文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
 完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
 
+凭据使用记录器由 App 显式构造和启动，HTTP grace 期间继续接受已准入请求的事件。
+HTTP/relay 退出后 App 等待其他 producer，再 seal 并 join 记录器及其日志 consumer。
+App 的外层 `Drained()`/`Closed()` 错误分别表明整个应用已排空或已关闭，并保留原始 cause；
+Runtime 不从单个嵌套错误推断整体完成。完成但失败的 drain 不阻止依赖释放，未退出时则保留
+资源。persistence 通过原关闭 channel join pool，包括驱动异步清理，超时后继续等待同一次关闭。
+request-local 故障的前置发布、版本确认和异常兜底见[认证设计](daynight-auth.md#凭据使用记录器)。
+
 诊断服务失败时，先以响应 `requestId` 定位日志，再沿组件和阶段定位失败；数据库
 问题另外检查迁移版本及 PostgreSQL 日志。验收应通过非法状态、版本冲突和受控
 数据库故障确认错误码、日志关联和脱敏内容，不能只检查健康请求的输出。

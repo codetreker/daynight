@@ -3,7 +3,7 @@ import { summariesForGraph } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { TEST_VIEWER_ID, taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as rawRender, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, getTask, getTaskSync } from '../src/api/client';
@@ -13,6 +13,8 @@ import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
 import * as TaskAssigneeFilterModule from '../src/features/task-assignment/TaskAssigneeFilter';
 import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import { LocaleProvider } from '../src/i18n/LocaleProvider';
+import { TestTaskCacheBoundary } from './helpers/taskCache';
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
@@ -147,8 +149,8 @@ describe('project task views', () => {
     fireEvent.click(tab('standalone'));
     expect(row(singleId)).toBeNull();
     fireEvent.click(tab('goals'));
-    expect(document.getElementById(`project-goal-${goal}`)).toHaveTextContent('1 完成 · 1 取消');
-    expect(document.getElementById(`project-goal-${emptyGoal}`)).toHaveTextContent('0/0 已完成');
+    expect(document.getElementById(`project-goal-${goal}`)!.closest('.goal-list-row')).toHaveTextContent('1 完成 · 1 取消');
+    expect(document.getElementById(`project-goal-${emptyGoal}`)!.closest('.goal-list-row')).toHaveTextContent('0/0 已完成');
   });
 
   it('paginates Goal summaries by twenty without counting children', async () => {
@@ -157,12 +159,103 @@ describe('project task views', () => {
     graphRequest.mockResolvedValue(snapshot([...goals, ...children]));
     mount(); await findTab('chains'); fireEvent.click(tab('goals'));
     expect(document.querySelectorAll('.goal-list-row')).toHaveLength(20);
-    const first = [...document.querySelectorAll('.goal-list-row')].map((element) => element.id);
+    const first = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Goal分页' })).getByRole('button', { name: '下一页' }));
-    const second = [...document.querySelectorAll('.goal-list-row')].map((element) => element.id);
+    const second = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     expect(second).toHaveLength(1);
     expect(new Set([...first, ...second]).size).toBe(21);
+    const goalWithChildren = document.querySelector<HTMLElement>(`[data-goal-id="${goals[0]!.id}"]`)!;
+    fireEvent.click(goalWithChildren.querySelector('.goal-list-toggle')!);
+    expect(goalWithChildren.querySelectorAll('.standalone-row')).toHaveLength(25);
+    expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('filters typed Goals by their own status and assignee while retaining all children', async () => {
+    const goal = canonicalTask(500), excluded = canonicalTask(501), single = canonicalTask(1), chain = canonicalTask(2), member = canonicalTask(3);
+    graphRequest.mockResolvedValue(snapshot([
+      { ...seed(goal), type: 'goal' }, { ...seed(excluded, 'done'), type: 'goal' },
+      { ...seed(single, 'done'), parentId: goal, assignedTo: canonicalTask(900) },
+      { ...seed(chain, 'todo'), parentId: goal, assignedTo: canonicalTask(900) },
+      { ...seed(member, 'cancelled', [chain]), parentId: goal, assignedTo: canonicalTask(900) },
+    ]));
+    let changeAssignee!: Parameters<typeof TaskAssigneeFilterModule.TaskAssigneeFilter>[0]['onChange'];
+    const ActualFilter = TaskAssigneeFilterModule.TaskAssigneeFilter;
+    vi.spyOn(TaskAssigneeFilterModule, 'TaskAssigneeFilter').mockImplementation((props) => { changeAssignee = props.onChange; return <ActualFilter {...props} />; });
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    act(() => changeAssignee({ kind: 'unassigned' }));
+    expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
+    const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    expect(card.querySelector('.standalone-row')).toHaveTextContent(`任务 ${single}`);
+    fireEvent.click(card.querySelector('.root-toggle')!);
+    const children = [...card.querySelectorAll('.goal-task-main')];
+    expect(children).toHaveLength(2);
+    expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${member}`);
+    expect(document.querySelector(`[data-goal-id="${excluded}"]`)).toBeNull();
+  });
+
+  it('retains expanded Goals on a pending refresh and failure, then reflects changed Parent and dependencies on retry', async () => {
+    const goal = canonicalTask(500), other = canonicalTask(501), a = canonicalTask(1), b = canonicalTask(2), c = canonicalTask(3);
+    const initial = [{ ...seed(goal), type: 'goal' as const }, { ...seed(other), type: 'goal' as const },
+      { ...seed(a), parentId: goal }, { ...seed(b, 'todo', [a]), parentId: goal }, { ...seed(c), parentId: goal }];
+    const changed = initial.map((item) => item.id === b ? { ...item, parentId: other } : item.id === c ? { ...item, dependsOn: [a] } : item);
+    let resolve!: (value: TaskGraph) => void;
+    const pending = new Promise<TaskGraph>((done) => { resolve = done; });
+    graphRequest.mockResolvedValueOnce(snapshot(initial)).mockReturnValueOnce(pending).mockRejectedValueOnce(new Error('Refresh failed')).mockResolvedValue(snapshot(changed));
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
+    const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    fireEvent.click(toggle); fireEvent.click(card.querySelector('.root-toggle')!);
+    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2);
+    expect(card.querySelector('.standalone-row')).toHaveTextContent(`任务 ${c}`);
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2);
+    await act(async () => { resolve(snapshot(initial)); });
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '刷新失败' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
+    await waitFor(() => expect(card.querySelector('.standalone-row')).toBeNull());
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(card.querySelector('.root-toggle')).toHaveAttribute('aria-expanded', 'true');
+    const children = [...card.querySelectorAll('.goal-task-main')];
+    expect(children).toHaveLength(2);
+    expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${c}`);
+    expect(children.map((item) => item.textContent).join(' ')).not.toContain(`任务 ${b}`);
+  });
+
+  it('withdraws an expanded Goal on identity change and ignores the old identity’s late refresh', async () => {
+    const goal = canonicalTask(500), child = canonicalTask(1), newGoal = canonicalTask(501);
+    const initial = snapshot([{ ...seed(goal), type: 'goal' }, { ...seed(child), parentId: goal }]);
+    const replacement = snapshot([{ ...seed(newGoal), type: 'goal' }]);
+    let resolve!: (value: TaskGraph) => void;
+    const pending = new Promise<TaskGraph>((done) => { resolve = done; });
+    graphRequest.mockResolvedValueOnce(initial).mockReturnValueOnce(pending).mockResolvedValue(replacement);
+    const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const second = createTaskCacheScope({ userId: canonicalTask(999), onIdentityMismatch: vi.fn() });
+    const page = (scope: TaskCacheScope) => <LocaleProvider initial={{ locale: 'zh-CN', issue: null }}><TestTaskCacheBoundary scope={scope}><ProjectPage projectId={project} /></TestTaskCacheBoundary></LocaleProvider>;
+    try {
+      const view = rawRender(page(first), { container: root });
+      selectTasks(); await findTab('chains'); fireEvent.click(tab('goals'));
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
+      fireEvent.click(card.querySelector('.goal-list-toggle')!);
+      expect(card.querySelector('.standalone-row')).toBeVisible();
+      fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+      view.rerender(page(second));
+      expect(document.querySelector(`[data-goal-id="${goal}"]`)).toBeNull();
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+      await findTab('chains'); fireEvent.click(tab('goals'));
+      await waitFor(() => expect(document.querySelector(`[data-goal-id="${newGoal}"]`)).toBeVisible());
+      await act(async () => { resolve(initial); });
+      expect(document.querySelector(`[data-goal-id="${goal}"]`)).toBeNull();
+      expect(document.querySelector(`[data-goal-id="${newGoal}"]`)).toBeVisible();
+    } finally { first.dispose(); second.dispose(); }
   });
 
   it('restores focus to a current entry after a previous detail and cross-Goal graph navigation', async () => {
@@ -384,7 +477,7 @@ describe('project task views', () => {
     expect(header).toHaveAccessibleName(/自动执行中/);
     expect(graphRequest).toHaveBeenCalledTimes(1);
     expect(getTask).not.toHaveBeenCalled();
-    workerClaims.set(child, { ...claim, state: 'released' });
+    workerClaims.delete(child);
     graphRequest.mockResolvedValue(snapshot());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(header).not.toHaveAccessibleName(/自动执行中/));
@@ -1206,10 +1299,63 @@ describe('recent task browsing and pagination', () => {
     const source = canonicalTask(1), dependency = canonicalTask(3);
     graphRequest.mockResolvedValue(snapshot([seed(source), seed(canonicalTask(2), 'todo', [source, dependency], [dependency]), seed(dependency)]));
     mount(); await openChain(source);
+    const trigger = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
     await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expect(getTask).toHaveBeenCalledWith(project, dependency, expect.anything(), expect.anything());
+    vi.mocked(window.scrollTo).mockClear();
+    vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+    fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Goal list origin across external graph hops and a singleton detail', async () => {
+    const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2), external = canonicalTask(3), externalChild = canonicalTask(4), single = canonicalTask(5);
+    graphRequest.mockResolvedValue(snapshot([
+      { ...seed(goal), type: 'goal' }, { ...seed(source), parentId: goal },
+      { ...seed(child, 'todo', [source, external], [external]), parentId: goal },
+      seed(external), seed(externalChild, 'todo', [external, single], [single]), seed(single),
+    ]));
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    const goalRow = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
+    const toggle = goalRow.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    fireEvent.click(toggle);
+    const trigger = goalRow.querySelector<HTMLButtonElement>('.goal-graph-button')!;
+    fireEvent.click(trigger);
+    expect(await screen.findByTestId(`external-${external}`)).toBeVisible();
+    fireEvent.click(screen.getByTestId(`external-${external}`));
+    expect(await screen.findByTestId(`external-${single}`)).toBeVisible();
+    fireEvent.click(screen.getByTestId(`external-${single}`));
+    await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${single}`));
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(tab('goals')).toHaveAttribute('aria-selected', 'true');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('falls back to the visible chain list when a singleton origin disappears during refresh', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const source = canonicalTask(1), child = canonicalTask(2), dependency = canonicalTask(3);
+    const initial = [seed(source), seed(child, 'todo', [source, dependency], [dependency]), seed(dependency, 'done')];
+    const refreshed = initial.map((task) => task.id === source || task.id === child ? { ...task, status: 'done' as const } : task);
+    graphRequest.mockResolvedValueOnce(snapshot(initial)).mockResolvedValueOnce(snapshot(refreshed));
+    mount(); await findChainRow(source);
+    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    await openChain(source);
+    const trigger = chainGraphButton(source);
+    fireEvent.click(screen.getByTestId(`external-${dependency}`));
+    await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await waitFor(() => expect(trigger.isConnected).toBe(false));
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(document.getElementById('project-chain-list')).toHaveFocus());
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
   });
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {

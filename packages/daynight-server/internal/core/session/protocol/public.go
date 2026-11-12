@@ -223,7 +223,7 @@ func validateMessagePart(data json.RawMessage) bool {
 }
 
 var timelineExtras = map[string]schema{
-	"user_message":      {"content": many(validateMessagePart, 0, 1000, "")},
+	"user_message":      {"content": many(validateMessagePart, 0, 1000, ""), "origin": enum("user", "daynight")},
 	"assistant_message": {"content": many(validateMessagePart, 0, 1000, "")},
 	"reasoning":         {"text": emptyText},
 	"tool_call":         {"callId": key, "name": key, "input": emptyText, "output": many(validateMessagePart, 0, 1000, ""), "status": enum("running", "completed", "failed"), "truncated": boolean},

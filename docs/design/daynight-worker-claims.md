@@ -113,7 +113,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和�
 
 ## Web 归属展示与撤回
 
-任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；completed 不作为当前认领。现有 Web 仍可读取旧 released 表示，但服务端迁移后不再产生该状态。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。
+任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；completed 不作为当前认领。CLI 与 Web 严格拒绝旧 released 表示；无 worker 时沿用无当前归属与历史入口。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。
 
 原 owner/admin 可从“强制撤回”进入确认；其他成员只读归属。确认冻结完整 task/claim 和精确版本，说明回到 todo、清空归属与计时、关闭自动执行，以及远端 agent 无法保证立即停止。取消不提交，后台已知变化使确认失效。Web 通过既有 TaskDetailSession 串行提交，验证完整返回值再更新详情和图；版本冲突要求重新审阅，未知结果只用 GET 核对，不重发请求或把观察到的状态归因于未知写入。成员显示和按钮可见性不替代服务端权限校验。
 
@@ -137,4 +137,4 @@ jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.js
 
 ## 协议切换
 
-切换时先停止旧 Server 和参与管理的 Worker，停止旧 release 管理写入；执行迁移并启动新 Server 后，再运行同构建的 CLI。迁移锁不能阻止旧业务实例重新写入 released。迁移失败时事务与 checksum 回滚，不启动新业务；成功后不能恢复旧 release 写协议。已有 Web 读端接受无 worker，旧 CLI 的 release 响应校验不能与新 Server 混用。迁移覆盖可见、隐藏、删除和取消任务，保留状态、计时、普通材料及 Session/archive，并更新受影响任务版本、时间和项目同步 epoch。
+切换时先停止旧 Server 和参与管理的 Worker，停止旧 release 管理写入；执行迁移并启动新 Server 后，再运行同构建的 CLI。迁移锁不能阻止旧业务实例重新写入 released。迁移失败时事务与 checksum 回滚，不启动新业务；成功后不能恢复旧 release 写协议。Web 读端接受无 worker，旧 CLI 的 release 响应校验不能与新 Server 混用。部署严格读端前须完成服务端迁移；Web 升级 schema 11 后重建 Task 缓存。迁移覆盖可见、隐藏、删除和取消任务，保留状态、计时、普通材料及 Session/archive，并更新受影响任务版本、时间和项目同步 epoch。

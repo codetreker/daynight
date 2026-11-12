@@ -5,6 +5,7 @@ import { graph } from "./zh-CN/graph";
 import { platform } from "./zh-CN/platform";
 import { automation } from "./zh-CN/automation";
 import { inspection } from "./zh-CN/inspection";
+import { completion } from "./zh-CN/completion";
 import { execution } from "./zh-CN/execution";
 import { auth } from "./zh-CN/auth";
 import { setup } from "./zh-CN/setup";
@@ -23,6 +24,7 @@ export const zhCN: Messages = {
   setup,
   landing,
   execution,
+  completion,
   common: {
     retrySave: "重试保存语言",
     status: { proposed: "待确认", todo: "待处理", in_progress: "进行中", done: "已完成", cancelled: "已取消", ended: "已结束" },

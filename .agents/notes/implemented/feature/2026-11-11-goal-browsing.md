@@ -26,7 +26,14 @@ only its explicit members for progress, while the full component supplies worker
 indication, the representative supplies its title and a scoped member supplies
 the graph witness.
 Instance identities also separate DOM associations and Session visibility keys,
-without starting Session reads where no provider exists.
+without starting Session reads where no provider exists. Project Goal scoped
+chains use the existing page Session store and visibility registration, without
+additional HTTP reads. Project Goal rows
+share the same projection between summary and inline contents. Each row owns
+its Goal disclosure and retained chain disclosures, while the active category
+hosts one graph. The original source Goal and trigger remain separate from the
+current graph witness across navigation; visible fallbacks do not alter filters
+or pagination.
 The [Goal description tab decision](2026-11-12-goal-description-tab.md) separates
 description reading from Task browsing while retaining these owners. The
 [Web design](../../../../docs/design/daynight-web.md) describes the current
@@ -42,6 +49,10 @@ lose the original chain and edge classification.
 list ownership would be duplicated, and resource-based DOM identities would
 collide when one chain appears in several scopes. Shared rows preserve those
 responsibilities in their existing owners.
+
+**Embed Goal details in the list.** That would bring detail controllers, writes,
+attachments and drafts into each row, changing their lifetimes. Separate detail
+reading retains those owners while inline rows expose the scoped work.
 
 **Mount ordinary Task details and hide execution controls for Goals.** Their
 Session and Steps controllers would still start against a resource that does not

@@ -17,7 +17,10 @@ removes worker and sessionStartup. Session and archive history remain bound to
 their original identities. Ordinary eligibility and local resource barriers
 apply to the next claim. Existing released rows are converted transactionally,
 including hidden and deleted tasks, with task version and project cache epoch
-updates. The server and the CLI release response consumer switch together.
+updates. The server and the CLI release response consumer switch together. CLI
+and Web readers accept only active and completed states; schema 11 clears Task
+projections before strict parsing, preserving identity and profile stores. A full
+snapshot can rebuild the refetchable Session catalogue.
 
 This replaces the retained released state described by the [candidate](../bug-fix/2026-11-12-worker-released-candidates.md)
 and [resume retirement](2026-11-12-retire-worker-resume.md) decisions; their

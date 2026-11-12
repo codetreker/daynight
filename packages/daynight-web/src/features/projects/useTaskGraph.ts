@@ -58,10 +58,14 @@ export const useTaskGraph = (projectId: string) => {
   const observingHistory = useRef(false);
   const liveAccess = useRef(false);
   const receipt = useRef<{ observedAt: string; receivedMonotonic: number; receivedAt: number; revision: number } | null>(null);
-  const publish = useCallback((project: CachedProject) => {
+  const publish = useCallback((project: CachedProject, synced = false) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, summaries: project.summaries, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
+    setState((previous) => {
+      const current = previous.projectId === projectId && previous.scope === scope;
+      return { projectId, scope, snapshot: { graph: project.graph, index: project.index, summaries: project.summaries, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready",
+        refreshing: !synced && current ? previous.refreshing : false, error: !synced && current ? previous.error : null };
+    });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
     if (automatic && active.current !== null) return;
@@ -125,7 +129,7 @@ export const useTaskGraph = (projectId: string) => {
       }
       liveAccess.current = true;
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
-      publish(result.project);
+      publish(result.project, true);
     } catch (error) {
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch || isAbortError(error)) return;
       sessionStore.clear();

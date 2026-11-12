@@ -1,4 +1,5 @@
 import type { GraphTask } from "../../api/types";
+import { timestampNanoseconds } from "../../time/timestamp";
 
 export type ExecutionTask = Pick<GraphTask, "status" | "allowAgents" | "startedAt" | "completedAt" | "cancelledAt">;
 export type TaskExecution = {
@@ -9,11 +10,10 @@ export type TaskExecution = {
   readonly startedAt: string;
   readonly completedAt: string | null;
 };
-export type ClockInput = {
-  readonly observedAt: string | null;
-  readonly receivedMonotonic: number;
-  readonly warningMinutes: number;
-};
+export type ClockInput = { readonly warningMinutes: number } & (
+  | { readonly observedAt: string; readonly receivedMonotonic: number }
+  | { readonly observedAt: null; readonly localTime: number; readonly receivedMonotonic: number }
+);
 export type ClockSnapshot = {
   readonly serverMilliseconds: number | null;
   readonly warningMinutes: number;
@@ -58,60 +58,78 @@ const browserEnvironment: ClockEnvironment = {
   },
 };
 
-export const createTaskExecutionClock = (initial: ClockInput, environment: ClockEnvironment = browserEnvironment) => {
+export const createTaskExecutionClock = (initial: ClockInput | null, environment: ClockEnvironment = browserEnvironment) => {
   let anchor = initial;
-  const serverTime = () => anchor.observedAt === null ? null : Date.parse(anchor.observedAt) + environment.now() - anchor.receivedMonotonic;
-  let clock: ClockSnapshot = {
-    serverMilliseconds: serverTime(),
-    warningMinutes: initial.warningMinutes,
-  };
-  let warning: WarningSnapshot = { warningMinutes: initial.warningMinutes };
+  let anchorNanoseconds = anchor === null ? null : anchor.observedAt === null
+    ? BigInt(anchor.localTime) * 1_000_000n : timestampNanoseconds(anchor.observedAt);
+  let clock: ClockSnapshot | null = null;
+  let warning: WarningSnapshot | null = null;
+  let completionNow: bigint | null = null;
   const runningListeners = new Set<() => void>();
+  const completionListeners = new Set<() => void>();
   const settingsListeners = new Set<() => void>();
   let mounted = false;
   let timer: Timer | null = null;
   let releaseVisibility: (() => void) | null = null;
 
-  const publishClock = () => {
-    const serverMilliseconds = serverTime();
-    if (serverMilliseconds === clock.serverMilliseconds && anchor.warningMinutes === clock.warningMinutes) return;
-    clock = { serverMilliseconds, warningMinutes: anchor.warningMinutes };
-    for (const listener of [...runningListeners]) listener();
+  // Publish all samples before notifying any consumer, so a receipt is atomic.
+  const publish = () => {
+    const now = anchor === null ? null : environment.now();
+    const elapsed = anchor === null ? null : now! - anchor.receivedMonotonic;
+    const serverMilliseconds = anchor?.observedAt == null ? null : Date.parse(anchor.observedAt) + elapsed!;
+    const nextCompletion = anchorNanoseconds === null ? null : anchorNanoseconds + BigInt(Math.trunc(elapsed! * 1_000_000));
+    const nextWarning = anchor === null ? null : anchor.warningMinutes;
+    const clockChanged = anchor === null ? clock !== null : clock === null || clock.serverMilliseconds !== serverMilliseconds || clock.warningMinutes !== nextWarning;
+    const warningChanged = nextWarning === null ? warning !== null : warning === null || warning.warningMinutes !== nextWarning;
+    const completionChanged = completionNow !== nextCompletion;
+    if (clockChanged) clock = anchor === null ? null : { serverMilliseconds, warningMinutes: anchor.warningMinutes };
+    if (warningChanged) warning = nextWarning === null ? null : { warningMinutes: nextWarning };
+    completionNow = nextCompletion;
+    if (clockChanged) for (const listener of [...runningListeners]) listener();
+    if (warningChanged) for (const listener of [...settingsListeners]) listener();
+    if (completionChanged) for (const listener of [...completionListeners]) listener();
   };
-  const onVisibility = () => { if (environment.visible()) publishClock(); synchronizeActivity(); };
+  const onVisibility = () => { if (environment.visible()) publish(); synchronizeActivity(); };
   const synchronizeActivity = () => {
-    const active = mounted && runningListeners.size > 0 && anchor.observedAt !== null;
+    const active = mounted && anchor !== null && (completionListeners.size > 0 || (runningListeners.size > 0 && anchor.observedAt !== null));
     if (active && releaseVisibility === null) releaseVisibility = environment.listen(onVisibility);
     if (!active && releaseVisibility !== null) { releaseVisibility(); releaseVisibility = null; }
     if (!active || !environment.visible()) {
       if (timer !== null) environment.cancel(timer);
       timer = null;
-    } else if (timer === null) timer = environment.schedule(publishClock);
+    } else if (timer === null) timer = environment.schedule(publish);
   };
   const subscribeRunning = (listener: () => void) => {
     runningListeners.add(listener);
-    publishClock();
+    publish();
     synchronizeActivity();
     return () => { runningListeners.delete(listener); synchronizeActivity(); };
+  };
+  const subscribeCompletion = (listener: () => void) => {
+    completionListeners.add(listener);
+    publish();
+    synchronizeActivity();
+    return () => { completionListeners.delete(listener); synchronizeActivity(); };
   };
   const subscribeSettings = (listener: () => void) => {
     settingsListeners.add(listener);
     return () => { settingsListeners.delete(listener); };
   };
-  const update = (input: ClockInput) => {
+  const update = (input: ClockInput | null) => {
     anchor = input;
-    const changed = input.warningMinutes !== warning.warningMinutes;
-    if (changed) warning = { warningMinutes: input.warningMinutes };
-    publishClock();
+    anchorNanoseconds = input === null ? null : input.observedAt === null
+      ? BigInt(input.localTime) * 1_000_000n : timestampNanoseconds(input.observedAt);
+    publish();
     synchronizeActivity();
-    if (changed) for (const listener of [...settingsListeners]) listener();
   };
   const mount = () => {
     mounted = true;
     synchronizeActivity();
     return () => { mounted = false; synchronizeActivity(); };
   };
-  return { getSnapshot: () => clock, getWarningSnapshot: () => warning, subscribeRunning, subscribeSettings, update, mount };
+  publish();
+  return { getSnapshot: () => clock, getWarningSnapshot: () => warning, getCompletionNow: () => completionNow,
+    subscribeRunning, subscribeCompletion, subscribeSettings, update, mount };
 };
 
 export type TaskExecutionClock = ReturnType<typeof createTaskExecutionClock>;

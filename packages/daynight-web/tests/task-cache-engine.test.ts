@@ -838,7 +838,7 @@ it("merges ownership within one epoch and replaces restored history without pers
 });
 
 it('publishes claim changes and removal only within the authorized user and project generation', async () => {
-  const worker = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: taskId(101), state, userId, workerId: taskId(102), machine: { id: taskId(103), name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId(104), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  const worker = (name: string, state: 'active' | 'completed') => ({ claimId: taskId(101), state, userId, workerId: taskId(102), machine: { id: taskId(103), name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId(104), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
   const cache = scope();
   const initial = await seed(cache, [task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]);
   expect(initial.project.workerMachines.get(taskId(1))?.machine.name).toBe('first');

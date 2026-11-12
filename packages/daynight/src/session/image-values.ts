@@ -102,6 +102,7 @@ export type ImageInputPart = {
   readonly byteLength: string;
 };
 export type SessionInput = {
+  readonly origin?: import("./protocol.js").MessageOrigin;
   readonly content: readonly (TextPart | ImageInputPart)[];
   readonly expectedTurnId: string | null;
   readonly target?: ImageTarget;
@@ -432,7 +433,9 @@ export const parseSessionInput = (
   );
   const o = imageObject(
     v,
-    hasImages
+    [
+      ...(Object.hasOwn(raw, "origin") ? ["origin"] : []),
+      ...(hasImages
       ? [
           "content",
           "expectedTurnId",
@@ -441,7 +444,8 @@ export const parseSessionInput = (
           "draftId",
           "draftRevision",
         ]
-      : ["content", "expectedTurnId"],
+      : ["content", "expectedTurnId"]),
+    ],
   );
   const content = raw.content.map((p: unknown) =>
     p && typeof p === "object" && "type" in p && p.type === "image"
@@ -449,7 +453,8 @@ export const parseSessionInput = (
       : parseText(p),
   );
   const expectedTurnId = nullable(o.expectedTurnId, (v) => imageText(v, 256));
-  if (!hasImages) return { content, expectedTurnId };
+  const origin = Object.hasOwn(o, "origin") ? { origin: choice(o.origin, ["user", "daynight"] as const) } : {};
+  if (!hasImages) return { content, expectedTurnId, ...origin };
   let total = 0n;
   const images = content.filter((p): p is ImageInputPart => p.type === "image");
   if (
@@ -469,6 +474,7 @@ export const parseSessionInput = (
   return {
     content,
     expectedTurnId,
+    ...origin,
     target: parseImageTarget(o.target),
     expectedImageCapabilityRevision: imageDecimal(
       o.expectedImageCapabilityRevision,
@@ -801,6 +807,10 @@ export const parseImageBudget = (v: unknown): ImageBudget => {
 /** Canonical new operation bytes retain array order and explicit nulls. Old operation hashes are never recomputed. */
 export const canonicalSessionIntent = (command: SessionCommand): string => {
   const { requestId, ...intent } = command;
+  if (intent.kind === "send_message" && intent.payload.origin === "user") {
+    const { origin: _origin, ...payload } = intent.payload;
+    return canonicalImageJson({ ...intent, payload });
+  }
   return canonicalImageJson(intent);
 };
 export const canonicalImageJson = (v: unknown): string => {

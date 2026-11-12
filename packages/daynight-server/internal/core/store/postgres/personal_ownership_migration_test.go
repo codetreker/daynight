@@ -53,6 +53,9 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 		if table == "tasks" {
 			projection = preCancellationTaskJSON
 		}
+		if table == "personal_access_tokens" {
+			projection = `(to_jsonb(t)-'last_used_at')`
+		}
 		if table == "projects" {
 			// Later lifecycle migrations add a nullable field; compare all original
 			// columns while checking that field separately after the full upgrade.

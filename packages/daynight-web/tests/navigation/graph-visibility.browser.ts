@@ -62,6 +62,8 @@ test('bounded graph expansion preserves focus and resets the visible set and vie
 });
 
 test('expanded graph survives failed refresh and content updates without stealing detail focus', async ({ page }) => {
+  // Keep the periodic refresh from racing this explicit failure and retry.
+  await page.addInitScript(() => Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 300_000 }));
   const state = await install(page); await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click(); await page.locator(`#task-chain-graph-${rootId}`).click();
   const join = page.locator(`.react-flow__node[data-id="${joinId}"]`), body = join.locator('.task-node-body');
@@ -80,7 +82,7 @@ test('expanded graph survives failed refresh and content updates without stealin
   state.tasks = state.tasks.map(task => task.id === revised.id ? { ...task, title: 'Updated successor', version: 2n, updatedAt: '2027-01-01T10:00:00Z' } : task);
   state.fail = false;
   const success = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
-  await page.locator('.snapshot-error').getByRole('button', { name: 'Retry refresh', exact: true, includeHidden: true }).evaluate((element: HTMLButtonElement) => element.click()); await success;
+  await page.locator('.snapshot-error button').filter({ hasText: 'Retry refresh' }).evaluate((element: HTMLButtonElement) => element.click()); await success;
   await expect(page.locator('.snapshot-error')).toHaveCount(0); await expect(close).toBeFocused();
   await expect(page.locator(`.react-flow__node[data-id="${revised.id}"]`)).toContainText('Updated successor');
   expect(await visible(page)).toEqual(ids); await expect(body).toHaveAttribute('aria-pressed', 'true'); await expect(viewport).toHaveAttribute('style', transform!);
@@ -114,7 +116,7 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
       detailFixture(projectId, child, { title: `Result ${position + 1}`, status: 'done', ready: false, assignedTo,
         dependsOn: position === 0 ? [root, id(4)] : [root], externalDependsOn: position === 0 ? [id(4)] : [] })];
   }).flat();
-  const waiting = Array.from({ length: 16 }, (_, position) => {
+  const waiting = Array.from({ length: 21 }, (_, position) => {
     const root = id(2000 + position * 2);
     return [detailFixture(projectId, root, { title: `Waiting Goal ${position}` }),
       detailFixture(projectId, id(2001 + position * 2), { title: `Waiting child ${position}`, dependsOn: [root], blockedBy: [root], ready: false })];
@@ -188,4 +190,11 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-title')).toHaveText('Standalone prerequisite');
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
+  await page.locator('.task-detail-dialog').getByRole('button', { name: 'Close task details', exact: true }).click();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => scrollY)).toBe(320);
+  await expect(original).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveValue(status);
+  await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
+  await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
 });

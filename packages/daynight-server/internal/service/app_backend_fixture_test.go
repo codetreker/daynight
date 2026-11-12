@@ -605,6 +605,11 @@ func (s unexpectedAppTransactions) WriteBot(context.Context, func(store.BotScope
 	var value0 store.Completion
 	return value0, failure
 }
+func (s unexpectedAppTransactions) WriteCredentialUsage(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
+	failure := s.backend.unexpected("WriteCredentialUsage")
+	return store.Completion{}, failure
+}
+
 func (s unexpectedAppTransactions) WriteCredentialFamily(context.Context, func(store.CredentialFamilyScope) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteCredentialFamily")
 	var value0 store.Completion
