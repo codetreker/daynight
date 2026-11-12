@@ -67,6 +67,9 @@ func (op *Operation) LockArchiveTask(ctx context.Context, scope store.SessionSco
 }
 
 func (op *Operation) LockCredential(ctx context.Context, scope store.SessionScope, p model.Principal) error {
+	if p.Kind == model.OAuthCredential {
+		return op.lockOAuthCredential(ctx, scope, p, false)
+	}
 	s, tx := op.scoped(scope)
 	return credential(ctx, tx, p, s.now())
 }

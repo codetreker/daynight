@@ -28,7 +28,7 @@ describes its write and lock isolation.
 The initial business adapters locked the access row without acquiring a grant
 lock in reverse order. Thread and Bot checks retain that protocol, and family
 revocation locks the grant and invalidates access rows in one transaction. Task
-Session send and receipt checks use the later
+Session purpose checks use the later
 [grant-before-token protocol](../bug-fix/2026-11-10-task-oauth-family-locks.md):
 their dispatch path reauthorizes an original Actor after acquiring the Session,
 so token-only locking can deadlock with partial deletion of a rotated family.

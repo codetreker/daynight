@@ -40,7 +40,7 @@ HTTP 沿用原 Task Session commands POST 的 202 合同；其他 POST 的成功
 
 MCP 的 WriteOutcome 表示本次服务写入事实，data.operation.state 表示原生操作事实，不能相互代替。unknown、输出失败和 not_found 都保留原资源 refs，并指引查询原 ID；只读 receipt 查询不制造写提交结果。严格公开 schema 与实际协议输出相符，读取遵守仓库既有编码规则。
 
-PAT 与 OAuth 保留真实凭据、scope、有效期、撤销、项目权限和 Session owner 约束。OAuth 仅按 Task 普通 send_message 与 receipt 用途开放，不扩展 Controller、Test/Bot、其他命令或上传边界。已受理但未派发的操作以持久原 Actor 重新授权；撤权后不得继续派发，已经发生的派发事实不能被撤权抹去。
+PAT 与 OAuth 保留真实凭据、scope、有效期、撤销、项目权限和 Session owner 约束。固定 API OAuth profile 可进入现有用户 Session 命令、控制、内容与回执用途；MCP OAuth 仍仅按原 Task 普通 send_message 与 receipt 用途进入命令路径。两者均不获得 Controller 注册、grant、生产 channel 或归档上传及完成权限。已受理但未派发的操作以持久原 Actor 的 user UUID、access UUID 和 kind 重新授权；用途由实际操作确定，不能继承外层 Controller 或当前请求的权限。Refresh 后的新 access 可以按原用户和意图规则查询 receipt，不能替换原 Actor、恢复失效凭据或重放原命令。撤权后不得继续派发，已经发生的派发事实不能被撤权抹去。
 
 ## 验证职责
 

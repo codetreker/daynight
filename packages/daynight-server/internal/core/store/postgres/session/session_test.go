@@ -35,8 +35,14 @@ func TestSessionStore(t *testing.T) {
 	suite.run(t, "SessionListOnlineFiltersBeforePagination", testSessionListOnlineFiltersBeforePagination)
 	suite.run(t, "SessionListParentOwnershipAndTiedCursor", testSessionListParentOwnershipAndTiedCursor)
 	suite.run(t, "SessionListExcludesBotSessionsBeforePagination", testSessionListExcludesBotSessionsBeforePagination)
-	suite.run(t, "TaskOAuthCredentialRechecksGrantAndToken", testTaskOAuthCredentialRechecksGrantAndToken)
-	suite.run(t, "SessionOperationRetainsOriginalOAuthActorAfterRevocation", testSessionOperationRetainsOriginalOAuthActorAfterRevocation)
+	for _, profile := range []string{"mcp", "api"} {
+		suite.run(t, "TaskOAuthCredentialRechecksGrantAndToken/"+profile, func(t *testing.T, db *postgres.Store) { testTaskOAuthCredentialRechecksGrantAndToken(t, db, profile) })
+	}
+	for _, profile := range []string{"mcp", "api"} {
+		suite.run(t, "SessionOperationRetainsOriginalOAuthActorAfterRevocation/"+profile, func(t *testing.T, db *postgres.Store) {
+			testSessionOperationRetainsOriginalOAuthActorAfterRevocation(t, db, profile)
+		})
+	}
 	suite.run(t, "ObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites/pat", func(t *testing.T, db *postgres.Store) {
 		testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t, db, model.PATCredential)
 	})

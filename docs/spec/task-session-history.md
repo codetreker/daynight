@@ -22,7 +22,7 @@ live 和 archive 游标分域；首次读取按真实可用来源选择，续页
 
 ## 权限与兼容
 
-每一页和每一个正文块重新检查真实凭据、Task 访问和 Session 归属。OAuth 仅用于本范围的 Task 读取，不扩大 Controller 注册、上传、Bot/Test 或写入权限。历史读取不因原 claim 结束而改投新 Session。
+每一页和每一个正文块重新检查真实凭据、Task 访问和 Session 归属。固定 API OAuth profile 可读取现有用户 Session 内容与可读归档；MCP OAuth 保持本范围内原 Task 读取子集，归档用途仅限原 Task ArchiveV1Read。独立 Test/Bot Session 的用户读取仍要求 owner 及原 parent PAT 有效，Task 读取仍要求项目权限与原资源绑定。Controller 注册、生产上传和归档完成保留原凭据条件。历史读取不因原 claim 结束而改投新 Session。
 
 Controller 每次 WebSocket 握手声明内容读取版本，能力只绑定该连接产生的新 fence。未声明的连接不收到新请求；重连未声明会清除旧能力。旧 Controller 的短条目可用既有显示接口读取，`display_budget_exceeded` 必须明确要求升级，不能作为完整原文。
 

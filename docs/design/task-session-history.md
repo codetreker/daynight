@@ -32,7 +32,7 @@ MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳�
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 
-Task 内容读取使用单独的授权目的，允许真实 PAT/OAuth 凭据并逐页、逐块重新检查。Controller、归档上传、Bot/Test 和其他命令的原有准入不扩大。网络内容等待后再次授权，并拒绝变化的 fence/epoch。pending、缺件、损坏、来源变化、空历史与可证明的覆盖缺口保留独立结果，不把无法判断的完整性当作已验证事实。
+Task 内容读取使用单独的授权目的，允许真实 PAT、browser Session 以及固定 API/MCP OAuth binding，并逐页、逐块重新检查。SessionDAO 在原事务中委托 family DAO；API 必须匹配配置 Origin 下的 API resource、daynight:api scope 和 societas-bot client，MCP 保留原 Task 读取子集。可读归档预检保留原 WriteSession 的 READ COMMITTED 事务作用域，其中 ReadOAuthCredential 使用无行锁查询；API 可进入既有用户可读归档，MCP 仅可进入原 Task ArchiveV1Read。实际 IO 准入再次使用原 scope、权限及锁序；独立 Session 保留 owner 与 parent PAT 检查。Controller 注册、生产 channel、归档上传与完成仍使用原生产者条件。网络内容等待后再次授权，并拒绝变化的 fence/epoch。pending、缺件、损坏、来源变化、空历史与可证明的覆盖缺口保留独立结果，不把无法判断的完整性当作已验证事实。
 
 ## 客户端与验证
 
