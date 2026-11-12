@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import stateVector from "../../session/fixtures/runtime-image-state.json" with { type: "json" };
 import { parseControllerState } from "../../../src/session/controller-protocol.js";
 const f = vi.hoisted(() => ({ callbacks: null as any, options: null as any, acquire: vi.fn(), send: vi.fn(), receipt: vi.fn(), order: [] as string[], state: "accepted", revision: "1", turn: null as string | null, actualState: false, storageFault: false, nativeClose: vi.fn(), journalClose: vi.fn(), mediaClose: vi.fn(), publication: vi.fn(), query: vi.fn(), patch: vi.fn(), intent: vi.fn(), adopt: vi.fn(), current: vi.fn() }));
+vi.mock("../../../src/commands/controller/storage-lock.js", () => ({ acquireControllerStoragePermit: () => ({ journalFile: "/private/controller/journal.sqlite", owner: "fixture", release: () => {} }), controllerStorageConnectionIsOpen: () => false, isControllerStorageLockHeld: () => false }));
+vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: () => ({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false }) }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (v: string) => v, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: () => { const s: any = new EventEmitter(); s.listen = (_: unknown, cb: () => void) => queueMicrotask(cb); s.close = () => {}; return s; } }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: "codex", cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null }), controllerExecutionDirectory: () => "/private/controller" }));
@@ -64,7 +66,7 @@ test("an unresolved publication transaction still closes the native provider and
   f.mediaClose.mockRejectedValueOnce(new Error("Controlled media close failure"));
   const result = f.options.imageRuntime.publishNativeInputAssociation({});
   expect(result.state).toBe("unknown");
-  await c.running;
+  await expect(c.running).rejects.toThrow("Controlled media close failure");
   expect(f.nativeClose).toHaveBeenCalledOnce();
   expect(f.mediaClose).toHaveBeenCalledOnce();
   expect(f.journalClose).toHaveBeenCalledOnce();

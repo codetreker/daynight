@@ -44,7 +44,7 @@ describe("relay transport persistence", () => {
       journal.close(); journal = undefined;
       if (process.platform === "win32") {
         const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-        try { await recordStoppedControllerGeneration(filename, original, undefined, {} as ControllerJobLease); } finally { confirm.mockRestore(); }
+        try { await recordStoppedControllerGeneration(filename, original, { stateDirectory: path.dirname(filename), jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
       }
       const ticket = { ...original, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeSessionId };
       journal = openControllerLifecycleStore(filename, ticket);

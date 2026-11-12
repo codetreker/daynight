@@ -1,17 +1,24 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import path from "node:path";
-const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
+const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
+const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
+vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
+vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: (...args: unknown[]) => storage.prepare(...args) }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
-vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
+vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.serverCreate(); fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
-vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => fixture.journal() }));
-const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
+vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => { storage.open(...args); return fixture.journal(); } }));
+const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), coordinatorCreate: vi.fn(), coordinatorStop: vi.fn(async () => {}), pipelineCreate: vi.fn(), pipelineStop: vi.fn(async () => {}), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
 vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
-vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: async () => {}, invalidate: () => {} }; } }));
-vi.mock("../../../src/commands/controller/markdown/pipeline.js", () => ({ createMarkdownTimelinePipeline: ({ journal }: { journal: { projectTimeline(entry: unknown): void } }) => ({ accept: (entry: unknown) => journal.projectTimeline(entry), tick: async () => {}, stop: async () => {} }) }));
+vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorCreate(); externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: externalRuntime.coordinatorStop, invalidate: () => {} }; } }));
+vi.mock("../../../src/commands/controller/markdown/pipeline.js", () => ({ createMarkdownTimelinePipeline: ({ journal }: { journal: { projectTimeline(entry: unknown): void } }) => { externalRuntime.pipelineCreate(); return { accept: (entry: unknown) => journal.projectTimeline(entry), tick: async () => {}, stop: externalRuntime.pipelineStop }; } }));
+vi.mock("../../../src/commands/controller/media/capture.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../../../src/commands/controller/media/capture.js")>();
+  return { ...original, createControllerCaptureBridge: (...args: Parameters<typeof original.createControllerCaptureBridge>) => { fixture.captureCreate(); return original.createControllerCaptureBridge(...args); } };
+});
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
-vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> }) => { fixture.relayCallbacks = callbacks; return { flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
+vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
 vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
@@ -25,9 +32,21 @@ import { runController } from "../../../src/commands/controller/runtime.js";
 afterEach(() => { toolSelectionFixture.read = null; });
 afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.close.mockReset(); externalRuntime.close.mockResolvedValue(); vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
+  fixture.synchronousRelay = false;
+  fixture.serverCreate.mockReset(); fixture.relayCreate.mockReset(); fixture.captureCreate.mockReset();
+  fixture.serverClose.mockReset(); fixture.serverClose.mockImplementation(() => { storage.order.push("server"); });
+  fixture.relayClose.mockReset(); fixture.relayClose.mockImplementation(() => { storage.order.push("relay"); });
+  externalRuntime.create.mockReset(); externalRuntime.coordinatorCreate.mockReset(); externalRuntime.pipelineCreate.mockReset();
+  externalRuntime.coordinatorStop.mockReset(); externalRuntime.coordinatorStop.mockImplementation(async () => { storage.order.push("captures"); });
+  externalRuntime.pipelineStop.mockReset(); externalRuntime.pipelineStop.mockImplementation(async () => { storage.order.push("pipeline"); });
+  storage.order.length = 0;
+  storage.release.mockReset(); storage.release.mockImplementation(() => { storage.order.push("permit"); });
+  storage.acquire.mockReset(); storage.acquire.mockImplementation((journalFile: string) => ({ journalFile, owner: "fixture", release: storage.release }));
+  storage.prepare.mockReset(); storage.prepare.mockReturnValue({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+  storage.open.mockReset(); storage.open.mockImplementation(() => { storage.order.push("journal-open"); });
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
-  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; } });
+  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
   fixture.capture.mockResolvedValue({ pid: 1 });
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
@@ -50,7 +69,7 @@ test("stop during process-proof initialization never starts a native writer afte
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
   await vi.waitFor(() => expect(fixture.capture).toHaveBeenCalledOnce());
   process.emit("SIGTERM", "SIGTERM"); captured({ pid: 1 });
-  await running; expect(fixture.open).not.toHaveBeenCalled(); expect(fixture.closed).toBe(true);
+  await running; expect(fixture.open).not.toHaveBeenCalled(); expect(storage.open).not.toHaveBeenCalled(); expect(storage.release).toHaveBeenCalledOnce();
 });
 
 test("stop while reading the frozen tool selection prevents a later provider start", async () => {
@@ -307,7 +326,184 @@ test("an external producer close failure cannot skip provider and journal cleanu
   externalRuntime.close.mockRejectedValueOnce(new Error("External policy close failed"));
   const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
-  try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); process.emit("SIGTERM", "SIGTERM"); await running; }
+  try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); process.emit("SIGTERM", "SIGTERM"); await expect(running).rejects.toThrow("External policy close failed"); }
   finally { log.mockRestore(); }
   expect(fixture.close).toHaveBeenCalledOnce(); expect(fixture.relayClose).toHaveBeenCalledOnce(); expect(fixture.closed).toBe(true);
+});
+
+
+test("commits the captured Controller proof through the journal constructor before connecting a relay or starting a provider", async () => {
+  setup(); fixture.synchronousRelay = true;
+  const proof = { pid: 321, startedAt: "original-controller" };
+  fixture.capture.mockResolvedValue(proof);
+  fixture.relayCreate.mockImplementation(() => {
+    expect(storage.open).toHaveBeenCalledWith(path.join("/private/controller", "journal.sqlite"), expect.objectContaining({ launchId: "launch" }), expect.objectContaining({ controllerProcess: proof, storagePermit: expect.objectContaining({ owner: "fixture" }) }));
+  });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); }
+  finally { process.emit("SIGTERM", "SIGTERM"); await running; }
+  expect(storage.prepare).toHaveBeenCalledWith(expect.objectContaining({ mode: "writer", journalFile: path.join("/private/controller", "journal.sqlite"), ticket: expect.objectContaining({ launchId: "launch" }) }), expect.objectContaining({ owner: "fixture" }));
+  expect(storage.order.at(-1)).toBe("permit");
+  expect(storage.order.indexOf("journal")).toBeGreaterThan(storage.order.indexOf("relay"));
+});
+
+test.each(["proof", "journal", "capture", "external", "coordinator", "pipeline", "relay", "server", "provider"] as const)("%s construction failure closes every earlier owner before releasing storage", async stage => {
+  setup();
+  const error = new Error(`${stage} constructor failed`);
+  const constructor = { proof: fixture.capture, journal: storage.open, capture: fixture.captureCreate, external: externalRuntime.create, coordinator: externalRuntime.coordinatorCreate, pipeline: externalRuntime.pipelineCreate, relay: fixture.relayCreate, server: fixture.serverCreate, provider: fixture.open }[stage];
+  constructor.mockImplementationOnce(() => { throw error; });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try { await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(error); }
+  finally { log.mockRestore(); }
+  expect(storage.release).toHaveBeenCalledOnce();
+  expect(storage.order.at(-1)).toBe("permit");
+  expect(fixture.closed).toBe(!["proof", "journal"].includes(stage));
+  expect(externalRuntime.close).toHaveBeenCalledTimes(["coordinator", "pipeline", "relay", "server", "provider"].includes(stage) ? 1 : 0);
+  expect(externalRuntime.coordinatorStop).toHaveBeenCalledTimes(["pipeline", "relay", "server", "provider"].includes(stage) ? 1 : 0);
+  expect(externalRuntime.pipelineStop).toHaveBeenCalledTimes(["relay", "server", "provider"].includes(stage) ? 1 : 0);
+  expect(fixture.relayClose).toHaveBeenCalledTimes(["server", "provider"].includes(stage) ? 1 : 0);
+  expect(fixture.serverClose).toHaveBeenCalledTimes(stage === "provider" ? 1 : 0);
+});
+
+test("constructor and cleanup failures preserve both causes and still release the closed journal", async () => {
+  setup();
+  const primary = new Error("pipeline constructor failed"), cleanup = new Error("external policy close failed");
+  externalRuntime.pipelineCreate.mockImplementationOnce(() => { throw primary; });
+  externalRuntime.close.mockRejectedValueOnce(cleanup);
+  const failure = await runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" }).then(() => null, error => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toEqual([primary, cleanup]);
+  expect(failure.cause).toBe(primary);
+  expect(fixture.closed).toBe(true);
+  expect(storage.order.at(-1)).toBe("permit");
+});
+
+test("journal shutdown uncertainty retains the storage permit while later cleanup still runs", async () => {
+  setup(); const close = new Error("journal close failed");
+  fixture.journal().close = () => { throw close; };
+  fixture.serverCreate.mockImplementationOnce(() => { throw new Error("server constructor failed"); });
+  const failure = await runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" }).then(() => null, error => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toContain(close);
+  expect(storage.release).not.toHaveBeenCalled();
+  expect(fixture.relayClose).toHaveBeenCalledOnce();
+});
+
+test("a launch that waits beyond its first observation window keeps the same ticket and acquires storage once it becomes available", async () => {
+  setup(); vi.useFakeTimers();
+  let busy = true;
+  storage.acquire.mockImplementation((journalFile: string) => {
+    if (busy) throw new Error("fixture-lock-busy");
+    return { journalFile, owner: "fixture", release: storage.release };
+  });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const settled = running.then(() => null, error => error);
+  try {
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(storage.prepare).not.toHaveBeenCalled();
+    expect(storage.open).not.toHaveBeenCalled();
+    expect(fixture.capture).not.toHaveBeenCalled();
+    expect(fixture.open).not.toHaveBeenCalled();
+    busy = false; await vi.advanceTimersByTimeAsync(100);
+    expect(storage.open).toHaveBeenCalledOnce();
+    expect(fixture.capture).toHaveBeenCalledOnce();
+    expect(fixture.open).toHaveBeenCalledOnce();
+    expect(storage.open.mock.calls[0]![1]).toMatchObject({ launchId: "launch", executionGeneration: "2" });
+  } finally {
+    process.emit("SIGTERM", "SIGTERM");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await settled).toBeNull();
+    vi.useRealTimers(); log.mockRestore();
+  }
+  expect(storage.release).toHaveBeenCalledOnce();
+});
+
+
+test("explicit physical-capacity waiting releases each short permit and retries the original writer preparation", async () => {
+  setup(); vi.useFakeTimers();
+  storage.prepare.mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: new Error("reserved storage is busy") });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const settled = running.then(() => null, error => error);
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(storage.release).toHaveBeenCalledOnce();
+    expect(fixture.capture).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(storage.acquire).toHaveBeenCalledTimes(2);
+    expect(storage.prepare).toHaveBeenCalledTimes(2);
+    expect(storage.prepare.mock.calls[0]![0]).toEqual(storage.prepare.mock.calls[1]![0]);
+    expect(storage.open).toHaveBeenCalledOnce();
+  } finally { process.emit("SIGTERM", "SIGTERM"); await vi.advanceTimersByTimeAsync(0); expect(await settled).toBeNull(); vi.useRealTimers(); }
+  expect(storage.release).toHaveBeenCalledTimes(2);
+});
+
+test("an unclassified storage acquisition failure exposes the original error without retrying", async () => {
+  setup(); const error = new Error("lock owner liveness is unknown");
+  storage.acquire.mockImplementationOnce(() => { throw error; });
+  await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(error);
+  expect(storage.acquire).toHaveBeenCalledOnce();
+  expect(storage.prepare).not.toHaveBeenCalled();
+  expect(storage.release).not.toHaveBeenCalled();
+  expect(fixture.capture).not.toHaveBeenCalled();
+});
+
+test("storage preparation with an unclosed SQLite connection retains ownership evidence", async () => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const error = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { outcome: "unknown", connectionClosed: false });
+  storage.prepare.mockImplementationOnce(() => { throw error; });
+  await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(error);
+  expect(storage.acquire).toHaveBeenCalledOnce();
+  expect(storage.release).not.toHaveBeenCalled();
+  expect(fixture.capture).not.toHaveBeenCalled();
+});
+
+test("a stop interrupts storage lock waiting without creating a journal generation", async () => {
+  setup(); vi.useFakeTimers();
+  storage.acquire.mockImplementation(() => { throw new Error("fixture-lock-busy"); });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(storage.acquire).toHaveBeenCalledOnce();
+    process.emit("SIGTERM", "SIGTERM"); await running;
+    expect(storage.open).not.toHaveBeenCalled();
+    expect(fixture.capture).not.toHaveBeenCalled();
+    expect(storage.release).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+
+
+test.each(["preparation", "journal"] as const)("nested %s connection-close uncertainty retains the runtime storage permit", async stage => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const unclosed = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { outcome: "unknown", connectionClosed: false });
+  const failure = new AggregateError([new Error("original initialization failed"), new Error("connection shutdown failed", { cause: unclosed })], "Constructor and cleanup failed");
+  (stage === "preparation" ? storage.prepare : storage.open).mockImplementationOnce(() => { throw failure; });
+  await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(failure);
+  expect(storage.acquire).toHaveBeenCalledOnce();
+  expect(storage.release).not.toHaveBeenCalled();
+  expect(fixture.open).not.toHaveBeenCalled();
+});
+
+test("a committed journal initialization and subsequent permit release failure preserve the committed primary outcome", async () => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const finalization = new Error("pending content finalization failed");
+  const primary = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "initialize" }, { outcome: "committed", connectionClosed: true, cause: finalization });
+  const release = new Error("storage lock release failed");
+  storage.open.mockImplementationOnce(() => { throw primary; });
+  storage.release.mockImplementationOnce(() => { throw release; });
+  const failure = await runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" }).then(() => null, error => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toEqual([primary, release]);
+  expect(failure.cause).toBe(primary);
+  expect(failure.cause).toMatchObject({ outcome: "committed", connectionClosed: true, context: { phase: "initialize" } });
+  expect(failure.cause.cause).toBe(finalization);
+  expect(storage.release).toHaveBeenCalledOnce();
+  expect(fixture.open).not.toHaveBeenCalled();
 });

@@ -1,6 +1,5 @@
 import Database from "better-sqlite3";
-import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
-import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { openControllerTestDatabase, closeControllerTestDatabase } from "../../helpers/controller-sqlite.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,8 +8,8 @@ import { afterEach, expect, test } from "vitest";
 import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
 
 const roots: string[] = [], databases: Database.Database[] = [];
-const database = (file: string) => { const db = openSqliteDatabase({ file, format: controllerJournalFormat, allowCreate: true, onMigration: () => {} }); databases.push(db); return db; };
-afterEach(async () => { for (const db of databases.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const database = (file: string) => { const db = openControllerTestDatabase({ file, allowCreate: true, onMigration: () => {} }); databases.push(db); return db; };
+afterEach(async () => { for (const db of databases.splice(0)) closeControllerTestDatabase(db); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const descriptor = (bytes: Uint8Array) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.byteLength), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
 
 test("stores a resource above the old 8 MiB limit outside JSON and restores the same immutable bytes", async () => {

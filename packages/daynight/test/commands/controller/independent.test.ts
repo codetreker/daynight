@@ -15,7 +15,7 @@ vi.mock("node:timers/promises", async importOriginal => {
   } };
 });
 const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn(), prepareStorage: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
@@ -25,6 +25,7 @@ vi.mock("../../../src/commands/controller/launch-observation.js", async original
 vi.mock("../../../src/commands/controller/windows-job.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/windows-job.js")>(), acquireControllerJobLease: f.acquireJob, releaseControllerJobLease: f.releaseJob }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
+vi.mock("../../../src/commands/controller/storage-preparation.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/storage-preparation.js")>(), prepareControllerStorage: f.prepareStorage }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
@@ -101,6 +102,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   });
   f.snapshot.mockReturnValue({ controllerProcess: proof, nativeProcesses: [] });
   f.record.mockResolvedValue({ stoppedAt: new Date().toISOString() });
+  f.prepareStorage.mockReset().mockReturnValue({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
   f.stop.mockResolvedValue(undefined);
   f.confirm.mockResolvedValue(true);
   f.bootstrap.mockResolvedValue(undefined);
@@ -115,6 +117,65 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   });
   return { home, context, out, err, requests, child };
 };
+test("storage admission waits before the one original spawn and releases each permit", async () => {
+  const v = await setup(null);
+  const capacity = new Error("Physical storage is reserved by another execution.");
+  f.prepareStorage.mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: capacity });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const requests = f.prepareStorage.mock.calls.map(([request]) => request);
+  expect(requests.map(request => request.mode)).toEqual(["writer", "writer"]);
+  expect(requests[0].ticket).toBe(requests[1].ticket);
+  expect(f.prepareStorage.mock.invocationCallOrder[1]).toBeLessThan(f.spawn.mock.invocationCallOrder[0]!);
+  const { assertControllerStoragePermit } = await import("../../../src/commands/controller/storage-lock.js");
+  for (const [request, permit] of f.prepareStorage.mock.calls) expect(() => assertControllerStoragePermit(permit, request.journalFile)).toThrow(/released/);
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(v.requests.filter(request => request.url.endsWith("/test-sessions"))).toHaveLength(1);
+});
+
+test("cancellation while waiting for storage never spawns or submits the original input", async () => {
+  const v = await setup("one original input");
+  f.prepareStorage.mockImplementationOnce(() => {
+    process.emit("SIGINT", "SIGINT");
+    return { kind: "waiting", reason: "reader_busy", cause: new Error("Previous readers remain active.") };
+  });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: "one original input" }, v.context);
+  expect(f.spawn).not.toHaveBeenCalled();
+  expect(f.record).not.toHaveBeenCalled();
+  expect(f.request).not.toHaveBeenCalled();
+  expect(v.requests.filter(request => request.url.endsWith("/test-sessions"))).toHaveLength(1);
+  expect(v.requests.filter(request => request.url.endsWith("controller-grant")).map(request => request.body.kind)).toEqual(["bootstrap"]);
+  expect(v.out.join("")).toContain("no controller process was started");
+});
+
+test.each([false, true])("preflight failure retains storage ownership only while its connection remains open (%s)", async connectionClosed => {
+  const v = await setup(null);
+  const failure = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { outcome: "unknown", connectionClosed });
+  f.prepareStorage.mockImplementationOnce(() => { throw failure; });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toBe(failure);
+  const [request, permit] = f.prepareStorage.mock.calls[0]!;
+  const { assertControllerStoragePermit } = await import("../../../src/commands/controller/storage-lock.js");
+  try {
+    if (connectionClosed) expect(() => assertControllerStoragePermit(permit, request.journalFile)).toThrow(/released/);
+    else expect(() => assertControllerStoragePermit(permit, request.journalFile)).not.toThrow();
+  } finally { permit.release(); }
+  expect(f.spawn).not.toHaveBeenCalled();
+  expect(f.record).not.toHaveBeenCalled();
+});
+
+test("storage release failure after the stopped commit preserves the committed outcome before archival", async () => {
+  const v = await setup(null);
+  f.record.mockImplementationOnce(async journalFile => {
+    await writeFile(path.join(path.dirname(journalFile), "storage.lock"), JSON.stringify({ owner: "replacement", pid: process.pid, startedAt: new Date().toISOString() }));
+    return { stoppedAt: new Date().toISOString() };
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.outcome).toBe("committed");
+  expect(error.cause.message).toContain("no longer belongs");
+  expect(f.record).toHaveBeenCalledOnce();
+  expect(f.archive).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
 test.each([null, "hello 中文"])("foreground Test lifecycle preserves registration and initial-input mode %s", async prompt => {
   const v = await setup(prompt);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt }, v.context);
@@ -126,7 +187,7 @@ test.each([null, "hello 中文"])("foreground Test lifecycle preserves registrat
   expect(v.requests.some(r => r.url.includes("/tasks") || r.url.includes("/workers"))).toBe(false);
   expect(v.requests.filter(r => r.url.endsWith("controller-grant")).map(r => r.body.kind)).toEqual(["bootstrap", "reconnect"]);
   expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
-  expect(f.record.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]);
+  expect(f.record.mock.calls[0]![2].deadline).toBe(f.bootstrap.mock.calls[0]![1]);
   const launch = (await readdir(path.join(v.home, ".daynight", "controller", "launches")))[0]!;
   const ticket = JSON.parse(await readFile(path.join(v.home, ".daynight", "controller", "launches", launch), "utf8"));
   expect(ticket).toMatchObject({ initialInput: prompt === null ? "none" : "prompt", initialPrompt: prompt ?? "" });
@@ -1173,8 +1234,8 @@ test("Windows keeps an authenticated Job lease through stop and journal recordin
     await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
     expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
     expect(f.acquireJob.mock.invocationCallOrder[0]).toBeLessThan(f.bootstrap.mock.invocationCallOrder[0]!);
-    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.record.mock.calls[0]![3]).toBe(lease);
-    expect(f.stop.mock.calls[0]![2]).toBe(f.record.mock.calls[0]![2]);
+    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.record.mock.calls[0]![2].jobLease).toBe(lease);
+    expect(f.stop.mock.calls[0]![2]).toBe(f.record.mock.calls[0]![2].deadline);
     expect(f.record.mock.invocationCallOrder[0]).toBeLessThan(f.releaseJob.mock.invocationCallOrder[0]!);
   });
 });
@@ -1213,10 +1274,35 @@ test("Windows Job handle close failure preserves the error and blocks archival a
   });
 });
 
+test("storage acquisition retains the original cleanup deadline after process stopping consumes its budget", async () => {
+  const v = await setup(null), storage = await import("../../../src/commands/controller/storage-lock.js");
+  const acquire = storage.acquireControllerStoragePermit;
+  let clock = Date.now(), originalDeadline: number | undefined;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.stop.mockImplementation(async (_controller, _native, deadline) => {
+    originalDeadline = deadline;
+    clock = deadline - 1000;
+  });
+  const acquiring = vi.spyOn(storage, "acquireControllerStoragePermit").mockImplementation((file, deadline, options) => {
+    if (deadline !== undefined) {
+      expect(deadline).toBe(originalDeadline);
+      expect(deadline).toBe(f.bootstrap.mock.calls[0]![1]);
+      expect(deadline - clock).toBe(1000);
+      clock = deadline;
+    }
+    return acquire(file, deadline, options);
+  });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow("Controller storage acquisition exceeded its deadline.");
+  expect(acquiring).toHaveBeenLastCalledWith(expect.stringContaining("journal.sqlite"), originalDeadline);
+  expect(f.record).not.toHaveBeenCalled();
+  expect(f.archive).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
 test("deadline after stopped journal commit preserves the committed outcome and releases the Job", async () => {
   const v = await setup(null), lease = {}; let clock = Date.now();
   f.acquireJob.mockResolvedValue(lease); vi.spyOn(Date, "now").mockImplementation(() => clock);
-  f.record.mockImplementation(async (_file, _ticket, deadline) => { clock = deadline; return { stoppedAt: new Date().toISOString() }; });
+  f.record.mockImplementation(async (_file, _ticket, options) => { clock = options.deadline; return { stoppedAt: new Date().toISOString() }; });
   await withWindowsPlatform(async () => {
     const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
     expect(error).toMatchObject({ outcome: "committed" }); expect(error.cause.message).toContain("cleanup exceeded its deadline");
@@ -1298,7 +1384,7 @@ const { spawn } = require('node:child_process');
   try {
     await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home });
     expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledOnce();
-    expect(f.stop.mock.calls[0]![3]).toBe(f.record.mock.calls[0]![3]);
+    expect(f.stop.mock.calls[0]![3]).toBe(f.record.mock.calls[0]![2].jobLease);
     expect(waitProcess(nativeHandle, 0)).toBe(0);
     const nativeExit = Buffer.alloc(4); expect(exitCode(nativeHandle, nativeExit)).not.toBe(0); expect(nativeExit.readUInt32LE()).toBe(1);
     const stored = lifecycle.readProvenWindowsStoppedControllerGeneration(journalFile, actualTicket!);
@@ -1451,7 +1537,7 @@ setTimeout(() => process.exit(9), 10000).unref();
   });
   try {
     const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
-    expect(launchObservation.isControllerJournalIoFailure(error)).toBe(true); expect(error.journalCause).toMatchObject({ code: "SQLITE_CANTOPEN" });
+    expect(launchObservation.isControllerJournalIoFailure(error)).toBe(true); expect(error.journalCause).toMatchObject({ cause: { code: "SQLITE_CANTOPEN" } });
     expect(nativeWasRunning).toBe(true); expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
     expect(await processProof.confirmControllerProcessesStopped(controllerProof!, [nativeProof!])).toBe(true);
     expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);

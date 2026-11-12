@@ -12,6 +12,8 @@ import { parseStartupObservation } from "../../session/startup.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { inspectBootstrapProcessProof, type ProcessProof } from "./process-proof.js";
 import { WindowsProcessProofError, stopWindowsBootstrapProcess } from "./windows-process-proof.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "./storage-lock.js";
+import { ControllerStorageWaitingError } from "./storage-preparation.js";
 
 export type ControllerLaunchObservation =
   | { kind: "observed"; snapshot: ControllerSnapshot }
@@ -54,6 +56,7 @@ export const hasUnsafeControllerObservationFailure = (error: unknown): boolean =
   const visit = (value: unknown, depth: number): boolean => {
     if (value === null || typeof value !== "object") return false;
     if (depth > 16 || ancestors.has(value)) return true;
+    if (value instanceof ControllerStorageWaitingError) return false;
     if (value instanceof ControllerLaunchJournalConflictError || value instanceof ControllerIpcIdentityConflictError) return true;
     if (value instanceof ControllerLaunchJournalObservationError && !isControllerJournalIoFailure(value)) return true;
     ancestors.add(value);
@@ -68,7 +71,7 @@ export const hasUnsafeControllerObservationFailure = (error: unknown): boolean =
 
 // Read the version, binding and snapshot in one short, read-only transaction.
 // A bootstrap observation must never initialize or migrate the original journal.
-const exitedJournal = (file: string, ticket: ControllerLaunchTicket, process: ProcessProof, timeoutMs: number): ControllerLaunchObservation => {
+const readExitedJournal = (file: string, ticket: ControllerLaunchTicket, process: ProcessProof, timeoutMs: number): ControllerLaunchObservation => {
   if (sqliteDatabaseIsMissing(file)) return { kind: "pre-writer-exited", process, journal: "missing" };
   const db = new Database(file, { readonly: true, fileMustExist: true, timeout: timeoutMs });
   let result: ControllerLaunchObservation | undefined, failure: unknown, failed = false;
@@ -97,6 +100,45 @@ const exitedJournal = (file: string, ticket: ControllerLaunchTicket, process: Pr
   } catch (error) { failed = true; failure = error; }
   try { closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "not-started"); }
   catch (error) { if (failed) throw new AggregateError([failure, error], "Controller launch observation and journal close failed.", { cause: failure }); throw error; }
+  if (failed) throw failure;
+  return result!;
+};
+
+const journalOpenFailure = (error: unknown, code: "ENOENT" | "SQLITE_CANTOPEN"): boolean => {
+  const seen = new Set<unknown>();
+  const visit = (cause: unknown): boolean => {
+    if (!(cause instanceof Error) || cause instanceof AggregateError || seen.has(cause)) return false;
+    seen.add(cause);
+    return "code" in cause && cause.code === code || visit(cause.cause);
+  };
+  return visit(error);
+};
+
+const exitedJournal = (file: string, ticket: ControllerLaunchTicket, process: ProcessProof, timeoutMs: number, requestedDeadline?: number): ControllerLaunchObservation => {
+  const deadline = requestedDeadline === undefined ? Date.now() + timeoutMs : requestedDeadline;
+  let permit: ReturnType<typeof acquireControllerStoragePermit>;
+  for (;;) {
+    if (sqliteDatabaseIsMissing(file)) return { kind: "pre-writer-exited", process, journal: "missing" };
+    try { permit = acquireControllerStoragePermit(file, deadline, { fileMustExist: true }); break; }
+    catch (cause) {
+      if (cause instanceof Error && isControllerStorageLockHeld(cause)) throw new ControllerStorageWaitingError("lock_busy", cause);
+      const missing = journalOpenFailure(cause, "ENOENT");
+      if (missing || journalOpenFailure(cause, "SQLITE_CANTOPEN")) {
+        if (sqliteDatabaseIsMissing(file)) return { kind: "pre-writer-exited", process, journal: "missing" };
+        if (missing && Date.now() < deadline) continue;
+      }
+      throw cause;
+    }
+  }
+  let result: ControllerLaunchObservation | undefined, failure: unknown, failed = false;
+  try {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Controller launch journal observation exceeded its deadline.");
+    result = readExitedJournal(file, ticket, process, Math.min(timeoutMs, remaining));
+  }
+  catch (cause) { failed = true; failure = cause; }
+  try { if (!failed || !controllerStorageConnectionIsOpen(failure)) permit.release(); }
+  catch (cause) { if (failed) throw new AggregateError([failure, cause], "Controller launch observation and storage release failed.", { cause: failure }); throw cause; }
   if (failed) throw failure;
   return result!;
 };
@@ -147,8 +189,12 @@ export const reconcileSubmittedControllerLaunch = async (input: { journalFile: s
   if (state === "replaced" && mismatch?.sameBirth !== false) return { kind: "unknown", cause: new AggregateError([ipcFailure, new Error("Controller bootstrap process identity was replaced.")], "Controller IPC and process observation failed.", { cause: ipcFailure }) };
   let result: ControllerLaunchObservation;
   const journalTimeout = timeoutAfterFailure(5000, ipcFailure);
-  try { result = exitedJournal(input.journalFile, input.ticket, input.spawnProof, journalTimeout); }
+  try { result = exitedJournal(input.journalFile, input.ticket, input.spawnProof, journalTimeout, input.deadline); }
   catch (cause) {
+    if (cause instanceof ControllerStorageWaitingError) {
+      checkAfterFailure(cause);
+      throw new ControllerStorageWaitingError(cause.reason, new AggregateError([ipcFailure, cause], "Controller launch observation awaits storage maintenance.", { cause }));
+    }
     const failure = new ControllerLaunchJournalObservationError(ipcFailure, cause);
     checkAfterFailure(failure);
     throw failure;

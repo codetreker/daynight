@@ -12,6 +12,11 @@ import { controllerJournalFormat } from "../../../src/commands/controller/journa
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { parseSessionArchive } from "../../../src/session/archive.js";
 
+const errorCauses = (error: unknown): Error[] => {
+  const values: Error[] = [];
+  for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
+  return values;
+};
 const roots: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
@@ -247,7 +252,8 @@ test("a migrated v6 journal cannot recreate a missing source manifest and publis
   const f = await fixture(2), bodies: string[] = [];
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies, () => true) })).rejects.toThrow("503");
   await rm(`${f.journalPath}.pending-content/manifest.json`);
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("Pending archive source is missing");
+  const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) }).then(() => null, (error: unknown) => error);
+  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Pending archive source is missing." })]));
   expect(bodies).toHaveLength(1);
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
   await expect(stat(`${f.journalPath}.pending-content/manifest.json`)).rejects.toMatchObject({ code: "ENOENT" });
@@ -287,7 +293,7 @@ test.each([1, 2, 3, 4, 5] as const)("normal lifecycle opening retains v%i upgrad
   try {
     expect(store.getSnapshot()).toEqual(f.snapshot);
     expect(store.getOperation(f.operation.operationId)).toEqual(f.operation);
-    expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("writer is still running");
+    expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("Cannot acquire instance lock");
     expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
   } finally { store.close(); }
 });
@@ -311,10 +317,10 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   if (process.platform === "win32") {
     // Historical records have no retained Job lease or durable stop proof.
-    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket)).rejects.toThrow(entrypoint === "stop" ? /current journal format/ : /stop proof.*lease/);
+    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket, { stateDirectory: f.home })).rejects.toThrow(/stop proof.*lease/);
     expect(confirm).not.toHaveBeenCalled();
     if (entrypoint === "stop") expect(readControllerSnapshot(f.journalPath)).toEqual(stopped);
-  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
+  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket, { stateDirectory: f.home })).toEqual(stopped);
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
   expect(bodies).toEqual([]);
   inspect(f.journalPath, db => {

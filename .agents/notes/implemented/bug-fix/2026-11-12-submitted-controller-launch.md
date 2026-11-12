@@ -104,8 +104,9 @@ Waiting and failed cleanup retain the original execution identity and resource
 responsibility. A pre-writer exit cannot establish native stop or authorize a
 new generation. This work originally targeted journal v8; mainline subsequently
 introduced v9 for message origins. The shared observer uses the current format
-without migrating it, and later storage ownership work can protect the same
-read-only classification without changing its result. The native SQLite
+without migrating it. The [storage ownership decision](../architecture/2026-11-12-controller-storage-ownership.md)
+protects that same read-only classification with the execution permit while
+preserving its result. The native SQLite
 runtime is part of this stop path: a replacement dependency must preserve the
 Windows WAL recovery repair. Native crash tests cover idle, active-write and
 closing phases; successful process termination alone does not establish that

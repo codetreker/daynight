@@ -43,7 +43,7 @@ export const submitWorkerControl = async (options: {
     if (source.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
     signal.throwIfAborted();
     const result = await coordinator.advanceRetry(identity);
-    if (result?.kind === "waiting_input") return { task: store.getTask(identity), message: `Recovery input was not submitted for claim ${request.claimId}; waiting for ${result.reason === "prompt_unknown" ? "prompt synchronization" : "a prompt within the native input limit"}.` };
+    if (result?.kind === "waiting_input") return { task: store.getTask(identity), message: `Recovery input was not submitted for claim ${request.claimId}; waiting for ${result.reason === "storage_maintenance" ? "Controller storage maintenance" : result.reason === "prompt_unknown" ? "prompt synchronization" : "a prompt within the native input limit"}.` };
     return { task: store.getTask(identity), message: `One recovery attempt completed for claim ${request.claimId}; worker run will connect its actual resources.` };
   }
   exactVersion();

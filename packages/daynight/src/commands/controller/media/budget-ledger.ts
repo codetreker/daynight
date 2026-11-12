@@ -2,26 +2,38 @@ import Database from "better-sqlite3";
 import { chmodSync, lstatSync, mkdirSync, existsSync, openSync, closeSync, fsyncSync, constants } from "node:fs";
 import path from "node:path";
 
+export class ControllerMediaBudgetError extends Error {
+  readonly scope: "execution" | "stateDirectory";
+  constructor(scope: "execution" | "stateDirectory") {
+    super(`Controller ${scope} media budget exceeded.`);
+    this.name = "ControllerMediaBudgetError";
+    this.scope = scope;
+  }
+}
+
 /** Reservations survive crashes; stale process identity never releases retained media. */
 export type MediaBudgetLedger = { reserve(bytes: number): void; close(): void };
-export const openMediaBudgetLedger = (stateDirectory: string, executionId: string): MediaBudgetLedger => {
+export const openMediaBudgetLedger = (stateDirectory: string, executionId: string, options: { timeoutMs?: number } = {}): MediaBudgetLedger => {
+  const timeoutMs = options.timeoutMs === undefined ? 5000 : options.timeoutMs;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError("Controller media ledger timeout must be a positive safe integer of at most 60000 milliseconds.");
   const directory = path.join(stateDirectory, "controller", "media");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Controller media ledger directory must be private.");
   const file = path.join(directory, "budget.sqlite");
-  const db = new Database(file); chmodSync(file, 0o600);
+  const db = new Database(file, { timeout: timeoutMs }); chmodSync(file, 0o600);
   try {
-    db.pragma("busy_timeout = 5000"); db.pragma("synchronous = FULL");
+    db.pragma(`busy_timeout = ${timeoutMs}`); db.pragma("synchronous = FULL");
     // Changing journal_mode races with another process's first reservation and
     // may return SQLITE_BUSY without honoring busy_timeout. Reserve using the
     // existing durable journal mode and serialize schema creation as a writer.
     db.transaction(() => db.exec("CREATE TABLE IF NOT EXISTS allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0))")).immediate();
   } catch (error) { db.close(); throw error; }
   const reserve = db.transaction((bytes: number) => {
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > 2_306_867_200) throw new Error("Controller execution media budget exceeded.");
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new TypeError("Controller media reservation must be a nonnegative safe integer.");
+    if (bytes > 2_306_867_200) throw new ControllerMediaBudgetError("execution");
     const other = (db.prepare("SELECT COALESCE(SUM(reserved_bytes),0) AS bytes FROM allocations WHERE execution_id<>?").get(executionId) as { bytes: number }).bytes;
-    if (other + bytes > 8_589_934_592) throw new Error("Controller stateDirectory media budget exceeded.");
+    if (other + bytes > 8_589_934_592) throw new ControllerMediaBudgetError("stateDirectory");
     db.prepare("INSERT INTO allocations VALUES(?,?) ON CONFLICT(execution_id) DO UPDATE SET reserved_bytes=excluded.reserved_bytes").run(executionId, bytes);
   });
   return { reserve: (bytes: number) => reserve.immediate(bytes), close: () => db.close() };

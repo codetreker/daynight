@@ -1,16 +1,23 @@
 import Database from "better-sqlite3";
-import { mkdtemp, mkdir, rm, readdir, unlink, stat, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readdir, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import * as archives from "../../../src/commands/controller/archive-upload.js";
 import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion, upgradeSqlite } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalWriteOptions } from "../../../src/commands/controller/storage-preparation.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+const errorCauses = (error: unknown): Error[] => {
+  const values: Error[] = [];
+  for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
+  return values;
+};
 const roots: string[] = [], readers: Database.Database[] = [];
 const pending = (file: string, sessionId: string) => { const db = new Database(file, { readonly: true }); readers.push(db); return openPendingContent(file, sessionId, db); };
 afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -21,8 +28,15 @@ const fixture = async () => {
   const journalPath = path.join(home, "journal.sqlite");
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
-  store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true }); store.close();
+  store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
   return { home, ticket, journalPath, entry, sourceThrough };
+};
+const migrate = (db: Database.Database, stateDirectory: string): void => {
+  const permit = acquireControllerStoragePermit(db.name);
+  try {
+    const { format } = controllerJournalWriteOptions(db.name, permit, stateDirectory);
+    db.transaction(() => upgradeSqlite(db, format)).immediate();
+  } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
 test("retries confirmed archive busy responses with the same request until the upload completes", async () => {
@@ -294,7 +308,8 @@ test("lost pending entry cannot become a ready empty archive", async () => {
   const f = await fixture(); const directory = `${f.journalPath}.pending-content/entries`;
   await unlink(path.join(directory, (await readdir(directory))[0]!));
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("incomplete");
+  const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request }).then(() => null, (error: unknown) => error);
+  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("incomplete") })]));
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("legacy completed SQL history migrates atomically and is readable after worktree deletion", async () => {
@@ -305,7 +320,7 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
-  db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
+  migrate(db, f.home);
   const migrated = pending(f.journalPath, f.ticket.sessionId);
   expect(migrated.entries.get(original.entryId)).toEqual(original);
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
@@ -320,10 +335,10 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
-  expect(() => db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate()).toThrow();fail.mockRestore();
+  expect(() => migrate(db, f.home)).toThrow();fail.mockRestore();
   expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT count(*) AS n FROM projection").get()).toEqual({ n: 1 });
-  db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
+  migrate(db, f.home);
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
 test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {
@@ -399,4 +414,22 @@ test("timeline growth keeps file inventory writes bounded while SQL detects dele
   const file = (db.prepare("SELECT content_file FROM content_index ORDER BY entry_seq LIMIT 1 OFFSET 6").get() as { content_file: string }).content_file; db.close();
   await unlink(path.join(`${f.journalPath}.pending-content/entries`, file));
   expect(() => openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true })).toThrow("incomplete");
+});
+
+
+test.each([0, 129])("all archive transport phases release local ownership with %i MiB retained metadata", async retainedMiB => {
+  const f = await fixture();
+  if (retainedMiB > 0) {
+    const retained = await open(path.join(`${f.journalPath}.pending-content`, "retained.tmp"), "wx", 0o600);
+    try { await retained.truncate(retainedMiB * 1048576); } finally { await retained.close(); }
+  }
+  const receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
+  let requests = 0;
+  const request: typeof fetch = async (input, init) => {
+    const permit = acquireControllerStoragePermit(f.journalPath);
+    try { requests++; return await receiver.request(input, init); }
+    finally { permit.release(); }
+  };
+  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).state).toBe("ready");
+  expect(requests).toBeGreaterThan(5);
 });

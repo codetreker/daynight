@@ -16,6 +16,11 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
+import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
+import * as storageLock from "../../../src/commands/controller/storage-lock.js";
+import { ControllerStorageWaitingError } from "../../../src/commands/controller/storage-preparation.js";
+import { resolveConfigurationPaths } from "../../../src/config/paths.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 
 afterEach(cleanupBotProcesses);
 
@@ -172,6 +177,76 @@ test("an abnormal stopped writer consumes one recovery attempt and a healthy lat
   await f.restart().advance(f.current(), f.signal);
   expect(f.executions.get(f.current())!.recoveryCount).toBe(1);
   expect(f.current().intent!.executionGeneration).toBe("2");
+});
+
+test.each(["reader_busy", "physical_capacity"] as const)("Bot recovery retains its original generation and budget while storage waits for %s", async reason => {
+  const f = await recoveryFixture();
+  f.patch({ lifecycle: "failed", error: "native connection lost" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const original = f.current().intent!, cause = new Error("Storage preparation is waiting.");
+  f.prepareStorage.mockReturnValueOnce({ kind: "waiting", reason, cause });
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toMatchObject({ reason, cause });
+  expect(f.current().intent).toEqual(original);
+  expect(f.executions.get(f.current())).toMatchObject({ recoveryCount: 0, snapshot: { lifecycle: "stopped", nativeStopped: true } });
+  expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
+  expect(f.prepareStorage).toHaveBeenCalledWith({ journalFile: original.journalPath, stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, mode: "stopped-maintenance", ticket: expect.objectContaining({ launchId: original.launchId }) }, expect.objectContaining({ journalFile: original.journalPath }));
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.current().intent!.executionGeneration).toBe("2");
+  expect(f.executions.get(f.current())!.recoveryCount).toBe(1);
+  expect(f.launch).toHaveBeenCalledTimes(2);
+});
+
+test("Bot recovery waits for the execution storage owner without recording stop or spending recovery", async () => {
+  const f = await recoveryFixture();
+  f.patch({ lifecycle: "failed", error: "native connection lost" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const original = f.current().intent!, permit = acquireControllerStoragePermit(original.journalPath);
+  try {
+    await expect(f.restart().advance(f.current(), f.signal)).rejects.toBeInstanceOf(ControllerStorageWaitingError);
+    expect(f.current().intent).toEqual(original);
+    expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+    expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.prepareStorage).not.toHaveBeenCalled();
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  } finally { permit.release(); }
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.current().intent!.executionGeneration).toBe("2");
+});
+
+test.each([true, false])("Bot recovery releases storage only after the stopped journal connection is closed (%s)", async connectionClosed => {
+  const f = await recoveryFixture();
+  f.patch({ lifecycle: "failed", error: "native connection lost" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const original = f.current().intent!;
+  const failure = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { connectionClosed, outcome: "unknown", cause: new Error("Stop connection close failed.") });
+  f.deps.recordStopped.mockRejectedValueOnce(failure);
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toBe(failure);
+  expect(f.current().intent).toEqual(original);
+  expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+  expect(f.prepareStorage).not.toHaveBeenCalled(); expect(f.launch).toHaveBeenCalledTimes(1);
+  if (connectionClosed) {
+    const permit = acquireControllerStoragePermit(original.journalPath);
+    permit.release();
+  } else {
+    expect(() => acquireControllerStoragePermit(original.journalPath)).toThrow();
+    expect(existsSync(path.join(path.dirname(original.journalPath), "storage.lock"))).toBe(true);
+  }
+});
+
+test("Bot recovery retains the committed stop outcome when storage ownership release fails", async () => {
+  const f = await recoveryFixture();
+  f.patch({ lifecycle: "failed", error: "native connection lost" });
+  f.deps.confirmStopped.mockResolvedValue(true);
+  const original = f.current().intent!, permit = acquireControllerStoragePermit(original.journalPath);
+  const failure = new Error("Storage ownership release failed.");
+  const acquire = vi.spyOn(storageLock, "acquireControllerStoragePermit").mockReturnValue({ ...permit, release: () => { throw failure; } });
+  try {
+    const result = await f.restart().advance(f.current(), f.signal).catch(error => error);
+    expect(result).toBeInstanceOf(SqliteAccessError);
+    expect(result).toMatchObject({ kind: "cleanup-failed", context: { phase: "release", file: original.journalPath }, outcome: "committed", connectionClosed: true, cause: failure });
+    expect(f.executions.get(f.current())).toMatchObject({ recoveryCount: 0, snapshot: { lifecycle: "stopped", nativeStopped: true } });
+    expect(f.current().intent).toEqual(original);
+    expect(f.launch).toHaveBeenCalledTimes(1); expect(f.grant).toHaveBeenCalledTimes(1);
+  } finally { acquire.mockRestore(); permit.release(); }
 });
 
 test("a failed native stop remains blocked after bootstrap exits until complete stop is proven", async () => {
@@ -737,7 +812,7 @@ test("Bot keeps the same Job lease after a failed stop response and releases it 
   expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled();
   await manager.shutdown(f.current(), f.signal);
-  expect(f.deps.recordStopped).toHaveBeenCalledWith(f.current().intent!.journalPath, expect.anything(), expect.any(Number), lease);
+  expect(f.deps.recordStopped).toHaveBeenCalledWith(f.current().intent!.journalPath, expect.anything(), { stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, deadline: expect.any(Number), jobLease: lease });
   expect(leases.release).toHaveBeenCalledOnce();
 });
 
@@ -769,7 +844,7 @@ test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery 
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-    const stopped = await lifecycle.recordStoppedControllerGeneration(file, ticket, Date.now() + 5000, {} as never);
+    const stopped = await lifecycle.recordStoppedControllerGeneration(file, ticket, { stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, deadline: Date.now() + 5000, jobLease: {} as never });
     f.executions.update(f.current(), { snapshot: stopped }); f.reopen();
     if (kind !== "valid") {
       const db = new Database(file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }, value = JSON.parse(row.snapshot);

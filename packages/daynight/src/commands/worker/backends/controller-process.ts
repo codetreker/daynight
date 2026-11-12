@@ -7,6 +7,33 @@ import { requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
+import { resolveConfigurationPaths } from "../../../config/paths.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
+import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
+import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+
+export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: ControllerLaunchTicket): void => {
+  const journalFile = path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId), "journal.sqlite");
+  let permit: ReturnType<typeof acquireControllerStoragePermit>;
+  try { permit = acquireControllerStoragePermit(journalFile); }
+  catch (cause) {
+    if (cause instanceof Error && isControllerStorageLockHeld(cause)) throw new ControllerStorageWaitingError("lock_busy", cause);
+    throw cause;
+  }
+  let failure: unknown, failed = false, committed = false;
+  try {
+    const prepared = prepareControllerStorage({ journalFile, stateDirectory: resolveConfigurationPaths(homeDirectory).stateDirectory, mode: "writer", ticket }, permit);
+    if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
+    committed = true;
+  } catch (cause) { failed = true; failure = cause; }
+  try { if (!failed || !controllerStorageConnectionIsOpen(failure)) permit.release(); }
+  catch (cause) {
+    const releaseFailure = failed ? new AggregateError([failure, cause], "Controller launch preparation and storage release failed.", { cause: failure }) : cause;
+    if (committed) throw new SqliteAccessError("cleanup-failed", { database: "controller-journal", file: journalFile, phase: "release" }, { cause: releaseFailure, outcome: "committed", connectionClosed: true });
+    throw releaseFailure;
+  }
+  if (failed) throw failure;
+};
 
 /** Serialize mutations of one execution without blocking unrelated executions. */
 export const createControllerExecutionSerializer = () => {
@@ -43,6 +70,8 @@ export const launchControllerProcess = async (options: {
   onObserved(snapshot: ControllerSnapshot): void | Promise<void>;
 }): Promise<ControllerSnapshot> => {
   const { ticket, signal } = options;
+  signal.throwIfAborted();
+  prepareControllerLaunchStorage(options.homeDirectory, ticket);
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId);
   const log = await open(path.join(directory, "controller.log"), "a", 0o600);
   try {

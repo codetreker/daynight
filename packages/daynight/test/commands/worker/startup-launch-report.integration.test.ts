@@ -22,6 +22,8 @@ import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { StartupObservation } from "../../../src/session/startup.js";
 import { stopStartupChildren } from "../../helpers/startup-deadline.js";
+import * as storageLock from "../../../src/commands/controller/storage-lock.js";
+import * as storagePreparation from "../../../src/commands/controller/storage-preparation.js";
 
 const native = vi.hoisted(() => ({ children: [] as ChildProcess[] }));
 vi.mock("node:child_process", async importOriginal => {
@@ -125,7 +127,11 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   disposals.push(async () => { await coordinator.shutdown(); });
   const reconcile = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   const launch = async () => {
-    await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before authenticated initialization");
+    // The unfinished writer is retained as report evidence; startup admission is controlled independently.
+    const acquisition = vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementation(journalFile => ({ journalFile, owner: randomUUID(), release() {} }));
+    const preparation = vi.spyOn(storagePreparation, "prepareControllerStorage").mockReturnValue({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+    try { await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before authenticated initialization"); }
+    finally { preparation.mockRestore(); acquisition.mockRestore(); }
     expect(native.children.at(-1)?.exitCode).toBe(1);
     expect(readControllerSnapshot(journalFile)?.startup).toEqual({ state: "starting", reasonCode: "initializing" });
     return store.getTask(task)!.webExecution!.startupReport!;

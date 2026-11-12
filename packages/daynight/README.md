@@ -2912,6 +2912,26 @@ requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
 Unknown initial inputs and operations are reconciled without replay.
 
+Controller writers, local migration, stopped recording and archive write phases
+share one execution storage permit. Current-format reads remain lock-free;
+old-format upgrades acquire the same owner and reserve their writes. Preparation
+separates upgrade-only, stopped-maintenance and writer admission. The writer holds
+its permit until relay, media and journal handles close; archive and source-tail
+transport release local ownership before the network and verify the same stopped
+source after reacquiring it. Stopped settlement retains its existing 8 MiB reserve
+above the ordinary 128 MiB metadata limit, so an acknowledged tail can settle
+before recovery applies normal writer admission. Unknown process state and unconfirmed handle close
+retain their evidence. Current journal v9 and candidate body files remain in use.
+
+Initial launch preflight uses the frozen ticket before spawn. The child prepares
+under its own permit and commits its generation and original Controller proof in
+one transaction before native side effects. Lock or capacity waiting retains the
+same launch, ticket and recovery budget. Runtime construction closes every created
+resource on failure and initializes capture callbacks before relay connection.
+Recovery records the original complete stop and finishes local maintenance before
+allocating another generation. A committed stop remains committed when later
+close or permit release reports a failure.
+
 An unconfirmed Controller launch retains its original ticket and spawn identity
 across observation windows. Only authenticated IPC acknowledges the launch;
 a preceding or missing journal cannot do so. Cancellation stops the original

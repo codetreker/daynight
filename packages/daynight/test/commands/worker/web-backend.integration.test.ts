@@ -35,7 +35,7 @@ it.each(["valid", "missing", "generation", "process"] as const)("Web orderly rec
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-    await lifecycle.recordStoppedControllerGeneration(file, source.ticket, Date.now() + 5000, {} as never);
+    await lifecycle.recordStoppedControllerGeneration(file, source.ticket, { stateDirectory: path.dirname(file), deadline: Date.now() + 5000, jobLease: {} as never });
     f.store.close(); stores.splice(stores.indexOf(f.store), 1);
     const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
     if (kind !== "valid") {

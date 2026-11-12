@@ -16,12 +16,44 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
+import * as storagePreparation from "../../../src/commands/controller/storage-preparation.js";
+import * as storageLock from "../../../src/commands/controller/storage-lock.js";
+import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
+
+it.each(["lock_busy", "physical_capacity"] as const)("keeps the stopped generation and recovery allowance while storage waits (%s)", async reason => {
+  const f = await recoveryFixture();
+  f.store.pauseRecovery(f.task, "Original failure", 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  if (reason === "lock_busy") vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => { throw new Error("Storage ownership held.", { cause: new InstanceLockHeldError(process.pid) }); });
+  else vi.mocked(storagePreparation.prepareControllerStorage).mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: new Error("Storage reservation unavailable.") });
+  expect(await f.backend.advanceResult(authorized, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "storage_maintenance" });
+  const waiting = f.store.getTask(f.task)!;
+  expect(waiting.webExecution).toMatchObject({ executionGeneration: "1", launchId: authorized.webExecution!.launchId });
+  expect(waiting.recovery).toEqual(authorized.recovery);
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+  const observed = await f.backend.advanceResult(waiting, new AbortController().signal);
+  expect(observed.kind).toBe("observed");
+  expect(observed.task.webExecution!.executionGeneration).toBe("2");
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+});
+
+it("keeps a committed stop outcome when recovery storage ownership cannot be released", async () => {
+  const f = await recoveryFixture();
+  f.store.pauseRecovery(f.task, "Original failure", 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9), release = new Error("Storage ownership release failed.");
+  vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(journalFile => ({ journalFile, owner: randomUUID(), release: () => { throw release; } }));
+  const failure = await f.backend.advanceResult(authorized, new AbortController().signal).catch(error => error);
+  expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "committed", connectionClosed: true, cause: release, context: { phase: "release" } });
+  expect(f.store.getTask(f.task)!.webExecution!.executionGeneration).toBe("1");
+  expect(f.store.getTask(f.task)!.recovery.count).toBe(authorized.recovery.count);
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
 
 it("reattaches a sidecar-bound legacy ticket after an orchestration interruption without allocating a launch", async () => {
   const f = await orchestrationFixture();
@@ -548,6 +580,7 @@ it("closes a provably unlaunched Web execution with backend proof rather than a 
 it.each([false,true])("only an orderly shutdown can resume at an exhausted recovery budget (shutdown=%s)",async(orderly)=>{
  const f=await fixture();let task=f.store.bindWorktree(f.identity,await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity,{} as never),3);
  task=f.store.initializeWebExecution(task,4);const nativeId=randomUUID();
+ await mkdir(launchTickets.controllerExecutionDirectory(f.home, task.webExecution!.executionId), { recursive: true });
  task=f.store.updateWebExecution(task,{sessionId:randomUUID(),initialPrompt:"managed",launchSubmission:"acknowledged",controllerProcess:{pid:123,parentPid:1,processGroupId:123,startedAt:"birth",commandHash:"a".repeat(64)}},5);
  task=f.store.bindNativeSession(task,{source:"controller",sessionId:nativeId},6);
  f.store.beginRecovery(task,7);task=f.store.beginRecovery(task,8);
@@ -1668,7 +1701,7 @@ it("Task holds one Job lease through IPC stop, complete confirmation and journal
   const deadline = tree.mock.calls[0]![2];
   expect(tree).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
   expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
-  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, deadline, lease);
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { stateDirectory: path.join(f.home, ".daynight"), deadline, jobLease: lease });
   expect(leases.release).toHaveBeenCalledOnce();
 });
 
