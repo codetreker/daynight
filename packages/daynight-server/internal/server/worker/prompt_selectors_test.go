@@ -109,8 +109,12 @@ func TestInvalidConfigurationProtocolRejectsBeforeReport(t *testing.T) {
 	for _, versions := range [][]string{{"3"}, {"1", "1"}, {"1, 2"}, {""}} {
 		t.Run(strings.Join(versions, "/"), func(t *testing.T) {
 			f := newCapacityReportOperationFixture(t, "11111111-1111-4111-8111-111111111111")
-			response := controlModeRequest(t, f, http.MethodPost, "/report", "{}", http.Header{workerConfigurationHeader: versions})
-			if response.Code != http.StatusBadRequest {
+			body := workerSnapshotReportBody()
+			if versions[0] != "" {
+				body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
+			}
+			response := controlModeRequest(t, f, http.MethodPost, "/report", jsonBody(t, body), http.Header{workerConfigurationHeader: versions})
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Unsupported Worker configuration protocol") {
 				t.Fatalf("protocol %q: status=%d body=%s", versions, response.Code, response.Body)
 			}
 		})
