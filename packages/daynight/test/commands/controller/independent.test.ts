@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
@@ -84,7 +84,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
     throw new Error("Unexpected request");
   }));
   const proof = { pid: 987, processGroupId: 987, startedAt: "original", commandHash: "hash", parentPid: 1 };
-  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as string | null, kill: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as string | null, kill: vi.fn(), unref: vi.fn() });
   f.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
   f.capture.mockResolvedValue(proof);
   f.reconcile.mockImplementation(async ({ ticket, spawnProof, signal, deadline }) => {
@@ -701,4 +701,168 @@ test("independent cleanup preserves replacement when later full process stopping
   const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
   expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([replacement, failure]);
   expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("capture failure still requests authenticated stop and retains the original error without a stop proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+  expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "stop"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("capture failure and unavailable IPC do not signal an unverified POSIX PID", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  f.capture.mockRejectedValueOnce(capture);
+  let attempts = 0;
+  f.request.mockImplementation(async () => { if (attempts++ === 0) { v.child.emit("error", new Error("unconfirmed child status")); throw new ControllerIpcOutcomeUnknownError("IPC unavailable"); } throw new Error("IPC status remains unconfirmed"); });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+  expect(error.errors[1].errors[0]).toBeInstanceOf(ControllerIpcOutcomeUnknownError);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test("capture failure stops a real spawned child over the original authenticated IPC", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-child-ready"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const ticket = JSON.parse(fs.readFileSync(path.join(process.env.DN_CONFIG_DIR, 'controller', 'launches', process.argv[5] + '.json'), 'utf8'));
+const snapshot = { executionId: ticket.executionId, testExecutionId: ticket.testExecutionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, controllerProcess: { pid: process.pid, parentPid: process.ppid, processGroupId: process.platform === "win32" ? null : process.pid, startedAt: "fixture-birth", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: "Local\\\\Daynight-" + ticket.launchId } : {}) }, nativeProcesses: [] };
+const server = net.createServer(socket => {
+  let input = '';
+  socket.on('data', data => {
+    input += data;
+    if (!input.includes('\\n')) return;
+    const request = JSON.parse(input);
+    if (request.secret !== ticket.ipcSecret || request.executionId !== ticket.executionId || request.testExecutionId !== ticket.testExecutionId || request.executionGeneration !== ticket.executionGeneration || request.controllerInstanceId !== ticket.controllerInstanceId) return socket.destroy();
+    socket.end(JSON.stringify({ requestId: request.requestId, ok: true, snapshot }) + '\\n', () => { if (request.action.kind === 'stop') server.close(); });
+  });
+});
+server.listen(ticket.ipcEndpoint, () => fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)));
+setTimeout(() => process.exit(9), 10000).unref();
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); throw capture; });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+    expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+    expect(spawned?.exitCode).toBe(0); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+    expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  } finally {
+    if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real IPC fixture child did not close.")), 12_000); })]); } finally { if (timer) clearTimeout(timer); } }
+  }
+}, 45_000);
+
+test("capture failure does not infer a process tree from authenticated journal evidence", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const proof = { pid: v.child.pid, parentPid: 1, processGroupId: v.child.pid, startedAt: "original", commandHash: "hash", ...(process.platform === "win32" ? { jobObjectName: "controlled-job" } : {}) };
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: proof, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(f.stop).not.toHaveBeenCalled();
+  expect(f.record).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("capture failure rejects conflicting IPC process identity without signaling it", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid + 1 }, nativeProcesses: [] } };
+    throw new Error("Conflicting peer must not receive stop");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors[0].message).toContain("does not match the spawned child");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce();
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("capture failure terminates the real Windows spawn handle without Job proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const localClient = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "real-child-ready"); await mkdir(dist);
+  await writeFile(path.join(dist, "main.js"), `require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => process.exit(9), 20000);`);
+  let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
+  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); throw capture; });
+  try {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
+    expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+    expect(spawned).toBeDefined(); expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true);
+    expect(spawned!.exitCode).not.toBe(9); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+  } finally {
+    if (spawnedClose) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([spawnedClose, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Real Windows fixture child did not close.")), 22_000); })]); } finally { if (timer) clearTimeout(timer); } }
+  }
+}, 60_000);
+
+
+test.skipIf(process.platform === "win32")("capture failure does not send IPC stop when the authenticated snapshot lacks child proof", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async ticket => ({ snapshot: { sessionId: ticket.sessionId, controllerProcess: null, nativeProcesses: [] } }));
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors[0].message).toContain("does not match the spawned child");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(v.child.kill).not.toHaveBeenCalled(); expect(v.child.unref).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("capture cleanup continues after a child error and stops the still-running authenticated child", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed"), childError = new Error("child status error");
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  f.capture.mockRejectedValueOnce(capture);
+  let observations = 0;
+  f.request.mockImplementation(async (ticket, action) => {
+    if (action.kind === "observe" && observations++ === 0) { v.child.emit("error", childError); throw new ControllerIpcOutcomeUnknownError("IPC not ready"); }
+    if (action.kind === "observe") return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } };
+    if (action.kind === "stop") { v.child.exitCode = 0; v.child.emit("exit", 0); return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(error.errors[1].errors).toContain(childError);
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "observe", "stop"]);
+  expect(v.child.unref).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test.skipIf(process.platform !== "win32")("capture cleanup reserves time for the Windows spawn handle near the IPC cutoff", async () => {
+  const v = await setup(null), capture = new Error("controlled process proof capture failed");
+  let clock = Date.now(), killAt: number | undefined;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.capture.mockRejectedValueOnce(capture);
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe") { clock += 12_499; return { snapshot: { sessionId: ticket.sessionId, controllerProcess: { pid: v.child.pid }, nativeProcesses: [] } }; }
+    if (action.kind === "stop") { expect(options.timeoutMs).toBe(1); clock += 1; return { snapshot: {} }; }
+    throw new Error("Unexpected IPC action");
+  });
+  v.child.kill.mockImplementation(() => { killAt = clock; v.child.exitCode = 0; v.child.emit("exit", 0); return true; });
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.errors[0]).toBe(capture); expect(killAt).toBeDefined();
+  expect(v.child.kill).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
 });

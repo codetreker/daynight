@@ -49,10 +49,12 @@ export const runIndependentController = async (input: IndependentControllerInput
   let child: ChildProcess | undefined, ticket: ControllerLaunchTicket | undefined;
   let directory: string | undefined, failed: unknown;
   let registeredSession: SessionSnapshot | undefined;
-  let spawnAttempted = false, archived = false, nativeStopped = false, unstartedTicketRetired = true;
+  let spawnAttempted = false, spawnConfirmed = false, archived = false, nativeStopped = false, unstartedTicketRetired = true;
   let resume: ResumeLease | undefined;
   let processProof: ProcessProof | undefined;
   let childExit: Promise<void> | undefined;
+  let childExited = false;
+  const childFailures: unknown[] = [];
   const request = async (target: string, body?: unknown, independent = false): Promise<unknown> => {
     if (!independent) cancellation.signal.throwIfAborted();
     let response: Response;
@@ -111,8 +113,10 @@ export const runIndependentController = async (input: IndependentControllerInput
     try {
       spawnAttempted = true;
       child = spawn(process.execPath, [path.join(context.packageDirectory, "dist", "main.js"), "controller", input.provider, "--launch-id", launchId], { cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(home).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
-      childExit = new Promise<void>(resolve => { child!.once("exit", () => resolve()); child!.once("error", () => resolve()); });
+      childExit = new Promise<void>(resolve => { child!.once("exit", () => { childExited = true; resolve(); }); });
+      child.on("error", error => { childFailures.push(error); });
       await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
+      spawnConfirmed = true;
     } finally { await log.close(); }
     if (!child.pid) throw new Error("Test controller process identity is unknown.");
     processProof = await captureProcessProof(child.pid);
@@ -180,7 +184,55 @@ export const runIndependentController = async (input: IndependentControllerInput
       try {
         const deadline = Date.now() + 15_000;
         const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Test controller cleanup exceeded its deadline; execution evidence is retained."); return time; };
-        if (!processProof) throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
+        if (!processProof) {
+          const failures: unknown[] = [];
+          let observed: Awaited<ReturnType<typeof requestController>> | undefined;
+          try {
+            // The original ticket can authenticate an IPC peer, but a failed spawn
+            // proof cannot authorize POSIX signals to a possibly recycled PID.
+            const observationDeadline = deadline - (process.platform === "win32" ? 2500 : 0);
+            while (spawnConfirmed && !childExited && Date.now() < observationDeadline) {
+              try {
+                const available = observationDeadline - Date.now();
+                if (available <= 0) break;
+                const response = await requestController(ticket, { kind: "observe" }, { timeoutMs: Math.min(500, available) });
+                if (response.snapshot.sessionId !== ticket.sessionId) throw new Error("Test controller IPC session identity mismatch.");
+                if (response.snapshot.controllerProcess === null || typeof response.snapshot.controllerProcess !== "object" || response.snapshot.controllerProcess.pid !== child.pid) throw new Error("Test controller IPC process does not match the spawned child.");
+                observed = response;
+                break;
+              } catch (error) {
+                failures.push(error);
+                if (!(error instanceof ControllerIpcOutcomeUnknownError)) break;
+                await waitForExit(childExit, Math.min(250, Math.max(0, observationDeadline - Date.now())));
+              }
+            }
+            if (spawnConfirmed && !childExited && !observed && Date.now() >= observationDeadline) failures.push(new Error("Original Test controller IPC observation window expired; exit remains unconfirmed."));
+            if (observed) {
+              const available = observationDeadline - Date.now();
+              if (available > 0) {
+                try { await requestController(ticket, { kind: "stop", deadline }, { timeoutMs: Math.min(2000, available) }); }
+                catch (error) { failures.push(error); }
+                const wait = observationDeadline - Date.now();
+                if (wait > 0) await waitForExit(childExit, Math.min(2500, wait));
+              } else failures.push(new Error("Original Test controller IPC stop window expired; exit remains unconfirmed."));
+            }
+            // Windows retains the original process handle from spawn. POSIX's
+            // ChildProcess.kill uses a PID that may already have been recycled.
+            if (spawnConfirmed && !childExited && process.platform === "win32") {
+              try {
+                remaining();
+                if (!child.kill("SIGTERM")) throw new Error("Original Test controller handle did not accept termination.");
+                await waitForExit(childExit, remaining());
+                if (!childExited) throw new Error("Test controller handle termination did not complete before its deadline.");
+              } catch (error) { failures.push(error); }
+            }
+          } catch (error) { failures.push(error); }
+          finally {
+            failures.push(...childFailures);
+            if (spawnConfirmed) { try { child.unref(); } catch (error) { failures.push(error); } }
+          }
+          throw new AggregateError(failures, "Original controller spawn proof is unavailable; complete stopping remains unconfirmed and execution evidence is retained.");
+        }
         const journal = path.join(directory, "journal.sqlite");
         let replacement: ControllerBootstrapReplacedError | undefined;
         let observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline });

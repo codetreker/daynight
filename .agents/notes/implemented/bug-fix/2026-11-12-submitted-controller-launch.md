@@ -27,6 +27,13 @@ intent and resources as blocked. The independent
 [startup report decision](2026-11-05-session-startup-observations.md) continues
 to describe the public classification and its precedence.
 
+If the independent launcher cannot capture spawn proof, it attempts a bounded
+stop over the original ticket's authenticated IPC after matching the Controller
+PID to the spawned child. On Windows it can terminate the original spawn handle;
+POSIX does not signal an unverified PID.
+Unconfirmed children are unreferenced so they cannot hold the foreground CLI
+open, while the capture error, execution evidence and native lease remain.
+
 A reparented POSIX zombie can establish the original Controller's exit when its
 birth and process group match; its parent and displayed command can change during
 exit. This does not establish descendant stop. Bot orderly shutdown persists its
