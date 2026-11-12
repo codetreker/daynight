@@ -472,12 +472,12 @@ describe("worker remote API", () => {
     await expect((await verifiedRemote(serverUrl)).resolveProject({ repoUrl: project().repoUrl, projectId }, signal())).rejects.toMatchObject({ phase: "protocol" });
   });
 
-  it("yields released candidates and later pages in service order", async () => {
+  it("yields unowned candidates and later pages in service order", async () => {
     const urls: URL[] = [];
     const serverUrl = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost"); urls.push(url);
       const later = url.searchParams.has("cursor");
-      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" }), task(uuid(10))];
+      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId), task(uuid(10))];
       respond(response, { items: candidates.map((candidate) => ({ ...candidate, assignedTo: worker.userId })), nextCursor: later ? null : "candidate cursor+/=" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
@@ -493,7 +493,7 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       const query = new URL(request.url!, "http://localhost").searchParams; queries.push(query);
       const later = query.has("cursor");
-      respond(response, { items: [{ ...task(later ? uuid(9) : taskId, later ? undefined : { ...worker, state: "released" }), assignedTo: worker.userId, requiredPlatform: platformSpecific ? "macos" : null }], nextCursor: later ? null : "next-tier" });
+      respond(response, { items: [{ ...task(later ? uuid(9) : taskId), assignedTo: worker.userId, requiredPlatform: platformSpecific ? "macos" : null }], nextCursor: later ? null : "next-tier" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "macos", signal(), platformSpecific));
     expect(result.map(({ id }) => id)).toEqual([taskId, uuid(9)]);

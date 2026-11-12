@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(10);
+  expect(TASK_CACHE_SCHEMA).toBe(11);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,7 +110,7 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(10);
+  expect(TASK_CACHE_SCHEMA).toBe(11);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
@@ -244,4 +244,34 @@ it("rebuilds schema 9 project and task stores while preserving identity, profile
   expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
   expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
   expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);
+});
+
+
+it("clears schema 10 mixed Worker projections before strict parsing while retaining identity and profiles", async () => {
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001";
+  const taskIds = [1, 2, 3, 4].map(n => `40000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
+  const failure = vi.fn(), old = cache(failure, 10), connection = await old.open();
+  const profile = { userId, projectId, profileUserId: taskIds[0]!, userFence, profile: { userId: taskIds[0]!, version: "a".repeat(64), name: "Member", avatarUrl: null } };
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId: taskIds[2]!, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null, epoch: userFence, project: null, maxUpdatedAt: null, taskCount: 4, edgeCount: 0 });
+  for (const [index, taskId] of taskIds.entries()) {
+    const state = ["active", "completed", "released", "released"][index]!;
+    const worker = { claimId: taskId, state, userId, workerId: projectId, machine: { id: projectId, name: `Worker ${index}` }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: userFence, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-24T00:00:00Z" };
+    const detail = detailFixture(projectId, taskId, { status: index === 0 ? "in_progress" : index === 3 ? "cancelled" : "todo", cancelledAt: index === 3 ? "2026-10-24T00:00:00Z" : null, properties: { worker } });
+    const summary = { type: detail.type, parentId: detail.parentId, id: taskId, assignedTo: detail.assignedTo, titlePreview: detail.title, titleTruncated: false, properties: detail.properties, status: detail.status, version: detail.version, dependsOn: detail.dependsOn, externalDependsOn: detail.externalDependsOn, allowAgents: detail.allowAgents, requiredPlatform: detail.requiredPlatform, startedAt: detail.startedAt, completedAt: detail.completedAt, cancelledAt: detail.cancelledAt, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+    await connection.put("summaries", { userId, projectId, taskId, summary, dependencyState: { taskVersion: detail.version, blockedBy: [], ready: detail.status === "todo" } });
+    await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
+  }
+  await connection.put("profiles", profile); await connection.put("sessionHistory", history);
+  const current = await cache().open();
+  expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
+  for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("profiles", [userId, projectId, taskIds[0]!])).toEqual(profile);
+  expect(await current.get("sessionHistory", [userId, projectId, taskIds[2]!])).toEqual(history);
+  const fresh = detailFixture(projectId, taskIds[2]!);
+  await current.put("details", { userId, projectId, taskId: fresh.id, userFence, cacheGeneration: crypto.randomUUID(), detail: fresh, byteSize: 100, lastUsedAt: 1 });
+  expect((await current.get("details", [userId, projectId, fresh.id]))?.detail).toEqual(fresh);
 });

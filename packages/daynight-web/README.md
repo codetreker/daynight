@@ -772,11 +772,11 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 10 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 10 rebuilds incompatible project, summary and detail records and their
-watermarks for required type, parentId and dependency states, preserving user
-fences, profiles and compatible Session-history formats. Upgrades from schema 1
-through 4 rotate user fences; schema 7 Session records lack the complete-empty
+schema 11 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 11 clears project, summary and
+detail records and their watermarks before strict parsing, preserving user fences,
+profiles and compatible Session-history formats. A full snapshot can clear the
+refetchable Session catalogue. Upgrades from schema 1 through 4 rotate user fences; schema 7 Session records lack the complete-empty
 proof and are cleared. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
@@ -1136,7 +1136,7 @@ separate decisions. Unknown manual input is never automatically resent.
 The main Session tab automatically follows the task's actual claim and lifecycle,
 without an execution-record selector or catalogue refresh row. Active claims keep
 their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed and released claims resolve their original Session through a
+an older Session. Completed claims resolve their original Session through a
 read-only current request and display fixed history without input or control
 operations. Task completion does not imply archive readiness: pending, failed and
 unavailable archives retain their status and recovery action. Opening, refreshing
@@ -1574,8 +1574,8 @@ database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
-phase; released claims are labeled, while completed history is not a current
-claim. Project participant profiles supply nullable names and email addresses,
+phase; completed history and a missing worker are not a current claim. Project
+participant profiles supply nullable names and email addresses,
 independently of the current-access owner that authorizes controls. The profile
 reader retains loading, request errors and retry; a former participant remains
 identified by its real user ID. A missing canonical profile is a roster error,
@@ -1589,7 +1589,7 @@ standalone pages also compact the auxiliary navigation bar spacing so complete
 return links and language controls fit together at 320px in both languages
 without consuming the attachment reading area. Keyboard
 focus can reveal the withdrawal control within that region. Only
-the original owner or a project admin sees **Force withdraw** for active/released
+the original owner or a project admin sees **Force withdraw** for active
 ownership; the service rechecks membership and authority.
 
 Withdrawal confirmation freezes the task, claim and precise version. It explains

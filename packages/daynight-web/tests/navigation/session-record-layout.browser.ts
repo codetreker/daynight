@@ -145,9 +145,11 @@ test('confirmed empty history hides Session; failed and first reads stay disting
   expect(state.writes).toEqual([]);
 });
 
-test('released claim in todo automatically reads the latest real history without writes', async ({ page }) => {
+test('todo without a current claim automatically reads the latest real history without writes', async ({ page }) => {
   const state = await install(page, 'history'); await navigate(page);
   await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+  await expect(page.locator('.task-claim')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Force withdraw' })).toHaveCount(0);
   await noSelector(page); await readonly(page); expect(state.currentReads).toBe(0); expect(state.writes).toEqual([]);
 });
 

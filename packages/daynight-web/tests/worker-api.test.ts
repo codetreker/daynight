@@ -17,7 +17,7 @@ const task: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
   startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const invalidWorkers: unknown[] = [
-  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
+  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, state: "released" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
   { ...worker, workerId: "bad" }, { ...worker, worktreeId: "bad" }, { ...worker, machine: { id: claimId, name: "" } },
   { ...worker, machine: { id: "bad", name: "Machine" } }, { ...worker, machine: { ...worker.machine, unexpected: true } },
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
@@ -75,10 +75,11 @@ describe("worker ownership detail reads", () => {
   });
 });
 
-it("accepts cancelled released history without accepting an active cancelled execution", () => {
-  const value = { ...task, status: "cancelled", cancelledAt: time, properties: { ...task.properties, worker: { ...worker, state: "released" } } };
+it("accepts cancelled tasks without ownership while rejecting released and active ownership", () => {
+  const value = { ...task, status: "cancelled", cancelledAt: time, properties: { pullRequests: task.properties.pullRequests } };
   expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
   expect(() => parseTaskDetail({ ...value, properties: task.properties }, projectId, taskId)).toThrow("invalid response");
+  expect(() => parseTaskDetail({ ...value, properties: { worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
   for (const patch of [{ cancelledAt: undefined }, { cancelledAt: null }, { status: "todo" }]) {
     expect(() => parseTaskDetail({ ...value, ...patch }, projectId, taskId)).toThrow("invalid response");
   }

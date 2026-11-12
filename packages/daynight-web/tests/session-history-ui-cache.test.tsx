@@ -10,6 +10,9 @@ import { ManagedSessionRecords } from '../src/features/task-agent-session/TaskSe
 import { beginSessionHistoryRefresh, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import * as historyCache from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskCacheDatabase } from '../src/features/task-cache/database';
+import { openDB } from 'idb';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 
 vi.mock('../src/api/terminal-sessions', async (original) => ({ ...(await original<typeof import('../src/api/terminal-sessions')>()), createTerminalSessionApi: vi.fn() }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => null }));
@@ -32,6 +35,26 @@ function fixture() {
 const render = createLocaleRender('en');
 const records = (label: string) => <div key={label} data-testid={label}><ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords></div>;
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); });
+
+it('rebuilds a schema 10 snapshot and refetches the history directory', async () => {
+  const fence = '30000000-0000-4000-8000-000000000001';
+  const old = new TaskCacheDatabase(vi.fn(), 10); const db = await old.open();
+  await db.put('userScopes', { userId: TEST_VIEWER_ID, userFence: fence });
+  await db.put('projects', { userId: TEST_VIEWER_ID, projectId, userFence: fence, cacheGeneration: fence, state: 'active', invalidatedBy: null, epoch: fence, project: null, maxUpdatedAt: null, taskCount: 1, edgeCount: 0 });
+  await db.put('summaries', { userId: TEST_VIEWER_ID, projectId, taskId, summary: { id: taskId, properties: { worker: { state: 'released' } } }, dependencyState: null } as unknown as TaskCacheSchema['summaries']['value']);
+  await db.put('sessionHistory', { userId: TEST_VIEWER_ID, projectId, taskId, userFence: fence, cacheGeneration: fence, requestToken: fence, clearedToken: null, leaseExpiresAt: null, settled: 'saved', paginationToken: null, page: { items: [second], nextCursor: null }, confirmedCompleteEmpty: false, observedNonEmpty: false, byteSize: 1, lastUsedAt: 1 });
+  old.close();
+  const scope = await seed();
+  const current = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  expect(await current.get('sessionHistory', [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
+  expect((await current.get('summaries', [TEST_VIEWER_ID, projectId, taskId]))?.summary.properties.worker).toBeUndefined();
+  current.close();
+  const api = fixture();
+  render(<TaskCacheProvider scope={scope}>{records('only')}</TaskCacheProvider>);
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toHaveTextContent('2026-11-03');
+  expect(api.history).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('button', { name: /2026-11-02.*Herdr/ })).toBeNull();
+});
 
 it('coalesces two visible consumers and publishes the saved response to the waiter', async () => {
   const scope = await seed(); const api = fixture();
