@@ -1,5 +1,4 @@
 import { fireEvent, screen, within } from '@testing-library/react';
-import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
@@ -10,7 +9,6 @@ const select = vi.hoisted(() => vi.fn());
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: ({ reveal }: { reveal: { path: string | null } }) => <span>Attachment: {reveal.path}</span> }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
-vi.mock('../src/features/task-detail/TaskOrganization', () => ({ TaskOrganization: () => <span>Task organization</span>, FormDialog: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('../src/features/task-assignment/TaskAssigneeSelect', () => ({ TaskAssigneeSelect: () => null }));
 
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -34,7 +32,9 @@ it.each(['dialog', 'page'] as const)('separates description and tasks, with keyb
   const tabs = screen.getAllByRole('tab');
   expect(tabs.map(tab => tab.textContent)).toEqual(['Description', 'Tasks', 'Attachments', 'Discussion']);
   expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
-  expect(screen.getByText('Task organization')).toBeVisible();
+  const taskPanel = screen.getByRole('tabpanel', { name: 'Tasks' });
+  expect(within(taskPanel).getByRole('status')).toBeVisible();
+  expect(within(taskPanel).queryByRole('button', { name: /New Task|Add existing Task/ })).not.toBeInTheDocument();
   fireEvent.keyDown(tabs[1]!, { key: 'Home' });
   expect(tabs[0]).toHaveFocus();
   expect(tabs[0]).toHaveAttribute('tabindex', '0');
@@ -42,7 +42,7 @@ it.each(['dialog', 'page'] as const)('separates description and tasks, with keyb
   expect(panel.id).toBe(tabs[0]!.getAttribute('aria-controls'));
   expect(within(panel).getByRole('heading', { name: 'Goal text' })).toBeVisible();
   expect(within(panel).getByRole('img', { name: 'Diagram' })).toHaveAttribute('src', expect.stringContaining('/images/diagram.png'));
-  expect(screen.getByText('Task organization')).not.toBeVisible();
+  expect(taskPanel).not.toBeVisible();
   fireEvent.click(within(panel).getByRole('link', { name: 'Guide' }));
   expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
   expect(select).toHaveBeenCalledWith('docs/guide.md');

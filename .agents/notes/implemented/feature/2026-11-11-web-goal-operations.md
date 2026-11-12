@@ -12,13 +12,15 @@ make an apparent write result insufficient evidence of the committed state.
 ## Decision
 
 Goal detail uses the existing Task detail session for versioned edits, ownership,
-status and deletion. Task membership changes use the child Task's version and
-the same session. Goal and Task creation use the typed API and preserve explicit
+status and deletion. The shared session retains Task membership operations that
+use the child Task's exact version. Goal and Task creation use the typed API and preserve explicit
 Parent and owner choices. Confirmations describe the different effects of ending
 and deleting a Goal. The [Goal requirements](../../../../docs/spec/daynight-goals.md)
 own the user-visible contract. The original Task detail membership editor was
-later replaced by the [read-only Goal link](../simplification/2026-11-12-task-detail-goal-link.md);
-Goal creation and adding existing Tasks retain their membership operations.
+later replaced by the [read-only Goal link](../simplification/2026-11-12-task-detail-goal-link.md).
+The original Goal detail creation and add-existing entrances were later removed
+by the [Goal Task entrance decision](../simplification/2026-11-12-goal-task-entrances.md);
+the shared form, session operation and APIs remain in place.
 
 Goal detail shares the compact status menu with Task detail and places it beside
 the assignee while retaining progress in the metadata row. The menu takes the
