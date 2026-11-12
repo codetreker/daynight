@@ -141,6 +141,7 @@ export const createHerdrRecordingResources = (options: {
           await removeHerdrSourceDirectory(options.directory, directory, sourceOperation);
           if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
           options.archive.removeSourceData(record, sourceOperation);
+          sourceOperation.check();
         }, signal);
       }
       signal?.throwIfAborted();

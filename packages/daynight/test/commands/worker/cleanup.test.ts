@@ -78,6 +78,7 @@ describe("cleanup from resource observations", () => {
     f.removeWorktree.mockResolvedValueOnce({ kind: "absent", effectErrors: [error] });
     await f.advance();
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-effect-error", identity: f.owner, component: "cleanup", phase: "worktree-removal", error: expect.objectContaining({ cause: error }) }));
+    expect(f.events.findIndex(event => event.kind === "cleanup-effect-error")).toBeLessThan(f.events.findIndex(event => event.kind === "cleaned"));
     expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
     expect(f.findWorktree).not.toHaveBeenCalled();
   });
@@ -232,9 +233,12 @@ describe("cleanup from resource observations", () => {
 
   it("retains responsibility when Git cannot confirm resource absence", async () => {
     const f = fixture(), error = new Error("worktree resources still exist");
+    const observe = vi.fn(); f.deps.observePhase = observe;
     f.removeWorktree.mockRejectedValueOnce(error);
     await expect(f.advance()).rejects.toMatchObject({ cause: error });
     expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
+    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, false, undefined);
+    expect(observe).not.toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
   });
 
   it("observes a reappearing original resource after a previous successful cleanup", async () => {

@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import path from "node:path";
 import { createServer } from "node:http";
 import { createWorkerRemote, type WorkerRemote } from "../../../src/commands/worker/remote.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { performance } from "node:perf_hooks";
 import { createOperation } from "../../../src/api/operation.js";
 import { ApiError } from "../../../src/api/client.js";
 import type { Task } from "../../../src/api/types.js";
@@ -67,6 +68,17 @@ describe("Herdr retained recording resources", () => {
       await expect(s.resource.dispose(request, op, async () => { rmSync(s.cwd, { recursive: true }); outer.abort(cancelled); }, { signal: outer.signal })).rejects.toMatchObject({ kind: "cancelled", cause: cancelled });
       expect(s.archive.inspect(s.record)?.disposition?.phase).toBe("intent"); expect(existsSync(s.source)).toBe(true);
     } finally { op.dispose(); }
+  });
+  it("retains the disposal intent if the source budget expires during data removal", async () => {
+    const s = setup(), op = createOperation(); let clock = 0;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const original = s.archive.removeSourceData.bind(s.archive);
+    vi.spyOn(s.archive, "removeSourceData").mockImplementation((...args) => { original(...args); clock = 300_001; });
+    const request = { ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action: "delete" as const, confirmed: true as const };
+    try {
+      await expect(s.resource.dispose(request, op, async () => rmSync(s.cwd, { recursive: true }), {})).rejects.toMatchObject({ kind: "deadline" });
+      expect(s.archive.inspect(s.record)?.disposition?.phase).toBe("intent");
+    } finally { now.mockRestore(); op.dispose(); }
   });
   it("distinguishes real task deletion from an unverified 404-like error", async () => {
     const s = setup(), op = createOperation();

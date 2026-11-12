@@ -40,6 +40,16 @@ vi.mock("../../../src/commands/cleanup-operation.js", async importOriginal => {
   } };
 });
 
+const registrationBoundary = vi.hoisted(() => ({ afterRead: undefined as (() => void) | undefined }));
+vi.mock("../../../src/commands/worker/worktree-scan.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../../src/commands/worker/worktree-scan.js")>();
+  return { ...actual, registrationsFor: async (...args: Parameters<typeof actual.registrationsFor>) => {
+    const result = await actual.registrationsFor(...args);
+    registrationBoundary.afterRead?.();
+    return result;
+  } };
+});
+
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-git-tests");
 type RefFormat = "files" | "reftable";
 let seedRoot: string | undefined;
@@ -146,7 +156,7 @@ afterAll(async () => {
   if (seedRoot !== undefined) await rm(seedRoot, { recursive: true, force: true });
 });
 afterEach(async () => {
-  controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined;
+  controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -934,6 +944,34 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     } finally { clock.mockRestore(); }
   });
 
+  it("reports an effect deadline after the already-absent early return", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await adapter.removeWorktree(f.project, f.owner, {});
+    const now = performance.now.bind(performance); let offset = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now() + offset);
+    registrationBoundary.afterRead = () => { registrationBoundary.afterRead = undefined; offset = 301_000; };
+    try {
+      const result = await adapter.removeWorktree(f.project, f.owner, {});
+      expect(result.kind).toBe("absent");
+      expect(result.effectErrors).toHaveLength(1);
+      expect(result.effectErrors[0]).toMatchObject({ kind: "deadline" });
+    } finally { registrationBoundary.afterRead = undefined; clock.mockRestore(); }
+  });
+
+  it("does not observe absence when repository validation fails before acquiring the gate", async () => {
+    const f = await fixture(); const failure = new Error("repository observation failed"); let armed = false; let reads = 0;
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (armed) { reads++; if (reads === 1) throw failure; }
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await adapter.removeWorktree(f.project, f.owner, {});
+    armed = true;
+    await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toBe(failure);
+    expect(reads).toBe(1);
+  });
+
   it("preserves both removal and fresh observation errors", async () => {
     const f = await fixture(); const effect = new Error("remove failed"); const observation = new Error("observation failed"); let removed = false;
     const adapter = manager(f.root, {
@@ -991,6 +1029,27 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await adapter.prepareWorktree(f.project, f.owner, operation());
     const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error);
     expect(errorText(error)).toContain("shutdown"); expect(readsAfterRemoval).toBe(0);
+  });
+
+  it("preserves an effect error and cancellation between budgets without observing again", async () => {
+    const f = await fixture(); const controller = new AbortController();
+    const effect = new Error("lost removal response"), shutdown = new Error("shutdown between budgets");
+    let removed = false; let readsAfterRemoval = 0;
+    const adapter = manager(f.root, {
+      runGit: async (cwd, args, op, options) => { if (removed) readsAfterRemoval++; return runRepositoryGit(cwd, args, op, options); },
+      startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
+        const result = await runRepositoryGit(cwd, args, op, options);
+        if (args.includes("worktree") && args.includes("remove")) { removed = true; controller.abort(shutdown); throw effect; }
+        return result;
+      }),
+    });
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.cause).toBe(effect);
+    expect(error.errors[0]).toBe(effect);
+    expect(error.errors[1]).toMatchObject({ kind: "cancelled", cause: shutdown });
+    expect(readsAfterRemoval).toBe(0);
   });
 
   it.each([false, true])("preserves cancellation after a successful fresh observation (effect failed: %s)", async (failEffect) => {

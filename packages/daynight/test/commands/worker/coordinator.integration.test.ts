@@ -116,6 +116,7 @@ afterEach(async () => {
 });
 const task = (projectId: string, id: string): Task => ({ type: "task", parentId: null, id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
+const worktreePaths = (cwd: string): string[] => execFileSync("git", ["worktree", "list", "--porcelain", "-z"], { cwd, encoding: "utf8", timeout: 10_000 }).split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
 
 const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
@@ -1159,7 +1160,7 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
 }, 45_000);
 
 it("reconciles a failed removal after the directory is deleted in the same coordinator", async () => {
-  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  const f = await fixture(2), monitoring = createMonitoringObserver({ now: f.options.now });
   await mkdir(f.project.localPath, { recursive: true });
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10_000 });
   git(f.project.localPath, "init", "--initial-branch=main");
@@ -1176,6 +1177,8 @@ it("reconciles a failed removal after the directory is deleted in the same coord
   const operation = createOperation();
   try { await manager.prepareRepository(f.project, operation); } finally { operation.dispose(); }
   const coordinator = createWorkerCoordinator({ ...f.options, git: manager, monitoring });
+  const [originalCandidate, healthyCandidate] = f.candidates.splice(0);
+  f.candidates.push(originalCandidate!);
   try {
     await coordinator.tick();
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
@@ -1184,25 +1187,36 @@ it("reconciles a failed removal after the directory is deleted in the same coord
     const cwd = f.bind(owner).worktreePath;
     await mkdir(path.join(cwd, "content"));
     await writeFile(path.join(cwd, "content", "file"), "data");
-    const candidates = f.candidates.splice(0);
+    f.candidates.splice(0);
     f.grants.clear();
     await coordinator.tick();
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1 }));
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" }));
+    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(f.store.getTask(owner)?.status).toBe("active");
-    expect(git(f.project.localPath, "worktree", "list", "--porcelain").toString()).toContain(cwd);
+    expect(worktreePaths(f.project.localPath)).toContain(path.normalize(cwd));
+    f.candidates.push(healthyCandidate!); await coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
     await rm(cwd, { recursive: true, force: true });
+    expect(worktreePaths(f.project.localPath)).toContain(path.normalize(cwd));
     f.clock(1_000_000);
     await coordinator.tick();
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(monitoring.capture("2").lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
     await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
-    expect(git(f.project.localPath, "worktree", "list", "--porcelain").toString()).not.toContain(cwd);
+    expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(cwd));
     expect(git(f.project.localPath, "branch", "--list", `daynight/${owner.taskId}`).toString()).toContain(owner.taskId);
-    f.candidates.push(...candidates.filter(candidate => candidate.id !== owner.taskId));
+    f.candidates.push(originalCandidate!);
     await coordinator.tick();
-    await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(3));
+    const successor = f.store.listTasks().find(entry => entry.taskId === owner.taskId && entry.claimId !== owner.claimId)!;
+    const successorOwner = f.resources.get(successor.claimId)!.owner;
+    expect(successor.status).toBe("active");
+    expect(successorOwner.worktreeId).not.toBe(owner.worktreeId);
+    expect(f.bind(successorOwner).worktreePath).not.toBe(cwd);
+    await expect(access(f.bind(successorOwner).worktreePath)).resolves.toBeUndefined();
   } finally { await coordinator.shutdown(); await manager.dispose(); }
 }, 30_000);
 
@@ -1502,7 +1516,7 @@ it("does not yield archive maintenance for a stopped reservation left in a stale
 it("reconciles a failed Web removal after manual deletion in the same coordinator", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
-  const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
+  const f = await fixture(2), monitoring = createMonitoringObserver({ now: f.options.now });
   await mkdir(f.project.localPath, { recursive: true });
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10_000 });
   git(f.project.localPath, "init", "--initial-branch=main");
@@ -1533,30 +1547,41 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
   let archiveReady = false;
   const archive = vi.fn(async (task: WebTask) => { expect(task.webExecution?.sessionId).toBe(uuid(703)); if (!archiveReady) throw new Error("controlled archive receipt unavailable"); });
   const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive });
-  const candidates = f.candidates.splice(0); f.grants.clear();
-  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: webConfig }], globalConfiguration: webConfig, git: manager, webStore, webBackend: backend, monitoring, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  const [originalCandidate, healthyCandidate] = f.candidates.splice(0); f.grants.clear();
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: backend, monitoring, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, stage: "archive" }));
     expect(archive).toHaveBeenCalledOnce();
-    expect(git(f.project.localPath, "worktree", "list", "--porcelain").toString()).toContain(binding.worktreePath);
+    expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
     archiveReady = true; f.clock(10_000); await coordinator.tick();
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 2, stage: "worktree-removal" }));
     expect(archive).toHaveBeenCalledTimes(2);
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" }));
+    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(webStore.getTask(owner)?.status).toBe("active");
-    expect(git(f.project.localPath, "worktree", "list", "--porcelain").toString()).toContain(binding.worktreePath);
+    expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
+    f.candidates.push(healthyCandidate!); await coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     await rm(binding.worktreePath, { recursive: true, force: true });
+    expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
     f.clock(1_000_000); await coordinator.tick();
     await eventually(() => expect(webStore.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
     expect(archive).toHaveBeenCalledTimes(3);
+    expect(monitoring.capture("2").lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
     await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
-    expect(git(f.project.localPath, "worktree", "list", "--porcelain").toString()).not.toContain(binding.worktreePath);
-    f.candidates.push(...candidates.filter(candidate => candidate.id !== owner.taskId));
+    expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
+    f.candidates.push(originalCandidate!);
     await coordinator.tick();
-    await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    const successor = f.store.listTasks().find(entry => entry.taskId === owner.taskId && entry.claimId !== owner.claimId)!;
+    const successorOwner = f.resources.get(successor.claimId)!.owner;
+    expect(successor.status).toBe("active");
+    expect(successorOwner.worktreeId).not.toBe(owner.worktreeId);
+    expect(f.bind(successorOwner).worktreePath).not.toBe(binding.worktreePath);
+    await expect(access(f.bind(successorOwner).worktreePath)).resolves.toBeUndefined();
   } finally { await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
 }, 30_000);
