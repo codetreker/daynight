@@ -129,10 +129,9 @@ it("interrupts an in-flight IPC observation with the original cancellation reaso
 it("classifies a changed birth without stopping the real live process at that PID", async () => {
   const f = await fixture();
   f.child.kill("SIGKILL"); await once(f.child, "close");
-  // POSIX birth timestamps have one-second precision. Ensure the second real
-  // process is distinguishable even when the fixture starts near a boundary.
-  const nextSecond = Math.floor(Date.now() / 1000) * 1000 + 1050;
-  if (Date.now() < nextSecond) await new Promise(resolve => setTimeout(resolve, nextSecond - Date.now()));
+  // POSIX ps rounds process start times to whole seconds and may use a clock
+  // offset from Date.now(); separate the real births by more than two seconds.
+  await new Promise(resolve => setTimeout(resolve, 2200));
   const replacement = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["ignore", "pipe", "ignore"] }); children.push(replacement);
   await once(replacement.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
   const current = await captureProcessProof(replacement.pid!);
