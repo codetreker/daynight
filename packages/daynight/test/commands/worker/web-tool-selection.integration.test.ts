@@ -10,11 +10,11 @@ import { afterEach, expect, test, vi } from "vitest";
 import { controllerExecutionDirectory, readLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { readControllerOperation, readControllerSnapshot, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
-import { confirmControllerProcessesStopped, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
-import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+import { acquireControllerJobLease, inspectControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -174,7 +174,24 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     console.error(JSON.stringify({ fixture: "web-tool-selection", generations, nativeReceipts: await receipts(), nativeRequests: await requests(), relayErrors }));
   });
   const shutdown = async (identity: ClaimIdentity) => {
-    const result = await execution.backend.cleanup(current(identity), { kind: "shutdown", deadline: Date.now() + 20_000, signal: AbortSignal.timeout(60_000), immediateStop: true });
+    let result: Awaited<ReturnType<typeof execution.backend.cleanup>>;
+    try { result = await execution.backend.cleanup(current(identity), { kind: "shutdown", deadline: Date.now() + 20_000, signal: AbortSignal.timeout(60_000), immediateStop: true }); }
+    catch (error) {
+      if (process.platform === "win32") {
+        try {
+          const task = current(identity), original = task.webExecution!, file = path.join(controllerExecutionDirectory(home, original.executionId), "journal.sqlite"), proof = original.controllerProcess;
+          const files = await Promise.all([file, `${file}-wal`, `${file}-shm`].map(async name => {
+            try { const metadata = await lstat(name); return { name: path.basename(name), size: metadata.size, modifiedAt: metadata.mtime.toISOString() }; }
+            catch (failure) { return { name: path.basename(name), error: String(failure) }; }
+          }));
+          const lease = proof === null ? undefined : observerFor(proof);
+          const members = proof === null || lease === undefined ? null : await inspectControllerJobLease(lease, proof, false, Date.now() + 5000).catch(failure => String(failure));
+          const processes = await Promise.all([...(proof === null ? [] : [proof]), ...original.nativeProcesses].map(async item => ({ pid: item.pid, state: await inspectProcessProof(item).catch(failure => String(failure)) })));
+          console.error(JSON.stringify({ fixture: "web-tool-selection", stage: "stop-journal-failure", files, members, processes }));
+        } catch (failure) { console.error(JSON.stringify({ fixture: "web-tool-selection", stage: "stop-journal-diagnostic-failure", error: String(failure) })); }
+      }
+      throw error;
+    }
     expect(result.complete).toBe(true);
     const saved = journal(identity);
     if (saved?.controllerProcess) {

@@ -1281,6 +1281,7 @@ const { spawn } = require('node:child_process');
   let saved: ReturnType<typeof retainedSnapshot>;
   let actualTicket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket | undefined;
   let journalFile = "";
+  let failed = false, originalFailure: unknown;
   f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
     if (!deadline) {
       actualTicket = ticket; journalFile = path.join(v.home, ".daynight", "controller", "executions", ticket.executionId, "journal.sqlite");
@@ -1307,16 +1308,21 @@ const { spawn } = require('node:child_process');
     const script = `const { readProvenWindowsStoppedControllerGeneration } = await import(${JSON.stringify(readerUrl)}); const { readLaunchTicket } = await import(${JSON.stringify(ticketUrl)}); const ticket = await readLaunchTicket(${JSON.stringify(v.home)}, ${JSON.stringify(actualTicket!.launchId)}); const snapshot = readProvenWindowsStoppedControllerGeneration(${JSON.stringify(journalFile)}, ticket); console.log(JSON.stringify({ lifecycle: snapshot.lifecycle, nativeStopped: snapshot.nativeStopped, controllerPid: snapshot.controllerProcess.pid, nativePid: snapshot.nativeProcesses[0].pid, proofVersion: snapshot.windowsJobStopProof.version }));`;
     const output = await new Promise<string>((resolve, reject) => childProcess.execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: 15_000 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
     expect(JSON.parse(output.trim())).toEqual({ lifecycle: "stopped", nativeStopped: true, controllerPid: spawned!.pid, nativePid: nativeProof!.pid, proofVersion: 1 });
-  } finally {
+  } catch (error) { failed = true; originalFailure = error; }
+  finally {
     const failures: unknown[] = [];
     try {
       if (spawned && spawned.exitCode === null && spawned.signalCode === null) spawned.kill();
       if (close) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([close, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Windows Controller fixture did not close.")), 5000); })]); } finally { if (timer) clearTimeout(timer); } }
     } catch (error) { failures.push(error); }
-    try { if (nativeProof) await launch.stopControllerBootstrap(nativeProof, Date.now() + 10_000); else if (spawned) await new Promise(resolve => setTimeout(resolve, 31_000)); } catch (error) { failures.push(error); }
+    try { if (nativeProof && (nativeHandle === null || waitProcess(nativeHandle, 0) !== 0)) await launch.stopControllerBootstrap(nativeProof, Date.now() + 10_000); else if (!nativeProof && spawned) await new Promise(resolve => setTimeout(resolve, 31_000)); } catch (error) { failures.push(error); }
     if (nativeHandle !== null) try { if (closeHandle(nativeHandle) === 0) throw new Error("Native fixture handle close failed."); } catch (error) { failures.push(error); }
-    if (failures.length) throw new AggregateError(failures, "Windows Job fixture cleanup failed.");
+    if (failures.length) {
+      roots.splice(roots.indexOf(v.home), 1);
+      throw new AggregateError(failed ? [originalFailure, ...failures] : failures, `Windows Job fixture cleanup failed; evidence retained in ${v.home}.`, failed ? { cause: originalFailure } : undefined);
+    }
   }
+  if (failed) throw originalFailure;
 }, 90_000);
 
 test.skipIf(process.platform === "win32")("journal I/O failure uses only the authenticated original POSIX snapshot for bounded cleanup", async () => {

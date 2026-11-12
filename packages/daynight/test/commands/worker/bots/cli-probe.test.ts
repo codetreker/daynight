@@ -206,6 +206,7 @@ setInterval(() => {}, 1000);`;
     const preload = `--require ${JSON.stringify(hook)}`;
     const operation = createOperation({ limits: { totalMs: 90_000, requestMs: 10_000 } }); operations.push(operation);
     const scope = await createBotCliProbe({ environment: { ...process.env, NODE_OPTIONS: preload }, cwd: root }, operation); scopes.push(scope);
+    if (process.platform === "win32") observedJobs.set(scope, await windowsJob.acquireControllerJobLease(scope.ownership.launchId, scope.ownership.process!, Date.now() + 15_000));
     await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await scope.run(process.execPath, ["-e", "console.log(process.env.NODE_OPTIONS)"]);
     expect(result.stdout.trim()).toBe(testIsolation.guardedEnvironment({ NODE_OPTIONS: preload }).NODE_OPTIONS);
