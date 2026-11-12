@@ -2,8 +2,11 @@
 
 The Goal workflow organizes a multi-stage objective in a `type=goal` resource.
 Ordinary direct child Tasks track stages and delivery; Parent expresses membership
-and ordinary dependencies express prerequisites. The Goal owns shared materials
-while each Task retains its own responsibility and results.
+and ordinary dependencies express prerequisites. The Goal owns effective shared
+specifications, architecture, breakdowns, conclusions and overall progress, even
+when produced directly in a Session. Each Task retains its own responsibility,
+status, results and evidence. Update Goal-wide conclusions and important progress
+under the product [material ownership rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#goal-outcomes-and-progress).
 Follow [create task](create-task.md) for creation, the [task content standard](task-content.md) for material, and [authorization and scope](authorization.md) for operational permissions.
 This file covers only stage progression and Goal-specific requirements.
 

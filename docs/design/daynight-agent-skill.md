@@ -41,9 +41,9 @@ UTF-8、空白内容、标题冲突、未关闭代码围栏或无效内部引用
 
 ## 文档职责与任务资料
 
-产品手册说明对象、操作及失败；仓库流程的 [task-content](../../.agents/skills/development-workflow/references/task-content.md)
-拥有任务定义、成果与 Session 的边界和资料充分性。需求、设计、输入、实施步骤与验收保存在
-所属任务；讨论方法、执行安排与操作授权留在 Session。Goal 持有共享需求、设计和整体验收；阶段 task 保留生产责任与 Goal ID、完整路径。普通任务创建默认 `proposed`；Goal 内需求讨论、已确认的方案后继和交付子任务新建时显式使用 `--status todo`，登记不启动执行。
+产品手册说明对象、操作、失败及通用材料归属；仓库流程的 [task-content](../../.agents/skills/development-workflow/references/task-content.md)
+补充任务定义、成果的资料充分性与具体阶段要求。需求、设计、输入、实施步骤与验收保存在
+其实际所有者；讨论方法、执行安排与操作授权留在 Session。Goal 持有共享 spec、架构、拆解、整体决策、成果和重要进展，无论由 Session 直接形成还是由子 task 产出；阶段 task 保留生产责任、自身状态、结果和证据，以及 Goal ID、完整资料路径。结论或重要进展变化时更新 Goal 并核验，服务计算的子任务计数不代替该同步与整体验收。普通任务创建默认 `proposed`；Goal 内需求讨论、已确认的方案后继和交付子任务新建时显式使用 `--status todo`，登记不启动执行。
 
 ## 终验收与开发交付
 

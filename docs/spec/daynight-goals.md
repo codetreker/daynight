@@ -2,6 +2,8 @@
 
 Goal 是具有独立身份、标题、描述、负责人、状态、Thread 和附件的项目资源。普通 Task 可归属于同项目的一个 Goal，也可不归属；Goal 不嵌套，不属于依赖图。现有 Task、资料和依赖不因引入 Goal 而迁移。
 
+Goal 的描述与附件保存当前有效的整体 spec、架构、任务拆解、关键决策、阶段成果、交付和整体验收结论，并记录已达成结果、剩余范围及重要阻碍。无论这些结论由 Session 直接形成，还是由子 Task 讨论、调研、设计或拆解产出，形成有效结论后都应更新 Goal 并核对保存结果。子 Task 保留自身的工作定义、责任、状态、成果和证据，并引用 Goal 的共享材料；临时操作和原始日志留在 Session。该归属约定由使用者维护，服务不会因子 Task 完成而自动汇总材料；子 Task 的数量进度不能代替整体交付与验收。CLI 和 MCP 的材料手册说明通用规则，各项目自行确定阶段、文件和确认要求。
+
 HTTP 和 MCP 创建接受 `type=goal`；省略类型创建普通 Task。类型创建后不可更改。普通 Task 的 `parentId` 可在创建时指定，更新时省略保持、null 移出、Goal ID 转移；目标必须是同项目中未删除的 Goal。归属变化使用子 Task 的精确版本，不改变依赖、状态或其他 Task 的版本。父 Goal 的状态不限制归属和普通 Task 的手动修改。
 
 Goal 默认 `todo`，负责人默认创建者；显式 `assignedTo:null` 表示未分配。Goal 可在 `todo`、`in_progress`、`done`、`cancelled` 间自由转换，同状态在版本检查后不写入。进入 `in_progress` 记录新的 startedAt；返回 `todo` 清空三个状态时间；进入 done 或 cancelled 保留可空 startedAt，分别记录 completedAt 或 cancelledAt 并清空另一终态时间。Goal 的 ready 始终为 false，不支持依赖、Steps、自动执行、平台要求或 Worker claim；可使用 `pullRequests`、Thread 和附件。

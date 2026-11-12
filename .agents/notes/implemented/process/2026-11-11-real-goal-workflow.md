@@ -21,10 +21,19 @@ each delivery brief identifies both the architecture producer and the Goal and
 paths holding its required shared sources. Confirmation, ordinary dependencies
 and registration-before-completion remain stage gates on ordinary tasks.
 
+The CLI and MCP product materials guides define the general ownership rule:
+effective shared specifications, architecture, breakdowns, decisions, outcomes
+and overall progress belong to the Goal regardless of which Session or child
+Task produces them. Users update and verify that material when conclusions or
+important progress change; child status accounting does not synchronize it.
+Task-specific results and evidence remain with their producer. Required stage
+tasks, files, confirmation and delivery gates follow the target project.
+
 [Goal handoff](../../../skills/handoff-goal/SKILL.md) selects direct ordinary
 children by Parent, checking each task independently. Dependencies can cross a
 Goal boundary without transferring the other Goal's work. The public CLI manual
-explains product operations; repository stage policy remains in development-workflow.
+explains product operations and material ownership; repository stage policy
+remains in development-workflow.
 
 ## Alternatives
 

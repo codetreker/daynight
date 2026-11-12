@@ -6,7 +6,7 @@ Follow the target repository's documentation and language rules.
 
 ## Task, Thread and Session boundary
 
-Task and Goal descriptions and attachments store effective requirements, solutions and formal results. For a Goal, shared requirements, architecture and whole-Goal acceptance belong to the Goal; producing Tasks identify the Goal ID and exact paths. Task-specific work and results remain with their Tasks.
+Task and Goal descriptions and attachments store effective requirements, solutions and formal results. For a Goal, shared requirements, architecture, breakdowns, overall decisions, results, progress and whole-Goal acceptance belong to the Goal, regardless of the producer; producing Tasks identify the Goal ID and exact paths. Task-specific work, results and evidence remain with their Tasks. Follow the product [material ownership rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#goal-outcomes-and-progress) when synchronizing conclusions and progress.
 Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
 Apply these responsibilities to descriptions, attachments and referenced material.
 Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#threads) to read, post and reply without changing task metadata or triggering execution.

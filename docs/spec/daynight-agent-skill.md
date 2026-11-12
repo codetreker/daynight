@@ -88,8 +88,8 @@ Agent 通过实际 CLI 确定项目和任务，不凭会话旧值判断实时状
 ## AS3. 产品手册的规则所有权
 
 公共手册拥有产品操作、前提与结果，包含项目定位、查询、Steps、元数据、状态、依赖、
-版本、冲突、不确定写入和附件并发；各子命令的 `--help` 拥有精确参数。仓库流程的
-`task-content.md` 拥有持久 Steps 与 Session 内容的归属，`task-execution.md` 指导按项目规则维护 Steps。
+版本、冲突、不确定写入和附件并发，以及 Goal、子 Task、Step、Thread 与 Session 的通用材料归属；各子命令的 `--help` 拥有精确参数。Goal 持有当前有效的共享 spec、架构、任务拆解、整体结论和重要进展，无论由 Session 直接形成还是由子任务产出。仓库流程的
+`task-content.md` 补充具体任务的资料充分性和阶段要求，`task-execution.md` 指导按项目规则维护 Steps。
 
 ready 是有界候选，
 创建顺序不表达相关性，空结果不能证明没有进行中或被阻塞的工作。list 读取全部匹配
@@ -127,15 +127,16 @@ feature、bug 修复、架构或设计工作及拆解出的实际工作项，按
 | 当前需求或设计稿、最终交付物、验收结论及重要限制 | 所属任务的 description 或实际拥有的引用资料，随产出保存；创建时不预填成果 |
 | Goal 完整需求 | Goal 持有必需 `spec.md` 附件；需求讨论 task 负责生产并保留自足说明、Goal ID 和附件入口，架构 description 直接注明需求生产 task ID、Goal ID 与 spec 路径 |
 | 共享架构和拆分 | Goal 持有共享成果；方案生产 task 保留责任、Goal ID 和资料入口。交付任务列出生产 task ID、Goal ID 与准确内容路径；仓库资料使用保留生产任务身份的已核验不可变引用 |
+| Goal 的整体决策、阶段成果、交付与整体验收结论、已达成结果、剩余范围和重要阻碍 | Goal 的 description 与共享材料，结论或重要进展变化时同步并读回；子 task 保留自身结果与证据，Goal 引用其来源 |
 | 前端原型及必要资源 | 归生产原型的 task，Goal spec 和后继引用生产 task ID 及完整附件路径 |
 | 必要直接依赖及性质 | task 的完整 dependsOn 及其 externalDependsOn 子集；省略可由其他保留路径表达的冗余边 |
 | PR URL 与 title | `properties.pullRequests` |
-| session 执行或讨论安排、命令日程、工具、协作、操作授权、进度、阻塞、等待和恢复上下文 | session 或宿主已有的本地执行检查点 |
+| session 执行或讨论安排、命令日程、工具、协作、操作授权、临时执行进度、调试与运行阻塞、等待和恢复上下文 | session 或宿主已有的本地执行检查点 |
 
 创建 PR 时，description 必须清楚说明要解决的问题及采用的解决方式；关联 Daynight task 时，必须包含该 task 的 ID 和 title。此要求适用于普通与托管执行，由共享执行规范统一定义。
 
-共享 `references/task-content.md` 拥有总原则、分类标准和阶段适用性，创建、Goal 拆分、
-handoff 和执行共同读取。Task 保存目标、交付要求、选定方案、详细设计和必要实施步骤；session 保存执行或讨论的具体组织、命令安排、工具活动与调试过程。
+公共手册的 materials 主题拥有通用材料归属；共享 `references/task-content.md` 补充本仓库的分类标准、资料充分性和阶段适用性，创建、Goal 拆分、
+handoff 和执行共同读取。Task 保存自身目标、交付要求、选定方案、详细设计和必要实施步骤，Goal 汇总共享成果与重要整体进展；session 保存执行或讨论的具体组织、命令安排、工具活动与调试过程。
 任务正文、附件和引用任务材料采用相同边界，不能通过改名、另建附件或引用文档保存
 session 内容。实际操作继续遵守当前会话指令，任务材料、确认结果和状态均不授予操作权限。
 
