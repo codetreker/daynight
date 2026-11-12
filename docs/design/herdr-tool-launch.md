@@ -18,7 +18,7 @@ macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选
 
 `herdr/tool-launch.ts` 在实例私有目录的 `tool-launch/` 下维护 owner 与 selectionKey 对应的 generation。manifest 保存 canonical owner、随机 nonce、冻结 Agent launch、native 原 PATH、Node/helper 绝对路径与平台。当前 generation 索引只指向完整发布的 manifest；旧 generation 仅在全部原进程确认停止并写入 retirement 证明后才能替换。重连只读原索引和 manifest，缺失、损坏、错 owner 或改变选择均拒绝。有冻结 launch 的执行不能因索引丢失被解释为 legacy，输入和停止不能跳过原映射证明。
 
-停止入口只需原 owner 与 cwd。生产适配层按 canonical owner 读取原持久执行配置，从该配置恢复 Agent 和冻结映射，并核对模式、Agent 与 recipe 的 tool/context；不依赖进程内缓存或当前 pane 是否已经报告 Agent。已存在映射而原配置或 recipe 缺失时保持错误；只有原配置没有 recipe 且没有未退休映射的执行可采用 legacy 停止。恢复的映射还须与已缓存 generation 的 nonce 和 selectionKey 一致，停止和 retirement 继续使用原进程证明。重启后的空 pane 因此仍保留映射的停止责任，只有确认退休后才允许创建新 generation。
+停止入口只需原 owner 与 cwd。生产适配层按 canonical owner 读取原持久执行配置，从该配置恢复 Agent 和冻结映射，并核对模式、Agent 与 recipe 的 tool/context。可选模式省略时沿用 `herdr` 默认值，显式 `web` 仍拒绝；不依赖进程内缓存或当前 pane 是否已经报告 Agent。已存在映射而原配置或 recipe 缺失时保持错误；只有原配置没有 recipe 且没有未退休映射的执行可采用 legacy 停止。恢复的映射还须与已缓存 generation 的 nonce 和 selectionKey 一致，停止和 retirement 继续使用原进程证明。重启后的空 pane 因此仍保留映射的停止责任，只有确认退休后才允许创建新 generation。
 
 `tool-launch-protocol.ts` 通过有界普通文件读取、独占临时文件、同步及 create-only 发布保存证据；POSIX 同时要求 owner-only 权限。manifest、启动 intent、receipt、初始输入 intent 和进程 journal 分别承担自己的事实，不能用某个文件存在推断其它步骤完成。
 

@@ -37,8 +37,9 @@ helper exits.
 Missing mapping indexes for frozen executions reject recovery instead of
 selecting legacy behavior. Owner-only stop reads the original persistent
 configuration to recover the mapping, even after caches are lost and before an
-empty pane reports an Agent. Existing mapping evidence with missing or conflicting
-configuration rejects cleanup; only an execution lacking both a frozen recipe
+empty pane reports an Agent. An omitted optional control mode retains the existing
+Herdr default; an explicit Web mode still rejects the mapping. Existing mapping
+evidence with missing or conflicting configuration rejects cleanup; only an execution lacking both a frozen recipe
 and an unretired mapping can use legacy stop. Restored mappings must agree with any
 cached nonce and selection key before process proof and retirement proceed.
 Windows reopens the original validated manifest's

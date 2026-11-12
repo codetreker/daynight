@@ -64,7 +64,7 @@ export const createWorkerHerdr = (options: {
   });
   const toolMapping = async (context: HerdrExecutionOwner & { agent?: HerdrExecutionContext["agent"] }, operation: Operation, existingOnly = true) => {
     const owner = canonicalResourceOwner(context), configuration = options.readExecutionConfiguration?.(owner) ?? null;
-    if (configuration !== null && (configuration.agentControlMode !== "herdr" || context.agent !== undefined && configuration.agent !== context.agent)) throw new Error("The frozen Herdr execution configuration belongs to another provider or mode.");
+    if (configuration !== null && ((configuration.agentControlMode ?? "herdr") !== "herdr" || context.agent !== undefined && configuration.agent !== context.agent)) throw new Error("The frozen Herdr execution configuration belongs to another provider or mode.");
     if (configuration?.toolLaunch === undefined) {
       if (existingOnly && readToolLaunchMappingInventory(options.paths.herdrDirectory).some(mapping => sameResourceOwner(mapping.owner, owner) && !mapping.retired)) throw new Error("The original Herdr mapping has no frozen execution recipe; process ownership remains unknown.");
       if (existingOnly || context.agent === "claude") return null;

@@ -85,6 +85,18 @@ const fixture = async (platform: "darwin" | "win32", recipe: "frozen" | "legacy"
 };
 
 describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s)", platform => {
+  it("uses the default Herdr mode for a frozen owner-only stop", async () => {
+    const f = await fixture(platform), readOriginal = f.readConfiguration.getMockImplementation()!;
+    f.readConfiguration.mockImplementation(identity => {
+      const { agentControlMode: _mode, ...configuration } = readOriginal(identity)!;
+      return configuration;
+    });
+    await f.build().tasks.stopAndClose(f.context, f.binding, operation());
+    expect(JSON.parse(await readFile(path.join(path.dirname(f.mapping!.manifestPath), "retired.json"), "utf8"))).toEqual({ nonce: f.mapping!.nonce, selectionKey: f.mapping!.selectionKey, owner });
+    expect(f.readConfiguration.mock.calls.map(([identity]) => identity)).toEqual([owner]);
+    expect(f.calls.filter(method => method === "workspace.close")).toHaveLength(1);
+  });
+
   it("retires a pre-launch mapping after store reopen and rotates shell and layout evidence", async () => {
     const f = await fixture(platform), mapping = f.mapping!, journal = path.join(path.dirname(mapping.manifestPath), "processes.json");
     const originalJournal = await readFile(journal, "utf8");
@@ -167,4 +179,16 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     expect(f.calls).not.toContain("workspace.close");
     await expect(readFile(path.join(path.dirname(f.mapping!.manifestPath), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+});
+
+it("uses the default Herdr mode when preparing an original mapped workspace", async () => {
+  const f = await fixture("darwin"), readOriginal = f.readConfiguration.getMockImplementation()!;
+  f.readConfiguration.mockImplementation(identity => {
+    const { agentControlMode: _mode, ...configuration } = readOriginal(identity)!;
+    return configuration;
+  });
+  const adapter = f.build();
+  await expect(adapter.tasks.prepareWorkspace({ ...f.context, agent: "codex" }, "Task", operation())).resolves.toEqual(f.binding);
+  expect(f.readConfiguration.mock.calls.map(([identity]) => identity)).toEqual([owner]);
+  expect(f.calls).not.toContain("workspace.close");
 });
