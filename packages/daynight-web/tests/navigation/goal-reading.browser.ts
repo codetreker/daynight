@@ -1370,8 +1370,8 @@ for (const locale of ['en', 'zh-CN'] as const) test(`Project Task short viewport
   const opener = page.locator('.project-title-actions').getByRole('button', { name: zh ? '新建 Task' : 'New Task' });
   const title = dialog.getByLabel(zh ? '标题' : 'Title', { exact: true });
   await title.fill('Retained Task draft');
-  await dialog.getByLabel('Goal', { exact: true }).selectOption(goalId);
-  await expect(dialog.getByLabel(zh ? '负责人' : 'Assignee', { exact: true })).toBeVisible();
+  await dialog.getByRole('combobox', { name: 'Goal', exact: true }).selectOption(goalId);
+  await expect(dialog.getByRole('combobox', { name: zh ? '负责人' : 'Assignee', exact: true })).toBeVisible();
   await expect(dialog.getByText(zh ? '无法读取负责人列表。' : 'Could not load assignees.', { exact: false })).toBeVisible();
   await expectHit(dialog.getByRole('button', { name: zh ? '重试' : 'Retry' }));
   await expectFormSkin(page, dialog);
@@ -1387,7 +1387,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`Project Task short viewport
   await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
   await opener.click();
   await expect(title).toHaveValue('Retained Task draft');
-  await expect(dialog.getByLabel('Goal', { exact: true })).toHaveValue(goalId);
+  await expect(dialog.getByRole('combobox', { name: 'Goal', exact: true })).toHaveValue(goalId);
   await dialog.getByRole('button', { name: zh ? '创建' : 'Create', exact: true }).click();
   await expect.poll(() => fixture.creates().length).toBe(1);
   await expect(dialog.getByText(zh ? '结果尚未确认，请先检查任务列表，再创建其他 Task。' : 'The result is unknown. Check the task list before creating another Task.')).toBeVisible();
