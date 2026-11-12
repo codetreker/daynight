@@ -184,6 +184,13 @@
 .token-row.revoked { background: #fcfcfd; }
 .token-row.revoked .person-name { color: #778298; }
 .token-row .actions { flex-wrap: wrap; }
+.token-row .row-detail { min-width: 0; }
+.credential-last-use, .last-use-empty { font-size: 11px; color: #737d8e; margin-top: 5px; max-width: 100%; }
+.credential-last-use summary { list-style: none; cursor: pointer; width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+.credential-last-use summary::-webkit-details-marker { display: none; }
+.credential-last-use summary:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; border-radius: 3px; }
+.credential-last-use summary time { color: #566279; text-decoration: underline dotted #9da5b3; text-underline-offset: 3px; }
+.credential-last-use .full-time { margin-top: 5px; color: #637087; line-height: 1.7; overflow-wrap: anywhere; }
 .token-expiry-custom { margin-top: 15px; }
 .token-current-expiry { margin-top: 15px; overflow-wrap: anywhere; }
 .token-symbol { width: 33px; height: 33px; border-radius: 8px; background: #f0f1fa; color: #7776b4; display: flex; align-items: center; justify-content: center; flex: none; }
@@ -348,6 +355,8 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .row .person { width: 100%; }
   .row .actions { margin-left: auto; gap: 7px; }
   .row > .row-detail { flex: 1; }
+  .token-row > :first-child { flex-basis: 100%; min-width: 0; }
+  .token-row > .row-detail { flex: 1 1 100%; }
   .role-select { font-size: 10px; }
   .role-legend { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .panel-heading { padding: 17px; align-items: flex-start; }
@@ -445,11 +454,13 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .task-confirmation .dialog-footer .button[aria-disabled="true"] { color: #737d8e; background: #f2f3f7; border-color: #e3e6ee; cursor: not-allowed; }
 
 .grant-row { grid-template-columns: minmax(0, 1.35fr) minmax(180px, 1fr) auto; align-items: start; }
+.grant-row.owner-grant-row { min-width: 0; }
 .grant-row .actions { align-self: center; }
 .grant-row.revoked .person-name { color: #778298; }
 .grant-meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .grant-origin, .grant-scope, .grant-facts { margin-top: 5px; font-size: 11px; color: #737d8e; overflow-wrap: anywhere; }
 .grant-facts p + p { margin-top: 5px; }
+.grant-facts .credential-last-use + p { margin-top: 5px; }
 .grant-facts strong { color: #566279; font-weight: 500; }
 .grant-dialog-client { padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; background: #fcfcfe; margin-bottom: 16px; overflow-wrap: anywhere; }
 .grant-dialog-client p { margin-top: 5px; }

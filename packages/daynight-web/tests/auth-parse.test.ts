@@ -15,7 +15,7 @@ const invitationId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-20T12:34:56.123456789Z";
 const expiresAt = "2026-11-20T12:34:56Z";
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: null, name: null, avatarUrl: null };
-const token = { id: tokenId, name: "CLI access", createdAt: time, expiresAt };
+const token = { id: tokenId, name: "CLI access", createdAt: time, expiresAt, lastUsedAt: time };
 const member = { projectId, userId, email: null, name: null, avatarUrl: null, role: "member", version: 1n, createdAt: time, updatedAt: time };
 const grant = { projectId, userId, role: member.role, version: member.version, createdAt: time, updatedAt: time };
 const participant = { inheritedFrom: null, userId, profile: { name: null, email: null, avatarUrl: null }, effectiveRole: member.role, directGrant: grant };
@@ -65,6 +65,7 @@ describe("personal access token parsing", () => {
     expect(parseTokens({ items: [value, { ...value, id: otherId }] })).toEqual([token, { ...token, id: otherId }]);
     expect(parseTokens({ items: [] })).toEqual([]);
     expect(parseToken({ ...token, expiresAt: null })).toEqual({ ...token, expiresAt: null });
+    expect(parseToken({ ...token, lastUsedAt: null })).toEqual({ ...token, lastUsedAt: null });
     expect(parseCreatedToken({ ...token, expiresAt: null, token: "permanent-token" })).toEqual({ ...token, expiresAt: null, token: "permanent-token" });
   });
 
@@ -75,10 +76,13 @@ describe("personal access token parsing", () => {
 
   it.each([
     undefined, null, [], {}, { items: null }, { items: [token, { ...token, id: tokenId.toUpperCase() }] },
-    ...["id", "name", "createdAt", "expiresAt"].map((field) => ({ items: [{ ...token, [field]: undefined }] })),
+    ...["id", "name", "createdAt", "expiresAt", "lastUsedAt"].map((field) => ({ items: [{ ...token, [field]: undefined }] })),
     { items: [{ ...token, name: " " }] }, { items: [{ ...token, name: "name\0value" }] },
     { items: [{ ...token, createdAt: "2026-02-30T00:00:00Z" }] },
     { items: [{ ...token, expiresAt: "2026-11-20T12:34:56+01:00" }] },
+    { items: [{ ...token, lastUsedAt: "2026-02-30T00:00:00Z" }] },
+    { items: [{ ...token, lastUsedAt: "2026-11-20T12:34:56+01:00" }] },
+    { items: [{ ...token, lastUsedAt: false }] },
   ])("rejects incomplete, malformed, and duplicate token lists %#", (value) => {
     expect(() => parseTokens(value)).toThrow("invalid response");
   });

@@ -10,7 +10,7 @@ const team = { ...personal, version: 1, createdAt: time, updatedAt: time, member
 const install = async (page: Page) => {
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
-  await page.route('**/api/v1/**', async (route: Route) => {
+  await page.route('**/api/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
     if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
@@ -19,9 +19,9 @@ const install = async (page: Page) => {
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/tokens') return request.method() === 'POST'
-      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
+      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
       : send({ items: [] });
-    if (path === '/api/v1/oauth/grants') return send({ items: [] });
+    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });

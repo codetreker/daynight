@@ -623,7 +623,7 @@ describe("authenticated application shell", () => {
 
   it("keeps a one-time PAT reveal mounted after account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
