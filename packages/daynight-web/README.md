@@ -1235,30 +1235,34 @@ records the original trade-offs.
 
 A local-only snapshot has revision zero and no server clock or successful receipt.
 It displays neither a refreshed timestamp nor running durations or stall warnings;
-completed durations still use their persisted endpoints. Overview uses client wall
-time for provisional recent-completion classification, then switches to the live
-server sample. This provisional time never establishes execution time or sync
-coverage.
+completed durations still use their persisted endpoints. Overview and completion-time readings use the local snapshot time for provisional
+display, then switch to the live server sample. This provisional time never
+establishes execution time, completion facts or sync coverage.
 
 The successful task-sync API reader captures `receivedMonotonic` immediately
 after `response.text()` completes, before JSON decoding, source scanning or
 validation. `getTaskSync` returns local `TaskSyncRead {sync, receivedMonotonic}`;
 `useTaskGraph` carries that receipt through history, IDB and index work and pairs
 it with the response's database `observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
-`TaskExecutionClockProvider` per loaded project advances the server sample with
+`TaskExecutionClockProvider` at each project or standalone resource page root advances the server sample with
 `performance.now()` elapsed time and publishes saved threshold changes in the
 same layout effect. Its estimate includes post-receipt render/commit delay but
 does not compensate for network delay before that receipt; client
 `Date.now()` does not determine duration or warnings.
 
-Only mounted running tasks with a known start subscribe to one visible-page
-one-second ticker. Completed tasks subscribe only to threshold metadata and use
-their persisted endpoint difference; unknown timing has no active subscription.
-Hiding pauses ticks, visibility return publishes monotonic elapsed immediately,
-and ordinary guarded polling separately reanchors time. The last running
-unsubscribe and provider unmount release timer/listener work. There is no new
-blur listener, per-card request or server worker. Clock samples and settings stay
-outside graph-index, projection and layout dependencies.
+Mounted running tasks with a known start and completion-time consumers share one
+visible-page one-second ticker. Completion readings use the server sample at
+nanosecond precision, or the local snapshot anchor for a cached preview. The
+completion hook publishes only semantic bucket changes. Completed execution
+durations subscribe only to threshold metadata and use their persisted endpoint
+difference; unknown timing has no active subscription. Without a snapshot all
+samples and settings remain unknown and no ticker starts. Hiding pauses ticks,
+visibility return publishes monotonic elapsed immediately, and ordinary guarded
+polling separately reanchors time. The last active unsubscribe, clearing the
+sample and provider unmount release timer/listener work. The provider stays mounted
+across first receipt and same-project presentation changes. There is no new
+per-card request or server worker. Clock samples and settings stay outside
+graph-index, projection and layout dependencies.
 
 Task cards, standalone rows and Goal child rows show live elapsed or a frozen
 original execution duration for done and cancelled records. Todo tasks and

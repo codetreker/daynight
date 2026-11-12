@@ -66,6 +66,36 @@ const moveHistory = async (direction: 'back' | 'forward') => {
 };
 
 describe('standalone full task details', () => {
+  it('retains the focused attachment draft when the first graph sample arrives', async () => {
+    const fixture = installed();
+    const pending = Promise.withResolvers<void>();
+    const read = vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => {
+      await pending.promise;
+      return taskSyncReadFixture(taskSyncFromGraph(graphFixture([...fixture.tasks.values()]), {
+        query, versionForTask: (task) => fixture.tasks.get(task.id)!.version,
+        propertiesForTask: (task) => fixture.tasks.get(task.id)!.properties,
+      }));
+    });
+    window.history.replaceState(null, '', address('attachments', 'docs/guide.md'));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'attachments', path: 'docs/guide.md' }} />, { taskCache: { scope } });
+    try {
+      await screen.findByText('方案正文');
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+      const draft = screen.getByLabelText('目标相对路径');
+      fireEvent.change(draft, { target: { value: 'retained/first-sample.txt' } });
+      draft.focus();
+      const main = screen.getByRole('main');
+      await act(async () => { pending.resolve(); await pending.promise; });
+      await waitFor(() => expect(scope.getAuthorizedProject(projectId)).not.toBeNull());
+      expect(screen.getByRole('main')).toBe(main);
+      expect(screen.getByLabelText('目标相对路径')).toBe(draft);
+      expect(draft).toHaveValue('retained/first-sample.txt');
+      expect(draft).toHaveFocus();
+    } finally { pending.resolve(); view.unmount(); scope.dispose(); }
+  });
+
   it('keeps a cold cached private body unavailable when a trusted access denial precedes an older delta', async () => {
     const detail = detailFixture(projectId, taskId, { title: 'Cached private task', description: 'COLD_PRIVATE_DESCRIPTION_MARKER', version: 5n });
     const graph = graphFixture([detail]);

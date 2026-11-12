@@ -2,6 +2,7 @@ import { act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { TaskDetail, TaskSync, WorkerClaim } from '../src/api/types';
+import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
@@ -52,11 +53,11 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false, goalM
     workerMachines: result.project.workerMachines, observedAt: sync.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 };
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
-  const workspace = (active = true) => <ProjectTaskWorkspace pausedTaskCount={0} projectId={projectId} snapshot={snapshot} sessionStore={store} active={active}
+  const workspace = (active = true) => <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}><ProjectTaskWorkspace pausedTaskCount={0} snapshot={snapshot} sessionStore={store} active={active}
     goalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
     activeView={goalMode ? 'goals' : 'chains'} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
     chains={{ projectId, representativeIds: [rootId], allRepresentativeIds: [rootId], openChainId: null, onOpenChain, onCloseChain: noop, onOpenTask, onOpenSession }}
-    standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
+    standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
   const view = renderWithLocale(workspace(), { taskCache: { scope }, locale: 'zh-CN' });
   const replace = (next: TaskSync['sessions']) => act(() => store.replace({ project: result.project,
     observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: next, receivedMonotonic: performance.now() }));

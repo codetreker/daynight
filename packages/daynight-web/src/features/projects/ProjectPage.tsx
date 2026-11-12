@@ -11,6 +11,7 @@ import { canonicalId } from "../../api/validation";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
+import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
@@ -448,7 +449,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} onNavigateExternalTask={onNavigateExternalTask} {...(initialWitness.current?.id === detailSelection.id ? { initialWitness: initialWitness.current.witness } : {})} /></ProjectDraftHost>;
 
   return (
-    <>
+    <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
       {history.error && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
       <div hidden={history.error} inert={history.error}>
       <div className="project-navigation">
@@ -505,7 +506,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={scopedStandaloneIds.filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length}
               unfinishedChainTaskCount={[...scopedMembers.values()].flat().filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length} goalCount={allGoals.length} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openChainId, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask,
@@ -522,7 +523,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       </div>
       <OverlayOwnerContext value={detailOwner}>{detailDialog}</OverlayOwnerContext>
       </div>
-    </>
+    </TaskExecutionClockProvider>
   );
 };
 

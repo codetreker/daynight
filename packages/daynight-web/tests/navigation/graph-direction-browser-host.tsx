@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LocaleProvider } from '../../src/i18n/LocaleProvider';
+import { TaskExecutionClockProvider } from '../../src/features/task-execution/TaskExecutionClock';
 import { TaskChainDialog } from '../../src/features/task-graph/TaskChainDialog';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -14,10 +15,10 @@ const indexA = buildGraphIndex(graphA), indexB = buildGraphIndex(graphB);
 const Host = () => {
   const [selected, setSelected] = useState<{ projectId: string; rootId: string } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  return <><div><button ref={trigger} onClick={() => setSelected({ projectId: projectA, rootId: id(1) })}>Open Goal A</button>
+  return <TaskExecutionClockProvider projectId={selected?.projectId ?? projectA} snapshot={null}><div><button ref={trigger} onClick={() => setSelected({ projectId: projectA, rootId: id(1) })}>Open Goal A</button>
     <button onClick={() => setSelected({ projectId: projectA, rootId: id(3) })}>Open Goal B</button>
     <button onClick={() => setSelected({ projectId: projectB, rootId: id(5) })}>Open other project</button></div>
     {selected && <TaskChainDialog projectId={selected.projectId} rootId={selected.rootId} index={selected.projectId === projectA ? indexA : indexB}
-      onOpenTask={() => {}} onClose={() => setSelected(null)} onRestoreFocus={() => trigger.current?.focus()} />}</>;
+      onOpenTask={() => {}} onClose={() => setSelected(null)} onRestoreFocus={() => trigger.current?.focus()} />}</TaskExecutionClockProvider>;
 };
 createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Host /></LocaleProvider>);

@@ -1,6 +1,7 @@
 import { isTerminalStatus, taskEndedAt, taskProgressStatus, type TaskProgressStatus } from "../../api/task-status";
 import type { GraphIndex } from "../task-graph/model";
-import { isRecentCompletion, latestKnownGoalCompletion, recentTaskWindow, timestampNanoseconds } from "./task-visibility";
+import { isRecentCompletion, latestKnownGoalCompletion, recentTaskWindow } from "./task-visibility";
+import { timestampNanoseconds } from "../../time/timestamp";
 
 export type OverviewTaskTarget = { readonly kind: "chain"; readonly taskId: string } | { readonly kind: "standalone" };
 export type OverviewProgressCount = { readonly done: number; readonly cancelled: number; readonly ended: number; readonly total: number; readonly percent: number; readonly status: TaskProgressStatus };

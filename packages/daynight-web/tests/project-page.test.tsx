@@ -124,6 +124,20 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it("retains the search draft and focus when the first graph sample arrives", async () => {
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "unfinished search" } });
+    input.focus();
+    await act(async () => { pending.resolve(graph()); });
+    await screen.findByRole("heading", { name: "核心项目" });
+    expect(searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" })).toBe(input);
+    expect(input).toHaveValue("unfinished search");
+    expect(input).toHaveFocus();
+  });
+
   it("keeps search available without a graph and opens a hit with direct observation", async () => {
     graphRequest.mockRejectedValue(new ApiError("network"));
     vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
