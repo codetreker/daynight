@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
@@ -16,6 +17,12 @@ import (
 type handlerWithRecorder struct {
 	server.Handler
 	recorder *credentialusage.Recorder
+}
+
+type usageWriter struct{}
+
+func (usageWriter) WriteCredentialUsage(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 
 func (h *handlerWithRecorder) Shutdown(ctx context.Context) error {
@@ -34,7 +41,7 @@ func NewHandler(c config.Config, database store.Transactions, ready func(context
 		return nil, err
 	}
 	app := service.NewModules(c, database, ready, files, client)
-	recorder, err := credentialusage.New(database, logger, nil)
+	recorder, err := credentialusage.New(usageWriter{}, logger, nil)
 	if err != nil {
 		return nil, err
 	}
