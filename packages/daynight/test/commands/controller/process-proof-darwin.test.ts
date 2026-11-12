@@ -28,3 +28,11 @@ it("waits through Darwin's exiting state without signaling incomplete identity o
   await vi.runAllTimersAsync(); await stopped;
   expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
+
+it("reports identity differences and never signals a live replacement", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, "4101 4000 4101 S Thu Nov 12 15:53:09 2026 replacement\n"));
+  await expect(stopControllerBootstrap(proof, Date.now() + 5000)).rejects.toThrow('"status":"S","sameBirth":true,"sameParent":true,"sameGroup":true,"sameCommand":false');
+  expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});

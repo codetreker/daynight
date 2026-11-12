@@ -5,7 +5,7 @@ import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { requestController } from "../../controller/local-client.js";
+import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
 import { reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
@@ -134,7 +134,13 @@ export const createBotProcess = (options: {
       if (prior.controllerProcess === null) {
         // Legacy records can still authenticate a live peer, but cannot prove stop
         // or authorize a replacement generation without the original process proof.
-        const snapshot = await observe(ticket, signal);
+        let snapshot: ControllerSnapshot;
+        try { snapshot = await observe(ticket, signal); }
+        catch (cause) {
+          signal.throwIfAborted();
+          if (!(cause instanceof ControllerIpcOutcomeUnknownError)) throw cause;
+          throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.", { cause });
+        }
         if (snapshot.sessionId !== ticket.sessionId) throw new Error("Bot controller IPC session identity mismatch.");
         if (["starting", "ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped) {
           const observed = remember(record, snapshot);

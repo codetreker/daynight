@@ -101,9 +101,10 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
   const remaining = () => { if (Date.now() >= deadline) throw new Error("Controller bootstrap stop exceeded its deadline."); };
   const check = async () => {
     remaining();
-    const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())));
+    let mismatch: unknown;
+    const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; });
     remaining();
-    if (state === "replaced") throw new Error("Controller bootstrap process identity was replaced.");
+    if (state === "replaced") throw new Error(`Controller bootstrap process identity was replaced (${JSON.stringify(mismatch)}).`);
     return state;
   };
   const signal = async (value: NodeJS.Signals): Promise<"signaled" | "stopped" | "exiting"> => {

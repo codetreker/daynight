@@ -470,7 +470,8 @@ test.each([false, true])("launches one real Controller with no user turn after u
   const closed = once(browser, "close"); browser.close(); await closed;
   expect(f.browserConnections()).toBe(1);
   if (interruptedObservation) {
-    await expect(f.create().advance(f.current(), signal)).rejects.toThrow(/spawn proof.*unavailable/);
+    expect((await f.create().advance(f.current(), signal)).controllerProcess).toEqual(first.controllerProcess);
+    await expect(f.create().shutdown(f.current(), signal)).rejects.toThrow(/no original spawn proof/);
     expect(await f.launches()).toHaveLength(1);
     return;
   }

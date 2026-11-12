@@ -5,6 +5,7 @@ import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/b
 import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/environment.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
+import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
@@ -31,9 +32,19 @@ test("reconciles an accepted registration with a lost response using the origina
 test("never repeats a possible spawn even after constructing a new process manager",async()=>{
   const f=fixture(); f.launch.mockImplementationOnce(async options=>{await options.onSubmitting();throw new Error("spawn outcome unknown");});
   await expect(f.process.advance(f.current(),new AbortController().signal)).rejects.toThrow("spawn outcome unknown");
-  expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown"); f.observe.mockRejectedValueOnce(new Error("IPC unavailable"));
+  expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown"); f.observe.mockRejectedValueOnce(new ControllerIpcOutcomeUnknownError("IPC unavailable"));
   await expect(f.process.advance(f.current(),new AbortController().signal)).rejects.toThrow(/spawn proof.*unavailable/);
-  await expect(f.createProcess().advance(f.current(),new AbortController().signal)).rejects.toThrow(/spawn proof.*unavailable/); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1);
+  expect((await f.createProcess().advance(f.current(),new AbortController().signal)).lifecycle).toBe("ready"); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1);
+});
+
+test("retains an explicit IPC identity conflict when legacy spawn proof is missing", async () => {
+  const f = fixture();
+  f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); throw new Error("spawn outcome unknown"); });
+  await expect(f.process.advance(f.current(), new AbortController().signal)).rejects.toThrow("spawn outcome unknown");
+  const conflict = new Error("Controller IPC snapshot fence mismatch."); f.observe.mockRejectedValueOnce(conflict);
+  await expect(f.process.advance(f.current(), new AbortController().signal)).rejects.toBe(conflict);
+  expect(f.executions.get(f.current())!.lastError).toContain("fence mismatch");
+  expect(f.launch).toHaveBeenCalledOnce();
 });
 
 test("rejects unsupported native configuration before registration and leaves failures visible",async()=>{

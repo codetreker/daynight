@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import { cleanupBotProcesses, fixture } from "./bot-process.fixtures.js";
 
 afterEach(cleanupBotProcesses);
@@ -12,7 +13,7 @@ test("blocks journal recovery when the original spawn proof is missing",async()=
     journal.patchSnapshot({lifecycle:"failed",startup:{state:"failed",reasonCode:"native_rejected"},error:"native rejected"});journal.close();
     throw new Error("IPC closed before observation");
   });
-  await expect(f.process.advance(f.current(),signal)).rejects.toThrow("IPC closed");f.observe.mockRejectedValue(new Error("unreachable"));
+  await expect(f.process.advance(f.current(),signal)).rejects.toThrow("IPC closed");f.observe.mockRejectedValue(new ControllerIpcOutcomeUnknownError("unreachable"));
   await expect(f.createProcess().advance(f.current(),signal)).rejects.toThrow(/spawn proof.*unavailable/);
   expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
   expect(f.launch).toHaveBeenCalledTimes(1);

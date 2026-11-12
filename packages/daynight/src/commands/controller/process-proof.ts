@@ -8,11 +8,11 @@ export type ProcessProof = { readonly pid: number; readonly parentPid: number; r
 const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
-const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean }> => {
+const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
-  return { proof: { pid, parentPid: Number(match[2]), processGroupId: Number(match[3]), startedAt: match[5]!.replace(/\s+/g, " "), commandHash: hash(match[6]!.trim()) }, zombie: match[4]!.startsWith("Z"), exiting: process.platform === "darwin" && match[4]!.includes("E") };
+  return { proof: { pid, parentPid: Number(match[2]), processGroupId: Number(match[3]), startedAt: match[5]!.replace(/\s+/g, " "), commandHash: hash(match[6]!.trim()) }, zombie: match[4]!.startsWith("Z"), exiting: process.platform === "darwin" && match[4]!.includes("E"), status: match[4]! };
 };
 export const captureProcessProof = async (pid: number, timeoutMs = process.platform === "win32" ? 15_000 : 5000): Promise<ProcessProof> => {
   validPid(pid);
@@ -26,14 +26,15 @@ export const captureControllerProcessProof = async (launchId: string): Promise<P
   const proof = await captureProcessProof(process.pid);
   return process.platform === "win32" ? { ...proof, jobObjectName: await createControllerJob(launchId, process.pid) } : proof;
 };
-const inspectProcessState = async (proof: ProcessProof, timeoutMs: number): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
+type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
+const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
   validPid(proof.pid);
   try { process.kill(proof.pid, 0); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw new Error("Process liveness could not be established.", { cause: error }); }
-  let current: ProcessProof, zombie = false, exiting = false;
+  let current: ProcessProof, zombie = false, exiting = false, status: string | null = null;
   try {
     if (process.platform === "win32") current = await captureProcessProof(proof.pid, timeoutMs);
-    else { const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; }
+    else { const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status; }
   }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
   // POSIX may retain a dead child as a zombie until its parent reaps it. Its
@@ -47,14 +48,16 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number): Prom
   // The original birth still identifies a live Windows process. Conflicting
   // command evidence cannot authorize releasing its resources as a reused PID.
   if (process.platform === "win32" && current.startedAt === proof.startedAt && (current.commandHash !== proof.commandHash || current.processGroupId !== proof.processGroupId)) throw new Error("The original Windows process has inconsistent identity evidence; ownership remains unknown.");
-  return current.startedAt === proof.startedAt && current.commandHash === proof.commandHash && current.processGroupId === proof.processGroupId ? "running" : "replaced";
+  if (current.startedAt === proof.startedAt && current.commandHash === proof.commandHash && current.processGroupId === proof.processGroupId) return "running";
+  onMismatch?.({ status, sameBirth: current.startedAt === proof.startedAt, sameParent: current.parentPid === proof.parentPid, sameGroup: current.processGroupId === proof.processGroupId, sameCommand: current.commandHash === proof.commandHash });
+  return "replaced";
 };
 export const inspectProcessProof = async (proof: ProcessProof, timeoutMs = 5000): Promise<"running" | "stopped" | "replaced"> => {
   const state = await inspectProcessState(proof, timeoutMs);
   if (state === "exiting") throw new Error("The original process is exiting and its full identity cannot be rechecked yet.");
   return state;
 };
-export const inspectBootstrapProcessProof = (proof: ProcessProof, timeoutMs = 5000): Promise<"running" | "stopped" | "replaced" | "exiting"> => inspectProcessState(proof, timeoutMs);
+export const inspectBootstrapProcessProof = (proof: ProcessProof, timeoutMs = 5000, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => inspectProcessState(proof, timeoutMs, onMismatch);
 const groupMembers = async (group: number): Promise<number[]> => {
   const rows = await run("ps", ["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="]);
   const result: number[] = [];
