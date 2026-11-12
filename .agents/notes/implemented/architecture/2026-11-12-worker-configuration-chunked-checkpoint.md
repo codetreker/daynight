@@ -17,9 +17,12 @@ incremental syntax guard before parsing with the pinned `@discoveryjs/json-ext`
 the read handle before migration. Commits freeze the queue's snapshot and create
 an iterator for each write attempt. A same-directory exclusive temporary file is
 written completely in order, synced and closed before atomic replacement.
-Schema 1–3 upgrades and schema 4 retain the existing business validation and
-failure semantics. The [Worker design](../../../../docs/design/daynight-worker.md)
-owns the current cache behavior.
+The chunked codec originally replaced the whole-file schema 4 path. Schema 1–4
+now upgrade explicitly to schema 5 under the
+[fact separation decision](2026-11-12-worker-configuration-fact-separation.md),
+retaining the strict historical business validation and persistence failure
+semantics. The [Worker design](../../../../docs/design/daynight-worker.md) owns
+the current cache behavior.
 
 ## Alternatives
 

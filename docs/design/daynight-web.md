@@ -140,7 +140,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 项目选择遍历完整可访问目录后供选择。明确的已加载状态区分首次读取与后台复核，有效空集同样属于已加载；后台读取完成前保留完整候选集，不插入 loading 行，真实失败仍按权限和错误规则处理。搜索与未应用选择属于弹窗本地状态，只在 Done 时应用。已选但不在当前目录的条目保持 ID 及原覆盖，不从历史缓存恢复名称或仓库信息。最终提交移除已有项目时，以一个确认窗口说明排除与停止的影响；取消、遮罩或 Escape 不发出 PUT。窗口沿用现有焦点约束、背景隔离和关闭恢复，不把任务认领或业务操作加入配置保存。
 
-应用结果按 key、实际值与每项 targetRevision 派生。实际值与当前目标相同的独立标量或全局 native 可保留成功；目标值已变时仍展示旧实际值，并标记等待。项目准备/native 尚无当前目标观测，或最近 projectRemoval.targetRevision 不早于对应项目结果时，不能用旧成功宣告重新就绪。projectRemoval 自身始终保留实际状态和原版本，不被较新目标遮蔽。准备、native 与停止结果可独立成功或失败；已移出目标的 projectRemoval 继续显示在结果区域。observation.reportedAt 是应用结果接纳时间；offline 或缺少近期运行观测不使它变成当前执行证明。error、lastFailure 和 nextAttemptAt 分别显示当前失败、最近尚需报告的失败及重试期限，诊断只使用协议闭合字段的本地化文本。
+应用结果按 key、实际值与每项 targetRevision 派生。实际值与当前目标相同的独立标量或全局 native 可保留成功；目标值已变时仍展示旧实际值，并标记等待。项目准备/native 尚无当前目标观测，或最近 projectRemoval.targetRevision 不早于对应项目结果时，不能用旧成功宣告重新就绪。projectRemoval 自身保留实际状态和本批报送的 targetRevision，不被较新目标遮蔽；原停止记录的本机 origin 与当前停止核验的报告版本分别表达，不由页面改写历史。准备、native 与停止结果可独立成功或失败；已移出目标的 projectRemoval 继续显示在结果区域。observation.reportedAt 是本批应用结果接纳时间；服务端整体替换最近批次，页面以该批与当前目标比较，未包含的目标项保持 pending，不合并旧批次制造完整成功。offline 或缺少近期运行观测不使它变成当前执行证明。error、lastFailure 和 nextAttemptAt 分别显示当前失败、最近尚需报告的失败及重试期限，诊断只使用协议闭合字段的本地化文本。
 
 [配置编辑决策](../../.agents/notes/archived/architecture/2026-11-04-web-worker-configuration-editor.md)保存资源、草稿和未知写入的职责分离及真实替代方案。生产组件和控制浏览器检查验证页面交互；真实配置下发、仓库准备及两种后端停止仍由实际 Worker 组合验收证明。
 

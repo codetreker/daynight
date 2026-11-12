@@ -964,7 +964,7 @@ it("reports historical Web archive failures against the original frozen checkout
   try {
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
-    expect(options.store.getProject({ projectId: uuid(1) })?.localPath).toBe(path.join(f.homeDirectory, "repo"));
+    await eventually(() => expect(options.store.getProject({ projectId: uuid(1) })?.localPath).toBe(path.join(f.homeDirectory, "repo")));
     const failure = options.monitoring!.capture("1").currentFailures.find(item => item.phase === "archive-backfill")!;
     expect(failure.worktree).toEqual({ kind: "project-relative", path: "../retained-worktree" });
     expect(JSON.stringify(failure)).not.toContain(f.homeDirectory);
@@ -974,7 +974,7 @@ it("reports historical Web archive failures against the original frozen checkout
 it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] as const)("backfill performs only low-frequency archive condition probes: %s", async outcome => {
   const f = await fixture();
   target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
-  let now = Date.parse(workerTelemetryTime), rounds = 0;
+  let now = Date.parse(workerTelemetryTime), completedProbes = 0;
   const startTime = now;
   vi.spyOn(Date, "now").mockImplementation(() => now);
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
@@ -987,11 +987,22 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
     return probes.length > 1 && outcome === "receipt" ? { kind: "attempt" } : { kind: "blocked", code: "archive_incomplete" };
   });
   mocks.archive.mockResolvedValue({ state: "ready" });
+  mocks.emit.mockImplementation((event: { kind: string; message: string }) => {
+    if ((event.kind !== "session-archive-retry" && event.kind !== "session-archive-ready") || !event.message.startsWith(`Completed session ${uuid(11)}`)) return;
+    if (event.kind === "session-archive-retry") {
+      completedProbes++;
+      if (completedProbes === 3) f.signal.abort();
+    } else if (outcome === "receipt") f.signal.abort();
+  });
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
-  mocks.delay.mockImplementation(async (milliseconds, _value, options) => { await timers.setTimeout(0, undefined, options); if (mocks.coordinator.mock.calls.length) now += milliseconds; });
+  // Configuration commits can wake reconciliation without advancing a poll interval.
+  mocks.delay.mockImplementation(async (milliseconds, _value, options) => {
+    await timers.setTimeout(0, undefined, options);
+    if (completedProbes !== 0 && completedProbes === probes.length) now += milliseconds;
+  });
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     if (outcome === "persistence-error") vi.spyOn(options.store, "saveArchiveBackfillSchedule").mockImplementation(() => { throw new Error("schedule storage unavailable"); });
-    return { tick: async () => { if (++rounds > 32) f.signal.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown };
+    return { tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown };
   });
   await start(f);
   if (outcome === "cancelled") {
@@ -1239,6 +1250,7 @@ it("retains Web stop observation causes and claim identity through runtime diagn
     backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
     expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", identity: owner, ...metadata, error });
     const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    await eventually(() => expect(coordinatorOptions.store.getProject({ projectId: owner.projectId })?.localPath).toBe(path.join(f.homeDirectory, "repo")));
     const task = coordinatorOptions.store.registerPending({ ...owner, agent: "codex" });
     backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
     expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", task, identity: owner, ...metadata, error });

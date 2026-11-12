@@ -38,9 +38,9 @@ flowchart LR
 
 UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目标原有时间位于未来也使用本次成功时间。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。在 UPSERT 后、提交前计量最终合并的 Worker，包括 null 清单保留的旧任务；超过完整资源预算时拒绝并回滚。配置交换与这些写入同属事务；取消、SQL 错误或后续配置错误回滚全部结果并释放锁。事务辅助保留操作、提交与回滚错误链。
 
-显式配置协议在机器观测 upsert 后，继续以同一 Worker 行处理首次候选和应用观测 CAS；该扩展的完整结构与事务由[配置设计](daynight-worker-configuration.md)拥有。观测 CAS 拒绝保留已有配置结果，不把合法机器观测当作失败。
+显式配置协议在机器观测 upsert 后，继续以同一 Worker 行处理首次候选和应用观测 CAS；该扩展的完整结构与事务由[配置设计](daynight-worker-configuration.md)拥有。接纳的 observation 仍整体替换为客户端本批有界 items，不汇集先前各批形成完整历史；本批遗漏不能证明配置已应用或移除已结束。观测 CAS 拒绝保留已有配置结果，不把合法机器观测当作失败。
 
-该路径不写其他 Worker 的时间，也不写 task、claim、task version 或项目状态。报告返回服务端时间与最终保存的 lastReportedAt。响应丢失不证明回滚，客户端后续新报告仍以完整观测收敛。
+该路径不写其他 Worker 的时间，也不写 task、claim、task version 或项目状态。报告返回服务端时间与最终保存的 lastReportedAt。响应丢失不证明回滚，客户端后续新报告仍以完整机器与任务观测、重新捕获的配置本批投影收敛。
 
 ## 读取快照与权限
 

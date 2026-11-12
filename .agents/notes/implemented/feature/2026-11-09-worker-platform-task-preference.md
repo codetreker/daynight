@@ -37,11 +37,14 @@ ordering and the [configuration protocol](../../../../docs/spec/daynight-worker-
 owns the target and application values.
 
 The server migrates initialized targets to include false without changing
-configuration versions, timestamps or prior observations. Local cache schema 2
-explicitly migrates schema 1 and preserves removals, retries and failure identity.
-The observation bound grows from 1024 to 1025 to accommodate one new global item
-without discarding a full historical cache. Current target parsers remain strict;
-false is an applied value and null is an unconfirmed value.
+configuration versions, timestamps or prior observations. Platform preference
+was introduced in local schema 2 with an explicit schema 1 migration. The current
+[fact representation](../architecture/2026-11-12-worker-configuration-fact-separation.md)
+upgrades schemas 1–4 to schema 5 and preserves that field migration, removals,
+backoff and failure identity. The original observation bound grew from 1024 to
+1025 for the additional global item; current non-mode batches retain 1025 while
+local historical responsibility is independent of a single batch. Target parsers
+remain strict; false is an applied value and null is an unconfirmed value.
 
 The [single-acquisition decision](../../archived/feature/2026-11-04-worker-single-acquisition.md)
 retains the rationale for one new claim per round. The

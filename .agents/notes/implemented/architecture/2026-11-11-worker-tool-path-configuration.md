@@ -39,8 +39,11 @@ Strict bounded groups and explicit incomplete observations preserve ordinary
 heartbeats under report pressure. The existing request and resource limits remain
 in force alongside the tool sub-budget.
 
-Configuration cache schema 4 preserves prior mode, native, failure and removal
-history. Runtime tool proofs start unverified. Complete targets and optional
+The original tool-path cache seam used schema 4 to preserve mode, native, failure
+and removal history. Schema 5 now separates current and retained records while
+keeping those facts and their genuine provenance, as specified by the
+[fact separation decision](2026-11-12-worker-configuration-fact-separation.md).
+Runtime tool proofs start unverified. Complete targets and optional
 selection-key inputs connect the configuration owner to the selection manager
 without another application ledger or another probe. Incomplete cloud adoption
 does not relabel a local choice as a cloud fact. Matching native qualification
