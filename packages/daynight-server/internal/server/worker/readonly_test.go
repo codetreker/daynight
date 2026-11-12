@@ -57,7 +57,10 @@ func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readO
 	}
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, workerservice.NewWorkers(h.Database), h.Auth, slog.Default())
-	broker := workerservice.NewReadOnly(h.Database)
+	broker := workerservice.NewReadOnly(h.Database, func(context.Context, model.Principal) error {
+		t.Error("native read-only fixture invoked API authority")
+		return &model.Fault{Code: "unauthenticated", Message: "Unexpected API authority call."}
+	})
 	routes := NewReadOnlyRoutes(broker, h.Auth, slog.Default())
 	for _, configureRoute := range configure {
 		configureRoute(routes)

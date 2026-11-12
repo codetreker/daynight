@@ -397,6 +397,13 @@ UserID、CredentialID 和 Kind；派发从实际操作重建用途并复核原 a
 Session-first 原 Actor 的 nested SHARE 与 Task 准入锁位置保持，兼容锁协议由
 [Session 锁决策](../../.agents/notes/implemented/bug-fix/2026-11-10-task-oauth-family-locks.md)所有。
 
+Worker readonly 用户请求由原 Broker 保存请求者 Principal，在派发、生产者交付和用户返回前分别
+调用同一应用 OAuth 实例的 `RecheckAPIAccess`。该操作独立于 native `WriteIdentity` callback，
+在既有 family 事务中以固定 API binding 执行 `LockAccess` 并确认 completion；它不签发凭据或
+重复记录 usage。Worker channel 继续要求 PAT；生产者 PAT 不替换保存的 OAuth requester，
+单用户回查失败只结束该请求。owner、online、Provider、能力与连接代次、期限和取消仍由
+[Worker readonly 通道](worker-readonly.md)的原机制检查。
+
 首次 grant / refresh 截止为发行时间加 30 天，access 为 60 分钟。续期沿用 grant `FOR UPDATE`
 → refresh `FOR UPDATE` 锁序；取得锁后读取数据库 UTC 微秒 `renewedAt`，复核实际 binding、撤销、
 消费状态及原 grant / refresh 截止。尚有效的 API refresh 原子消费旧行，把 grant 和新 refresh 截止

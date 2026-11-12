@@ -4,6 +4,22 @@
 
 [需求](../spec/worker-readonly.md)由独立的只读通道实现。`core/workerreadonly` 拥有连接、请求限额、身份绑定和结果准入；`service/worker` 组装凭证权限与所有者 Worker 观察；`server/worker` 负责 HTTP/WebSocket 编解码及关闭。目录枚举只在 CLI 的 `commands/worker/read-only/directory.ts` 内执行。
 
+`service/worker.NewReadOnly` 接收同一应用 `service/oauth.Authenticator` 的
+`RecheckAPIAccess` callback。原 PAT / Session 分支仍在 `WriteIdentity` 中复核当前凭据；
+OAuth 用户分支在该 callback 外独立执行 `WriteCredentialFamily`，以固定
+`PublicOrigin + "/api/v1"`、`daynight:api`、`societas-bot` binding 调用 `LockAccess`。
+只有确认完成才准入；不存在、到期、撤销或 binding 不符返回 unauthenticated，
+数据库、清理及结果未知保留原错误链和完成语义；这些错误链中的 deadline 或 cancellation
+不被 Broker 归一化成普通 timeout / cancelled。已选取的完成结果先保留其授权失败，再判断
+调用方 context；普通成功结果仍在取消或到期后拒绝返回，等待阶段仍按原 select 处理取消。回查只使用真实 user UUID 与 access UUID，
+不签发凭据，不重复记录 credential usage。MCP family 不取得一般 readonly 请求权限。
+
+Broker 在请求派发前、Worker 结果交付时和用户返回前都使用保存的原请求者 Principal 回查，
+生产者上下文中的 Worker PAT 不替代该用户 access。随后沿用 owner、online、Provider、
+连接与能力代次检查。Worker WebSocket 始终要求原 PAT；用户 OAuth 只授予其原用户权限。
+应用先构造 OAuth 实例再注入 Broker，并在使用前设置同一 PublicOrigin；两者共享原数据库，
+不新增连接池、后台服务或关闭所有权。
+
 该通道不借用任何现有助手 Session，也不创建持久执行记录。Worker 运行时在既有所有者身份下建立连接，读取与助手默认目录相同的 `workingDirectory`。有效配置改变后关闭旧连接，下一连接产生新能力代次；已有任务 claim 和助手冻结配置不受该通道修改。
 
 ## 接口
@@ -46,7 +62,7 @@ CLI 的 `WorkerReadOnlyOperations` 是类型化操作扩展点。[模型发现](
 
 ## 验证入口
 
-CLI 目录与连接回归位于 `packages/daynight/test/commands/worker/read-only/`，Web 客户端回归位于 `packages/daynight-web/tests/worker-readonly-api.test.ts`。服务端 `core/workerreadonly` 检查业务路由，`server/worker/readonly_test.go` 使用真实 HTTP/WebSocket 和身份数据库检查认证、取消、请求正文期限及关闭。
+CLI 目录与连接回归位于 `packages/daynight/test/commands/worker/read-only/`，Web 客户端回归位于 `packages/daynight-web/tests/worker-readonly-api.test.ts`。服务端 `core/workerreadonly` 检查业务路由，`service/worker` 使用真实 Broker 检查三阶段原请求者回查，并以真实 family 数据验证正常返回与撤销；`service/oauth` 检查固定 binding、事务完成及错误链。应用装配测试检查共享 OAuth 实例和配置的 audience。`server/worker/readonly_test.go` 使用真实 HTTP/WebSocket 和身份数据库检查认证、取消、请求正文期限及关闭。`cmd/integration_tests` 的正常流程验证完整应用的 Worker PAT 通道、HTTP 派发和结果返回。
 
 跨端验收需要先在仓库根目录运行 `pnpm build`，然后在 `packages/daynight-server/` 中执行：
 

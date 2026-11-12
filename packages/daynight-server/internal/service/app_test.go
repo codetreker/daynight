@@ -24,11 +24,40 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
+	"github.com/google/uuid"
 )
 
 type compositionOnlyStore struct{ store.Transactions }
+
+type configuredOAuthStore struct {
+	store.Transactions
+	calls   int
+	failure error
+}
+
+func (s *configuredOAuthStore) WriteCredentialFamily(context.Context, func(store.CredentialFamilyScope) error) (store.Completion, error) {
+	s.calls++
+	return store.Completion{Outcome: store.TransactionNotCommitted}, s.failure
+}
+
+func TestNewModulesConfiguresTheSharedOAuthAPIAudience(t *testing.T) {
+	database := &configuredOAuthStore{failure: errors.New("configured family unavailable")}
+	app := NewModules(config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}}, database, nil, nil, nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := app.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	principal := model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.OAuthCredential}
+	if err := app.OAuth.RecheckAPIAccess(t.Context(), principal); !errors.Is(err, database.failure) || database.calls != 1 {
+		t.Fatalf("configured OAuth did not use its family writer: calls=%d error=%v", database.calls, err)
+	}
+}
 
 func TestOAuthProfileComposition(t *testing.T) {
 	c := config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{

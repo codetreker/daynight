@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -128,6 +129,11 @@ func (b *Broker) Check(ctx context.Context, c *Connection) error {
 	return nil
 }
 func requestContextError(ctx context.Context, err error) error {
+	// Unknown completion and failed cleanup remain authority failures even when
+	// their driver causes include cancellation or a deadline.
+	if database, _ := store.DatabaseErrorFacts(err); database || unsafeAuthorityCompletion(err) {
+		return err
+	}
 	cause := ctx.Err()
 	if cause == nil {
 		cause = err
@@ -140,6 +146,23 @@ func requestContextError(ctx context.Context, err error) error {
 	default:
 		return err
 	}
+}
+
+func unsafeAuthorityCompletion(err error) bool {
+	if transaction, ok := err.(*store.TransactionError); ok && (transaction.Outcome == store.TransactionUnknown || transaction.CleanupFailed) {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if unsafeAuthorityCompletion(cause) {
+				return true
+			}
+		}
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return unsafeAuthorityCompletion(wrapped.Unwrap())
+	}
+	return false
 }
 func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
 	timeout := OperationTimeout(r.Operation)
@@ -235,29 +258,33 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	}()
 	select {
 	case out := <-work.answer:
-		if e := ctx.Err(); e != nil {
-			return Message{}, e
-		}
-		if out.err != nil {
-			return Message{}, out.err
-		}
-		if e := b.authorize(ctx, p, worker); e != nil {
-			return Message{}, e
-		}
-		if e := b.Check(ctx, c); e != nil {
-			return Message{}, e
-		}
-		b.mu.Lock()
-		current := b.connections[k] == c
-		b.mu.Unlock()
-		if !current {
-			return Message{}, fault("offline", "Worker read-only connection changed before delivery.")
-		}
-		return out.message, nil
+		return b.receiveOutcome(ctx, p, worker, c, out)
 	case <-ctx.Done():
 		return Message{}, ctx.Err()
 	}
 }
+func (b *Broker) receiveOutcome(ctx context.Context, p model.Principal, worker string, c *Connection, out outcome) (Message, error) {
+	if out.err != nil {
+		return Message{}, out.err
+	}
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
+	}
+	if err := b.authorize(ctx, p, worker); err != nil {
+		return Message{}, err
+	}
+	if err := b.Check(ctx, c); err != nil {
+		return Message{}, err
+	}
+	b.mu.Lock()
+	current := b.connections[key(p.UserID, worker)] == c
+	b.mu.Unlock()
+	if !current {
+		return Message{}, fault("offline", "Worker read-only connection changed before delivery.")
+	}
+	return out.message, nil
+}
+
 func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 	if e := validateResultEnvelope(m); e != nil {
 		return e

@@ -19,6 +19,20 @@ The [design](../../../../docs/design/worker-readonly.md) owns the wire protocol
 and lifecycle; the [requirements](../../../../docs/spec/worker-readonly.md) own
 observable behavior and limits.
 
+The API OAuth requester uses the same application authenticator as other OAuth
+admission. Its callback locks the current access family against the fixed API
+resource, scope and client, independently of the native identity transaction.
+Confirmed completion is required; missing or invalid authority is unauthenticated,
+while SQL, cleanup and unknown-completion facts retain their error chains.
+Deadline or cancellation causes inside those failures do not replace completion
+facts with an ordinary request timeout or cancellation. A selected completed
+answer retains its authorization error before checking caller cancellation; a
+successful answer remains unavailable once its caller ends. The
+Broker rechecks the saved original user/access Principal before dispatch, at
+producer delivery and before user return. The producer's PAT cannot replace that
+Principal. Native PAT/session checks and PAT-only Worker channels retain their
+original authority. Rechecks neither mint credentials nor record repeated usage.
+
 Keep directory enumeration bounded in time, bytes, scanned entries and retained
 operations. Signed cursors retain only page identity, while each page scans a
 bounded current layer. Cancelled filesystem calls retain their capacity until
@@ -54,5 +68,8 @@ there is no cross-instance broker or durable result recovery. Old Workers return
 unsupported and no local fallback is available. Directory mutations invalidate
 cursors. Hidden filtering means dot-prefixed names, including on Windows; it does
 not inspect Windows hidden attributes. [Model discovery](2026-11-06-worker-model-discovery.md)
-uses a typed operation without opening arbitrary command execution. A need for cross-instance routing
-or directories above the scan limit requires revisiting these explicit limits.
+uses a typed operation without opening arbitrary command execution. OAuth grants now authorize owner-scoped queries without becoming Worker
+producer credentials. The application shares the existing authenticator and
+database without introducing another pool or background service. A need for
+cross-instance routing or directories above the scan limit requires revisiting
+these explicit limits.

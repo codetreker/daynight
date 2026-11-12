@@ -40,6 +40,7 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("worker readonly directory", func(t *testing.T) { serverAPIWorkerReadOnlyNormalFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {

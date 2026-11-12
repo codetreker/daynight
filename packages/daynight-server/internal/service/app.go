@@ -88,6 +88,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Application: application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
+	app.OAuth.SetOrigin(c.Server.PublicOrigin)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
 	app.drainLock <- struct{}{}
