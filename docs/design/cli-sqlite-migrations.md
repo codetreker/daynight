@@ -37,9 +37,11 @@
 
 目标版本由实际发现的主链末尾给出。没有清单或第二套期望序列时，连续链缺少原本末尾文件无法仅靠目录发现判定；不能把中间缺号检查宣传成任意文件缺失检测。构建和安装验证核对实际源码目录与产物中的完整文件及字节，已交付 SQL 文件的保留仍属于源码变更审阅要求。
 
-构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle 和上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录递归复制 `.sql`。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
+构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle、上述五个 SQL 目录以及 `controller/content/timeline-schema.sql` 到相同的 dist 相对路径；SQL 目录递归复制 `.sql`。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
 
 SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)。
+
+Controller 的可独立调用 SQL 正文组件使用唯一暂存 `content/timeline-schema.sql`，与同一编号序列组合为隔离 v10 格式。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；完整验证并捕获原已提交指针后，在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件并导入正文，随后核对统计；失败回滚恢复原索引。暂存资源不进入 `loadSqliteSequence`，生产格式仍为 v9。组件的当前行、历史源验证、局部峰值预留与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。
 
 ## 独立版本与起点
 

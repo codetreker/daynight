@@ -15,6 +15,7 @@ const resources = [
   { source: "commands/worker/herdr/sqlite", destination: "commands/worker/herdr/sqlite", kind: "directory", sqlOnly: true },
   { source: "commands/worker/herdr/input-sqlite", destination: "commands/worker/herdr/input-sqlite", kind: "directory", sqlOnly: true },
   { source: "commands/controller/sqlite/journal", destination: "commands/controller/sqlite/journal", kind: "directory", sqlOnly: true },
+  { source: "commands/controller/content/timeline-schema.sql", destination: "commands/controller/content/timeline-schema.sql", kind: "file", sqlOnly: true },
   { source: "commands/controller/sqlite/resume-lease", destination: "commands/controller/sqlite/resume-lease", kind: "directory", sqlOnly: true },
 ];
 

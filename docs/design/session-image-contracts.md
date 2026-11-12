@@ -511,6 +511,8 @@ GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 uploa
 
 ### 私有文件与 journal
 
+资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。生产候选正文组合与可独立调用的 SQL 正文组合均须在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images` 后才能释放资源，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有隔离组件的转换、退休和压缩；生产 journal 当前仍为 v9。
+
 沿 `controllerExecutionDirectory`，媒体暂存与 pending-content 同属于原 execution，原件不写入 journal 的 Base64 字段。
 
 ```text

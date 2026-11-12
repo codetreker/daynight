@@ -15,10 +15,13 @@ resource must not invalidate committed history or native input publications.
 `content/resource-files.ts` owns Session-bound descriptors, blobs, the shared
 resource index, persistent pins, process-local leases, file validation and
 resource budgets. It exposes the existing resource operations without owning
-timeline entries. The v8 pending-content composition retains the timeline
-candidate files and SQL visibility described in the [atomic publication
+timeline entries. The production v9 pending-content composition retains timeline candidate
+files and SQL visibility described in the [atomic publication
 decision](2026-11-10-atomic-content-publication.md), and uses the resource
-owner's descriptor byte count for its combined metadata budget.
+owner's descriptor byte count for its combined metadata budget. The independently
+callable SQL composition uses the same file owner and guards; its current-row,
+conversion and maintenance responsibilities belong to the
+[SQL content decision](2026-11-12-session-sqlite-content-components.md).
 
 The composition checks both committed timeline references and
 `native_input_publication_images` in its synchronous read transaction before

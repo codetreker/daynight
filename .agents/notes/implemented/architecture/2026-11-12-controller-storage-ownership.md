@@ -25,8 +25,10 @@ Preparation separates format upgrade, maintenance of a proven stopped generation
 and admission of a new writer. The current numbered SQL sequence remains the
 single schema owner at v9. A local migration context supplies the original permit
 and reserved-write check; current-format reads require neither. This preserves
-the message-origin migration and file-backed candidate body publication while
-establishing the ownership needed for later storage changes. The
+the message-origin migration and production file-backed candidate body publication.
+The independently callable [SQL content components](2026-11-12-session-sqlite-content-components.md)
+reuse the permit and role owners for historical import and stopped maintenance;
+their staged DDL does not enter numbered production discovery. The
 [protocol design](../../../../docs/design/task-session-protocol.md#controller-与原生会话)
 owns the role, capacity and failure contracts.
 
