@@ -36,7 +36,10 @@ and closes constructed resources through one scope. Its permit is released last,
 after journal and media closure is confirmed. Other writers use short local
 phases; archive and stopped-tail transport hold no journal ownership while the
 network is awaited. Each returning acknowledgement reacquires ownership and
-checks the original stopped identity and frozen source.
+checks the original stopped identity and frozen source. Stopped batch and
+acknowledgement settlement retain the existing 8 MiB reserve above ordinary
+metadata admission; normal stopped-maintenance is required before the next
+writer, while actual numbered migrations keep their reserved-write checks.
 
 Stopped recording holds the permit while verifying the original process boundary
 outside a SQL transaction, then compares snapshot, ticket hash and owner PID in a

@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdtemp, mkdir, rm, readdir, unlink, stat, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readdir, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -417,8 +417,12 @@ test("timeline growth keeps file inventory writes bounded while SQL detects dele
 });
 
 
-test("all archive transport phases release local storage ownership", async () => {
+test.each([0, 129])("all archive transport phases release local ownership with %i MiB retained metadata", async retainedMiB => {
   const f = await fixture();
+  if (retainedMiB > 0) {
+    const retained = await open(path.join(`${f.journalPath}.pending-content`, "retained.tmp"), "wx", 0o600);
+    try { await retained.truncate(retainedMiB * 1048576); } finally { await retained.close(); }
+  }
   const receiver = archiveTestReceiver({ bodies: [], sourceThrough: f.sourceThrough });
   let requests = 0;
   const request: typeof fetch = async (input, init) => {

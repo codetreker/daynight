@@ -6,14 +6,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
-import { ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
+import { controllerMetadataBudget, ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { replayStoppedControllerHistory, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
-const errorCauses = (error: unknown): Error[] => {
-  const values: Error[] = [];
-  for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
-  return values;
-};
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (count = 3, text = "durable", floor = false) => {
@@ -75,14 +70,43 @@ test("an active generation is rejected before transport", async () => {
   const send = vi.fn(); await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow("original stopped"); expect(send).not.toHaveBeenCalled();
 });
 
+test("stopped tail settlement above the normal metadata limit preserves the original batch across response loss and ACK", async () => {
+  const f = await fixture(1), before = f.read();
+  const retained = await open(path.join(`${f.journalPath}.pending-content`, "retained.tmp"), "wx", 0o600);
+  try { await retained.truncate(129 * 1048576); } finally { await retained.close(); }
+  const db = new Database(f.journalPath, { readonly: true });
+  try {
+    const budget = controllerMetadataBudget(f.journalPath, db);
+    expect(budget.bytes()).toBeGreaterThan(128 * 1048576);
+    expect(budget.bytes()).toBeLessThan(136 * 1048576);
+    expect(() => budget.assert()).toThrow(ControllerMetadataBudgetError);
+  } finally { db.close(); }
+  let original!: StoppedSourceTail;
+  await expect(replayStoppedControllerHistory({ ...f, send: async batch => {
+    original = batch;
+    throw new Error("Response lost after settlement");
+  } })).rejects.toThrow("Response lost after settlement");
+  expect(f.read().state).toEqual(before.state);
+  expect(f.read().outbox).toEqual({ total: 1 });
+  expect(f.read().batch).toEqual({ value: JSON.stringify(original) });
+  await replayStoppedControllerHistory({ ...f, send: async batch => {
+    expect(JSON.stringify(batch)).toBe(JSON.stringify(original));
+    return acknowledged(batch);
+  } });
+  const after = f.read();
+  expect(after.state).toEqual({ ...(before.state as object), last_acknowledged: 1 });
+  expect(after.operation).toEqual(before.operation);
+  expect(after.outbox).toEqual({ total: 0 });
+  expect(after.batch).toBeUndefined();
+});
+
 test("a stopped batch cannot consume metadata beyond the settlement reserve or discard its original events", async () => {
   const f = await fixture(), before = f.read(), pending = `${f.journalPath}.pending-content`;
   const retained = await open(path.join(pending, "retained.tmp"), "wx", 0o600);
   try { await retained.truncate(136 * 1048576); } finally { await retained.close(); }
   const send = vi.fn();
   const failure = await replayStoppedControllerHistory({ ...f, send }).then(() => null, (error: unknown) => error);
-  expect(failure).toMatchObject({ name: "ControllerStorageWaitingError", reason: "physical_capacity" });
-  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.any(ControllerMetadataBudgetError)]));
+  expect(failure).toBeInstanceOf(ControllerMetadataBudgetError);
   expect(send).not.toHaveBeenCalled(); expect(f.read()).toEqual(before);
 });
 

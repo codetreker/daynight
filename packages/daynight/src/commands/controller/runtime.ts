@@ -12,9 +12,8 @@ import { resolveConfigurationPaths } from "../../config/paths.js";
 import { createNativeCommandQueue, assertControlCommand } from "./command-controls.js";
 import { createServer, type Socket } from "node:net";
 import { once } from "node:events";
-import { acquireControllerStoragePermit, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
 import { prepareControllerStorage } from "./storage-preparation.js";
-import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { SessionCommand } from "../../session/protocol.js";
@@ -81,7 +80,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       let prepared;
       try { prepared = prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, storagePermit); }
       catch (error) {
-        if (!(error instanceof SqliteAccessError) || error.connectionClosed) {
+        if (!controllerStorageConnectionIsOpen(error)) {
           try { storagePermit.release(); } catch (release) { throw new AggregateError([error, release], "Controller storage preparation and permit release failed."); }
         }
         throw error;
@@ -109,7 +108,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
   try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, mediaStateDirectory: stateDirectory }); }
-  catch (error) { journalClosed = !(error instanceof SqliteAccessError) || error.connectionClosed; throw error; }
+  catch (error) { journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });
   const stopMedia = own(async () => { await journal.stopMedia?.(); mediaClosed = true; });

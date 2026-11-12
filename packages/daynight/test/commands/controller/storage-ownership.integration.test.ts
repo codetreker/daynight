@@ -219,3 +219,33 @@ test.each([null, {}, [], { executionId: "invalid", sessionId: "invalid" }])("upg
     try { expect((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot).toBe(original); } finally { db.close(); }
   } finally { permit.release(); }
 });
+
+
+test("a proven live permit holder keeps gate contention retryable with the original SQLite cause", async () => {
+  const f = await fixture(); initialize(f);
+  const permit = acquireControllerStoragePermit(f.file), db = new Database(f.file);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    let failure: unknown;
+    try { acquireControllerStoragePermit(f.file, Date.now() + 100); } catch (error) { failure = error; }
+    expect(isControllerStorageLockHeld(failure)).toBe(true);
+    expect(failure).toMatchObject({ cause: { name: "InstanceLockHeldError", pid: process.pid, cause: { code: "SQLITE_BUSY" } } });
+  } finally { db.exec("ROLLBACK"); db.close(); permit.release(); }
+});
+
+test.each(["missing", "malformed", "stale", "unknown"])("gate contention with %s ownership never becomes a live-lock wait", async kind => {
+  const f = await fixture(); initialize(f);
+  const lockFile = path.join(f.root, "storage.lock");
+  const original = kind === "malformed" ? "invalid" : JSON.stringify({ owner: randomUUID(), pid: kind === "stale" ? 2147483647 : process.pid, startedAt: new Date().toISOString() });
+  if (kind !== "missing") await writeFile(lockFile, original);
+  const db = new Database(f.file); db.exec("BEGIN IMMEDIATE");
+  if (kind === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("unavailable"), { code: "EPERM" }); });
+  try {
+    let failure: unknown;
+    try { acquireControllerStoragePermit(f.file, Date.now() + 100); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(isControllerStorageLockHeld(failure)).toBe(false);
+    if (kind === "missing") expect(failure).toMatchObject({ cause: { code: "SQLITE_BUSY" } });
+    else expect(await readFile(lockFile, "utf8")).toBe(original);
+  } finally { db.exec("ROLLBACK"); db.close(); }
+});

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
 const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
-vi.mock("../../../src/commands/controller/storage-lock.js", () => ({ acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
+vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: (...args: unknown[]) => storage.prepare(...args) }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.serverCreate(); fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
@@ -475,4 +475,35 @@ test("a stop interrupts storage lock waiting without creating a journal generati
     expect(storage.release).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   } finally { vi.useRealTimers(); }
+});
+
+
+test.each(["preparation", "journal"] as const)("nested %s connection-close uncertainty retains the runtime storage permit", async stage => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const unclosed = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { outcome: "unknown", connectionClosed: false });
+  const failure = new AggregateError([new Error("original initialization failed"), new Error("connection shutdown failed", { cause: unclosed })], "Constructor and cleanup failed");
+  (stage === "preparation" ? storage.prepare : storage.open).mockImplementationOnce(() => { throw failure; });
+  await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(failure);
+  expect(storage.acquire).toHaveBeenCalledOnce();
+  expect(storage.release).not.toHaveBeenCalled();
+  expect(fixture.open).not.toHaveBeenCalled();
+});
+
+test("a committed journal initialization and subsequent permit release failure preserve the committed primary outcome", async () => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const finalization = new Error("pending content finalization failed");
+  const primary = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "initialize" }, { outcome: "committed", connectionClosed: true, cause: finalization });
+  const release = new Error("storage lock release failed");
+  storage.open.mockImplementationOnce(() => { throw primary; });
+  storage.release.mockImplementationOnce(() => { throw release; });
+  const failure = await runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" }).then(() => null, error => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toEqual([primary, release]);
+  expect(failure.cause).toBe(primary);
+  expect(failure.cause).toMatchObject({ outcome: "committed", connectionClosed: true, context: { phase: "initialize" } });
+  expect(failure.cause.cause).toBe(finalization);
+  expect(storage.release).toHaveBeenCalledOnce();
+  expect(fixture.open).not.toHaveBeenCalled();
 });

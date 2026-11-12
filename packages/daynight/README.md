@@ -2909,7 +2909,9 @@ old-format upgrades acquire the same owner and reserve their writes. Preparation
 separates upgrade-only, stopped-maintenance and writer admission. The writer holds
 its permit until relay, media and journal handles close; archive and source-tail
 transport release local ownership before the network and verify the same stopped
-source after reacquiring it. Unknown process state and unconfirmed handle close
+source after reacquiring it. Stopped settlement retains its existing 8 MiB reserve
+above the ordinary 128 MiB metadata limit, so an acknowledged tail can settle
+before recovery applies normal writer admission. Unknown process state and unconfirmed handle close
 retain their evidence. Current journal v9 and candidate body files remain in use.
 
 Initial launch preflight uses the frozen ticket before spawn. The child prepares

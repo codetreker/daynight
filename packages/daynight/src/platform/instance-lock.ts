@@ -5,8 +5,8 @@ import Database from "better-sqlite3";
 type InstanceOwner = { owner: string; pid: number; startedAt: string };
 
 export class InstanceLockHeldError extends Error {
-  constructor(readonly pid: number) {
-    super(`CLI process ${pid} is still running; its instance lock was retained.`);
+  constructor(readonly pid: number, options?: ErrorOptions) {
+    super(`CLI process ${pid} is still running; its instance lock was retained.`, options);
     this.name = "InstanceLockHeldError";
   }
 }
@@ -36,6 +36,21 @@ const readOwner = (content: string): InstanceOwner => {
   return { owner: value.owner, pid: value.pid, startedAt: value.startedAt };
 };
 
+const liveOwnerAtBlockedGate = (lockFile: string, busy: unknown): unknown => {
+  let original: string, record: InstanceOwner;
+  try { original = readFileSync(lockFile, "utf8"); record = readOwner(original); }
+  catch (observation) {
+    if (isMissing(observation)) return busy;
+    return new AggregateError([busy, observation], "SQLite ownership gate is busy and its instance-lock evidence cannot be read.");
+  }
+  try { process.kill(record.pid, 0); }
+  catch (observation) { return new AggregateError([busy, observation], "SQLite ownership gate is busy and its original live lock owner is unconfirmed."); }
+  try {
+    if (readFileSync(lockFile, "utf8") !== original) throw new Error("Instance-lock ownership changed while its SQLite gate was busy.");
+  } catch (observation) { return new AggregateError([busy, observation], "SQLite ownership gate is busy and its original lock evidence changed."); }
+  return new InstanceLockHeldError(record.pid, { cause: busy });
+};
+
 const replaceOwner = (lockFile: string, content: string): void => {
   const temporary = `${lockFile}.${randomUUID()}.tmp`;
   let descriptor: number | undefined;
@@ -59,9 +74,10 @@ const replaceOwner = (lockFile: string, content: string): void => {
 export const acquireInstanceLockSync = (lockFile: string, ownershipGateFile: string, owner: string = randomUUID(), options: { timeoutMs?: () => number; fileMustExist?: boolean } = {}) => {
   const timeout = (): number => options.timeoutMs === undefined ? 5000 : options.timeoutMs();
   const content = JSON.stringify({ owner, pid: process.pid, startedAt: new Date().toISOString() });
-  let previousProcessesExcluded: boolean;
+  let previousProcessesExcluded: boolean, gateEntered = false;
   try {
     previousProcessesExcluded = withOwnershipGate(ownershipGateFile, () => {
+      gateEntered = true;
       let previous: string | undefined;
       try { previous = readFileSync(lockFile, "utf8"); }
       catch (error) { if (!isMissing(error)) throw error; }
@@ -81,7 +97,8 @@ export const acquireInstanceLockSync = (lockFile: string, ownershipGateFile: str
       return true;
     }, options.fileMustExist === true, timeout());
   } catch (cause) {
-    throw new Error(`Cannot acquire instance lock ${lockFile}. If recovery requires operator confirmation, confirm that the previous CLI and all managed processes have stopped before manually removing the lock.`, { cause });
+    const failure = !gateEntered && cause instanceof Error && "code" in cause && cause.code === "SQLITE_BUSY" ? liveOwnerAtBlockedGate(lockFile, cause) : cause;
+    throw new Error(`Cannot acquire instance lock ${lockFile}. If recovery requires operator confirmation, confirm that the previous CLI and all managed processes have stopped before manually removing the lock.`, { cause: failure });
   }
   let released = false;
   return {

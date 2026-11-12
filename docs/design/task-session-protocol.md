@@ -112,7 +112,7 @@ Journal 的编号迁移由本库唯一 SQL 序列持有，当前格式为 v9，�
 
 Task、Bot 和独立 Test 的恢复顺序为确认原进程停止、以原 permit 写停止记录、完成停止维护，再分配下一代。首次 spawn 前以冻结 ticket 完成 writer preflight 并关闭句柄、释放锁；子进程争用或等待容量时继续同一 launch ticket，有界退避不重发初始输入、不消耗恢复次数，超过原观察窗口仍监督同一子进程。停止记录在事务外核验完整原进程边界，最终短 immediate 事务比较原 snapshot、ticket_hash 和 owner_pid 未变后提交 stopped；重复确认保留 stoppedAt。Windows 沿用原 Job lease 和已提交 stop proof，清理 deadline 贯穿锁、准备、进程查询和停止写入，提交后的 close/release 失败保留实际 SqliteOutcome。
 
-Controller 在所有副作用构造之前取得 permit 并准备 writer；自身进程证明与新 generation 在同一 journal 事务提交，之后才启动认证 IPC、relay 和 native Provider。Markdown/capture 回调依赖在 relay 连接前完成构造，全部构造与运行使用同一收尾作用域；任一阶段失败都停止已经创建的 timer、relay、Provider、server、媒体与 journal，保留原错及清理错误，最后释放 permit。close 清除 owner_pid 也受格式检查和原 permit 保护。归档和 stopped source-tail 的本机快照、batch、ACK 与 checkpoint 分别取得 permit，传输前释放；返回后重新核对原 stopped 身份、冻结正文和 source cutoff，既有 unknown/receipt 对账保持原语义。
+Controller 在所有副作用构造之前取得 permit 并准备 writer；自身进程证明与新 generation 在同一 journal 事务提交，之后才启动认证 IPC、relay 和 native Provider。Markdown/capture 回调依赖在 relay 连接前完成构造，全部构造与运行使用同一收尾作用域；任一阶段失败都停止已经创建的 timer、relay、Provider、server、媒体与 journal，保留原错及清理错误，最后释放 permit。close 清除 owner_pid 也受格式检查和原 permit 保护。归档和 stopped source-tail 的本机快照、batch、ACK 与 checkpoint 分别取得 permit，传输前释放；返回后重新核对原 stopped 身份、冻结正文和 source cutoff。停止后的结算继续使用原 128 MiB 加 8 MiB settlement 空间，不在每次 batch 或 ACK 前套用下一 writer 的普通 128 MiB 准入；真正的编号迁移仍执行预留写入检查，恢复下一代前必须完成普通 stopped-maintenance。既有 unknown/receipt 对账保持原语义。
 
 本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 

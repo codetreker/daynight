@@ -405,7 +405,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   } catch (primary) {
     try { if (db.open) closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "committed"); }
     catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "initialize-close" }, { cause: new AggregateError([primary, cleanup], "Controller journal initialization and shutdown failed."), outcome: "committed", connectionClosed: !db.open }); }
-    throw primary;
+    throw new SqliteAccessError("migration-failed", { database: controllerJournalFormat.name, file, phase: "initialize" }, { cause: primary, outcome: "committed", connectionClosed: true });
   }
 };
 

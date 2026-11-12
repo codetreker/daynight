@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
+import * as filesystem from "node:fs";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import * as pendingContent from "../../../src/commands/controller/pending-content.js";
 import { afterEach, expect, it, vi } from "vitest";
@@ -11,6 +12,10 @@ import { openControllerLifecycleStore, recordStoppedControllerGeneration } from 
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 const roots: string[] = [];
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, unlinkSync: vi.fn(actual.unlinkSync) };
+});
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
 const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
@@ -260,8 +265,30 @@ it("closes a journal and releases owned storage when a postcommit constructor fa
   const { home, ticket } = await fixture(), file = path.join(home, "journal.sqlite");
   const failure = new Error("Pending initialization failed");
   const finalize = vi.spyOn(pendingContent, "finalizePendingMigration").mockImplementationOnce(() => { throw failure; });
-  try { expect(() => openControllerLifecycleStore(file, ticket, { onMigration: () => {} })).toThrow(failure); }
+  try { expect(() => openControllerLifecycleStore(file, ticket, { onMigration: () => {} })).toThrow(expect.objectContaining({ outcome: "committed", connectionClosed: true, cause: failure })); }
   finally { finalize.mockRestore(); }
   const permit = acquireControllerStoragePermit(file); permit.release();
   const db = new Database(file); try { db.exec("BEGIN IMMEDIATE; ROLLBACK"); } finally { db.close(); }
+});
+
+
+it("retains committed initialization when finalization and implicit storage release both fail", async () => {
+  const { home, ticket } = await fixture(), file = path.join(home, "journal.sqlite"), lock = path.join(home, "storage.lock");
+  const failure = new Error("Pending initialization failed"), releaseFailure = Object.assign(new Error("Lock release denied"), { code: "EACCES" });
+  const finalize = vi.spyOn(pendingContent, "finalizePendingMigration").mockImplementationOnce(() => { throw failure; });
+  const unlink = filesystem.unlinkSync;
+  const release = vi.spyOn(filesystem, "unlinkSync").mockImplementation(filename => {
+    if (filename === lock) throw releaseFailure;
+    return unlink(filename);
+  });
+  try {
+    expect(() => openControllerLifecycleStore(file, ticket, { onMigration: () => {} })).toThrow(expect.objectContaining({
+      outcome: "committed", connectionClosed: true, context: expect.objectContaining({ phase: "initialize-release" }),
+      cause: expect.objectContaining({ errors: [expect.objectContaining({ outcome: "committed", cause: failure }), releaseFailure] }),
+    }));
+    const observer = new Database(file, { readonly: true });
+    try { expect(observer.prepare("SELECT ticket_hash FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(ticket) }); }
+    finally { observer.close(); }
+    expect(filesystem.existsSync(lock)).toBe(true);
+  } finally { finalize.mockRestore(); release.mockRestore(); unlink(lock); }
 });

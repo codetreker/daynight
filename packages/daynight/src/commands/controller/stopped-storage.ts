@@ -1,12 +1,13 @@
 import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
-import { controllerJournalFormat } from "./journal-format.js";
+import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
+import { inspectSqlite } from "../../platform/sqlite-format.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import { acquireControllerStoragePermit } from "./storage-lock.js";
-import { controllerJournalWriteOptions, ControllerStorageWaitingError, prepareControllerStorage } from "./storage-preparation.js";
+import { controllerJournalWriteOptions } from "./storage-preparation.js";
 
-/** Each archive phase ends its local ownership before asynchronous transport. */
+/** Stopped settlement keeps its existing capacity allowance; new-writer admission belongs to recovery preparation. */
 export const withStoppedControllerStorage = <T>(options: {
   journalPath: string; stateDirectory: string; ticket: ControllerLaunchTicket;
   assertOriginal(db: Database.Database): void;
@@ -20,12 +21,13 @@ export const withStoppedControllerStorage = <T>(options: {
     options.assertOriginal(db);
     closeSqliteDatabase(db, { file: journalPath, format: controllerJournalFormat }, "not-started");
     db = undefined;
-    const preparation = prepareControllerStorage({ journalFile: journalPath, stateDirectory, mode: "stopped-maintenance", ticket }, permit);
-    if (preparation.kind === "waiting") throw new ControllerStorageWaitingError(preparation.reason, preparation.cause);
     const write = controllerJournalWriteOptions(journalPath, permit, stateDirectory, ticket.executionId);
     db = openSqliteDatabase({ ...write, allowCreate: false,
       assertMigrationAllowed: (connection, source) => { options.assertOriginal(connection); write.assertMigrationAllowed(connection, source); },
-      onReady: options.assertOriginal,
+      onReady: connection => {
+        options.assertOriginal(connection);
+        assertJournalMigrationAllowed(connection, inspectSqlite(connection, write.format));
+      },
     });
     outcome = "committed";
     value = action(db);

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import stateVector from "../../session/fixtures/runtime-image-state.json" with { type: "json" };
 import { parseControllerState } from "../../../src/session/controller-protocol.js";
 const f = vi.hoisted(() => ({ callbacks: null as any, options: null as any, acquire: vi.fn(), send: vi.fn(), receipt: vi.fn(), order: [] as string[], state: "accepted", revision: "1", turn: null as string | null, actualState: false, storageFault: false, nativeClose: vi.fn(), journalClose: vi.fn(), mediaClose: vi.fn(), publication: vi.fn(), query: vi.fn(), patch: vi.fn(), intent: vi.fn(), adopt: vi.fn(), current: vi.fn() }));
-vi.mock("../../../src/commands/controller/storage-lock.js", () => ({ acquireControllerStoragePermit: () => ({ journalFile: "/private/controller/journal.sqlite", owner: "fixture", release: () => {} }), isControllerStorageLockHeld: () => false }));
+vi.mock("../../../src/commands/controller/storage-lock.js", () => ({ acquireControllerStoragePermit: () => ({ journalFile: "/private/controller/journal.sqlite", owner: "fixture", release: () => {} }), controllerStorageConnectionIsOpen: () => false, isControllerStorageLockHeld: () => false }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: () => ({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false }) }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (v: string) => v, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: () => { const s: any = new EventEmitter(); s.listen = (_: unknown, cb: () => void) => queueMicrotask(cb); s.close = () => {}; return s; } }));
