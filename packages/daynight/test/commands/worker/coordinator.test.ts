@@ -10,6 +10,7 @@ import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/reso
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
+import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -252,10 +253,13 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   task = store.updateWebExecution(task, { controllerProcess: snapshot.controllerProcess }, 7);
   vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+  // These cases exercise archive scheduling after stop has been proven; the
+  // Windows proof boundary itself is covered by the lifecycle integration tests.
+  vi.spyOn(lifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(snapshot);
   vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => ({ kind: "controller-exited", process: input.spawnProof, snapshot }));
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  return { task, ticket, snapshot, request: vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original controller is stopped.")) };
+  return { task, ticket, snapshot, jobLeases: createControllerJobLeases("win32"), request: vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original controller is stopped.")) };
 };
 
 const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) => {
@@ -2390,7 +2394,7 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's slot whi
     await allowRemoval.promise;
     return removeWorktree(...args);
   });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, archive, request: stopped.request });
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, archive, jobLeases: stopped.jobLeases, request: stopped.request });
   const advance = async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => webStore.initializeWebExecution(input, 1000);
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
@@ -2623,7 +2627,7 @@ describe("terminal cleanup retry scheduling", () => {
     const failure = Object.assign(new Error("Archive request failed."), { status, code });
     const archive = vi.fn<() => Promise<void>>(async () => { throw nested ? new Error("Archive operation failed.", { cause: failure }) : failure; });
     if (stage === "worktree-removal") { archive.mockResolvedValue(undefined); vi.mocked(f.git.removeWorktree).mockRejectedValue(failure); }
-    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, request: stopped.request });
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, jobLeases: stopped.jobLeases, request: stopped.request });
     const monitor = createMonitoringObserver({ now: f.options.now });
     const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
     let coordinator = create();
@@ -4190,7 +4194,7 @@ it.each(["blocked", "probe-error", "storage-failure", "cancelled", "receipt-mism
     if (outcome === "probe-error") throw new Error("probe unavailable");
     return outcome === "blocked" || outcome === "storage-failure" ? { kind: "blocked", code: "archive_incomplete" } : { kind: "attempt" };
   });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, request: stopped.request });
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, jobLeases: stopped.jobLeases, request: stopped.request });
   const cleanup = vi.spyOn(backend, "cleanup");
   let monitor = createMonitoringObserver({ now: f.options.now });
   const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
@@ -4270,7 +4274,7 @@ it.each(["current", "legacy", "mismatch"] as const)("reconciles an original rece
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: remote }));
   const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now,
     probeArchive: (_task, actual, signal) => probeStoppedControllerArchive({ journalPath: actual, ticket: stopped.ticket, signal }),
-    archive: async (_task, actual, signal) => { await uploadStoppedControllerArchive({ journalPath: actual, ticket: stopped.ticket, signal, serverToken: "fixture", request }); }, request: stopped.request });
+    archive: async (_task, actual, signal) => { await uploadStoppedControllerArchive({ journalPath: actual, ticket: stopped.ticket, signal, serverToken: "fixture", request }); }, jobLeases: stopped.jobLeases, request: stopped.request });
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
@@ -4308,7 +4312,7 @@ it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
     if (outcome === "blocked") return { kind: "blocked", code };
     return { kind: outcome === "receipt" ? "attempt" : "complete" };
   });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, request: stopped.request });
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, jobLeases: stopped.jobLeases, request: stopped.request });
   const monitor = createMonitoringObserver({ now: f.options.now });
   const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   let coordinator = create();

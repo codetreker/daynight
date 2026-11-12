@@ -13,7 +13,9 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import { parseSessionArchive } from "../../../src/session/archive.js";
 
 const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 // Build each historical schema independently of the current lifecycle opener.
 const fixture = async (version: 1 | 2 | 3 | 4 | 5) => {
@@ -290,7 +292,8 @@ test.each([1, 2, 3, 4, 5] as const)("normal lifecycle opening retains v%i upgrad
   } finally { store.close(); }
 });
 
-test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypoint => [false, true].map(drained => [entrypoint, drained] as const)))("%s upgrade cannot turn a v1 source into a complete archive (outbox drained: %s)", async (entrypoint, drained) => {
+test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypoint => [false, true].flatMap(drained => fixturePlatforms.map(mode => [entrypoint, drained, mode] as const))))("%s upgrade cannot turn a v1 source into a complete archive (outbox drained: %s; %s)", async (entrypoint, drained, mode) => {
+  if (mode === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   const f = await fixture(1), bodies: string[] = [];
   if (drained) inspect(f.journalPath, db => db.exec("DELETE FROM outbox"));
   if (entrypoint === "snapshot") expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
@@ -305,8 +308,13 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
   inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(stopped)));
   // Only process-tree inspection is substituted; stop reconciliation and both
   // database openings are real and preserve their migration transactions.
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  if (process.platform === "win32") {
+    // Historical records have no retained Job lease or durable stop proof.
+    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket)).rejects.toThrow(entrypoint === "stop" ? /current journal format/ : /stop proof.*lease/);
+    expect(confirm).not.toHaveBeenCalled();
+    if (entrypoint === "stop") expect(readControllerSnapshot(f.journalPath)).toEqual(stopped);
+  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
   expect(bodies).toEqual([]);
   inspect(f.journalPath, db => {

@@ -15,6 +15,12 @@ const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
+const jobLease = {} as ControllerJobLease;
+const recordFixtureStop = (file: string, ticket: ControllerLaunchTicket, deadline?: number) => process.platform === "win32"
+  ? recordStoppedControllerGeneration(file, ticket, deadline, jobLease)
+  : recordStoppedControllerGeneration(file, ticket, deadline);
 beforeEach(() => { proof.stopped.mockReset().mockResolvedValue(true); });
 afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
@@ -27,21 +33,24 @@ const fixture = async () => {
 const currentStopFixture = async () => {
   const f = await fixture();
   const journal = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
-  journal.patchSnapshot({ controllerProcess: { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) } });
+  journal.patchSnapshot({ controllerProcess: { pid: 123, parentPid: 12, processGroupId: process.platform === "win32" ? null : 123, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${f.ticket.launchId}` } : {}) } });
   journal.close();
   return f;
 };
 
-test("does not write stopped if complete proof consumes the stop deadline", async () => {
+test.each(fixturePlatforms)("does not write stopped if complete proof consumes the stop deadline (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now);
   proof.stopped.mockImplementationOnce(async () => { clock.mockReturnValue(deadline); return true; });
-  await expect(recordStoppedControllerGeneration(f.file, f.ticket, deadline)).rejects.toThrow(/deadline/);
-  expect(proof.stopped).toHaveBeenCalledWith(expect.anything(), [], deadline);
+  await expect(recordFixtureStop(f.file, f.ticket, deadline)).rejects.toThrow(/deadline/);
+  if (process.platform === "win32") expect(proof.stopped).toHaveBeenCalledWith(expect.anything(), [], deadline, jobLease);
+  else expect(proof.stopped).toHaveBeenCalledWith(expect.anything(), [], deadline);
   expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
 });
 
-test("refreshes the SQLite busy timeout before starting the write transaction", async () => {
+test.each(fixturePlatforms)("refreshes the SQLite busy timeout before starting the write transaction (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now), execute = Database.prototype.exec;
   let writeTimeout: unknown;
@@ -50,11 +59,12 @@ test("refreshes the SQLite busy timeout before starting the write transaction", 
     if (sql === "BEGIN IMMEDIATE") writeTimeout = this.pragma("busy_timeout", { simple: true });
     return execute.call(this, sql);
   });
-  await recordStoppedControllerGeneration(f.file, f.ticket, deadline);
+  await recordFixtureStop(f.file, f.ticket, deadline);
   expect(writeTimeout).toBe(40);
 });
 
-test("does not begin a write transaction when timeout configuration exhausts the deadline", async () => {
+test.each(fixturePlatforms)("does not begin a write transaction when timeout configuration exhausts the deadline (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now), pragma = Database.prototype.pragma, execute = vi.spyOn(Database.prototype, "exec");
   proof.stopped.mockImplementationOnce(async () => { clock.mockReturnValue(deadline - 1); return true; });
@@ -63,16 +73,17 @@ test("does not begin a write transaction when timeout configuration exhausts the
     if (source === "busy_timeout = 1") clock.mockReturnValue(deadline);
     return result;
   });
-  await expect(recordStoppedControllerGeneration(f.file, f.ticket, deadline)).rejects.toThrow(/stop-deadline/);
+  await expect(recordFixtureStop(f.file, f.ticket, deadline)).rejects.toThrow(/stop-deadline/);
   expect(execute.mock.calls.some(([sql]) => sql === "BEGIN IMMEDIATE")).toBe(false);
   expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
 });
 
-test("bounds an actual journal write lock and retains the original SQLite failure", async () => {
+test.each(fixturePlatforms)("bounds an actual journal write lock and retains the original SQLite failure (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await currentStopFixture(), locked = new Database(f.file);
   locked.exec("BEGIN IMMEDIATE");
   try {
-    const error = await recordStoppedControllerGeneration(f.file, f.ticket, Date.now() + 200).catch(error => error);
+    const error = await recordFixtureStop(f.file, f.ticket, Date.now() + 200).catch(error => error);
     if (error.cause instanceof AggregateError) {
       expect(error).toMatchObject({ context: { phase: "stop-deadline" }, outcome: "not-started" });
       expect(error.cause.errors[0]).toMatchObject({ code: "SQLITE_BUSY" });
@@ -81,7 +92,8 @@ test("bounds an actual journal write lock and retains the original SQLite failur
   } finally { locked.exec("ROLLBACK"); locked.close(); }
 });
 
-test("reports a committed stop honestly when COMMIT crosses the deadline", async () => {
+test.each(fixturePlatforms)("reports a committed stop honestly when COMMIT crosses the deadline (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await currentStopFixture(), now = Date.now(), deadline = now + 100;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now), execute = Database.prototype.exec;
   vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
@@ -89,7 +101,7 @@ test("reports a committed stop honestly when COMMIT crosses the deadline", async
     if (sql === "COMMIT") clock.mockReturnValue(deadline);
     return result;
   });
-  const error = await recordStoppedControllerGeneration(f.file, f.ticket, deadline).catch(error => error);
+  const error = await recordFixtureStop(f.file, f.ticket, deadline).catch(error => error);
   expect(error).toMatchObject({ name: "SqliteAccessError", outcome: "committed", connectionClosed: true, context: { phase: "stop-deadline" } });
   expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: true, lifecycle: "stopped" });
 });
@@ -102,7 +114,6 @@ const windowsStopFixture = async () => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   return f;
 };
-const jobLease = {} as ControllerJobLease;
 
 test("atomically records a Windows lease stop proof and reuses it after reopening", async () => {
   const f = await windowsStopFixture(), deadline = Date.now() + 5000;
@@ -387,11 +398,12 @@ test("missing and invalid journal paths preserve their distinct read contracts",
   expect(() => readControllerSnapshot(bad)).toThrow();
 });
 
-test("stopped-generation writing rejects a format change during asynchronous process proof", async () => {
+test.each(fixturePlatforms)("stopped-generation writing rejects a format change during asynchronous process proof (%s)", async mode => {
+  selectFixturePlatform(mode);
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
-  store.patchSnapshot({ controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }); store.close();
+  store.patchSnapshot({ controllerProcess: { pid: 987, parentPid: 1, processGroupId: process.platform === "win32" ? null : 987, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${f.ticket.launchId}` } : {}) } }); store.close();
   proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma(`user_version=${journalVersion + 1}`); changed.close(); return true; });
-  await expect(recordStoppedControllerGeneration(f.file, f.ticket)).rejects.toThrow("unsupported-version");
+  await expect(recordFixtureStop(f.file, f.ticket)).rejects.toThrow("unsupported-version");
   const db = new Database(f.file); try { expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot).nativeStopped).toBe(false); } finally { db.close(); }
 });
 

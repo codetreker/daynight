@@ -28,8 +28,9 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: e.launchId, executionId: e.executionId, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId, sessionId: e.sessionId!, executionGeneration: e.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: task.configuration!, initialOperationId: e.initialOperationId, initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(directory, "credential.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null, signalCode: null, unref: vi.fn() });
   native.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
-  native.capture.mockResolvedValue({ pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) });
-  native.observe.mockResolvedValue({ snapshot: { nativeProcesses: [] } });
+  const proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
+  native.capture.mockResolvedValue(proof);
+  native.observe.mockResolvedValue({ snapshot: { controllerProcess: proof, nativeProcesses: [] } });
   native.reconcile.mockImplementation(async () => ({ kind: "observed", snapshot: (await native.observe()).snapshot }));
   const grant = { token: "controller-token", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: ticket.sessionId, testExecutionId: undefined, claimId: task.claimId, executionGeneration: "1", controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId };
   const sessionApi = { grant: vi.fn(async () => grant) } as unknown as WorkerSessionApi;

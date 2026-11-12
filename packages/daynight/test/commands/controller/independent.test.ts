@@ -1231,6 +1231,12 @@ test.skipIf(process.platform !== "win32")("real Windows Job stop is committed an
   const proofApi = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
   const launch = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
   const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const koffi = await import("koffi"), kernel = koffi.load("kernel32.dll");
+  const openProcess = kernel.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
+  const processTimes = kernel.func("int __stdcall GetProcessTimes(void *process, void *creation, void *exit, void *kernel, void *user)");
+  const waitProcess = kernel.func("uint32_t __stdcall WaitForSingleObject(void *handle, uint32_t milliseconds)");
+  const exitCode = kernel.func("int __stdcall GetExitCodeProcess(void *handle, void *code)");
+  const closeHandle = kernel.func("int __stdcall CloseHandle(void *handle)");
   const dist = path.join(v.home, "dist"), ready = path.join(v.home, "job-ready.json"); await mkdir(dist);
   const jobModule = path.resolve(import.meta.dirname, "../../../dist/commands/controller/windows-job.js");
   await writeFile(path.join(dist, "main.js"), `
@@ -1239,18 +1245,29 @@ const { spawn } = require('node:child_process');
 (async () => {
   const job = await import(${JSON.stringify(pathToFileURL(jobModule).href)});
   await job.createOwnedControllerJob(process.argv[5], process.pid);
-  const native = spawn(process.execPath, ['-e', 'const parent=process.ppid; const poll=setInterval(() => { try { process.kill(parent, 0); } catch { clearInterval(poll); setTimeout(() => process.exit(0), 5000); } }, 100); setTimeout(() => process.exit(9), 30000);'], { stdio: 'ignore' });
+  // Detached avoids libuv's parent-lifetime Job while retaining the Controller Job.
+  // https://github.com/libuv/libuv/blob/v1.52.1/src/win/process.c#L69-L80
+  const native = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(9), 30000)'], { stdio: 'ignore', detached: true });
   fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ native: native.pid }));
   setTimeout(() => process.exit(9), 60000);
 })().catch(error => { console.error(error); process.exit(1); });
 `);
   let spawned: import("node:child_process").ChildProcess | undefined, close: Promise<void> | undefined;
   let nativeProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  let nativeHandle: unknown = null;
   f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); close = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
   f.capture.mockImplementationOnce(async pid => {
     let data: { native: number } | undefined;
     await vi.waitFor(async () => { data = JSON.parse(await readFile(ready, "utf8")); expect(data!.native).toBeGreaterThan(0); }, { timeout: 15_000, interval: 25 });
-    nativeProof = await proofApi.captureProcessProof(data!.native); return proofApi.captureProcessProof(pid);
+    nativeProof = await proofApi.captureProcessProof(data!.native);
+    nativeHandle = openProcess(0x101000, 0, nativeProof.pid);
+    if (nativeHandle === null) throw new Error("Native fixture handle is unavailable.");
+    const creation = Buffer.alloc(8);
+    if (processTimes(nativeHandle, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)) === 0) throw new Error("Native fixture creation time is unavailable.");
+    const ticks = creation.readBigUInt64LE() / 10n * 10n - 116444736000000000n;
+    const startedAt = `${new Date(Number(ticks / 10000000n) * 1000).toISOString().slice(0, 19)}.${(ticks % 10000000n).toString().padStart(7, "0")}Z`;
+    expect(startedAt).toBe(nativeProof.startedAt); expect(waitProcess(nativeHandle, 0)).toBe(258);
+    return proofApi.captureProcessProof(pid);
   });
   f.acquireJob.mockImplementation((...args: Parameters<typeof job.acquireControllerJobLease>) => job.acquireControllerJobLease(...args));
   f.releaseJob.mockImplementation((...args: Parameters<typeof job.releaseControllerJobLease>) => job.releaseControllerJobLease(...args));
@@ -1281,6 +1298,8 @@ const { spawn } = require('node:child_process');
     await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home });
     expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledOnce();
     expect(f.stop.mock.calls[0]![3]).toBe(f.record.mock.calls[0]![3]);
+    expect(waitProcess(nativeHandle, 0)).toBe(0);
+    const nativeExit = Buffer.alloc(4); expect(exitCode(nativeHandle, nativeExit)).not.toBe(0); expect(nativeExit.readUInt32LE()).toBe(1);
     const stored = lifecycle.readProvenWindowsStoppedControllerGeneration(journalFile, actualTicket!);
     expect(stored).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: { pid: spawned!.pid }, nativeProcesses: [{ pid: nativeProof!.pid }], windowsJobStopProof: { version: 1 } });
     const readerUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/lifecycle-store.js")).href;
@@ -1295,6 +1314,7 @@ const { spawn } = require('node:child_process');
       if (close) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([close, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Windows Controller fixture did not close.")), 5000); })]); } finally { if (timer) clearTimeout(timer); } }
     } catch (error) { failures.push(error); }
     try { if (nativeProof) await launch.stopControllerBootstrap(nativeProof, Date.now() + 10_000); else if (spawned) await new Promise(resolve => setTimeout(resolve, 31_000)); } catch (error) { failures.push(error); }
+    if (nativeHandle !== null) try { if (closeHandle(nativeHandle) === 0) throw new Error("Native fixture handle close failed."); } catch (error) { failures.push(error); }
     if (failures.length) throw new AggregateError(failures, "Windows Job fixture cleanup failed.");
   }
 }, 90_000);

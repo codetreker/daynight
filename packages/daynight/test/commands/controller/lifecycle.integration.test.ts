@@ -1,12 +1,26 @@
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { validateControllerLocalRequest } from "../../../src/commands/controller/local-client.js";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
+const stageStoppedFixture = (store: ReturnType<typeof openControllerLifecycleStore>, ticket: ControllerLaunchTicket, nativeSessionId: string): void => {
+  if (process.platform === "win32") store.patchSnapshot({ nativeSessionId, controllerProcess: { pid: 987654, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` } });
+  else store.patchSnapshot({ nativeSessionId, lifecycle: "stopped", nativeStopped: true });
+};
+const commitStoppedFixture = async (file: string, ticket: ControllerLaunchTicket): Promise<void> => {
+  if (process.platform !== "win32") return;
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  try { await recordStoppedControllerGeneration(file, ticket, undefined, {} as ControllerJobLease); } finally { confirm.mockRestore(); }
+};
+afterEach(async () => { Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -51,13 +65,14 @@ it("lists durable operations and refuses to reopen an unproven native generation
   store.patchSnapshot({ controllerProcess: { pid: 987654, parentPid: 1, processGroupId: 987654, startedAt: "original", commandHash: "hash" } });
   store.close(); expect(() => openControllerLifecycleStore(filename, ticket)).toThrow(/generation/);
 });
-it("retains an overflow gap outside the outbox across generations and emits it once after ACK",async()=>{
+it.each(fixturePlatforms)("retains an overflow gap outside the outbox across generations and emits it once after ACK (%s)",async mode=>{
+ selectFixturePlatform(mode);
  const {home,ticket}=await fixture();const file=path.join(home,"state.sqlite");let store=openControllerLifecycleStore(file,ticket,{maxOutboxBytes:512});
  store.appendEvent({text:"a".repeat(470)});
  expect(()=>store.appendEvent({text:"lost native output".repeat(30)})).toThrow(/capacity/);
  store.markProjectionGap("Native projection overflow requires history reload.");
  expect(store.drainProjectionGap()).toBeNull();expect(store.pendingEvents()).toHaveLength(1);
- const nativeId=randomUUID();store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
+ const nativeId=randomUUID();stageStoppedFixture(store,ticket,nativeId);store.close();await commitStoppedFixture(file,ticket);
  const resumed={...ticket,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"2",resumeNativeSessionId:nativeId};
  store=openControllerLifecycleStore(file,resumed,{maxOutboxBytes:512});
  expect(store.drainProjectionGap()).toBeNull();store.acknowledgeEvents("1");
@@ -65,18 +80,19 @@ it("retains an overflow gap outside the outbox across generations and emits it o
  expect(store.drainProjectionGap()).toBeNull();store.close();store=openControllerLifecycleStore(file,resumed,{maxOutboxBytes:512});
  expect(store.pendingEvents()).toHaveLength(1);expect(store.drainProjectionGap()).toBeNull();store.close();
 });
-it("seeds control revisions above retained outbox and snapshot revisions across native recovery", async () => {
+it.each(fixturePlatforms)("seeds control revisions above retained outbox and snapshot revisions across native recovery (%s)", async mode => {
+  selectFixturePlatform(mode);
   const {home,ticket}=await fixture(); const file=path.join(home,"state.sqlite"); let store=openControllerLifecycleStore(file,ticket);
   const controls={revision:"9007199254740993",settings:[],commands:[],settingsError:null,commandsError:null};
   store.patchSnapshot({controls});
   store.appendEvent({kind:"state",payload:{controls:{...controls,revision:"9007199254740995"}}});
-  const nativeId=randomUUID();store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
+  const nativeId=randomUUID();stageStoppedFixture(store,ticket,nativeId);store.close();await commitStoppedFixture(file,ticket);
   const resumed={...ticket,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"2",resumeNativeSessionId:nativeId};
   store=openControllerLifecycleStore(file,resumed);
   expect(store.getSnapshot().controls).toBeUndefined();
   expect(store.getSnapshot().controlsRevisionFloor).toBe("9007199254740995");
   expect(store.pendingEvents()).toHaveLength(1);
-  store.acknowledgeEvents("1");store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
+  store.acknowledgeEvents("1");stageStoppedFixture(store,resumed,nativeId);store.close();await commitStoppedFixture(file,resumed);
   store=openControllerLifecycleStore(file,{...resumed,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"3"});
   expect(store.getSnapshot().controlsRevisionFloor).toBe("9007199254740995");store.close();
 });
@@ -120,7 +136,8 @@ it.each(["task", "test"])("preserves the original %s ticket bytes and journal ha
   finally { reopened.close(); }
 });
 
-it("carries persisted role instructions through stopped generations without replaying unknown user input", async () => {
+it.each(fixturePlatforms)("carries persisted role instructions through stopped generations without replaying unknown user input (%s)", async mode => {
+  selectFixturePlatform(mode);
   const { home, ticket: task } = await fixture();
   const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
   let ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", instructions: "固定角色\nUse the CLI. 😀" };
@@ -142,8 +159,9 @@ it("carries persisted role instructions through stopped generations without repl
         expect(store.listOperations()).toMatchObject([{ operationId, state: "unknown" }]);
         expect(() => store.markDispatching(operationId)).toThrow(/replay/);
       }
-      store.patchSnapshot({ nativeSessionId, lifecycle: "stopped", nativeStopped: true });
+      stageStoppedFixture(store, persisted, nativeSessionId);
     } finally { store.close(); }
+    await commitStoppedFixture(journal, persisted);
     ticket = { ...persisted, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: String(Number(generation) + 1), resumeNativeSessionId: nativeSessionId };
   }
 });

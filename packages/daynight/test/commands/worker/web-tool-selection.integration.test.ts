@@ -8,11 +8,13 @@ import { pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
 import { afterEach, expect, test, vi } from "vitest";
 import { controllerExecutionDirectory, readLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { readControllerOperation, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { readControllerOperation, readControllerSnapshot, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
+import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
+import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -35,8 +37,8 @@ afterEach(async ({ task }) => {
   if (errors.length) throw new AggregateError(errors, "Web tool selection fixture cleanup remains unconfirmed.");
 }, 180_000);
 
-const stopped = async (controller: ProcessProof, native: readonly ProcessProof[]): Promise<void> => {
-  await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(controller, native)).toBe(true), { timeout: 20_000, interval: 100 });
+const stopped = async (controller: ProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease): Promise<void> => {
+  await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(controller, native, undefined, lease)).toBe(true), { timeout: 20_000, interval: 100 });
 };
 
 const fixture = async () => {
@@ -101,7 +103,11 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     if (previous !== undefined) {
       const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(home, execution.executionId), "journal.sqlite"))!;
       expect(saved).toMatchObject({ claimId: task.claimId, executionGeneration: previous.generation, controllerInstanceId: previous.instanceId, nativeStopped: true, stoppedAt: previous.stoppedAt });
-      expect(await confirmControllerProcessesStopped(saved.controllerProcess!, saved.nativeProcesses)).toBe(true);
+      if (process.platform === "win32") {
+        const name = saved.controllerProcess!.jobObjectName!;
+        const ticket = await readLaunchTicket(home, name.slice("Local\\Daynight-".length));
+        expect(readProvenWindowsStoppedControllerGeneration(path.join(controllerExecutionDirectory(home, execution.executionId), "journal.sqlite"), ticket)).toEqual(saved);
+      } else expect(await confirmControllerProcessesStopped(saved.controllerProcess!, saved.nativeProcesses)).toBe(true);
     }
     return { token: "controlled-web-grant", expiresAt: new Date(Date.now() + 900_000).toISOString(), claimId: task.claimId, sessionId: execution.sessionId!,
       executionGeneration: execution.executionGeneration, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId };
@@ -117,9 +123,21 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     return binding;
   }), prepareRepository: unexpected, findWorktree: unexpected, removeWorktree: unexpected, dispose: unexpected } as unknown as WorkerGitManager;
   const buildPrompt = vi.fn((task: LocalTask) => `original assignment ${tasks.get(task.claimId)!.tool}`);
+  const leaseOwners: ReturnType<typeof createControllerJobLeases>[] = [];
+  const observerJobs = new Map<string, ControllerJobLease>();
+  const observerFor = (proof: ProcessProof) => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
   const stack = () => {
-    const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory, store, sessionApi, now: Date.now, selectToolLaunch, toolObservationFor: tools.toolObservationFor });
-    const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", buildPrompt, emit: () => {}, now: Date.now });
+    const owned = createControllerJobLeases(); leaseOwners.push(owned);
+    const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
+      const lease = await owned.retain(launchId, proof, deadline);
+      if (process.platform === "win32") {
+        const name = `Local\\Daynight-${launchId}`;
+        if (!observerJobs.has(name)) observerJobs.set(name, await acquireControllerJobLease(launchId, proof, deadline));
+      }
+      return lease;
+    } };
+    const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory, store, sessionApi, jobLeases, now: Date.now, selectToolLaunch, toolObservationFor: tools.toolObservationFor });
+    const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, jobLeases, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", buildPrompt, emit: () => {}, now: Date.now });
     return { launcher, backend };
   };
   let execution = stack();
@@ -159,21 +177,32 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     const result = await execution.backend.cleanup(current(identity), { kind: "shutdown", deadline: Date.now() + 20_000, signal: AbortSignal.timeout(60_000), immediateStop: true });
     expect(result.complete).toBe(true);
     const saved = journal(identity);
-    if (saved?.controllerProcess) await stopped(saved.controllerProcess, saved.nativeProcesses);
+    if (saved?.controllerProcess) {
+      if (process.platform === "win32") {
+        const ticket = await readLaunchTicket(home, current(identity).webExecution!.launchId);
+        expect(readProvenWindowsStoppedControllerGeneration(path.join(controllerExecutionDirectory(home, ticket.executionId), "journal.sqlite"), ticket)).toEqual(saved);
+      } else await stopped(saved.controllerProcess, saved.nativeProcesses);
+    }
     return result.task;
   };
   cleanups.push(async () => {
-    let safe = true;
+    let safe = true, cleanupFailure: unknown;
     try { for (const task of store.listUnfinishedTasks()) if (task.webExecution?.launchSubmission !== "not-submitted" && task.webExecution !== null) await shutdown(task); }
-    catch (error) { safe = false; throw error; }
+    catch (error) { safe = false; cleanupFailure = error; throw error; }
     finally {
+      const failures: unknown[] = [];
+      for (const owner of leaseOwners) try { await owner.close(); } catch (error) { failures.push(error); }
+      for (const lease of observerJobs.values()) try { releaseControllerJobLease(lease); } catch (error) { failures.push(error); }
+      observerJobs.clear();
       for (const socket of relay.clients) socket.terminate();
-      await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
-      await tools.close(); store.close();
-      if (safe) {
+      try { await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve())); } catch (error) { failures.push(error); }
+      try { await tools.close(); } catch (error) { failures.push(error); }
+      try { store.close(); } catch (error) { failures.push(error); }
+      if (safe && failures.length === 0) {
         if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(home, "fixture")), { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });
       }
+      if (failures.length) throw new AggregateError(cleanupFailure === undefined ? failures : [cleanupFailure, ...failures], "Web fixture cleanup and handle release failed.", { cause: cleanupFailure });
     }
   });
   const addTask = async (tool: "A" | "B") => {
@@ -199,7 +228,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       await delay(100);
     }
   };
-  return { home, tools, toolEntries, nativeIds, current, journal, addTask, ready, shutdown, register, grant, selectToolLaunch, buildPrompt, requests, receipts, relayErrors,
+  return { home, tools, toolEntries, nativeIds, current, journal, addTask, ready, shutdown, observerFor, register, grant, selectToolLaunch, buildPrompt, requests, receipts, relayErrors,
     get backend() { return execution.backend; }, get store() { return store; },
     reopen: () => { store.close(); store = openWebExecutionStore(database); execution = stack(); },
   };
@@ -246,7 +275,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   f.store.clearShutdown(identityA, Date.now());
   await f.backend.advance(f.current(identityA), signal).catch(() => {});
   await vi.waitFor(() => expect(f.journal(identityA)).toMatchObject({ error: expect.stringContaining("tool_identity_changed"), nativeProcesses: [] }), { timeout: 20_000, interval: 100 });
-  const refused = f.journal(identityA)!; await stopped(refused.controllerProcess!, refused.nativeProcesses);
+  const refused = f.journal(identityA)!; await stopped(refused.controllerProcess!, refused.nativeProcesses, f.observerFor(refused.controllerProcess!));
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: { sessionId: f.nativeIds.A } }, webExecution: { executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "3", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt } });
   expect(await f.receipts()).toEqual(beforeRemoval);
   expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(1);

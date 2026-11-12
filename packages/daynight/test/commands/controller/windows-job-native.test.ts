@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { expect, test, vi } from "vitest";
 import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { acquireControllerJobLease, createControllerJob, inspectControllerJob, inspectControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 
 test.skipIf(process.platform !== "win32")("queries and terminates a real named Job containing a leader and its descendant", async () => {
   const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
@@ -114,6 +115,7 @@ test.skipIf(process.platform !== "win32").each([true, false])("handles an unreco
   const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
   const assign = library.func("int __stdcall AssignProcessToJobObject(void *job, void *process)");
   const close = library.func("int __stdcall CloseHandle(void *handle)");
+  const terminate = library.func("int __stdcall TerminateJobObject(void *job, uint32_t code)");
   const lastError = library.func("uint32_t __stdcall GetLastError()");
   const launchId = randomUUID(), name = `Local\\Daynight-${launchId}`;
   let job: unknown = create(null, name), lease: ControllerJobLease | undefined;
@@ -121,7 +123,9 @@ test.skipIf(process.platform !== "win32").each([true, false])("handles an unreco
   const script = `
 const { spawn } = require('node:child_process');
 process.on('message', () => {
-  const child = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(()=>{},1000)'], { stdio: ['ignore','ignore','ignore','ipc'], windowsHide: true });
+  // Avoid libuv's parent-lifetime Job while keeping the inherited Controller Job.
+  // https://github.com/libuv/libuv/blob/v1.52.1/src/win/process.c#L69-L80
+  const child = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(()=>{},1000)'], { stdio: ['ignore','ignore','ignore','ipc'], windowsHide: true, detached: true });
   child.once('message', () => process.send({ pid: child.pid }));
 });
 process.send('ready'); setInterval(()=>{},1000);
@@ -159,8 +163,9 @@ process.send('ready'); setInterval(()=>{},1000);
     }
   } catch (error) { failed = true; failure = error; }
   finally {
+    if (job !== null) try { if (terminate(job, 1) === 0) throw new Error(`Fixture Job termination failed (Win32 ${lastError()}).`); } catch (error) { cleanupFailures.push(error); }
     if (descendant !== undefined) try {
-      if (await inspectProcessProof(descendant) === "running") process.kill(descendant.pid);
+      if (await inspectProcessProof(descendant) === "running") await stopControllerBootstrap(descendant, Date.now() + 10_000);
       await vi.waitFor(async () => expect(await inspectProcessProof(descendant!)).toBe("stopped"), { timeout: 10_000, interval: 25 });
     } catch (error) { cleanupFailures.push(error); }
     try { if (child.exitCode === null && child.signalCode === null) child.kill(); await closed; } catch (error) { cleanupFailures.push(error); }
