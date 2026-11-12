@@ -169,6 +169,7 @@ export const inspection: InspectionMessages = {
     loading: "正在加载附件…", listError: "附件列表加载失败。", incompleteList: "附件列表尚未完整加载，以下仅显示已读取的文件。",
     retry: "重试附件", empty: "暂无附件，上传文件后即可在这里浏览。", files: "附件文件", choosePreview: "选择文件查看预览或下载。",
     preview: "附件预览", fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`, download: "下载", deleting: "正在删除…", delete: "删除",
+    created: "创建时间", lastModified: "最后修改时间",
     fileActions: ({ path }) => `更多操作：${path}`, deleteTitle: "删除附件？", deleteConfirmation: "确认删除此附件？此操作无法撤销。", cancelDelete: "取消", confirmDelete: "删除附件",
     previewLoading: "正在加载预览…", previewLoadError: "无法加载文件预览，请重试或下载文件。", previewReadError: "无法读取文件预览，请重试或下载文件。",
     retryPreview: "重试预览", frameTitle: ({ kind, path }) => `${kind} 预览：${path}`, unsupportedPreview: "此文件暂不支持预览，请下载后打开。",

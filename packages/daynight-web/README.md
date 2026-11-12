@@ -2017,6 +2017,12 @@ reloads the selected content and remounts native previews; the server's
 `Cache-Control: no-store` keeps mutable paths current. Empty inventory and no
 selection have distinct states; deleting the selected file clears its preview, while deleting another file preserves the loaded preview and reading position. A failed delete retains the last-known row and preview without promising server-side rollback under K1.
 
+The shared Task and Goal preview header displays the selected attachment's created
+and last-modified timestamps using the current locale and browser time zone, with
+seconds and semantic `time` values. It retains known metadata during refresh,
+preview errors and remote-operation pauses; confirmed removal or absence clears it.
+File information, timestamps and actions can wrap on narrow screens.
+
 The right preview has one vertical scroll owner. Markdown, text/JSON/source and
 large images use `attachment-preview-body`; their renderers have no nested
 vertical height limits. Tables and code can scroll horizontally. For ready
