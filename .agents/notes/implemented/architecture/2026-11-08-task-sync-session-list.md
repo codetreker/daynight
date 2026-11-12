@@ -15,8 +15,8 @@ replace it with the publication time.
 
 ## Decision
 
-The existing fifteen-second TaskSync is the only list Session read. Its required
-complete four-state map feeds a page-local store owned by `useTaskGraph`, with
+The existing TaskSync is the only list Session read; its visible-page period is
+fifteen seconds. Its required complete four-state map feeds a page-local store owned by `useTaskGraph`, with
 `ProjectPage`, `ProjectTaskWorkspace` and the summary Provider passing the same
 instance to presentation consumers. The Provider owns presentation activity,
 not another producer or scheduler. Existing annotations, pending shortcuts,
@@ -94,8 +94,8 @@ owned by the detail client.
 Request binding reconstruction and scope admission remain necessary work even
 though Session values are small. TaskSync still performs its existing graph
 validation and cache transaction; this decision does not claim to remove that
-cost. The fifteen-second observation period and thirty-second lifetime are the
-chosen freshness bounds. Structural request reduction does not establish an
+cost. The visible-page fifteen-second observation period and thirty-second
+lifetime are the chosen freshness bounds. Structural request reduction does not establish an
 unmeasured production CPU or bandwidth saving.
 
 The Web parser strictly requires the new Session map. Server support precedes

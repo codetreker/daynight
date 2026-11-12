@@ -1617,9 +1617,9 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 
 In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`
-map from the existing fifteen-second task-sync. Reliable pending Sessions retain
-the same shortcut without an annotation. Child status controls open that Task's
-Session tab; titles still open Overview, and chain status controls only expand
+map from the existing visible-page fifteen-second task-sync. Reliable pending
+Sessions retain the same shortcut without an annotation. Child status controls
+open that Task's Session tab; titles still open Overview, and chain status controls only expand
 members. Collapsed chains and assignee-filtered chains include every ordinary
 member, including the root; external chains do not contribute.
 
@@ -1765,9 +1765,13 @@ marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
-An open project automatically requests task-sync every fifteen seconds while the
-document is visible. Hidden documents start no periodic reads; returning requests
-immediately unless a sync is already active. Automatic ticks skip active syncs.
+While a project remains mounted and the browser permits execution, task-sync runs
+every fifteen seconds when the document is visible and every five minutes when
+hidden. Visibility transitions reset the interval from the transition; hiding
+does not request or cancel a read, and returning attempts a read immediately.
+Focus alone does not change the interval. Browser throttling or freezing makes
+the background interval nominal. Automatic ticks and visibility recovery skip
+active syncs.
 Manual refresh cancels the active read and starts immediately. Every successful
 response updates the mount's clock receipt, including duplicate-only responses.
 Detail content follows its own summary business version and project generation;

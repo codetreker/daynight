@@ -180,12 +180,12 @@ export const useTaskGraph = (projectId: string) => {
       }).catch((error: unknown) => { if (!lifetime.signal.aborted && !isAbortError(error)) setState((previous) => ({ ...previous, error, refreshing: false })); });
     });
     let timer: ReturnType<typeof setInterval> | null = null;
-    const pause = () => { if (timer !== null) clearInterval(timer); timer = null; };
-    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, pollingInterval('taskSync')); };
-    const onVisibilityChange = () => { resume(); if (document.visibilityState !== "hidden") void request(true); };
-    resume(); document.addEventListener("visibilitychange", onVisibilityChange);
+    const clearTimer = () => { if (timer !== null) clearInterval(timer); timer = null; };
+    const resetTimer = () => { clearTimer(); timer = setInterval(() => { void request(true); }, pollingInterval(document.visibilityState === "hidden" ? 'taskSyncInactive' : 'taskSync')); };
+    const onVisibilityChange = () => { resetTimer(); if (document.visibilityState !== "hidden") void request(true); };
+    resetTimer(); document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      pause(); unsubscribe(); lifetime.abort();
+      clearTimer(); unsubscribe(); lifetime.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       ++generation.current; active.current?.abort(); active.current = null;
       liveAccess.current = false; receipt.current = null;

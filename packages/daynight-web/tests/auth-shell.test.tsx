@@ -12,6 +12,7 @@ import { waitForState } from "./helpers/waitForState";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as auth from "../src/api/auth";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
+import * as taskGraphHook from '../src/features/projects/useTaskGraph';
 import { navigate, parseRoute } from "../src/app/router";
 import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
@@ -483,6 +484,43 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
     expect(fetcher.mock.calls).toHaveLength(before);
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+  });
+
+  it('syncs and persists Tasks in the background until an actual account change pauses requests', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    window.history.replaceState(null, '', `/projects/${projectId}`);
+    const taskId = '00000000-0000-4000-8000-000000000005';
+    const initial = detailFixture(projectId, taskId, { title: 'Initial background task' });
+    const changed = { ...initial, title: 'Updated background task', version: 2n, updatedAt: '2026-10-22T10:00:01Z' };
+    let updated = false;
+    const fetcher = install((url) => isTaskSync(url)
+      ? graphResponse({ ...graphFixture([updated ? changed : initial]), project: project() }, url, updated ? 2n : 1n)
+      : defaults(url));
+    const originalHook = taskGraphHook.useTaskGraph;
+    let current: ReturnType<typeof originalHook> | undefined;
+    vi.spyOn(taskGraphHook, 'useTaskGraph').mockImplementation((id) => { current = originalHook(id); return current; });
+    await act(async () => { render(<AuthenticatedApp />); });
+    await waitForState(() => expect(current?.snapshot?.summaries.get(taskId)?.version).toBe(1n));
+    const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+    try {
+      visibility = 'hidden'; act(() => document.dispatchEvent(new Event('visibilitychange')));
+      const initialReads = fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
+      updated = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+      await waitForState(() => expect(current?.snapshot?.summaries.get(taskId)?.version).toBe(2n));
+      expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(initialReads + 1);
+      expect(current?.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe('Updated background task');
+      expect((await database.get('summaries', [userId, projectId, taskId]))?.summary).toMatchObject({ titlePreview: 'Updated background task', version: 2n });
+      expect(fetcher.mock.calls.filter(([url]) => url === '/api/v1/me')).toHaveLength(1);
+      accountChange(otherId); await screen.findByText('账户已变化');
+      const before = fetcher.mock.calls.length;
+      serverUserId = otherId;
+      await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+      expect(fetcher.mock.calls).toHaveLength(before);
+      expect(current?.snapshot?.summaries.get(taskId)?.version).toBe(2n);
+      expect((await database.get('summaries', [userId, projectId, taskId]))?.summary).toMatchObject({ titlePreview: 'Updated background task', version: 2n });
+      expect(await database.get('summaries', [otherId, projectId, taskId])).toBeUndefined();
+    } finally { database.close(); }
   });
 
   it("retains the project when a refresh response proves another principal", async () => {

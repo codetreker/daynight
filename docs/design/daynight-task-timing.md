@@ -14,7 +14,7 @@
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)
 读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
-Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每 15 秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
+Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 可见时每 15 秒、隐藏时每 5 分钟读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
 最新服务端样本由独立 `GraphSnapshot.observedAt` 保存，因此仅时钟变化时复用图与索引仍能取得新样本。
 [TaskNode](../../packages/daynight-web/src/features/task-graph/TaskNode.tsx) 已将检查任务的主体按钮和打开详情的 Details 按钮分开。
 `GraphIndex` 拥有任务与统计，布局来自投影和展开状态；项目设置与每秒计时不应成为这些计算的输入。

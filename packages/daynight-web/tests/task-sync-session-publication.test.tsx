@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { openDB } from 'idb';
 import { ApiError, getTaskSync, pauseAuthRequests } from '../src/api/client';
 import type { TaskSync, TaskSyncRead, WorkerClaim } from '../src/api/types';
 import { useTaskGraph } from '../src/features/projects/useTaskGraph';
 import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, taskSyncReadFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
@@ -32,6 +34,40 @@ const mount = (scope: TaskCacheScope) => renderHook(() => useTaskGraph(projectId
 });
 beforeEach(() => { vi.mocked(getTaskSync).mockReset(); });
 afterEach(() => scopes.splice(0).forEach((scope) => scope.dispose()));
+
+it('persists a hidden background Task update without publishing its Session', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  let visibility: DocumentVisibilityState = 'visible';
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+  vi.mocked(getTaskSync).mockImplementationOnce(async () => taskSyncReadFixture(sync({ [taskId]: 'working' })));
+  const scope = cache();
+  const applied = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const applySync = scope.applySync.bind(scope); let applications = 0;
+  vi.spyOn(scope, 'applySync').mockImplementation((...args) => {
+    const result = applySync(...args); const index = applications++;
+    void result.then(() => applied[index]?.resolve(), (error) => applied[index]?.reject(error));
+    return result;
+  });
+  const view = mount(scope);
+  act(() => view.result.current.sessionStore.setChain('chain', [taskId], true));
+  await act(async () => { await applied[0]!.promise; });
+  expect(view.result.current.sessionStore.snapshot().get(taskId)?.indicator).toBe('working');
+  const changed = { ...task, title: 'Background update', version: 2n, updatedAt: '2026-10-22T10:00:01Z' };
+  vi.mocked(getTaskSync).mockImplementationOnce(async (_project, query) => taskSyncReadFixture(taskSyncFromGraph(graphFixture([changed]), {
+    query, sessions: { [taskId]: 'notice' }, versionForTask: () => 2n, propertiesForTask: () => changed.properties,
+  })));
+  act(() => { visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+  expect(view.result.current.sessionStore.snapshot().size).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  await act(async () => { await applied[1]!.promise; });
+  expect(view.result.current.snapshot?.summaries.get(taskId)?.version).toBe(2n);
+  expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe('Background update');
+  expect(view.result.current.sessionStore.snapshot().size).toBe(0);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  try {
+    expect((await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId]))?.summary).toMatchObject({ titlePreview: 'Background update', version: 2n });
+  } finally { database.close(); view.unmount(); }
+});
 
 it('only publishes this page producer and accepts Session-only empty deltas', async () => {
   vi.mocked(getTaskSync).mockImplementation(async (_project, query) => taskSyncReadFixture(sync({ [taskId]: 'working' }, query)));
