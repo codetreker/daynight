@@ -42,12 +42,14 @@ v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文�
 停止维护要求原 ticket、generation、instance、持久 stopped/nativeStopped 证据及无活跃 writer。顺序为：
 
 1. 读回当前 SQL 正文与 totals，在事务外执行有界 `wal_checkpoint(TRUNCATE)`。
-2. 只有 checkpoint 明确成功后，退休已识别的旧正文并持久化相应目录。
+2. 只有 checkpoint 明确成功后，由资源索引拥有者耐久发布 `index.json.entries=[]`，保留其完整 `resources` 清单，再退休已识别的旧正文并持久化相应目录。
 3. 完成 VACUUM 前 TRUNCATE，执行事务外的原地 VACUUM，再完成后置有界 TRUNCATE。
 4. 核对真实 DB/WAL/SHM、旧正文残留、当前正文与 totals，提交清除 pending，并读回实际提交状态。
 5. 按真实占用结算维护预留，恢复普通物理准入，全部成功才返回 pending=false。
 
-退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。
+退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。共享 `index.json` 仍由 `resource-files.ts` 统一读写，Session 绑定、descriptor、blob、pin 和 lease 均不随正文索引退休而改变。索引发布失败时不删除正文；索引已发布而删除中断时，SQL 正文继续可读，重入仍重新耐久发布空旧正文清单，确认之前 rename 后的目录刷盘结果，再完成文件退休。
+
+当前 v10 读者可能在屏障之后建立自己的 SQL 快照，并在构造资源拥有者时读到发布前的旧文件清单。若旧 timeline 引用的文件在检查时消失，仅允许在索引原始字节确实已改变时重读一次，并完整核对新清单仍引用的全部文件；未改变的索引、仍被引用的缺失文件或无效清单继续报错。资源清单不缓存旧正文引用；后续资源写入只发布空 `entries`，删除回滚读取当前已发布清单，不恢复构造时的旧引用。
 
 `deadline` 在阶段前后检查，SQLite busy timeout 约束锁等待；同步原生 VACUUM 不能被 JavaScript timer 强制中断。VACUUM 返回后若期限已过，保留真实已提交阶段、pending 与后续维护所需预留，再由同一入口重入。
 

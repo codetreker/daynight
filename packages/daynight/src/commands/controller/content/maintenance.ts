@@ -17,6 +17,7 @@ import { assertControllerStoragePermit, type ControllerStoragePermit } from "../
 import { assertControllerStorageRole, controllerStorageExecutionRow, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
 import { assertNoOrphanTimelineSource, controllerTimelineFormat, controllerTimelineFormatForMigration } from "./migration.js";
 import { openTimelineStore } from "./timeline-store.js";
+import { retireLegacyTimelineReferences } from "./resource-files.js";
 
 const timeout = (deadline?: number): number => {
   const remaining = deadline === undefined ? 5000 : deadline - Date.now();
@@ -288,6 +289,7 @@ export const maintainControllerTimeline = (options: {
     const before = controllerMetadataBudget(request.journalFile, db).bytes();
     const first = checkpoint(db, request.deadline);
     report(phase, "started", { ...first, oldFileBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
+    retireLegacyTimelineReferences(request.journalFile, snapshot.sessionId);
     retire(sources, request.journalFile);
     if (retirementSources(request.journalFile, snapshot.sessionId).length !== 0) throw new Error("Controller timeline retirement left recognized source files.");
     report(phase, "completed", { retiredBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });

@@ -37,8 +37,15 @@ space limits continue to apply.
 
 Stopped maintenance retains ownership through reader barriers, recognized source
 retirement, in-place VACUUM, a post-VACUUM TRUNCATE checkpoint, actual file and
-content verification, pending-clear readback and reservation settlement. A busy
-reader retains the files, pending flag and required reservation. Failures preserve
+content verification, pending-clear readback and reservation settlement. Before
+unlinking old bodies, the resource owner durably clears only the shared legacy
+index's body references and preserves its complete resource inventory. Publishing
+the index and retiring files are ordered recovery phases: a failed publication
+retains files, and reentry confirms the publication again before resuming deletes.
+A new SQL reader which captured the old index may reread one provably changed
+inventory; unchanged or still-referenced missing files continue to fail. The
+resource owner never caches legacy references for later inventory writes or
+rollback. A busy reader retains the files, pending flag and required reservation. Failures preserve
 the actual committed phase; the ledger replaces the execution's absolute charge
 from observed remaining work rather than accumulating refunds. The
 [component design](../../../../docs/design/session-sqlite-content.md) owns the
