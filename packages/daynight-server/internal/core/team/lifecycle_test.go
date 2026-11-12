@@ -164,10 +164,11 @@ func (f *writerFake) InvitationMember(ctx context.Context, user string) (model.T
 	f.invitationMemberID = user
 	return f.member, f.errs["inviteMember"]
 }
-func (f *writerFake) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
+func (f *writerFake) AddMember(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
 	f.acceptCalls = append(f.acceptCalls, "add")
 	f.acceptContexts = append(f.acceptContexts, ctx)
 	f.addedMemberID = user
+	f.changedRole = role
 	f.added = true
 	return f.invitedMember, f.errs["add"]
 }
@@ -917,7 +918,7 @@ func TestInvitationAcceptanceRechecksAndFailures(t *testing.T) {
 					t.Fatalf("invitation member=%q; want %q", w.invitationMemberID, actor.UserID)
 				}
 			case "add":
-				if w.addedMemberID != actor.UserID {
+				if w.addedMemberID != actor.UserID || w.changedRole != model.ProjectMemberRole {
 					t.Fatalf("added member=%q; want %q", w.addedMemberID, actor.UserID)
 				}
 			case "consume":

@@ -186,17 +186,37 @@ func Delete(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 
 // WriteFault preserves transaction completion evidence before inspecting nested domain refusals.
 func WriteFault(err error) (*model.Fault, bool) {
-	var transaction *store.TransactionError
-	if !errors.As(err, &transaction) {
+	found, cleanupFailed, unknownCommit, abnormal := false, false, false, false
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil {
+			return
+		}
+		if transaction, ok := current.(*store.TransactionError); ok {
+			found = true
+			cleanupFailed = cleanupFailed || transaction.CleanupFailed
+			unknownCommit = unknownCommit || transaction.CommitAttempted && transaction.Outcome == store.TransactionUnknown
+			abnormal = abnormal || transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child)
+			}
+		} else {
+			visit(errors.Unwrap(current))
+		}
+	}
+	visit(err)
+	if !found {
 		return nil, false
 	}
-	if transaction.CleanupFailed {
+	if cleanupFailed {
 		return &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
 	}
-	if transaction.CommitAttempted && transaction.Outcome == store.TransactionUnknown {
+	if unknownCommit {
 		return &model.Fault{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", Cause: err}, true
 	}
-	if transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted {
+	if abnormal {
 		return &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
 	}
 	if errors.Is(err, model.ErrNotFound) {

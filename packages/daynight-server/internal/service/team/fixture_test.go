@@ -84,7 +84,10 @@ func (s *fixtureSnapshot) TeamDAO() store.TeamReader {
 	return s.fixture.readDAO
 }
 
-type fixtureWriteScope struct{ fixture *teamFixture }
+type fixtureWriteScope struct {
+	store.TeamWriteScope
+	fixture *teamFixture
+}
 
 func (s *fixtureWriteScope) TeamDAO() store.TeamWriteDAO {
 	s.fixture.take("writer")

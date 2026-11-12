@@ -104,3 +104,11 @@ func (tx *writer) RemoveMember(ctx context.Context, userID string) error {
 	}
 	return nil
 }
+
+func (tx *writer) AddMember(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
+	_, err := tx.tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) SELECT $1,id,$3 FROM users WHERE id=$2`, tx.teamID, user, role)
+	if err != nil {
+		return model.TeamMember{}, pg.QueryError("add Team member", err)
+	}
+	return tx.Member(ctx, user)
+}

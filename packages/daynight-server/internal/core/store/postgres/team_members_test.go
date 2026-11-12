@@ -114,7 +114,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	var rejoined model.TeamMember
 	if err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error {
 		var err error
-		rejoined, err = tx.AddInvitedMember(ctx, other.UserID)
+		rejoined, err = tx.AddMember(ctx, other.UserID, model.ProjectMemberRole)
 		return err
 	}); err != nil {
 		t.Fatal(err)

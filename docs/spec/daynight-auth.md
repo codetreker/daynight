@@ -17,7 +17,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
 每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
-创建、读取、分页、改名和删除普通 Team，并通过邀请加入普通 Team；当前 owner Team admin 可预览和转移项目。Team 成员管理和转移客户端保持各自的功能边界。
+创建、读取、分页、改名和删除普通 Team，并通过邀请加入普通 Team；当前 admin 可按完整外部身份直接添加成员，当前 owner Team admin 可预览和转移项目。Team 成员管理和转移客户端保持各自的功能边界。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -38,6 +38,7 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 | AU11 | 启用鉴权时，全部服务入口、客户端、部署健康检查和既有验收同次适配，不能依赖前端隐藏按钮。 |
 | AU12 | 错误、取消及不确定写入可见；秘密不进入诊断、日志、仓库绑定或持久 URL。 |
 | AU13 | 普通 Team 创建与创建者 admin 原子提交；本人列表和详情受成员资格限制，admin 按精确元数据版本改名或删除空 Team，Personal 禁止变更。 |
+| AU14 | 普通 Team admin 可按完整外部身份直接添加显式 admin/member；初始化目标前和成员写入时均核验当前主体、凭据和权限。同角色收敛保留原成员版本与时间，异角色明确冲突。 |
 
 ## 身份与凭据
 
@@ -214,6 +215,7 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 | `PATCH /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，保存后的 Team 与本人真实成员关系 |
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
+| `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
 | `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
 | `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
@@ -249,8 +251,27 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 Team 成员目录仅对本 Team 的当前成员开放，包含每位成员的可空姓名、邮箱、头像、角色、
 真实成员版本和时间；只有 Project 单独授权不能读取目录。目录读取失败或用户资料缺失时整个
 请求失败，不返回部分目录。REST 目录保持完整 `{items}`，不新增分页或累计配额；MCP 成员页复用当前权限及普通批量查询，按条数和 cursor 连续读取。普通 Team admin 可修改已有成员角色或移除成员；普通成员可自行
-退出，但不能管理他人。加入只能通过邀请接受，不提供按 UUID、姓名或邮箱加人。Personal Team
-成员关系固定，角色修改和退出均返回 `409 personal_team_immutable`。
+退出，但不能管理他人。admin 可按下述完整外部身份直接添加成员；邀请仍由接收者明确接受。Personal Team
+成员关系固定，添加、角色修改和退出均返回 `409 personal_team_immutable`。
+
+直接添加的 JSON 恰为 `{expectedUserId,user:{externalUserId,profile?},role}`，三个顶层字段必需，
+不接受 query 或 version。expectedUserId 必须是非零规范 UUID，且等于实际 actor；目标身份不能替代 actor。
+role 必须显式为 admin 或 member。user 使用完整用户初始化的共享输入：externalUserId 非空、合法 UTF-8、
+无 control 字符、最多 1024 bytes；profile 可省略，提供时必须是仅含可省略 name/avatarUrl 的对象，字段为 string 或 null；
+未知或重复字段、错误类型和非法 Unicode 明确拒绝。body 使用 1 MiB、15 秒读取预算；解码后的业务操作
+继承请求 context 与取消。输入资料只用于新账号，已有账号资料保持不变。
+
+先在短 Team 事务内检查当前凭据、普通 Team 与 admin 权限，初始拒绝不能创建目标账号。释放该事务后，
+独立完成目标用户及其 Personal Team 初始化，并确认提交；随后在成员写事务重新检查凭据、当前 admin、
+Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，成员行等待后以新鲜时间再次检查凭据。
+后阶段撤权、到期或其他拒绝可保留已完整初始化的目标账号，但不能提交部分成员或 eligibility。
+凭据在任一阶段失效返回 `401 unauthenticated`；凭据行缺失不是 Team 缺失。实际 Team 不存在返回
+`404 not_found`，未知提交和清理失败仍优先返回各自的事务完成错误。
+
+首次插入返回 added=true；已有同角色返回 added=false，保留实际成员的原 version、createdAt、updatedAt。
+已有不同角色返回 `409 resource_conflict`，关系和时间均不变；调用者须读取当前成员版本后使用既有 PATCH
+修改角色。成功 membership 包含实际目标 UUID、Team UUID、角色、无损正 int64 版本和 UTC 时间。
+直接添加不推进 Team 元数据版本，不改变最后 admin 规则或独立 Project grant，不创建或消费邀请。
 
 角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
 过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的
@@ -546,6 +567,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
 | Team 管理、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
+| 直接添加的目标已是不同角色的 Team 成员 | 409 resource_conflict，成员版本与时间不变 |
 | 新增独立授权的目标不是有效 participant | 404 not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有活跃 Project ownership 引用的 Team | 409 team_not_empty |
@@ -586,6 +608,7 @@ App Secret、一次性 code 或邀请秘密。
 | AU-V10 | 独立登录的缺失/合法/非法目标、已有会话、历史、任务/文件/query、已知 callback 失败、邀请和设备账号切换、普通退出及失败重试保持上述连续性；公开首页不成为私有授权依据。 |
 | AU-V10 | 日志按请求/用户/项目关联登录、授权和错误；Cookie、PAT、App Secret、设备秘密、上游一次性 code 与邀请秘密不进入诊断或持久 URL；设备短码只用于核对和验证链接，不进入日志。 |
 | AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值，浏览器会话仍为七天。 |
+| AU-V14 | 直接添加在目标初始化前拒绝无权主体；独立初始化确认后再次核验权限、凭据与状态。同角色真实 PostgreSQL 收敛保留版本和时间，异角色无写；成员等待后的到期、并发撤权和 eligibility 失败回滚保持完整目标账号与成员阶段边界。正常集成入口通过真实 PAT 请求添加外部身份，并从后续目录读回实际目标 UUID、资料与成员版本和时间。 |
 | AU-V12 | Team 创建者 admin 原子性、本人过滤和跨账号 cursor、不可见/非 admin/Personal 拒绝、合法 Unicode 与原文空白、NUL/非法转义/全空白拒绝、重名、精确版本 no-op/冲突/耗尽、空删除与非空拒绝均有验证；真实 PostgreSQL 锁等待证明删除和 ownership 写入互斥，错误身份零领域 SQL，取消、回滚失败和未知 COMMIT 保持结果分类。 |
 
 模型工具面继续使用既有 CLI，不增加 MCP 工具。保留现有请求/操作/响应预算与输出

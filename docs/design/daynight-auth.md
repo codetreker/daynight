@@ -578,6 +578,35 @@ directGrant/access；accept 返回 projectId、真实 directGrant、提交后 ac
 consumed。无效、到期、消费、撤销和目标删除统一为 404 invitation_unavailable。到期
 查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，过期索引支持每次最多清理 100 条。
 
+### 管理员直接添加 Team 成员
+
+`POST /api/v1/teams/{teamId}/members` 由 `server/team` 解码共享 `ExternalUserInput` 和显式角色，
+`service/team.DirectMembers` 协调三个独立阶段，`core/team` 决定普通 Team/admin 准入及成员收敛。
+expectedUserId 和规范 Team ID 校验先于领域 SQL，目标外部身份只标识加入者。
+
+第一阶段使用原 `TeamWriter.WriteTeam` 短事务，在 Team 原预锁后检查实际凭据、普通 Team 和当前 admin。
+确认该只读核验事务完成后，第二阶段调用独立 `Identity.EnsureUser`，仅使用其确认提交的完整目标账号。
+第三阶段重新进入原 Team 写事务，再检查凭据与当前 Team/admin，锁定目标成员并添加或读取关系，
+刷新同事务 eligibility，最后用新鲜时间再次检查凭据。初始无权不产生用户，后阶段失败回滚成员和 eligibility，
+可以保留第二阶段已完整建立的用户和 Personal Team。HTTP 的直接成员错误适配先保留事务完成和清理失败，
+再保留明确的 unauthenticated 凭据拒绝；其 missing-row 原因不被 Team 缺失回退覆盖。
+实际 Team 缺失仍使用 not_found；网络或数据库故障不被领域拒绝掩盖。
+
+`TeamWriteScope.IdentityDAO()` 与 `CredentialFamilyDAO()` 由 PostgreSQL 根装配绑定到同一事务。
+API principal 复用 Identity 的固定 resource/scope/client `LockAccess`；原生 Session/PAT 复用
+`IdentityDAO.LockProfileCredential` 的 reader-compatible SHARE 检查，排除撤销与到期写入，并保留管理操作的原锁模式。
+Team 预锁位置保持不变；成员行或其他下层等待不沿用第一次凭据核验的时间。
+
+成员 DAO 的 `AddMember(ctx,userID,role)` 使用显式角色，邀请接受明确传 member，仍保留实际接收主体、
+邀请状态与消费事务。直接添加前锁读真实目标关系：不存在时插入并返回 added=true；同角色返回原成员和
+added=false；异角色返回 resource_conflict 并整体回滚，角色修改仍由观察版本的 PATCH 拥有。
+成功仅在确认提交后返回实际 membership、added 与 actorRole=admin。未知 COMMIT 返回
+write_outcome_unknown，确认提交后的响应丢失不重复执行操作。Personal、最后 admin、Team 元数据版本和
+独立 Project grant 均保持原规则。[直接成员决策](../../.agents/notes/implemented/feature/2026-11-13-direct-team-members.md)
+拥有三阶段边界与明确角色收敛的取舍。
+
+### Team 邀请
+
 Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
 邀请 → 当前成员顺序锁定，先重验邀请有效，再检查真实成员；已有成员保留角色且不消费，
 新 member 与消费同事务提交。撤销与接受共享 Team 和邀请锁；删除 Team 同事务清除邀请。
@@ -586,13 +615,13 @@ joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，
 invitation_unavailable；[Team 邀请决策](../../.agents/notes/archived/architecture/2026-11-04-team-invitations.md)记录了接收入口及交付边界的历史取舍。
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
-项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
-提交串行化。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更取得 Task SHARE 锁后，
+项目写锁内检查成员。直接成员与本人资料更新在自己的写事务内额外复核凭据，并在可能的行锁等待后
+再次检查新鲜期限；其他资源操作保留凭据认证与业务事务各自的准入时点。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更取得 Task SHARE 锁后，
 通过 `pg.ReadProjectAccess` 在单条语句中重新读取当前 ownership、owner Team member 和 direct grant
 形成准入结果，不锁定授权来源行。Task 锁继续覆盖删除状态检查、文件 IO、事务绑定元数据写入及事务完成，
 与 Task 删除排序。准入后的 grant 或 Team 成员撤权无需等待文件 IO；已准入操作允许完成，
 不能在文件写入后仅因成员刚移除而拒绝元数据写入。撤权后没有其他有效来源的新准入请求拒绝；
-HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由其专用事务拥有。
+附件 HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由其专用事务拥有。
 真实存储/数据库错误按原链传播，保留 K1，已发字节不承诺撤回。
 [附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)记录锁范围与撤权完成的取舍。
 
@@ -944,6 +973,6 @@ CLI 不增加认证预检往返，保持既有 request/operation/response/累计
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交，CLI 与 Web 使用该预览及回执；Web 项目设置负责确认、缓存撤权和结果导航。Team 邀请的公开接收入口可登录、确认并加入；Team 设置的成员与邀请分区、Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；admin 可通过直接成员 API 添加完整外部身份并读回实际关系。项目转移提供服务端预览和提交，CLI 与 Web 使用该预览及回执；Web 项目设置负责确认、缓存撤权和结果导航。Team 邀请的公开接收入口可登录、确认并加入；Team 设置的成员与邀请分区、Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

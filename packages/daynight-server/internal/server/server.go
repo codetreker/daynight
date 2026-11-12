@@ -89,6 +89,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
+	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
 	prompthttp.RegisterRoutes(mux, app.Prompts, auth, logger)
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
