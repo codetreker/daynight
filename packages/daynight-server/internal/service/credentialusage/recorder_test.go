@@ -421,7 +421,10 @@ func TestDiagnosticPassVisitsOtherDirtyKey(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	w := writerFunc(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
-		started <- struct{}{}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-release
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	})
@@ -429,32 +432,56 @@ func TestDiagnosticPassVisitsOtherDirtyKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Record(request(context.Background(), "req-1"), event(1, clock.read())); err != nil {
-		t.Fatal(err)
-	}
-	wait(t, started)
-	if _, err := r.Record(request(context.Background(), "req-2"), event(2, clock.read())); err != nil {
-		t.Fatal(err)
-	}
 	fault := func(n int) usage.Fault {
 		return usage.Fault{Phase: usage.PhaseFlush, Code: usage.CodeWriteFailed, Cause: usage.CauseDatabase, Observation: usage.Observation{Event: event(n, clock.read()), RequestID: fmt.Sprintf("req-%d", n), Source: usage.SourceHTTPPAT}, OccurredAt: clock.read()}
 	}
-	if err := r.sampler.ReportFault(fault(1)); err != nil {
+	// The first diagnostic snapshot must contain both resident keys.
+	for _, n := range []int{1, 2} {
+		f := fault(n)
+		if admission, err := r.sampler.Record(f.Observation); err != nil || admission != usage.Accepted {
+			t.Fatalf("record key %d: %v %v", n, admission, err)
+		}
+		if err := r.sampler.ReportFault(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.sampler.ReportFault(fault(2)); err != nil {
-		t.Fatal(err)
-	}
-	notify(r.diagnosticWake)
+	var releaseHandler, releaseWriter sync.Once
+	t.Cleanup(func() {
+		releaseHandler.Do(func() { close(h.release) })
+		releaseWriter.Do(func() { close(release) })
+		// Keep unexpected diagnostics from blocking the producer during cleanup.
+		stop := make(chan struct{})
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			for {
+				select {
+				case <-h.entered:
+				case <-stop:
+					return
+				}
+			}
+		}()
+		ctx, cancel := bounded(t)
+		defer cancel()
+		err := r.Drain(ctx)
+		close(stop)
+		<-stopped
+		if err != nil {
+			t.Errorf("cleanup drain: %v", err)
+		}
+	})
+	wait(t, started)
 	first := wait(t, h.entered)
 	if err := r.sampler.ReportFault(fault(1)); err != nil {
 		t.Fatal(err)
 	}
-	close(h.release)
+	releaseHandler.Do(func() { close(h.release) })
 	second := wait(t, h.entered)
+	third := wait(t, h.entered)
 	subject := func(rec slog.Record) string {
 		var id string
 		rec.Attrs(func(a slog.Attr) bool {
@@ -465,14 +492,27 @@ func TestDiagnosticPassVisitsOtherDirtyKey(t *testing.T) {
 		})
 		return id
 	}
-	if subject(first) != event(1, clock.read()).SubjectID || subject(second) != event(2, clock.read()).SubjectID {
-		t.Fatalf("diagnostic order: %q, %q", subject(first), subject(second))
+	if subject(first) != event(1, clock.read()).SubjectID || subject(second) != event(2, clock.read()).SubjectID || subject(third) != event(1, clock.read()).SubjectID {
+		t.Fatalf("diagnostic order: %q, %q, %q", subject(first), subject(second), subject(third))
 	}
-	close(release)
+	var count uint64
+	third.Attrs(func(a slog.Attr) bool {
+		if a.Key == "count" {
+			count = a.Value.Uint64()
+		}
+		return true
+	})
+	if count != 2 {
+		t.Fatalf("updated diagnostic count: %d, want 2", count)
+	}
+	releaseWriter.Do(func() { close(release) })
 	join, cancel := bounded(t)
 	defer cancel()
 	if err := r.Drain(join); err != nil {
 		t.Fatal(err)
+	}
+	if s := r.Snapshot(); s.Dirty != 0 {
+		t.Fatalf("unconfirmed diagnostics: %+v", s)
 	}
 }
 
