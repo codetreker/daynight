@@ -1047,13 +1047,15 @@ it("waits for the original startup summary before withdrawing its grant", async 
     return update(current, summary, operation);
   });
   let ready = false;
+  let startup: Promise<void> | undefined;
+  const failures: unknown[] = [];
   try {
     await f.coordinator.tick();
     await eventually(() => expect(summaryBlocked).toBe(true));
     const original = f.store.listTasks()[0]!;
     expect(original.sessionId).toEqual(expect.any(String));
     expect(readWorkerClaim(f.grants.get(original.claimId)!.properties)).toMatchObject({ phase: "preparing", nativeSessionId: null });
-    const startup = waitForOriginalStartup(f).then(() => { ready = true; });
+    startup = waitForOriginalStartup(f).then(() => { ready = true; });
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(ready).toBe(false);
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
@@ -1067,7 +1069,17 @@ it("waits for the original startup summary before withdrawing its grant", async 
     expect(f.resources.has(original.claimId)).toBe(false);
     expect(f.worktrees.has(original.claimId)).toBe(false);
     expect(f.order.slice(-2)).toEqual(["stop-close", "remove-worktree"]);
-  } finally { releaseSummary.resolve(); await f.coordinator.shutdown(); }
+  } catch (error) { failures.push(error); }
+  finally {
+    releaseSummary.resolve();
+    const startupSettlement = await Promise.allSettled([startup]);
+    const shutdownSettlement = await Promise.allSettled([f.coordinator.shutdown()]);
+    for (const result of [...startupSettlement, ...shutdownSettlement]) {
+      if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Startup summary regression or fixture cleanup failed.", { cause: failures[0] });
+  }
 });
 
 it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shutdown" }, { stream: "child", mode: "shutdown" }, ...(process.platform === "win32" ? [{ stream: "helper", mode: "shutdown" }] : [])])("holds the original task gate through $stream closure and $mode", async ({ stream, mode }) => {
