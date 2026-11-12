@@ -38,6 +38,8 @@ The [Goal description tab decision](2026-11-12-goal-description-tab.md) separate
 description reading from Task browsing while retaining these owners. The
 [Web design](../../../../docs/design/daynight-web.md) describes the current
 presentation and lifecycle.
+The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)
+uses the Goal's own state for its list heading while keeping scoped progress independent.
 
 ## Alternatives
 

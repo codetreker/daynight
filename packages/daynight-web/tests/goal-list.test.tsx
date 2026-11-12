@@ -23,10 +23,25 @@ const empty = summary('empty', 'goal', null, 'todo');
 const tasks = [goal, other, empty, summary('root', 'task', other.id, 'done'), summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['root'], startedAt: '2026-10-20T11:50:00Z' }), summary('standalone', 'task', goal.id, 'cancelled'), summary('solo-other', 'task', other.id, 'todo')];
 const noop = () => {};
 const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
-  <GoalList projectId={projectId} index={value.index} goals={[goal, other, empty]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openChainId={null} onCloseChain={noop} onOpenTask={noop} />
+  <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openChainId={null} onCloseChain={noop} onOpenTask={noop} />
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it('updates the Goal surface from its own status without changing child progress', () => {
+    const render = createLocaleRender('en', { taskCache: true });
+    const view = render(list(snapshot(tasks)));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const row = card.querySelector('.goal-list-row')!;
+    const progress = row.querySelector('.goal-list-progress')!.textContent;
+    for (const status of ['todo', 'in_progress', 'done', 'cancelled'] as const) {
+      view.rerender(list(snapshot(tasks.map((task) => task.id === goal.id ? { ...task, status } : task))));
+      expect(card).toHaveAttribute('data-task-status', status);
+      expect(row).toHaveClass('task-status-surface');
+      expect(row).toHaveAttribute('data-task-status', status);
+      expect(row.querySelector('.goal-list-progress')).toHaveTextContent(progress!);
+    }
+  });
+
   it('keeps expansion independent and restores nested selection while exposing separate read actions', () => {
     const value = snapshot(tasks);
     const openGoal = vi.fn(); const openTask = vi.fn(); const openChain = vi.fn();

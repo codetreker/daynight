@@ -11,6 +11,7 @@ import { completedAtFor } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
 import { useCompletionHint } from '../task-completion/useCompletionHint';
 import { CompletionTimeLabel } from '../task-completion/CompletionTimeLabel';
+import '../../styles/task-status-rows.css';
 
 export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, onOpenGoal, onOpenListTask, onOpenListChain, onOpenSession }: {
   readonly projectId: string;
@@ -43,8 +44,8 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
   const childrenId = `project-goal-children-${goal.id}`;
   const { total: count, done, cancelled } = scope.progress;
-  return <li className="goal-list-card" data-goal-id={goal.id} ref={root}>
-    <div className="goal-list-row">
+  return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} ref={root}>
+    <div className="goal-list-row task-status-surface" data-task-status={goal.status}>
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} onClick={() => {
         if (expanded && content.current?.contains(document.activeElement)) toggle.current?.focus({ preventScroll: true });
         setExpanded(!expanded);

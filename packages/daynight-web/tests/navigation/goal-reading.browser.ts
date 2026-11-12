@@ -28,6 +28,7 @@ async function expectHit(target: Locator) {
 async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   let details = all;
   let currentGraph = graph;
+  let colorRevision = 0;
   let epoch = taskSyncEpoch(projectId);
   let forbiddenGoal = false;
   let failPeople = false;
@@ -111,7 +112,18 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { completionGoal: () => {
+  return { setGoalStatusFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', completedChildren: boolean) => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    details = details.map(item => item.id === goalId
+      ? { ...item, status, assignedTo: TEST_VIEWER_ID, version: item.version + 1n, updatedAt: changedAt, startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null }
+      : item.parentId === goalId && item.status !== (completedChildren ? 'done' : 'todo')
+        ? { ...item, status: completedChildren ? 'done' as const : 'todo' as const, version: item.version + 1n, updatedAt: changedAt, completedAt: completedChildren ? time : null, cancelledAt: null } : item);
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, setMixedChildren: () => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    details = details.map(item => item.id === singleId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: time } : item);
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, completionGoal: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z' });
     details = [{ ...goal, status: 'done', completedAt: '2026-10-22T09:59:40Z' },
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), outside,
@@ -1450,6 +1462,75 @@ test('account refresh notice keeps the shared form header and close accessible',
   expect(positions.noticeTop).toBeGreaterThanOrEqual(Math.max(positions.titleBottom, positions.closeBottom)); expect(positions.noticeRight).toBeLessThanOrEqual(positions.boundsRight);
   await expectHit(dialog.locator('.close-button')); await expectHit(notice.getByRole('button', { name: 'Refresh page' }));
   await expect(dialog.locator('.language-selector')).toHaveCount(0);
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal list uses its own status colors at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  fixture.setGoalTitle('LongGoal名称'.repeat(12));
+  fixture.setGoalStatusFixture('todo', true);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const row = card.locator('.goal-list-row');
+  const palette = {
+    todo: ['rgb(241, 243, 246)', 'rgb(232, 236, 241)', 'rgb(216, 223, 232)', 'rgb(89, 101, 121)'],
+    in_progress: ['rgb(235, 242, 255)', 'rgb(223, 234, 255)', 'rgb(187, 207, 242)', 'rgb(48, 95, 168)'],
+    done: ['rgb(234, 246, 239)', 'rgb(221, 239, 229)', 'rgb(191, 220, 201)', 'rgb(36, 109, 74)'],
+    cancelled: ['rgb(243, 239, 247)', 'rgb(235, 229, 241)', 'rgb(214, 203, 223)', 'rgb(112, 92, 128)'],
+  } as const;
+  let progress = '';
+  for (const status of ['todo', 'in_progress', 'done', 'cancelled'] as const) {
+    if (status !== 'todo') {
+      fixture.setGoalStatusFixture(status, true);
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    }
+    await expect(row).toHaveAttribute('data-task-status', status);
+    await page.mouse.move(0, 0);
+    await expect(row).toHaveCSS('background-color', palette[status][0]);
+    await expect(card).toHaveCSS('border-top-color', palette[status][2]);
+    await expect(row.locator('.root-status')).toHaveCSS('color', palette[status][3]);
+    await expect(row).toHaveCSS('opacity', '1');
+    const text = await row.locator('.goal-list-progress').innerText();
+    if (status === 'todo') progress = text;
+    expect(text).toBe(progress);
+    for (const hover of [false, true]) {
+      if (hover) await row.hover();
+      await expect(row).toHaveCSS('background-color', palette[status][hover ? 1 : 0]);
+      for (const selector of ['.goal-list-title', '.goal-list-meta', '.task-assignee-identity', '.goal-list-progress', '.root-status']) {
+      const ratio = await row.locator(selector).evaluate(element => {
+        const color = (value: string) => value.match(/\d+/g)!.slice(0, 3).map(Number).map(c => { const n = c / 255; return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4; });
+        const luminance = (value: string) => { const [r, g, b] = color(value); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+        const style = getComputedStyle(element); const background = style.backgroundColor === 'rgba(0, 0, 0, 0)' ? getComputedStyle(element.closest('.goal-list-row')!).backgroundColor : style.backgroundColor;
+        const a = luminance(style.color), b = luminance(background); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+      });
+        expect(ratio, `${status} ${hover ? 'hover' : 'default'} ${selector}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  }
+  fixture.setGoalStatusFixture('done', false);
+  fixture.setMixedChildren();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(row).toHaveAttribute('data-task-status', 'done');
+  await expect(row.locator('.goal-list-progress')).not.toHaveText(progress);
+  fixture.setGoalStatusFixture('cancelled', false);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(row).toHaveAttribute('data-task-status', 'cancelled');
+  const title = card.locator('.goal-list-title');
+  await card.locator('.goal-list-toggle').focus();
+  await page.keyboard.press('Tab');
+  await expect(title).toBeFocused();
+  await expect(title).toHaveCSS('outline-color', 'rgb(140, 140, 240)');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.goal-detail-surface')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(title).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(page.locator('.goal-detail-surface')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(title).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
