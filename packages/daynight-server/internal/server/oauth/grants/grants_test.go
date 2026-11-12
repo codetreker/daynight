@@ -95,6 +95,11 @@ func TestVersionedGrantProjections(t *testing.T) {
 		if len(old[i]) != 9 || len(current[i]) != 10 {
 			t.Fatalf("field counts: %v %v", old[i], current[i])
 		}
+		for _, field := range []string{"id", "clientName", "clientId", "resource", "scope", "createdAt", "expiresAt", "revokedAt", "status"} {
+			if _, present := old[i][field]; !present {
+				t.Fatalf("v1 is missing %s", field)
+			}
+		}
 		usage, ok := current[i]["lastUsedAt"]
 		if !ok {
 			t.Fatal("missing lastUsedAt")
