@@ -121,7 +121,7 @@ shim 的目标从同一份有界字节快照提取，后缀选择忽略大小写
 
 资源键在 Windows 归一化检索键后排除 PATH/PATHEXT；POSIX 保持环境名大小写语义，普通 native 变量 `Path` 不能被当作 `PATH` 排除。
 
-`commands/worker/tool-selection.ts` 统一拥有 Web Codex/Copilot 的目标 generation、候选验证、新执行准入与观察快照。版本、host 能力、模型目录与启动消费同一个完整 recipe；实际版本来自该 recipe 的原生响应。候选结果提交前重验目标 generation 和 cleanup generation，旧目标的迟到成功不能覆盖新选择。 缓存候选身份改变时，同次操作先协调最近探针 recipe 的清理，再重新解析和探测当前选择；最后的新执行校验也遵循此顺序。最近探针责任独立于可清空的候选缓存，在首次 probe 前保留，失败或目标变化不能绕过旧清理。新目标失败保留旧实际观察，只阻断依赖该工具的新执行。Herdr 的实例映射尚未消费该管理器；显式 Herdr 工具目标明确拒绝，全部 auto 时保留既有 Herdr 检查，不能报告为已应用工具路径。
+`commands/worker/tool-selection.ts` 统一拥有 Web Codex/Copilot 的目标 generation、候选验证、新执行准入与观察快照。版本、host 能力、模型目录与启动消费同一个完整 recipe；实际版本来自该 recipe 的原生响应。候选结果提交前重验目标 generation 和 cleanup generation，旧目标的迟到成功不能覆盖新选择。 缓存候选身份改变时，同次操作先协调最近探针 recipe 的清理，再重新解析和探测当前选择；最后的新执行校验也遵循此顺序。最近探针责任独立于可清空的候选缓存，在首次 probe 前保留，失败或目标变化不能绕过旧清理。协调覆盖该 recipe 在不同 cwd 和环境中的探测范围，并在清理期间阻止旧 recipe 的迟到探测；清理确认后才准入新候选。新目标失败保留旧实际观察，只阻断依赖该工具的新执行。Herdr 的实例映射尚未消费该管理器；显式 Herdr 工具目标明确拒绝，全部 auto 时保留既有 Herdr 检查，不能报告为已应用工具路径。
 
 Task 的冻结配置、Web 执行记录、Bot intent、Controller ticket 共用严格 `parseResolvedToolLaunch`，未知字段和不匹配的工具/context 拒绝。首次启动前保存 recipe 及同 selectionKey 的 `{version,checkedAt}`，恢复先读原 claim 配置，不能先被新的目标验证挡住。每次新 spawn 核验原文件；缺失或变化报告 `tool_identity_changed`，不改用 PATH 上的另一个安装。旧活执行的观察、输入、停止和归档继续原 process-proof/RPC。旧记录缺身份且已经 submitted/unknown 时禁止新 spawn；有完整 never-submitted 证明时才能创建原 ticketHash/launchId/executionId 绑定的私有 `tool-selections` 侧文件，原票字节保持不变，读回成功后继续冻结。侧文件为 create-only，symlink、错误 ticket 或冲突内容拒绝，不能重放首条输入或换 Session 绕过。
 

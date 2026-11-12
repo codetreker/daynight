@@ -6,7 +6,8 @@ import { withinOperation } from "../../platform/tool-io.js";
 
 export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
 export type ToolSelectionProbe = {
-  reconcile?(launch: ResolvedToolLaunch, operation: Operation): Promise<void>;
+  reconcile?(launch: ResolvedToolLaunch, operation: Operation): Promise<unknown>;
+  admit?(launch: ResolvedToolLaunch, receipt: unknown): void;
   check(launch: ResolvedToolLaunch, operation: Operation): Promise<{ version: string; checkedAt?: string }>;
   assertAvailable?(launch: ResolvedToolLaunch): void;
   cacheToken?(launch: ResolvedToolLaunch): unknown;
@@ -113,7 +114,8 @@ export class ToolSelectionManager {
         if (previous) await withinOperation(previous, operation);
         this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         const priorRecipe = slot.probeRecipe;
-        if (priorRecipe && this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(priorRecipe, operation), operation);
+        let receipt: unknown;
+        if (priorRecipe && this.options.probe.reconcile) receipt = await withinOperation(this.options.probe.reconcile(priorRecipe, operation), operation);
         this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         let launch = await (this.options.resolve ?? resolveToolLaunch)({ tool, context, choice, environment: this.environment, cwd: this.options.cwd, ...(this.options.workerNode === undefined ? {} : { workerNode: this.options.workerNode }) }, operation);
         this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
@@ -121,9 +123,10 @@ export class ToolSelectionManager {
         await (this.options.verify ?? verifyToolLaunch)(launch, operation); this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         // Recovery must reach the original process owner before the read-only
         // admission gate, and its result precedes the new inspection generation.
-        if ((!priorRecipe || priorRecipe.selectionKey !== launch.selectionKey) && this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(launch, operation), operation);
+        if ((!priorRecipe || priorRecipe.selectionKey !== launch.selectionKey) && this.options.probe.reconcile) receipt = await withinOperation(this.options.probe.reconcile(launch, operation), operation);
         this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         this.options.probe.assertAvailable?.(launch); const token = this.options.probe.cacheToken?.(launch);
+        this.options.probe.admit?.(launch, receipt);
         slot.probeRecipe = clone(launch);
         const result = await this.options.probe.check(launch, operation); operation.check();
         if (!validVersion(result.version)) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");

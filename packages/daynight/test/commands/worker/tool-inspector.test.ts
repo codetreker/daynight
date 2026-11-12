@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { createWorkerToolInspector } from "../../../src/commands/worker/native-selection.js";
+import { createCodexProbeOwner } from "../../../src/commands/worker/codex-probe-owner.js";
 import { ToolSelectionManager } from "../../../src/commands/worker/tool-selection.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 const controlled = vi.hoisted(() => ({ create: vi.fn(), command: vi.fn() }));
@@ -139,6 +140,71 @@ test("Codex model discovery and version/transport inspection serialize through t
     await expect(version).resolves.toMatchObject({ version: "0.156.1" });
     expect(controlled.command.mock.calls.map(([command]) => command.args.slice(-3))).toEqual([[f.alias.executablePath, "--version"], ["app-server", "--stdio", "--help"]]);
   } finally { release?.(); await inspector.close(); op.dispose(); }
+});
+
+test("an upgraded candidate waits for failed discovery cleanup from another scope", async () => {
+  const f = await fixture("codex"), other = await fixture("codex"), op = operation();
+  const retry = vi.fn().mockRejectedValue(new Error("old scope remains live"));
+  const cleanup = new BotCliProbeCleanupError({ launchId: "cross-scope", pid: 123, process: null, jobObjectName: null, targetStarted: true }, retry);
+  controlled.create.mockResolvedValue({ run: async () => ({ stdout: '{"ok":true,"observation":{"model":null,"models":[{"id":"model","efforts":null}]}}' }), close: async () => { throw cleanup; } });
+  const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
+  const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  try {
+    const old = await manager.selectForNewExecution("codex", "web", op);
+    await expect(inspector.discover({ native: { agent: "codex", model: null, args: [] }, cwd: other.root, environment: { ...process.env, CODEX_HOME: other.root }, mode: "web", toolLaunch: old }, op)).rejects.toMatchObject({ code: "cleanup_unknown" });
+    await writeFile(f.launch.entryPath, "#!/usr/bin/env node\nconsole.log('upgraded fixture');\n");
+    controlled.command.mockClear();
+    await expect(manager.selectForNewExecution("codex", "web", op)).rejects.toThrow("old scope remains live");
+    expect(controlled.command).not.toHaveBeenCalled();
+    await expect(inspector.check(other.launch, op)).resolves.toMatchObject({ version: "0.156.1" });
+    controlled.command.mockClear(); retry.mockResolvedValue(undefined);
+    const selected = await manager.selectForNewExecution("codex", "web", op);
+    expect(selected.selectionKey).not.toBe(old.selectionKey); expect(controlled.command).toHaveBeenCalledTimes(2);
+    expect(retry).toHaveBeenCalledTimes(2);
+  } finally { retry.mockResolvedValue(undefined); await manager.close(op); op.dispose(); }
+});
+
+test("an upgraded candidate joins an in-flight discovery in another scope", async () => {
+  const f = await fixture("codex"), other = await fixture("codex"), op = operation();
+  let release!: () => void, entered!: () => void, signalled!: () => void;
+  let armed = false;
+  const blocked = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; }), reconciling = new Promise<void>(resolve => { signalled = resolve; });
+  controlled.create.mockResolvedValue({ run: async () => { entered(); await blocked; return { stdout: '{"ok":true,"observation":{"model":null,"models":[{"id":"model","efforts":null}]}}' }; }, close: async () => {} });
+  const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
+  const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision,
+    reconcile: (launch, operation) => { const result = inspector.reconcile(launch, operation); if (armed && launch.selectionKey === f.launch.selectionKey) signalled(); return result; } } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  let discovery: Promise<unknown> | undefined, queuedDiscovery: Promise<unknown> | undefined;
+  try {
+    const old = await manager.selectForNewExecution("codex", "web", op);
+    const oldRequest = { native: { agent: "codex" as const, model: null, args: [] }, cwd: other.root, environment: { ...process.env, CODEX_HOME: other.root }, mode: "web" as const, toolLaunch: old };
+    discovery = inspector.discover(oldRequest, op);
+    await started; queuedDiscovery = inspector.discover(oldRequest, op); void queuedDiscovery.catch(() => {});
+    await writeFile(f.launch.entryPath, "#!/usr/bin/env node\nconsole.log('upgraded fixture');\n");
+    controlled.command.mockClear(); armed = true;
+    const selection = manager.selectForNewExecution("codex", "web", op);
+    await reconciling; expect(controlled.command).not.toHaveBeenCalled();
+    const stale = { native: { agent: "codex" as const, model: null, args: [] }, cwd: other.root, environment: { ...process.env, CODEX_HOME: f.root }, mode: "web" as const, toolLaunch: f.alias };
+    await expect(inspector.discover(stale, op)).rejects.toMatchObject({ code: "tool_identity_changed" });
+    expect(controlled.create).toHaveBeenCalledOnce();
+    release(); await discovery; await expect(queuedDiscovery).rejects.toMatchObject({ code: "tool_identity_changed" });
+    expect((await selection).selectionKey).not.toBe(old.selectionKey); expect(controlled.command).toHaveBeenCalledTimes(2);
+    await expect(inspector.discover(stale, op)).rejects.toMatchObject({ code: "tool_identity_changed" });
+  } finally { release(); await discovery; await manager.close(op); op.dispose(); }
+});
+
+test("only the latest completed reconciliation admits a canonical recipe", async () => {
+  const f = await fixture("codex"), op = operation(), owner = createCodexProbeOwner(process.env, f.root);
+  const invocation = { file: f.launch.command.file, environment: process.env, workingDirectory: f.root, toolLaunch: f.launch };
+  try {
+    const first = await owner.reconcileRecipe(f.launch, op), second = await owner.reconcileRecipe(f.alias, op);
+    expect(() => owner.admitRecipe(f.launch, first)).toThrow("superseded");
+    await expect(owner.observe(invocation, op, async () => "probe")).rejects.toMatchObject({ code: "tool_identity_changed" });
+    owner.admitRecipe(f.alias, second);
+    await expect(owner.observe(invocation, op, async () => "probe")).resolves.toBe("probe");
+    expect(() => owner.admitRecipe(f.launch, first)).toThrow("superseded");
+  } finally { await owner.close(op); op.dispose(); }
 });
 
 

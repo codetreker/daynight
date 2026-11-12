@@ -21,7 +21,8 @@ recipes are verified against their own command, selection key and recorded files
 New execution candidates whose identity changes are resolved and probed again in
 the same operation only after the most recent probe recipe has been reconciled.
 That responsibility is retained before probing and independently of the candidate
-cache. Existing execution recipes and process identities remain frozen. The
+cache. Reconciliation covers the recipe’s probe scopes across working directories
+and environments, and gates late probes of that recipe until cleanup is confirmed. Existing execution recipes and process identities remain frozen. The
 [resolution decision](2026-11-11-worker-tool-path-resolution.md) retains the
 original identity rationale; the [runtime decision](2026-11-12-worker-frozen-tool-runtime.md)
 owns execution and cleanup boundaries.
