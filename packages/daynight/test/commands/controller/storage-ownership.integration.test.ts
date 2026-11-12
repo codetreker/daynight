@@ -101,7 +101,9 @@ test("a fresh writer is prepared without committing a generation and accepts a s
 test("an empty execution cannot admit a later-generation writer", async () => {
   const f = await fixture(), permit = acquireControllerStoragePermit(f.file);
   try {
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...f.ticket, executionGeneration: "2" } }, permit, () => {})).toThrow(/upgrade-blocked/);
+    let failure: unknown;
+    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...f.ticket, executionGeneration: "2" } }, permit, () => {}); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true, cause: { cause: { message: "Controller storage requires the original first-generation ticket or stopped predecessor." } } });
     const db = new Database(f.file, { readonly: true }); try { expect(db.pragma("user_version", { simple: true })).toBe(0); } finally { db.close(); }
   } finally { permit.release(); }
 });
@@ -282,4 +284,88 @@ test("pure wrapped busy aggregates stay retryable while independent cleanup fail
   expect(isControllerStorageLockHeld(cleanup)).toBe(false);
   expect(isControllerStorageLockHeld(new AggregateError([held, cleanup], "blocked and cleanup failed"))).toBe(false);
   expect(isControllerStorageLockHeld(new AggregateError([held, new Error("release failed")], "blocked and release failed"))).toBe(false);
+});
+
+
+const versionZeroSource = (file: string, variant: "owner-only" | "invalid-json", owner: number | null): void => {
+  const db = new Database(file);
+  try {
+    db.exec(variant === "owner-only"
+      ? "CREATE TABLE execution(id INTEGER PRIMARY KEY, owner_pid INTEGER)"
+      : "CREATE TABLE execution(id INTEGER PRIMARY KEY, owner_pid INTEGER, snapshot TEXT, ticket_hash TEXT)");
+    if (variant === "owner-only") db.prepare("INSERT INTO execution VALUES(1,?)").run(owner);
+    else db.prepare("INSERT INTO execution VALUES(1,?,'discarded invalid { JSON','discarded ticket')").run(owner);
+    db.exec("CREATE TABLE discarded(value TEXT); INSERT INTO discarded VALUES('original evidence')");
+    db.pragma("user_version=0");
+  } finally { db.close(); }
+};
+
+const versionZeroPreparationCases = (["writer", "upgrade-only"] as const).flatMap(mode => (["owner-only", "invalid-json"] as const).flatMap(variant => ([null, 2147483647] as const).map(owner => ({ mode, variant, owner }))));
+test.each(versionZeroPreparationCases)("$mode resets version zero $variant after admitting owner $owner", async ({ mode, variant, owner }) => {
+  const f = await fixture(); versionZeroSource(f.file, variant, owner);
+  const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
+  try {
+    const request = mode === "writer" ? { journalFile: f.file, stateDirectory: f.root, mode, ticket: f.ticket } : { journalFile: f.file, stateDirectory: f.root, mode };
+    expect(prepareControllerStorage(request, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+      expect(db.prepare("SELECT COUNT(*) AS count FROM execution").get()).toEqual({ count: 0 });
+      expect(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='discarded'").get()).toBeUndefined();
+      expect(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='input_message_origins'").get()).toBeDefined();
+    } finally { db.close(); }
+  } finally { permit.release(); }
+});
+
+const unsafeVersionZeroCases = (["writer", "upgrade-only"] as const).flatMap(mode => (["live", "unknown", "missing-id", "missing-owner"] as const).map(variant => ({ mode, variant })));
+test.each(unsafeVersionZeroCases)("$mode retains version zero $variant owner evidence and schema", async ({ mode, variant }) => {
+  const f = await fixture(), original = new Database(f.file);
+  let schema: unknown, rows: unknown;
+  try {
+    if (variant === "missing-id") original.exec("CREATE TABLE execution(owner_pid INTEGER,sentinel TEXT); INSERT INTO execution VALUES(NULL,'owner evidence')");
+    else if (variant === "missing-owner") original.exec("CREATE TABLE execution(id INTEGER,sentinel TEXT); INSERT INTO execution VALUES(1,'owner evidence')");
+    else { original.exec("CREATE TABLE execution(id INTEGER,owner_pid INTEGER,sentinel TEXT)"); original.prepare("INSERT INTO execution VALUES(1,?,'owner evidence')").run(process.pid); }
+    original.exec("CREATE TABLE discarded(value TEXT); INSERT INTO discarded VALUES('original evidence')");
+    original.pragma("user_version=0");
+    schema = original.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
+    rows = original.prepare("SELECT * FROM execution").all();
+  } finally { original.close(); }
+  const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
+  if (variant === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("owner status unavailable"), { code: "EPERM" }); });
+  try {
+    const request = mode === "writer" ? { journalFile: f.file, stateDirectory: f.root, mode, ticket: f.ticket } : { journalFile: f.file, stateDirectory: f.root, mode };
+    let failure: unknown;
+    try { prepareControllerStorage(request, permit, () => {}); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", connectionClosed: true });
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(0);
+      expect(db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual(schema);
+      expect(db.prepare("SELECT * FROM execution").all()).toEqual(rows);
+      expect(db.prepare("SELECT value FROM discarded").get()).toEqual({ value: "original evidence" });
+    } finally { db.close(); }
+  } finally { permit.release(); }
+});
+
+test("version zero writer reset rolls back when retained pending content has no original execution", async () => {
+  const f = await fixture(); versionZeroSource(f.file, "owner-only", null);
+  const directory = `${f.file}.pending-content`, entry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "reasoning", text: "retained original" };
+  await mkdir(path.join(directory, "entries"), { recursive: true });
+  await writeFile(path.join(directory, "manifest.json"), JSON.stringify({ schemaVersion: 1, sessionId: f.ticket.sessionId }));
+  const orphan = path.join(directory, "entries", `${randomUUID()}.json`), bytes = JSON.stringify(entry);
+  await writeFile(orphan, bytes);
+  const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
+  try {
+    let failure: unknown;
+    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true, cause: { cause: { message: "Pending archive source has no original controller execution." } } });
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(0);
+      expect(db.prepare("PRAGMA table_info(execution)").all().map(row => (row as { name: string }).name)).toEqual(["id", "owner_pid"]);
+      expect(db.prepare("SELECT * FROM execution").get()).toEqual({ id: 1, owner_pid: null });
+      expect(db.prepare("SELECT value FROM discarded").get()).toEqual({ value: "original evidence" });
+    } finally { db.close(); }
+    expect(await readFile(orphan, "utf8")).toBe(bytes);
+  } finally { permit.release(); }
 });

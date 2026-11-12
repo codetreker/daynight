@@ -134,7 +134,7 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, perm
   let snapshot: ControllerSnapshot | null = null;
   try {
     db = openSqliteDatabase({ ...options, allowCreate: request.mode === "writer", timeoutMs: storageTimeout(request.deadline), ...(onMigration === undefined ? {} : { onMigration }),
-      assertMigrationAllowed: (database, source) => { assertJournalMigrationAllowed(database, source); assertRole(request, executionRow(database)); },
+      assertMigrationAllowed: (database, source) => { assertJournalMigrationAllowed(database, source); if (source.version !== 0) assertRole(request, executionRow(database)); },
       onReady: database => {
         try {
         storageTimeout(request.deadline);
