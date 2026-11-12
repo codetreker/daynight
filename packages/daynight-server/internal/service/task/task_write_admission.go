@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -57,7 +58,7 @@ func PartitionDependencies(ordinary, external *[]string) (*[]string, *[]string, 
 		}
 	}
 	if count > taskcore.MaxDependencies {
-		return nil, nil, invalidInput("Task dependencies must contain at most 15 items.")
+		return nil, nil, invalidInput(fmt.Sprintf("Task dependencies contain %d items; at most %d items are allowed.", count, taskcore.MaxDependencies))
 	}
 	all := make([]string, 0, count)
 	ext := []string{}

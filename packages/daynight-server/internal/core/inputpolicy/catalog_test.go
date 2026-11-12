@@ -32,6 +32,7 @@ func TestResponseAndRangePolicies(t *testing.T) {
 	}{
 		{"bot.cwd", 4096, "bytes"},
 		{"task.resource", 512 << 10, "bytes"},
+		{"task.dependencies", 30, "items"},
 		{"search.expression", 8192, "bytes"},
 		{"search.terms", 128, "items"},
 		{"search.depth", 32, "levels"},

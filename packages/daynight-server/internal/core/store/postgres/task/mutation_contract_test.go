@@ -843,15 +843,15 @@ func testTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T, data
 func testTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
-	ids := make([]string, 16)
+	ids := make([]string, 30)
 	for i := range ids {
 		ids[i] = writerTask(t, database, project.ID, i+11, model.TaskTodo).ID
 	}
 	var target model.Task
-	values := store.TaskWrite{Title: "Target", Status: model.TaskTodo, DependsOn: slices.Clone(ids[:15]), ExternalDependsOn: slices.Clone(ids[:2])}
+	values := store.TaskWrite{Title: "Target", Status: model.TaskTodo, DependsOn: slices.Clone(ids[:30]), ExternalDependsOn: slices.Clone(ids[:2])}
 	if err := writerWrite(t, database, project.ID, func(scope store.TaskWriteDAO) error {
 		var err error
-		target, err = scope.CreateTask(ctx, testutil.QueryID(30), values)
+		target, err = scope.CreateTask(ctx, testutil.QueryID(100), values)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -860,8 +860,8 @@ func testTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T, da
 	if err := database.Pool.QueryRow(ctx, `SELECT ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 ORDER BY depends_on_task_id),ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 AND external ORDER BY depends_on_task_id)`, target.ID).Scan(&stored, &external); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(stored, ids[:15]) || !slices.Equal(external, ids[:2]) || target.Ready {
-		t.Fatalf("fifteen stored edges lost order/classification: %#v %#v %#v", stored, external, target)
+	if !slices.Equal(stored, ids[:30]) || !slices.Equal(external, ids[:2]) || target.Ready {
+		t.Fatalf("thirty stored edges lost order/classification: %#v %#v %#v", stored, external, target)
 	}
 }
 

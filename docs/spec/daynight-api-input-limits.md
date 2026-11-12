@@ -11,7 +11,7 @@
 | 对象 | 上限 |
 |---|---:|
 | Task/Step 标题、描述 | 分别 1 KiB、64 KiB |
-| Task 完整依赖集合 | 15 项，external 为其子集 |
+| Task 完整依赖集合 | 30 项，external 为其子集 |
 | 每个规范化属性值 | 8 KiB |
 | pullRequests 的 url、title | 分别 2 KiB、1 KiB |
 | 属性 worker 的 machine.name、nativeSessionId | 各 256 bytes |

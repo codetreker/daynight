@@ -66,7 +66,7 @@ func TestOnlineCandidateAdmission(t *testing.T) {
 		dao.tasks = append(dao.tasks, model.Task{ID: deps[i], Status: model.TaskDone})
 	}
 	values, err := CreateCandidate(id, CreateTask{Title: strings.Repeat("é", 512), Description: strings.Repeat("界", 21845) + "a", DependsOn: deps})
-	if err != nil || ValidateCandidate(t.Context(), dao, id, values) != nil || dao.reads != 1 || dao.walks != 15 {
+	if err != nil || ValidateCandidate(t.Context(), dao, id, values) != nil || dao.reads != 1 || dao.walks != MaxDependencies {
 		t.Fatalf("boundary failed: reads=%d walks=%d err=%v", dao.reads, dao.walks, err)
 	}
 	tooMany := append(append([]string{}, deps...), "not-a-uuid")
@@ -88,6 +88,35 @@ func TestOnlineCandidateAdmission(t *testing.T) {
 	} {
 		_, err := CreateCandidate(id, input)
 		faultCode(t, err, "invalid_input")
+	}
+}
+
+func TestDependencyCountCreateAndUpdate(t *testing.T) {
+	const id = "00000000-0000-4000-8000-000000000001"
+	for _, count := range []int{16, 30} {
+		deps := make([]string, count)
+		dao := &countingAdmissionDAO{}
+		for i := range deps {
+			deps[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i+2)
+			dao.tasks = append(dao.tasks, model.Task{ID: deps[i], Status: model.TaskDone})
+		}
+		for _, externalCount := range []int{0, count / 2, count} {
+			external := deps[:externalCount]
+			created, err := CreateCandidate(id, CreateTask{Title: "Task", DependsOn: deps, ExternalDependsOn: external})
+			if err != nil {
+				t.Fatalf("create %d/%d: %v", count, externalCount, err)
+			}
+			if err := ValidateCandidate(t.Context(), dao, id, created); err != nil {
+				t.Fatalf("create graph %d/%d: %v", count, externalCount, err)
+			}
+			updated, err := UpdateCandidate(model.Task{ID: id, Title: "Task", Properties: model.TaskProperties{}}, UpdateTask{DependsOn: &deps, ExternalDependsOn: &external})
+			if err != nil {
+				t.Fatalf("update %d/%d: %v", count, externalCount, err)
+			}
+			if err := ValidateCandidate(t.Context(), dao, id, updated); err != nil {
+				t.Fatalf("update graph %d/%d: %v", count, externalCount, err)
+			}
+		}
 	}
 }
 

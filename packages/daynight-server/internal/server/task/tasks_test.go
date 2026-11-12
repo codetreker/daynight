@@ -140,6 +140,27 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	}
 }
 
+func TestTaskDependencyLimitHTTPRefusals(t *testing.T) {
+	f := newExternalHTTPFixture(t)
+	dependencies := make([]string, 31)
+	for i := range dependencies {
+		dependencies[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
+	}
+	f.noStorage()
+	create := projectRequest(f.handler, http.MethodPost, taskCollection(f.project.ID), jsonBody(t, map[string]any{"title": "Too many", "dependsOn": dependencies}))
+	assertProjectError(t, create, http.StatusBadRequest, "invalid_input")
+	if !strings.Contains(create.Body.String(), "31") || !strings.Contains(create.Body.String(), "30") {
+		t.Fatalf("missing count and limit: %s", create.Body.String())
+	}
+	current := externalHTTPRecord(f.project.ID, externalHTTPID('f'), "Existing")
+	f.mutation(&current, nil, nil, nil, false, store.TransactionCommitted)
+	update := projectRequest(f.handler, http.MethodPatch, taskPath(externalHTTPAPI(current)), jsonBody(t, map[string]any{"version": current.Version, "dependsOn": dependencies}))
+	assertProjectError(t, update, http.StatusBadRequest, "invalid_input")
+	if !strings.Contains(update.Body.String(), "31") || !strings.Contains(update.Body.String(), "30") {
+		t.Fatalf("missing count and limit: %s", update.Body.String())
+	}
+}
+
 func TestExternalDependencyHTTPWriteReplacementAndNoop(t *testing.T) {
 	f := newExternalHTTPFixture(t)
 	a := externalHTTPRecord(f.project.ID, externalHTTPID('a'), "A")
