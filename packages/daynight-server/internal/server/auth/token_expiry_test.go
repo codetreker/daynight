@@ -75,7 +75,7 @@ func TestTokenExpiryHTTPCreateEditAndCurrentBearer(t *testing.T) {
 	}
 }
 
-func TestTokenExpiryResponseDoesNotExposeUsageTime(t *testing.T) {
+func TestTokenExpiryResponseIncludesUsageTime(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.Login(t, "metadata-user")
 	user := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{cookie}, nil, ""), 200)
@@ -91,9 +91,12 @@ func TestTokenExpiryResponseDoesNotExposeUsageTime(t *testing.T) {
 	if patch.Code != http.StatusOK || json.Unmarshal(patch.Body.Bytes(), &changed) != nil {
 		t.Fatalf("patch: %d %s", patch.Code, patch.Body)
 	}
-	want := []string{"id", "name", "createdAt", "expiresAt"}
+	want := []string{"id", "name", "createdAt", "expiresAt", "lastUsedAt"}
 	if len(changed) != len(want) {
 		t.Fatalf("unexpected metadata fields: %v", changed)
+	}
+	if string(changed["lastUsedAt"]) != `"`+now.Format(time.RFC3339Nano)+`"` {
+		t.Fatalf("usage time changed by expiry edit: %s", changed["lastUsedAt"])
 	}
 	for _, field := range want {
 		if _, ok := changed[field]; !ok {

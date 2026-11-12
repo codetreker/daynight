@@ -32,4 +32,5 @@ MCP 客户端可从未认证协议请求发现授权信息，通过既有 Daynig
 
 客户端使用 authorization code、S256 PKCE 和精确资源绑定交换令牌，支持 refresh 和
 撤销。错误绑定不得消费有效授权码；正确绑定的重放使已发行的凭据 family 失效。秘密不
-进入日志或任务材料。服务端机制见[架构](../design/daynight-mcp-oauth.md)。
+进入日志或任务材料。授权所有者可读取最后已记录的合格使用时间；其可空语义及版本化列表
+合同见[身份认证需求](daynight-auth.md)。服务端机制见[架构](../design/daynight-mcp-oauth.md)。

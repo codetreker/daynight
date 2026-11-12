@@ -2616,6 +2616,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		add("POST", "/api/v1/auth/device/"+op)
 	}
 	add("GET", "/api/v1/oauth/grants")
+	add("GET", "/api/v2/oauth/grants")
 	add("POST", "/api/v1/oauth/grants/{id}/revoke")
 	addPlain("GET", "/api/v1/oauth/requests/{id}")
 	routes = append(routes, rootRoute{method: "POST", path: "/api/v1/oauth/requests/{id}/decision", pattern: "/api/v1/oauth/requests/{id}/decision", origin: true})
@@ -2751,7 +2752,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	for _, path := range []string{
 		"/api/v1/me", "/api/v1/auth/logout", "/api/v1/me/tokens", "/api/v1/me/tokens/{tokenId}",
 		"/api/v1/auth/device/inspect", "/api/v1/auth/device/decision", "/api/v1/auth/device/logout",
-		"/api/v1/oauth/grants", "/api/v1/oauth/grants/{id}/revoke",
+		"/api/v1/oauth/grants", "/api/v2/oauth/grants", "/api/v1/oauth/grants/{id}/revoke",
 		"/api/v1/projects", p, p + "/deletion-preview", p + "/access", p + "/transfer-preview", p + "/transfer", p + "/settings",
 		p + "/members", p + "/members/{userId}", p + "/grants/{userId}", p + "/invitations", p + "/invitations/{inviteId}",
 		"/api/v1/invitations/inspect", "/api/v1/invitations/accept",
@@ -2816,7 +2817,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			continue
 		}
 		head := rootRoute{method: "HEAD", path: route.path, pattern: route.pattern}
-		explicit := route.path == "/api/v1/oauth/grants" ||
+		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" ||
 			route.path == worker+"/monitoring" || route.path == worker+"/readonly/channel" ||
 			route.path == "/api/v1/session-capabilities" || route.path == "/api/v1/test-session-capabilities" ||
 			route.path == "/api/v1/test-sessions" || route.path == testSession ||

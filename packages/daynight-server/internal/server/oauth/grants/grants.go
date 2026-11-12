@@ -33,6 +33,9 @@ type routes struct {
 func RegisterRoutes(mux *http.ServeMux, grants lifecycle, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &routes{grants: grants, auth: auth, logger: logger}
 	mux.HandleFunc("GET /api/v1/oauth/grants", h.session(h.list))
+	mux.HandleFunc("GET /api/v2/oauth/grants", h.session(h.listV2))
+	mux.HandleFunc("HEAD /api/v2/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
+	mux.HandleFunc("/api/v2/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
 	mux.HandleFunc("POST /api/v1/oauth/grants/{id}/revoke", h.session(h.revoke))
 	mux.HandleFunc("HEAD /api/v1/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
 	mux.HandleFunc("/api/v1/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
@@ -62,7 +65,20 @@ type grantView struct {
 	Status     string     `json:"status"`
 }
 
+type grantViewV2 struct {
+	grantView
+	LastUsedAt *time.Time `json:"lastUsedAt"`
+}
+
 func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	h.listVersion(w, r, p, false)
+}
+
+func (h *routes) listV2(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	h.listVersion(w, r, p, true)
+}
+
+func (h *routes) listVersion(w http.ResponseWriter, r *http.Request, p model.Principal, v2 bool) {
 	if r.URL.RawQuery != "" {
 		httpx.WriteError(w, r, h.logger, "oauth_grants", "list", httpx.InvalidInput("Query parameters are not supported."))
 		return
@@ -73,6 +89,7 @@ func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal)
 		return
 	}
 	views := make([]grantView, 0, len(items))
+	viewsV2 := make([]grantViewV2, 0, len(items))
 	for _, item := range items {
 		var client core.ValidatedClient
 		if err := json.Unmarshal(item.ClientSnapshot, &client); err != nil || client.ClientID != item.ClientID {
@@ -90,7 +107,24 @@ func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal)
 			stamp := item.RevokedAt.UTC()
 			revokedAt = &stamp
 		}
-		views = append(views, grantView{ID: item.ID, ClientName: client.ClientName, ClientID: item.ClientID, Resource: item.Resource, Scope: item.Scope, CreatedAt: item.CreatedAt.UTC(), ExpiresAt: item.ExpiresAt.UTC(), RevokedAt: revokedAt, Status: status})
+		view := grantView{ID: item.ID, ClientName: client.ClientName, ClientID: item.ClientID, Resource: item.Resource, Scope: item.Scope, CreatedAt: item.CreatedAt.UTC(), ExpiresAt: item.ExpiresAt.UTC(), RevokedAt: revokedAt, Status: status}
+		if v2 {
+			var usedAt *time.Time
+			if item.LastUsedAt != nil {
+				stamp := item.LastUsedAt.UTC()
+				usedAt = &stamp
+			}
+			viewsV2 = append(viewsV2, grantViewV2{grantView: view, LastUsedAt: usedAt})
+		} else {
+			views = append(views, view)
+		}
+	}
+	if v2 {
+		httpx.WriteJSON(w, r, h.logger, http.StatusOK, struct {
+			UserID string        `json:"userId"`
+			Grants []grantViewV2 `json:"grants"`
+		}{p.UserID, viewsV2})
+		return
 	}
 	httpx.WriteJSON(w, r, h.logger, http.StatusOK, struct {
 		UserID string      `json:"userId"`

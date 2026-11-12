@@ -261,7 +261,9 @@ __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain
 的可空到期由独立领域记录表达，Principal 仍区分 session/PAT。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
 1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI (<hostname>)` 凭据。
-明文只交付一次，列表返回 ID、名称、创建时间与必填的 nullable expiresAt。
+明文只交付一次。列表、创建与期限修改的元数据均返回 ID、名称、创建时间及必填的可空
+`expiresAt`、`lastUsedAt`；创建时 `lastUsedAt` 为 null。设备领取仍只返回
+`{access_token,token_type}`，通过账户列表读取其 PAT 元数据。
 会话可修改或撤销自己的有效 PAT，CLI 可撤销当前 Bearer 自身，均不影响其他凭据。
 
 POST `/api/v1/me/tokens` 严格接受 `{name,expiresAt:null|UTCtimestamp}`，expiresAt 必填，
@@ -283,8 +285,12 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 账户页通过 `GET /api/v1/oauth/grants` 读取当前会话账户的无秘密授权元数据。响应包含 `userId` 和
 `grants`，每项包含 `id`、`clientName`、`clientId`、`resource`、`scope`、`createdAt`、`expiresAt`、
 可空 `revokedAt` 和 `status`（`active`、`expired` 或 `revoked`）；撤销状态优先于过期状态。
+`GET /api/v2/oauth/grants` 使用相同 envelope 和这九个字段，并增加必须存在的可空 `lastUsedAt`。
+两版复用 `ListSessionGrants`、客户端快照解析和状态判断，再分别显式投影；v1 保持精确原表示。
+两版均只接受主站 Session，响应带 `Cache-Control: no-store` 和 `Daynight-User-ID`，拒绝 query、
+HEAD 和其他方法。认证 callback 配置保留 `/api/v2/oauth` 及其后代路径。
 `POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
-重复撤销不改变 family。两个端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
+重复撤销不改变 family。列表和撤销端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
 不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
 服务在同一事务中复核 Session，撤销按 grant、Session、access 锁序执行并在等待后重新检查到期。
 网页核对响应主体并独立维护授权列表与 PAT 状态。提交前按账户在 `sessionStorage` 保存无秘密的 grant ID；
@@ -309,7 +315,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 
 PAT 和 OAuth grant 各自持有可空 `last_used_at timestamptz`，表示已记录的真实合格事件时间。
 新建和升级数据均初始为 NULL，不设置默认值或回填历史。领域元数据的 `LastUsedAt` 对应此列；
-现有列表和 PAT 期限修改读取它，但现有 HTTP DTO 显式投影原表示，不公开新字段。存储能力不自行推断事件。
+PAT 元数据和 OAuth v2 列表显式投影该字段，OAuth v1 列表保留原表示。存储能力不自行推断事件。
 
 共享事件以 kind、user ID、PAT ID 或 grant ID 和真实 UTC 微秒时间标识；OAuth 使用 grant ID，
 不使用 access token 或 client ID。窄 writer 接受非空、最多 128 个、按 kind/user ID/subject ID
@@ -324,6 +330,16 @@ UPDATE，因为前台可能按相反顺序持有凭据共享锁。独立事务�
 writer 返回不证明 pgx 内部异步连接销毁结束，`persistence.Close` 负责等待连接池关闭。
 [持久化决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-persistence.md)
 记录取舍和范围。
+
+### 协议发布与恢复
+
+先部署包含迁移、记录 producer 和 PAT 必填字段及 OAuth v2 列表的 backend，再将采用这些字段的
+Web 投入流量。Web 随 server 从同一源码构建并嵌入；新 Web 投入流量前退出旧 backend，避免新
+bundle 请求不支持 v2 的实例。旧页面仍可通过 v1 读取新 backend。新客户端上线后，应用回滚的
+最低恢复 artifact 必须保留 PAT 必填字段、OAuth v2 列表及正确读回能力，或使用前向修复；仅保留
+数据库新增列不足以使旧 binary 安全。若退出新协议，须先真实退役采用它的客户端；当前没有自动
+退役保证。数据库回滚保留新增可空列及已记录值，不做破坏性降级。
+[协议决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-http.md)记录版本取舍。
 
 ### 真实凭据使用事件
 

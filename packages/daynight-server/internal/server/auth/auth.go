@@ -166,7 +166,7 @@ func userResponse(user model.User) api.User {
 	return profileprotocol.UserResponse(user)
 }
 func tokenResponse(c model.PersonalAccessToken) api.PersonalAccessToken {
-	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}
+	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt), LastUsedAt: utcTokenExpiry(c.LastUsedAt)}
 }
 
 func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p model.Principal) {

@@ -26,7 +26,8 @@ owns the store contract and cleanup boundary.
 The grant remains the owner of its use time across access and refresh token
 rotation, complementing the [credential family decision](2026-11-06-mcp-oauth-credentials.md)
 and its lifecycle and retention rules. This persistence capability does not
-itself generate events or expose the field in existing HTTP representations.
+itself generate events. The [HTTP projection decision](2026-11-12-credential-usage-http.md) exposes the
+recorded value while preserving the original OAuth v1 representation.
 
 ## Alternatives
 
@@ -53,5 +54,5 @@ recorded, not that the credential was never used. The writer completion result
 does not prove that pgx has finished asynchronously destroying a failed
 connection; persistence closure owns that resource. The separate
 [sampling decision](2026-11-12-credential-usage-sampling.md) owns bounded in-memory
-selection; event production, background execution and public presentation remain
+selection; event production, background execution and public presentation are
 separate capabilities.
