@@ -17,9 +17,15 @@ export const focusVisible = (element: HTMLElement | null | undefined): boolean =
 export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | null, witness: string | null, index: GraphIndex | null): boolean => {
   if (origin?.view === view && focusVisible(origin.trigger)) return true;
   const list = document.getElementById(view === 'chains' ? 'project-chain-list' : view === 'goals' ? 'project-goal-list' : 'project-standalone-list');
-  if (list !== null && origin?.view === view && origin.sourceGoalId !== null) {
-    const goal = [...list.querySelectorAll<HTMLElement>('[data-goal-id]')].find((item) => item.dataset.goalId === origin.sourceGoalId);
-    if (focusVisible(goal?.querySelector<HTMLElement>('.goal-toggle'))) return true;
+  const sourceGoalId = origin?.view === view ? origin.sourceGoalId : view === 'goals' && witness !== null ? index?.nodes.get(witness)?.parentId : null;
+  if (view === 'goals' && list !== null && sourceGoalId != null) {
+    const goal = [...list.querySelectorAll<HTMLElement>('[data-goal-id]')].find((item) => item.dataset.goalId === sourceGoalId);
+    if (focusVisible(goal?.querySelector<HTMLElement>('.goal-list-toggle'))) return true;
+  }
+  if (view === 'goals' && list !== null && witness !== null) {
+    const representative = index?.componentByTask.get(witness);
+    const chains = [...list.querySelectorAll<HTMLElement>('[data-chain-id]')].filter((item) => item.dataset.chainId === representative);
+    if (chains.some((chain) => focusVisible(chain.querySelector<HTMLElement>('.root-toggle')))) return true;
   }
   if (view === 'chains' && list !== null) {
     const representative = witness === null ? undefined : index?.componentByTask.get(witness);

@@ -1613,14 +1613,24 @@ graph action can wrap on narrow screens. Desktop header titles stay 13px and
 narrow-screen titles 12px. Child tasks use compact rows with visible individual
 status.
 
-Each mounted Goal row owns an initially collapsed disclosure state, separate
-from graph opening. Several lists can be expanded at once. Same-row refreshes
+Each mounted ordinary chain representative row owns an initially collapsed disclosure
+state, separate from graph opening. Several lists can be expanded at once. Same-row refreshes
 and detail/graph round trips preserve that choice while updating current
 members. Inactive inner categories unmount their rows, and filtering or
 representative replacement can also remove a row; remounting starts collapsed.
 Outer Overview switching retains the visited task subtree and its disclosure
 choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
+
+The typed Goal category also expands each Goal in place. Its independent title
+opens Goal details, while the disclosure shows all direct standalone tasks and
+scoped chains. Classification uses the complete ordinary graph before selecting
+the Goal, so a scoped single member of a larger component remains a chain.
+Goal and chain disclosures start closed; closing a Goal preserves its chain
+choices until that row unmounts. Scoped progress counts only its own members,
+including separate done and cancelled results. List filters and 20-item pagination
+apply to Goals themselves, not their children. Graph and Task readers preserve
+the original Goal source, background list state and focus fallback.
 
 In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`

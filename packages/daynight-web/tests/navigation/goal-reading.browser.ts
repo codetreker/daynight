@@ -41,6 +41,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   let failedGoalReads = 0;
   let rejectGoalWrites = false;
   let releaseEdit: (() => void) | null = null;
+  let failNextSync = false;
+  let holdNextSync = false;
+  let releaseSync: (() => void) | null = null;
+  let heldSyncFinished = false;
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
@@ -53,7 +57,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path === `/api/v1/projects/${projectId}/task-assignees` && failPeople) return send({ error: { code: 'unavailable', message: 'Assignee service unavailable', requestId: 'people-error' } }, 503);
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) {
+      if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
+      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties });
+      if (holdNextSync) {
+        holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
+        try { await send(response); } finally { heldSyncFinished = true; }
+        return;
+      }
+      return send(response);
+    }
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status` && route.request().method() === 'PUT') {
       if (rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-2' } }, 403);
       const request = route.request().postDataJSON() as { status: 'todo' | 'in_progress' | 'done' | 'cancelled'; version: number };
@@ -98,7 +111,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+  return { emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
+    details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
+    currentGraph = graphFixture(details);
+  }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
     details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
     currentGraph = graphFixture(details);
   }, addActiveChain: () => {
@@ -127,6 +143,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     currentGraph = graphFixture(details);
   }, moveOtherTask: () => {
     details = details.map(item => item.id === otherTaskId ? { ...item, parentId: null, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
+    currentGraph = graphFixture(details);
+  }, addLongGoalListWorker: () => {
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = details.map(item => item.id === firstId ? { ...item, assignedTo: TEST_VIEWER_ID, status: 'in_progress', startedAt: time, ready: false, properties: { worker } } : item);
+    currentGraph = graphFixture(details);
+  }, addGoalExternalChain: () => {
+    const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', dependsOn: [singleId], externalDependsOn: [singleId] });
+    const outsideChild = detailFixture(projectId, otherTaskId, { title: 'Outside child', dependsOn: [outsideId] });
+    const singleton = detailFixture(projectId, singleId, { title: 'Outside singleton' });
+    details = [goal, first, { ...second, dependsOn: [firstId, outsideId], externalDependsOn: [outsideId] }, outside, outsideChild, singleton];
     currentGraph = graphFixture(details);
   }, addOutsideChain: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain' });
@@ -1417,4 +1443,154 @@ test('account refresh notice keeps the shared form header and close accessible',
   expect(positions.noticeTop).toBeGreaterThanOrEqual(Math.max(positions.titleBottom, positions.closeBottom)); expect(positions.noticeRight).toBeLessThanOrEqual(positions.boundsRight);
   await expectHit(dialog.locator('.close-button')); await expectHit(notice.getByRole('button', { name: 'Refresh page' }));
   await expect(dialog.locator('.language-selector')).toHaveCount(0);
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  fixture.addCrossGoal(); fixture.setGoalTitle('LongGoal名称'.repeat(20)); fixture.addLongGoalListWorker();
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const firstGoal = page.locator(`[data-goal-id="${goalId}"]`);
+  const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  const firstToggle = firstGoal.locator('.goal-list-toggle');
+  const otherToggle = otherGoal.locator('.goal-list-toggle');
+  await expect(firstToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(otherToggle).toHaveAttribute('aria-expanded', 'false');
+  await firstToggle.focus(); await page.keyboard.press('Space');
+  await otherToggle.focus(); await page.keyboard.press('Enter');
+  const firstChain = firstGoal.locator('.goal-row');
+  const otherChain = otherGoal.locator('.goal-row');
+  await expect(firstChain).toHaveCount(1); await expect(otherChain).toHaveCount(1);
+  await expect(firstGoal.getByText('Standalone task', { exact: true })).toBeVisible();
+  const firstChainToggle = firstChain.locator('.goal-toggle');
+  const otherChainToggle = otherChain.locator('.goal-toggle');
+  await expect(firstChainToggle).toHaveAttribute('aria-expanded', 'false');
+  await firstChainToggle.focus(); await page.keyboard.press('Enter');
+  await otherChainToggle.focus(); await page.keyboard.press('Space');
+  await expect(firstGoal.getByText('First task', { exact: true }).last()).toBeVisible();
+  await expect(otherGoal.getByText('Other task', { exact: true })).toBeVisible();
+  await expect(otherGoal.locator(`[data-goal-task-id="${firstId}"]`)).toHaveCount(0);
+  const ids = await page.locator('[id]').evaluateAll(elements => elements.map(element => element.id));
+  expect(new Set(ids).size).toBe(ids.length);
+  await firstToggle.focus(); await page.keyboard.press('Space');
+  await expect(firstChain).toHaveCount(0);
+  await page.keyboard.press('Space');
+  await expect(firstGoal.locator('.goal-toggle')).toHaveAttribute('aria-expanded', 'true');
+  const graphButton = firstGoal.locator('.goal-graph-button');
+  await graphButton.focus(); await page.keyboard.press('Enter');
+  const graphDialog = page.locator('.task-chain-dialog');
+  await expect(graphDialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(graphDialog).toHaveCount(0);
+  await expect(graphButton).toBeFocused();
+  await firstGoal.locator(`#project-goal-${goalId}`).focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('.goal-detail-surface')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(firstGoal.locator('.goal-toggle')).toHaveAttribute('aria-expanded', 'true');
+  const overflow = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: window.innerWidth, scrollX: window.scrollX, elements: [...document.querySelectorAll("body *")].map(element => ({ tag: element.tagName, className: element.className, right: element.getBoundingClientRect().right + window.scrollX })).filter(element => element.right > window.innerWidth + 1).slice(0, 30) }));
+  expect(overflow, JSON.stringify(overflow)).toMatchObject({ width: width, viewport: width });
+  await page.screenshot({ path: testInfo.outputPath('goal-list.png') });
+  await page.reload();
+  await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
+  expect(errors).toEqual([]);
+});
+
+test('Goal list graph navigation and history retain the source and scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const fixture = await install(page); fixture.addGoalExternalChain();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
+  const goalToggle = goalRow.locator('.goal-list-toggle'); await goalToggle.click();
+  const chainToggle = goalRow.locator('.goal-toggle'); await chainToggle.click();
+  const open = goalRow.locator('.goal-graph-button'); await open.scrollIntoViewIfNeeded();
+  const scroll = await page.evaluate(() => window.scrollY);
+  await open.click();
+  let graphDialog = page.locator('.task-chain-dialog');
+  await expect(graphDialog).toBeVisible();
+  await graphDialog.locator(`[data-id="${outsideId}"] .task-node-navigate`).click();
+  await expect(graphDialog.locator(`[data-id="${otherTaskId}"]`)).toBeVisible();
+  await graphDialog.locator(`[data-id="${singleId}"] .task-node-navigate`).click();
+  await expect(graphDialog).toHaveCount(0);
+  const detail = page.getByRole('dialog', { name: 'Outside singleton', exact: true });
+  await expect(detail).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0); await expect(open).toBeFocused();
+  await expect(goalToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
+  expect(await page.evaluate(() => window.scrollY)).toBe(scroll);
+  await open.click(); await expect(graphDialog).toBeVisible();
+  await page.goBack(); await expect(graphDialog).toHaveCount(0);
+  await page.goForward(); await expect(graphDialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(goalToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('Goal list graph restores visible focus when its source Goal is filtered out', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.getByRole('combobox', { name: 'Status' }).selectOption('todo');
+  const source = page.locator(`[data-goal-id="${goalId}"]`);
+  await source.locator('.goal-list-toggle').click();
+  await source.locator('.goal-graph-button').click();
+  const dialog = page.locator('.task-chain-dialog'); await expect(dialog).toBeVisible();
+  fixture.finishGoal();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(source).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('#project-goal-list')).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'Status' })).toHaveValue('todo');
+  await expect(page.locator(`[data-goal-id="${otherGoalId}"]`)).toBeVisible();
+});
+
+test('Goal list distinguishes loading failure from empty and retains expanded rows through failed refresh and retry', async ({ page }) => {
+  const fixture = await install(page); fixture.failNextSync();
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByRole('heading', { name: 'Project could not be loaded' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = goalRow.locator('.goal-list-toggle'); await toggle.click();
+  const chain = goalRow.locator('.goal-toggle'); await chain.click();
+  fixture.failNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Refresh failed' })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(chain).toHaveAttribute('aria-expanded', 'true');
+  await expect(goalRow.getByText('Second task', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry refresh' }).click();
+  await expect(page.getByRole('heading', { name: 'Refresh failed' })).toHaveCount(0);
+  await expect(chain).toHaveAttribute('aria-expanded', 'true');
+  await expect(goalRow.getByText('Second task', { exact: true })).toBeVisible();
+});
+
+test('Goal list retires an old epoch and rejects its late background result', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const row = page.locator(`[data-goal-id="${goalId}"]`);
+  await row.locator('.goal-list-toggle').click();
+  fixture.holdNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect.poll(fixture.syncHeld).toBe(true);
+  fixture.advanceEpoch(); fixture.setGoalTitle('Replacement Goal');
+  await row.locator(`#project-goal-${goalId}`).click();
+  await expect.poll(fixture.goalReads).toBeGreaterThan(0);
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
+  fixture.releaseSync();
+  await expect.poll(fixture.heldSyncFinished).toBe(true);
+  await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
+  await expect(page.getByText('Goal reading', { exact: true })).toHaveCount(0);
 });

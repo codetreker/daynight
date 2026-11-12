@@ -183,13 +183,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
   if (openChainWitness !== null) lastGraphWitness.current = openChainWitness;
   const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
-  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
+  const openChainId = section === "tasks" && (activeView === "chains" || activeView === "goals") && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
   openChain.current = openChainId;
   useLayoutEffect(() => {
     if (openChainWitness === null || snapshot === null || openChainId !== null) return;
     history.select({ ...selection, projectGraphWitness: null }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
-    else if (activeView !== "chains") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
+    else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
   }, [openChainWitness, openChainId, section, activeView, snapshot, selection, history.select]);
   const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, projectGraphWitness: id }, false, () => {
@@ -311,7 +311,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
-    if (task.parentId === null && detailSelection === null && activeView === "chains" && openChainId !== null) {
+    if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openChainId !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
         history.select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
@@ -513,7 +513,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination }} />}
+              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination,
+                summaries: snapshot.summaries, openChainId, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask,
+                onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
           </section>
         </div>

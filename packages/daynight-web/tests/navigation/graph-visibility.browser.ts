@@ -62,6 +62,8 @@ test('bounded graph expansion preserves focus and resets the visible set and vie
 });
 
 test('expanded graph survives failed refresh and content updates without stealing detail focus', async ({ page }) => {
+  // Keep the periodic refresh from racing this explicit failure and retry.
+  await page.addInitScript(() => Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 300_000 }));
   const state = await install(page); await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click(); await page.locator(`#task-chain-graph-${rootId}`).click();
   const join = page.locator(`.react-flow__node[data-id="${joinId}"]`), body = join.locator('.task-node-body');

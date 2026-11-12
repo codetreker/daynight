@@ -21,7 +21,7 @@ to remain accessible.
 
 ProjectPage owns an active actual-task `openChainWitness` for the graph resource.
 It resolves that task through the complete `componentByTask` index and requires
-a multi-member ordinary component while Task list / Task chains is active.
+a multi-member ordinary component while Task list / Task chains or Goal is active.
 Filtered and off-page components remain valid graph resources. A missing task or
 single-member component closes the graph; leaving the corresponding view clears
 its opening state. Representative changes preserve a still-valid actual-task
@@ -44,13 +44,13 @@ and performs the existing scroll, focus and highlight operation.
 
 ProjectPage owns the runtime `ProjectListOrigin` separately from the active
 graph witness. It records the source view, nullable source Goal ID, original
-list-task witness and trigger; current list entries pass a null source Goal ID.
+list-task witness and trigger; Goal entries pass their actual source Goal ID, while other entries pass null.
 The origin remains bound to the initial opening across external graph hops and
 when a standalone destination replaces the graph with task details. Closing the
 last reader focuses the connected, visible original trigger with `preventScroll`.
-If it has disappeared, the original list witness resolves to its latest
-representative on the current visible page; fallback then uses the first visible
-chain disclosure, list region and active category tab. A detail above the graph
+If it has disappeared, a visible source Goal disclosure takes priority; the
+original list witness can then resolve to a visible chain, followed by the list
+region and active category tab. A detail above the graph
 first returns focus to a valid graph entry or its close button. ProjectPage
 coordinates both restorations after overlay cleanup; the origin is neither
 history nor cache data. A history entry without a runtime opener uses visible

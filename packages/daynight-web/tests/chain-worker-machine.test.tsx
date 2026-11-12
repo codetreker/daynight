@@ -27,7 +27,7 @@ beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID,
 afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ProjectTaskWorkspace pausedTaskCount={0} sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
-  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
+  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
