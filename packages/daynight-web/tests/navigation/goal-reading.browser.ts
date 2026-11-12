@@ -472,7 +472,8 @@ test('Goal write errors identify refusals without exposing internal diagnostics'
   await page.getByRole('tab', { name: /^Goal/ }).click();
   await page.locator(`#project-goal-${goalId}`).click();
   const dialog = page.getByRole('dialog', { name: 'Goal reading' });
-  await dialog.getByRole('combobox', { name: 'Goal status' }).selectOption('in_progress');
+  await dialog.locator('.task-status-trigger').click();
+  await dialog.getByRole('menuitemradio', { name: 'In progress' }).click();
   await expect(dialog.locator('p[role=alert]').filter({ hasText: 'goal-write-2' })).toContainText('You do not have permission');
   await dialog.getByRole('button', { name: /^Assignee:/ }).click();
   await dialog.locator('.assignee-menu').getByRole('option', { name: /Long owner name/ }).click();
@@ -605,34 +606,80 @@ for (const width of [1440, 390]) test(`Goal status confirmations preserve childr
   await page.getByRole('tab', { name: /^Goal/ }).click();
   await page.locator(`#project-goal-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
-  const status = goalDialog.getByRole('combobox', { name: 'Goal status' });
-  await status.selectOption('done');
+  const status = goalDialog.locator('.task-status-trigger');
+  const selectStatus = async (label: string) => {
+    await status.click();
+    await goalDialog.getByRole('menuitemradio', { name: label, exact: true }).click();
+  };
+  await selectStatus('Done');
   const confirmation = page.getByRole('alertdialog', { name: 'Complete this Goal?' });
   await expect(confirmation).toContainText('Task statuses remain unchanged');
   await confirmation.getByRole('button', { name: 'Back' }).click();
   expect(fixture.statusWrites()).toHaveLength(0);
-  await expect(status).toHaveValue('todo');
-  await status.selectOption('done');
+  await expect(status).toHaveText('To do');
+  await selectStatus('Done');
   await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect.poll(() => fixture.statusWrites().length).toBe(1);
-  await expect(status).toHaveValue('done');
+  await expect(status).toHaveText('Done');
   await expect(goalDialog.getByRole('button', { name: 'New Task' })).toBeEnabled();
-  await status.selectOption('todo');
+  await selectStatus('To do');
   await expect.poll(() => fixture.statusWrites().length).toBe(2);
-  await expect(status).toHaveValue('todo');
-  await status.selectOption('cancelled');
+  await expect(status).toHaveText('To do');
+  await selectStatus('Cancelled');
   await page.getByRole('alertdialog', { name: 'Cancel this Goal?' }).getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect.poll(() => fixture.statusWrites().length).toBe(3);
-  await expect(status).toHaveValue('cancelled');
-  await status.selectOption('in_progress');
+  await expect(status).toHaveText('Cancelled');
+  await selectStatus('In progress');
   await expect.poll(() => fixture.statusWrites().length).toBe(4);
-  await expect(status).toHaveValue('in_progress');
+  await expect(status).toHaveText('In progress');
   expect(fixture.statusWrites()).toEqual([{ status: 'done', version: 1 }, { status: 'todo', version: 2 }, { status: 'cancelled', version: 3 }, { status: 'in_progress', version: 4 }]);
   await goalDialog.getByRole('button', { name: 'Delete Goal' }).click();
   const deletion = page.getByRole('alertdialog', { name: 'Delete this Goal?' });
   await expect(deletion).toContainText('Their Parent remains');
   await deletion.getByRole('button', { name: 'Back' }).click();
   await expect(goalDialog).toBeVisible();
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal status menu fits the detail page and fullscreen at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  const zh = locale === 'zh-CN';
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  const status = surface.locator('.task-status-trigger');
+  const check = async () => {
+    await expect(status).toHaveText(zh ? '待处理' : 'To do');
+    await expect(surface.locator('.goal-detail-meta select')).toHaveCount(0);
+    const controls = surface.locator('.task-detail-status-assignee');
+    await expect(controls.locator('.task-assignee-field')).toBeVisible();
+    expect(await controls.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      const parts = [...element.children].map(child => child.getBoundingClientRect());
+      return element.scrollWidth <= element.clientWidth && parts.every(rect => rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1)
+        && Math.abs(parts[0]!.top - parts[1]!.top) < 2;
+    })).toBe(true);
+    await status.focus();
+    await page.keyboard.press('Enter');
+    const menu = surface.getByRole('menu');
+    const options = menu.getByRole('menuitemradio');
+    await expect(options).toHaveCount(4);
+    const names = zh ? ['待处理', '进行中', '已完成', '已取消'] : ['To do', 'In progress', 'Done', 'Cancelled'];
+    for (const name of names) await expect(menu.getByRole('menuitemradio', { name, exact: true })).toBeVisible();
+    await expect(options.first()).toHaveAttribute('aria-checked', 'true');
+    expect(await menu.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.left >= 0 && rect.right <= window.innerWidth && rect.top >= 0 && rect.bottom <= window.innerHeight;
+    })).toBe(true);
+    await page.keyboard.press('End');
+    await expect(options.last()).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(status).toBeFocused();
+    expect(fixture.statusWrites()).toHaveLength(0);
+  };
+  await check();
+  await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await check();
 });
 
 for (const width of [1366, 390, 320]) test(`active chain indicator remains usable at ${width}px`, async ({ page }) => {
