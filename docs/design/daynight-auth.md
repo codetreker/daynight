@@ -305,6 +305,27 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 同源预览使用同一 Cookie 和授权规则，没有第二种浏览器凭据。
 
+### 凭据使用时间的持久化
+
+PAT 和 OAuth grant 各自持有可空 `last_used_at timestamptz`，表示已记录的真实合格事件时间。
+新建和升级数据均初始为 NULL，不设置默认值或回填历史。领域元数据的 `LastUsedAt` 对应此列；
+现有列表和 PAT 期限修改读取它，但现有 HTTP DTO 显式投影原表示，不公开新字段。认证和续期入口
+尚不产生或提交使用事件；存储能力不自行推断事件。
+
+共享事件以 kind、user ID、PAT ID 或 grant ID 和真实 UTC 微秒时间标识；OAuth 使用 grant ID，
+不使用 access token 或 client ID。窄 writer 接受非空、最多 128 个、按 kind/user ID/subject ID
+排序且 key 唯一的事件，在独立 READ COMMITTED 事务中先以相同顺序对存在且属于指定用户的行执行
+`SELECT ... FOR UPDATE NOWAIT`，排空锁阶段后再对实际锁到的行批量条件更新。只有当前值为 NULL
+或小于事件时间才修改；缺失对象或不匹配的 owner 跳过，不插入或恢复对象。即使 grant 已撤销或
+到期，仍存在的行也可接纳此前发生的事件。使用时间不参与期限 CAS 或列表排序。
+
+`NOWAIT` 在行锁竞争时以 `55P03` 结束并回滚整个元数据批，保留原错误链；不能改为先执行等待的
+UPDATE，因为前台可能按相反顺序持有凭据共享锁。独立事务避免元数据失败改变认证或续期事务结果；
+普通池获取、网络及提交仍可能等待或失败。事务沿用现有 Completion 分类和独立五秒 rollback cleanup；
+writer 返回不证明 pgx 内部异步连接销毁结束，`persistence.Close` 负责等待连接池关闭。
+[持久化决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-persistence.md)
+记录取舍和范围。
+
 ## 数据与并发
 
 | 表 | 关键字段与约束 |
@@ -312,7 +333,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
 | sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
-| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
+| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at 与 last_used_at；expires_at 为 null 表示永不过期，last_used_at 为 null 表示无已记录使用，撤销删除。 |
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
 | teams | UUID；唯一 nullable personal_user_id；Personal 的 name 为 null，普通 Team 的 name 非 null；正 version 与时间。 |

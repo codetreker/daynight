@@ -1,4 +1,4 @@
--- Schema snapshot version: 65
+-- Schema snapshot version: 66
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -197,6 +197,7 @@ CREATE TABLE "oauth_grants" (
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
     "revoked_at" timestamp with time zone,
+    "last_used_at" timestamp with time zone,
     CONSTRAINT "oauth_grants_check" CHECK ((("expires_at" > "created_at") AND ("expires_at" <= ("created_at" + '720:00:00'::interval)))),
     CONSTRAINT "oauth_grants_client_id_check" CHECK (("length"("client_id") > 0)),
     CONSTRAINT "oauth_grants_resource_check" CHECK (("length"("resource") > 0)),
@@ -223,6 +224,7 @@ CREATE TABLE "personal_access_tokens" (
     "name" "text" NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone,
+    "last_used_at" timestamp with time zone,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
