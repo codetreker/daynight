@@ -111,7 +111,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
 `tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|attachments|steps|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
+默认为附件；显式 `tab=overview|description|attachments|steps|discussion|session` 进入共享导航准入。Goal 的 `description` 选择描述页签，`overview` 仍选择默认 Task 页签；普通 Task 只接受自身支持的页签，`description` 回退概览。Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。

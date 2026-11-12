@@ -507,7 +507,7 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 独立附件入口是完整任务详情的一种初始状态。
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` 与基础任务路径由同一
 `TaskDetailPage` 展示 `TaskDetailSurface`，附件路径默认激活附件并选中文件；显式
-`tab=overview|attachments` 可选择页签。完整详情的共享主体、任务/页签/文件 URL、
+页签选择遵守完整详情的导航准入。完整详情的共享主体、任务/页签/文件 URL、
 浏览器历史及项目图刷新由[独立详情设计](daynight-task-inspection.md#独立完整任务详情)
 拥有。附件预览的真实新标签链接仍使用 `attachmentPageUrl`，进入完整详情并定位
 当前文件，不传递来源窗口的数据或状态。

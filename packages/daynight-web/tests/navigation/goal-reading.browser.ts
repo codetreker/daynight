@@ -88,11 +88,12 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path.endsWith('/attachments')) return send({ items: [{ path: 'notes.txt', contentType: 'text/plain', sizeBytes: 5, createdAt: time, updatedAt: time }], nextCursor: null });
     if (path.endsWith('/attachments/files/notes.txt')) return route.fulfill({ body: 'notes', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/preview/image.png`) return route.fulfill({ body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aN8AAAAASUVORK5CYII=', 'base64'), headers: { 'Content-Type': 'image/png', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path.endsWith('/steps')) { const taskId = path.split('/').at(-2)!; return send({ projectId, taskId, version: details.find(item => item.id === taskId)!.version, steps: [] }); }
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+  return { setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
     details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
     currentGraph = graphFixture(details);
   }, addActiveChain: () => {
@@ -131,6 +132,119 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     currentGraph = graphFixture(details);
   } };
 }
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal description navigation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 800 });
+  await install(page, locale);
+  const zh = locale === 'zh-CN';
+  const names = zh ? ['描述', 'Task', '附件', '讨论'] : ['Description', 'Tasks', 'Attachments', 'Discussion'];
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  const tabs = surface.getByRole('tab');
+  await expect(tabs).toHaveText(names);
+  const descriptionTab = tabs.nth(0), tasksTab = tabs.nth(1), discussionTab = tabs.nth(3);
+  await expect(tasksTab).toHaveAttribute('aria-selected', 'true');
+  await expect(surface.locator('.goal-detail-overview')).not.toContainText('Paragraph 0 of the goal description.');
+  await tasksTab.focus();
+  await page.keyboard.press('Home');
+  await expect(descriptionTab).toBeFocused();
+  await expect(descriptionTab).toHaveAttribute('aria-selected', 'true');
+  await expect(descriptionTab).toHaveAttribute('tabindex', '0');
+  const panelId = await descriptionTab.getAttribute('aria-controls');
+  const descriptionId = await descriptionTab.getAttribute('id');
+  const panel = surface.locator('.goal-detail-description');
+  await expect(panel).toHaveAttribute('id', panelId!);
+  await expect(panel).toHaveAttribute('aria-labelledby', descriptionId!);
+  await expect(panel).toContainText('Paragraph 0 of the goal description.');
+  expect(await panel.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('goal-description.png') });
+  await panel.evaluate(element => { element.scrollTop = 100; });
+  await page.keyboard.press('ArrowRight');
+  await expect(tasksTab).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(discussionTab).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(descriptionTab).toBeFocused();
+  expect(await panel.evaluate(element => element.scrollTop)).toBe(100);
+  await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await expect(descriptionTab).toHaveAttribute('aria-selected', 'true');
+  expect(await panel.evaluate(element => element.scrollTop)).toBe(100);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('goal-description-fullscreen.png') });
+});
+
+test('Goal description deep link, reload, history, and empty state', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=description`);
+  const surface = page.locator('.goal-detail-surface');
+  const description = surface.getByRole('tab', { name: 'Description', exact: true });
+  const tasks = surface.getByRole('tab', { name: 'Tasks', exact: true });
+  await expect(description).toHaveAttribute('aria-selected', 'true');
+  await expect(surface.locator('.goal-detail-description')).toContainText('Paragraph 0 of the goal description.');
+  await page.reload();
+  await expect(description).toHaveAttribute('aria-selected', 'true');
+  await tasks.click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await page.goBack();
+  await expect(description).toHaveAttribute('aria-selected', 'true');
+  await page.goForward();
+  await expect(tasks).toHaveAttribute('aria-selected', 'true');
+  fixture.setGoalDescription('');
+  await page.reload();
+  await description.click();
+  await expect(surface.locator('.goal-detail-description')).toContainText('No description');
+});
+
+test('Goal description resolves its image and attachment link to the Goal', async ({ page }) => {
+  const fixture = await install(page);
+  fixture.setGoalDescription('![Goal image](image.png)\n\n[Read notes](notes.txt)');
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=description`);
+  const surface = page.locator('.goal-detail-surface');
+  const image = surface.getByRole('img', { name: 'Goal image' });
+  await expect(image).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${goalId}/preview/image.png`);
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  await surface.getByRole('link', { name: 'Read notes' }).click();
+  await expect(surface.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}/attachments/notes\\.txt$`));
+  await expect(surface.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+test('ordinary Task description URL normalizes without trapping browser Back', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.goto(`/projects/${projectId}/tasks/${firstId}?tab=description`);
+  const task = page.locator('.task-detail-page');
+  await expect(task.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(task.getByRole('tab', { name: 'Description', exact: true })).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
+});
+
+test('Goal tabs stay visible during keyboard navigation in a short phone viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=description`);
+  const surface = page.locator('.goal-detail-surface');
+  const tabs = surface.getByRole('tab');
+  const list = surface.getByRole('tablist', { name: 'Goal content' });
+  const visibleInList = async (tab: Locator) => tab.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const viewport = element.parentElement!.getBoundingClientRect();
+    return bounds.left >= viewport.left - 1 && bounds.right <= viewport.right + 1 && bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1;
+  });
+  await expect(list).toBeVisible();
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  expect(await visibleInList(tabs.nth(0))).toBe(true);
+  await tabs.nth(0).focus();
+  await page.keyboard.press('End');
+  await expect(tabs.nth(3)).toBeFocused();
+  expect(await visibleInList(tabs.nth(3))).toBe(true);
+  await page.keyboard.press('Home');
+  await expect(tabs.nth(0)).toBeFocused();
+  expect(await visibleInList(tabs.nth(0))).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
 
 async function retainGoalAttachmentPath(page: Page, goalPage: Locator) {
   await goalPage.getByRole('tab', { name: 'Attachments', exact: true }).click();
@@ -189,7 +303,7 @@ test('Task parent Goal link preserves native modified clicks and protects unsave
   const task = page.locator('.task-detail-page');
   const link = task.getByRole('region', { name: 'Current Goal' }).getByRole('link', { name: 'Goal reading' });
   const popupPromise = context.waitForEvent('page');
-  await link.click({ modifiers: ['Control'] });
+  await link.click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
   const popup = await popupPromise;
   await expect(popup).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await popup.close();
@@ -577,11 +691,12 @@ for (const width of [1440, 390]) test(`Goal retains reading state and nested key
   const goalDialog = page.locator('.goal-detail-surface'); await expect(goalDialog).toBeVisible();
   const chain = goalDialog.locator('.goal-detail-disclosure'); await expect(chain).toHaveAttribute('aria-expanded', 'false'); await chain.click();
   await expect(goalDialog.locator(`[data-goal-task-id="${firstId}"]`)).toBeVisible();
-  const overview = goalDialog.locator('.goal-detail-overview');
-  expect(await overview.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await goalDialog.getByRole('tab', { name: 'Description', exact: true }).click();
+  const description = goalDialog.locator('.goal-detail-description');
+  expect(await description.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await overview.evaluate(element => { element.scrollTop = 100; });
-  expect(await overview.evaluate(element => element.scrollTop)).toBe(100);
+  await description.evaluate(element => { element.scrollTop = 100; });
+  expect(await description.evaluate(element => element.scrollTop)).toBe(100);
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click();
   const draft = goalDialog.locator('.thread-composer textarea'); await draft.fill('A retained draft');
   await goalDialog.getByRole('tab', { name: 'Attachments' }).click();
@@ -589,8 +704,9 @@ for (const width of [1440, 390]) test(`Goal retains reading state and nested key
   await goalDialog.getByRole('button', { name: 'Enter fullscreen' }).click();
   await expect(goalDialog.locator('.attachment-file-selected')).toContainText('notes.txt');
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click(); await expect(draft).toHaveValue('A retained draft');
+  await goalDialog.getByRole('tab', { name: 'Description', exact: true }).click();
+  expect(await description.evaluate(element => element.scrollTop)).toBe(100);
   await goalDialog.getByRole('tab', { name: 'Tasks' }).click(); await expect(chain).toHaveAttribute('aria-expanded', 'true');
-  expect(await overview.evaluate(element => element.scrollTop)).toBe(100);
   const target = goalDialog.locator(`[data-goal-task-id="${firstId}"]`); await target.click();
   const child = page.getByRole('dialog', { name: 'First task', exact: true }); await expect(child).toBeVisible(); await expect(goalDialog).toHaveAttribute('inert', '');
   await page.keyboard.press('Tab'); expect(await child.evaluate(element => element.contains(document.activeElement))).toBe(true);
@@ -941,13 +1057,17 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await graphDialog.getByRole('button', { name: 'Other task, Details' }).click();
   const external = page.getByRole('dialog', { name: 'Other goal' });
   await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
+  await external.getByRole('tab', { name: 'Description', exact: true }).click();
+  await expect(external.locator('.goal-detail-description')).toContainText('No description');
   await external.getByRole('tab', { name: 'Attachments', exact: true }).click();
   await external.getByRole('button', { name: /^notes\.txt/ }).click();
   await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
   await page.goBack(); await expect(external.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack(); await expect(external.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goBack(); await expect(external.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goBack(); await expect(external).toHaveCount(0); await expect(graphDialog).toBeVisible();
   await page.goForward(); await expect(external).toBeVisible(); await expect(graphDialog).toHaveCount(0);
+  await page.goForward(); await expect(external.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
 });

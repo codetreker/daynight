@@ -7,8 +7,8 @@
 .goal-edit-recovery p { margin: 0 0 .5rem; }
 .goal-detail-footer { display: flex; justify-content: flex-end; padding: .75rem 1.25rem; border-top: 1px solid var(--border, #e5e8ee); }
 .goal-detail-content:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-.goal-detail-overview { padding: 1rem 1.25rem; overflow: auto; }
-.goal-detail-overview > .task-description { margin-bottom: 1rem; overflow-wrap: anywhere; }
+.goal-detail-overview, .goal-detail-description { padding: 1rem 1.25rem; overflow: auto; }
+.goal-detail-description > .task-description { overflow-wrap: anywhere; }
 .goal-detail-chain { border: 1px solid var(--border, #e5e8ee); border-radius: 8px; margin-bottom: .75rem; }
 .goal-detail-chain-header { display: flex; align-items: center; gap: .75rem; padding: .6rem .75rem; }
 .goal-detail-disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: .6rem; border: 0; background: transparent; text-align: left; cursor: pointer; color: inherit; }

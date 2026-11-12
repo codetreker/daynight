@@ -2087,8 +2087,14 @@ and explicit exit/return controls remain available.
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
-`tab=overview|attachments|discussion|session` can explicitly select a tab;
-Session falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
+`tab=overview|description|attachments|steps|discussion|session` enters shared
+navigation. A Goal presents Description, Tasks, Attachments and Discussion in that
+order, with `overview` selecting the default Tasks panel. Description uses the
+Goal’s Markdown and attachment owner and shows the existing empty state when
+empty. Description and Tasks scroll independently; the four panels remain mounted
+across tab changes, refreshes and fullscreen transitions. Ordinary Tasks do not
+have a Description tab and fall back to Overview for `tab=description`; Session
+falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
 URL with `?tab=attachments`; a hidden file selection can remain in an attachment
 path with `?tab=overview`. `taskDetailUrl` builds those URLs from
 `TaskDetailNavigation`. The app observes both pathname and search, and login
