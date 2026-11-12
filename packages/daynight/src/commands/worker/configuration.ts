@@ -141,9 +141,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       const changedMode = nativeMode(cache, { kind: "native" }) !== nativeMode(next, { kind: "native" }) && supportsMode(next.authority.desired) && next.authority.desired?.value.agentControlMode != null;
       const nextValidatedNative = new Map(validatedNative);
       if (changedMode) for (const item of allConfigurationItems(next)) if (item.value.key.kind === "projectNative") nextValidatedNative.delete(item.recordId);
+      const previousCurrent = new Map(cache.currentItems.map(item => [keyOf(item.value.key), item]));
       for (const item of next.currentItems) {
+        if (item.value.key.kind !== "native" && item.value.key.kind !== "projectNative") continue;
         if (nextValidatedNative.has(item.recordId)) continue;
-        const sourceId = item.actualSource?.kind === "observed" ? item.actualSource.recordId : findItem(cache, item.value.key)?.recordId;
+        const sourceId = item.actualSource?.kind === "observed" ? item.actualSource.recordId : previousCurrent.get(keyOf(item.value.key))?.recordId;
         const prior = sourceId === undefined ? undefined : validatedNative.get(sourceId);
         if (prior !== undefined && item.nativeMode === prior.mode && equal(item.value.appliedValue, prior.native) && (item.value.key.kind === "native" || equal(proofFor(next, prior.native, prior.mode), prior) && projectMode(next) === prior.mode)) nextValidatedNative.set(item.recordId, prior);
       }

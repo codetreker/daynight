@@ -26,7 +26,9 @@ keeps one path, strict incremental reads and atomic persistence. Schemas 1–4
 upgrade through the original structural rules; normal execution uses schema 5.
 The serialized manager freezes a result before persistence and publishes it only
 after the write succeeds. Runtime native proof belongs to the current process
-and record identity. Original stop jobs keep their own identity; a new stop
+and record identity. Proof propagation examines only native records and indexes
+prior current records once, so a large removal collection does not multiply
+unrelated key scans. Original stop jobs keep their own identity; a new stop
 verification waits for their actual end and checks resources through the original
 adapter before new Project preparation becomes ready.
 
