@@ -45,7 +45,9 @@ describe('project browsing', () => {
     const second = deferred<Response>();
     const fetch = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
+    render(<ProjectsProvider><ProjectsPage eyebrow="设计团队" /></ProjectsProvider>);
+    expect(screen.getByRole('heading', { level: 1, name: '项目' })).toBeVisible();
+    expect(screen.getByText('设计团队', { selector: '.project-list-information .eyebrow' })).toBeVisible();
     expect(screen.getByRole('status').textContent).toContain('正在加载项目');
     expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/projects?limit=50');
     await act(async () => { first.resolve(response(Array.from({ length: 50 }, (_, index) => project(index + 1)), 'next/+ cursor')); });

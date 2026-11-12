@@ -16,7 +16,7 @@ const page = (items: unknown[], nextCursor: string | null) => json({ items, next
 const preference = { detail: { id: personal, status: "ready", team: { id: personal, kind: "personal", name: null } } } as TeamPreference;
 const render = createLocaleRender("en");
 let snapshot: ReturnType<typeof useTeams>["list"];
-const View = () => { const teams = useTeams(); snapshot = teams.list; return <><TeamSelector personalId={personal} selectedId={personal} onNavigate={() => {}} /><button onClick={teams.refreshList}>Refresh list</button></>; };
+const View = () => { const teams = useTeams(); snapshot = teams.list; return <><TeamSelector personalId={personal} selectedId={personal} visibilityTeamId={personal} onNavigate={() => {}} /><button onClick={teams.refreshList}>Refresh list</button></>; };
 const setup = (fetcher: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
   vi.stubGlobal("fetch", vi.fn(fetcher));
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { throw new Error("principal mismatch"); } });

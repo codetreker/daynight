@@ -15,13 +15,11 @@ export type AuthMessages = {
       readonly writeError: string;
       readonly retrySave: string;
     };
-    readonly myProjects: string;
     readonly workers: string;
     readonly worker: string;
     readonly accountSettings: string;
     readonly members: string;
     readonly projectSettings: string;
-    readonly teamWorkspace: string;
     readonly accountMenu: (args: { readonly name: string }) => string;
     readonly currentAccount: string;
     readonly genericProject: string;

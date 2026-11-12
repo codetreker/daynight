@@ -48,7 +48,7 @@ it('renders the shared session after authentication and removes it on sign-out',
   expect(await screen.findByText('Private test conversation')).toBeVisible();
   expect(await screen.findByRole('link', { name: 'Session test project' })).toHaveAttribute('href', '/projects/00000020-1111-4111-8111-111111111111');
   expect(screen.getByRole('link', { name: 'Test Sessions' })).toHaveAttribute('aria-current', 'page');
-  expect(screen.getByRole('link', { name: 'My projects' })).not.toHaveAttribute('aria-current');
+  expect(screen.getByRole('link', { name: 'Projects' })).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Uncertain input' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));

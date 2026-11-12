@@ -37,7 +37,7 @@ const ErrorDetail = ({ error }: { error: unknown }) => {
   );
 };
 
-export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { readonly onCreate?: () => void; readonly title?: string; readonly subtitle?: string; readonly emptyDetail?: string }) => {
+export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail, eyebrow }: { readonly onCreate?: () => void; readonly title?: string; readonly subtitle?: string; readonly emptyDetail?: string; readonly eyebrow?: string }) => {
   const projects = useProjectList();
   const { messages: { workspace: { projects: m, app }, auth: { createProject } }, format } = useI18n();
 
@@ -45,7 +45,7 @@ export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { reado
     <>
       <div className="page-heading project-list-heading">
         <div className="project-list-information">
-          <p className="eyebrow">{app.workspace}</p>
+          <p className="eyebrow">{eyebrow ?? app.workspace}</p>
           <h1 id="page-title" tabIndex={-1}>{title ?? app.projects}</h1>
           <p className="subtitle">{subtitle ?? m.subtitle}</p>
         </div>

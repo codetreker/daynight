@@ -272,8 +272,15 @@ It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` provides a Team selector, the selected Team's project links,
-Shared with me and My Workers in its scrollable upper region. The Team trigger
+`WorkspaceSidebar` groups navigation by the current Team or Personal space, My,
+and Tools in one scrollable region. The current scope contains the Team selector,
+Projects tree and Team settings; My contains Shared with me, My Workers and
+Assistants; Tools contains Webhooks and Test sessions. Webhooks starts at
+`/webhooks?owner=personal` and retains its independent owner selection and catalog
+gate. The selector shows the known Team or Personal space type above its name; an
+unknown type leaves that line empty. Project list headings and document titles use
+Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
+not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
 without shifting navigation or changing the sidebar state. It preserves native
 Team links, keyboard access, pagination and recoverable errors. On a fresh
@@ -305,7 +312,7 @@ mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
 
-The sidebar toggle stays in the footer. Desktop widths are 190px expanded and
+Only the sidebar toggle stays in the footer. Desktop widths are 190px expanded and
 68px collapsed. The footer stays reachable on long pages and short viewports;
 icon entries retain accessible names, hover titles and selected route styling.
 The topbar avatar opens an account menu whose Account settings item navigates to

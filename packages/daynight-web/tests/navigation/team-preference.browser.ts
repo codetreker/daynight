@@ -59,7 +59,9 @@ const install = async (page: Page): Promise<Fixture> => {
 const selected = (page: Page, id: string) => page.evaluate((k) => localStorage.getItem(k), key(id));
 const put = (page: Page, id: string, value: string) => page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [key(id), value]);
 const openPicker = (page: Page) => page.locator('.team-selector .team-switch').click();
-const heading = (page: Page, name: string) => page.getByRole('main').getByRole('heading', { name, exact: true });
+const heading = (page: Page, name: string) => name === 'Team settings' || name === 'Projects shared with me'
+  ? page.getByRole('main').getByRole('heading', { name, exact: true })
+  : page.locator('.project-list-information').filter({ has: page.getByText(name, { exact: true }) }).getByRole('heading', { name: /^(Projects|项目)$/, exact: true });
 
 for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 }]) {
   for (const locale of ['en', 'zh-CN']) {
@@ -354,15 +356,15 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, t
       const api = await install(page);
       const chinese = locale === 'zh-CN';
       const members = chinese ? 'Team 成员' : 'Team members';
-      const settings = chinese ? 'Team 设置' : 'Team settings';
+      const settings = chinese ? '团队设置' : 'Team settings';
       const shared = chinese ? '与我共享' : 'Shared with me';
       const personalLabel = chinese ? '个人' : 'Personal';
       const expand = chinese ? '展开侧栏' : 'Expand sidebar';
       const collapse = chinese ? '折叠侧栏' : 'Collapse sidebar';
       const nav = page.locator('.sidebar nav');
       const assertPersonal = async () => {
-        await expect(nav.locator('a').filter({ has: page.locator('span.nav-text') }).filter({ hasText: /^(Team members|Team settings|Team 成员|Team 设置)$/ })).toHaveCount(0);
-        await expect(nav.locator('.sidebar-projects + a')).toHaveAttribute('aria-label', shared);
+        await expect(nav.locator('a').filter({ has: page.locator('span.nav-text') }).filter({ hasText: /^(Team members|Team settings|Team 成员|团队设置)$/ })).toHaveCount(0);
+        await expect(nav.getByRole('link', { name: shared, exact: true })).toHaveAttribute('aria-label', shared);
       };
       const open = async () => { if (narrow) await page.getByRole('button', { name: expand, exact: true }).click(); };
       await page.goto('/projects');
@@ -416,7 +418,10 @@ test('keeps Personal management links absent throughout project loading, failure
   const sidebar = page.locator('.sidebar nav');
   const absent = async () => {
     await expect(sidebar.locator('a[aria-label="Team members"], a[aria-label="Team settings"]')).toHaveCount(0);
-    await expect(sidebar.locator('.sidebar-projects + a')).toHaveAttribute('aria-label', 'Shared with me');
+    await expect(sidebar.locator('.sidebar-group').nth(0).locator('.sidebar-projects')).toHaveCount(1);
+    const myGroup = sidebar.locator('.sidebar-group').nth(1);
+    await expect(myGroup.locator('.nav-label')).toHaveText('My');
+    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'Shared with me');
   };
   try {
     await page.goto('/projects');
@@ -554,7 +559,7 @@ test.describe('Chinese narrow sidebar', () => {
     await page.goto('/projects'); await expect(heading(page, '个人')).toBeVisible();
     await put(page, alice, alpha);
     await page.goto(`/projects/${project}`); await page.reload();
-    const control = page.getByRole('button', { name: '切换 Team: Alpha', exact: true });
+    const control = page.getByRole('button', { name: '切换 Team: 团队, Alpha', exact: true });
     await expect(control).toBeVisible(); await control.click();
     await expect(page.locator('.team-options')).toBeVisible();
     await control.click();

@@ -134,7 +134,7 @@ test('keeps both settings sections readable in both languages and narrow widths'
       for (const label of [generalLabel, membersLabel]) {
         await page.getByRole('link', { name: label, exact: true }).click();
         await expect(page.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
-        await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team settings' : 'Team 设置', exact: true })).toBeVisible();
+        await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team settings' : '团队设置', exact: true })).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       }
     }
@@ -276,7 +276,7 @@ test('a retained invitation result survives returning while the Team read is in 
   await expect.poll(() => invitationStarted, { message: 'Invitation request must reach its response gate' }).toBe(true);
   try {
     await traverse(page, `/teams/${teamId}`);
-    await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha', exact: true })).toBeVisible();
+    await expect(page.locator('.project-list-information').filter({ has: page.getByText('Alpha', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
     const before = await page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
     api.holdTeamRead = { started: () => { teamReadStarted = true; }, wait: finishTeamRead.promise };
     await foreground(page, api);
@@ -308,7 +308,7 @@ test('a demoted member can leave after an invitation result is lost during navig
   await expect(page.getByText('The invitation change is still unconfirmed; you no longer have permission to read this Team’s invitations.')).toBeVisible();
   const leave = page.getByRole('button', { name: 'Leave Team' }); await expect(leave).toBeEnabled(); await leave.click();
   await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   expect(api.invitationWrites).toBe(1); expect(api.writes).toHaveLength(1);
 });
 
@@ -379,7 +379,7 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await expect(dialog).toContainText('Project grants remain');
   await dialog.getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect(page.getByText('You left the Team; direct Project grants remain.')).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.writes).toHaveLength(1); expect(api.grant).toEqual({ userId: alice, role: 'admin', version: 7 });
@@ -403,7 +403,7 @@ test('an admin can leave with another admin, but a concurrent last-admin change 
   await page.reload(); await expect(page.getByRole('button', { name: 'Leave Team' })).toBeEnabled();
   await page.getByRole('button', { name: 'Leave Team' }).click();
   await dialog.getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.members.has(alice)).toBe(false); expect(api.writes).toHaveLength(2);
 });
