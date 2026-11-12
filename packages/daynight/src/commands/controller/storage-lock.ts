@@ -12,12 +12,16 @@ type PermitState = { readonly journalFile: string; readonly owner: string; reado
 const permits = new WeakMap<ControllerStoragePermit, PermitState>();
 
 export const isControllerStorageLockHeld = (error: unknown): boolean => {
-  const seen = new Set<unknown>();
+  const active = new Set<Error>();
   const visit = (cause: unknown): boolean => {
-    if (seen.has(cause)) return false;
-    seen.add(cause);
+    if (cause instanceof SqliteAccessError && cause.kind === "cleanup-failed") return false;
     if (cause instanceof InstanceLockHeldError) return true;
-    return cause instanceof Error && (visit(cause.cause) || cause instanceof AggregateError && cause.errors.some(visit));
+    if (!(cause instanceof Error) || active.has(cause)) return false;
+    active.add(cause);
+    try {
+      if (cause instanceof AggregateError) return cause.errors.length > 0 && cause.errors.every(visit) && (cause.cause === undefined || visit(cause.cause));
+      return visit(cause.cause);
+    } finally { active.delete(cause); }
   };
   return visit(error);
 };

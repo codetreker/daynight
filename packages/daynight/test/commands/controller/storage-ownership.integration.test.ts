@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
 import { readSqliteDatabase } from "../../../src/platform/sqlite-access.js";
+import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../../src/commands/controller/storage-lock.js";
@@ -248,4 +249,37 @@ test.each(["missing", "malformed", "stale", "unknown"])("gate contention with %s
     if (kind === "missing") expect(failure).toMatchObject({ cause: { code: "SQLITE_BUSY" } });
     else expect(await readFile(lockFile, "utf8")).toBe(original);
   } finally { db.exec("ROLLBACK"); db.close(); }
+});
+
+
+test("a real held gate with a close failure stays a cleanup error and retains its open connection", async () => {
+  const f = await fixture(), permit = acquireControllerStoragePermit(f.file), leaked: Database.Database[] = [];
+  const closeFailure = new Error("ownership gate close failed"), originalClose = Database.prototype.close;
+  const close = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+    if (this.name === f.file && leaked.length === 0) { leaked.push(this); throw closeFailure; }
+    return originalClose.call(this);
+  });
+  try {
+    let failure: unknown;
+    try { acquireControllerStoragePermit(f.file); } catch (error) { failure = error; }
+    expect(isControllerStorageLockHeld(failure)).toBe(false);
+    expect(failure).toMatchObject({ cause: { errors: [expect.any(InstanceLockHeldError), closeFailure] } });
+    expect(leaked).toHaveLength(1);
+    expect(leaked[0]!.open).toBe(true);
+    assertControllerStoragePermit(permit, f.file);
+  } finally {
+    close.mockRestore();
+    for (const db of leaked) if (db.open) db.close();
+    permit.release();
+  }
+});
+
+test("pure wrapped busy aggregates stay retryable while independent cleanup failures stay visible", () => {
+  const held = new InstanceLockHeldError(process.pid), wrapped = new Error("admission blocked", { cause: held });
+  expect(isControllerStorageLockHeld(new AggregateError([held, wrapped], "both blocked", { cause: held }))).toBe(true);
+  expect(isControllerStorageLockHeld(new Error("outer", { cause: new AggregateError([wrapped, held], "both blocked") }))).toBe(true);
+  const cleanup = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "release" }, { cause: held, connectionClosed: false });
+  expect(isControllerStorageLockHeld(cleanup)).toBe(false);
+  expect(isControllerStorageLockHeld(new AggregateError([held, cleanup], "blocked and cleanup failed"))).toBe(false);
+  expect(isControllerStorageLockHeld(new AggregateError([held, new Error("release failed")], "blocked and release failed"))).toBe(false);
 });
