@@ -840,6 +840,27 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       suspend: owner => { getInput(owner).suspend(); },
     },
     lifecycle: {
+      migration: {
+        listLifecycles: () => store.list(),
+        listRetired: () => store.listRetired(),
+        assertOrigin: record => {
+          if (record.owner.serverOrigin !== options.serverOrigin || record.owner.workerId !== options.workerId) throw new Error("The original Herdr archive belongs to another server or worker and cannot be completely observed.");
+        },
+        listBindings: async (projectId, operation) => {
+          const result = [];
+          for (const record of store.list()) {
+            if (record.owner.projectId !== projectId || record.runs.length === 0 || current(record).phase === "stopped_confirmed") continue;
+            // Unlike the ordinary best-effort inventory, conversion cannot omit
+            // an inaccessible original daemon and declare the format complete.
+            result.push(...await adapter(record).tasks.listResources(operation));
+          }
+          return result;
+        },
+        listLegacyBindings: async operation => {
+          await legacy.ensureInstance(operation);
+          return legacy.tasks.listResources(operation);
+        },
+      },
       neverStarted: {
         candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),
         retired: () => store.listRetired().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId).map(record => ({ owner: identity(record), cwd: record.cwd, agent: record.owner.provider })),
@@ -863,17 +884,17 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
             try { lstatSync(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
             throw new Error("The never-started claim still has filesystem resources; retirement is prohibited.");
           };
-          const verifyLocal = (): void => {
+          const verifyOtherLocal = (): void => {
             operation.check();
             if (canonicalSessionJson(need(owner)) !== canonicalSessionJson(record)) throw new Error("The original lifecycle changed during never-started retirement.");
             if (inputStore.get(record.sessionId) !== null) throw new Error("The original claim has input evidence; retirement is prohibited.");
-            assertAbsent(record.cwd); assertAbsent(path.join(recordingRoot, record.sessionId));
+            assertAbsent(path.join(recordingRoot, record.sessionId));
             if (readdirSync(path.join(options.paths.workerDirectory, "herdr-archives")).some(name => name.startsWith(`${record.sessionId}.`))) throw new Error("The original claim has archive evidence; retirement is prohibited.");
           };
-          verifyLocal();
+          verifyOtherLocal();
           await verifyWorktreeAbsent(record.cwd);
           // Git inspection may await subprocesses; fence every local observation again before the atomic decision.
-          verifyLocal();
+          verifyOtherLocal(); assertAbsent(record.cwd);
           store.retireNeverStarted(record);
         }),
       },
@@ -881,6 +902,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         const previous = store.get(context);
         if (previous !== null) { need(context); return; }
         store.create({ owner: { projectId: context.projectId, taskId: context.taskId, workerId: options.workerId, worktreeId: context.worktreeId, ownerUserId, serverOrigin: options.serverOrigin, provider: context.agent }, claimId: context.claimId, cwd: context.cwd });
+      },
+      hasStarted: owner => {
+        const record = store.get(owner);
+        if (record === null || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) return true;
+        return record.preparation !== null || record.runs.length > 0;
       },
       assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,

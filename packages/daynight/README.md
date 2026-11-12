@@ -2365,7 +2365,7 @@ First use generates and atomically saves stable root workerId. One instance owns
 private Herdr resources. On macOS, each actual run has its own existing Herdr
 daemon and durable lifecycle record; Linux and Windows use the shared private
 daemon. Each task uses branch `daynight/<task-id>` and directory
-`<repository>/.worktrees/daynight/<task-id>`. Valid claims retain their dirty
+`<repository>/.worktrees/daynight/<worktree-id>`. Migrated claims retain their original task-id directory and cwd. Valid claims retain their dirty
 worktree; task branches and commits remain after terminal cleanup.
 
 A workspace label starts with the task title and ends with its full stable owner:
@@ -2376,8 +2376,7 @@ Fix worker startup | daynight:{"projectId":"…","taskId":"…","claimId":"…",
 
 The title is display text. Ownership checks and the managed agent name use only
 those four canonical UUIDs; renaming a task does not change its claim, worktree,
-agent name or native conversation. Herdr and Git ownership markers share that
-four-field identity. The configured service address remains available to API
+agent name or native conversation. Herdr labels and worktree manifests share that four-field identity. The configured service address remains available to API
 requests and the managed assignment; the macOS lifecycle journal additionally
 binds the service, Worker and authenticated owner to the original runtime. One retained
 worker state directory belongs to one configured service.
@@ -2451,19 +2450,19 @@ authenticated user ID. Unassigned tasks and tasks assigned to another account
 are ineligible for automatic acquisition. Explicit manual resume retains its
 original execution-owner/admin rules. Still-owned local active tasks are queued for fresh target
 observation and recovery before global Git discovery, so a sibling checkout's
-filesystem error does not block an already-reserved task. New pending startup
-and new claims still require complete global resource discovery. Failed or
-partial reads are errors, not an empty inventory. Resources from unqueried or
+filesystem error does not block an already-reserved task. New pending startup and new claims require complete claim inventory, target
+repository discovery and a reliable execution-capacity observation. A localized
+format failure closes that repository's file gate while independent prepared
+repositories remain eligible. Failed or partial reads are errors, not an empty
+inventory. Resources from unqueried or
 unmapped Projects are preserved with a diagnostic.
 
 Capacity is the claim-deduplicated union of active rows, actual owned resources,
 already selected cleanup responsibilities and adapter stop confirmations still
-pending. An orphan keeps its slot and same-task barrier until all cleanup has
-finished, even without a local row or after its pane has closed. On macOS, a
-confirmed Herdr stop with closed segments and an acknowledged ledger releases
-the execution slot while its retained worktree keeps the same-task barrier. A
-queued recovery still reserves a slot. Git
-markers identify a claim rather than a worker. A Git-only resource must be tied
+pending. An orphan retains its same-task barrier until cleanup finishes. Confirmed stop
+of the original execution releases its execution slot independently of archive
+and file cleanup. A queued recovery still reserves a slot. Worktree manifests
+identify a claim rather than a worker. A Git-only resource must be tied
 to a local row, the private Herdr instance or a current own claim before this
 worker can clean it; otherwise it is reported and preserved.
 
@@ -2768,32 +2767,30 @@ backoff and both errors without claiming that the latest decision is durable.
 
 A known incomplete Web archive enters a durable repair-required state. Every
 15 minutes the Worker checks the original stopped generation without loading
-pending timeline content or resource bytes. The claim, source and capacity remain
-reserved. A recovered receipt still enters the normal remote receipt validation;
+pending timeline content or resource bytes. The claim and source remain reserved; a confirmed stopped execution no longer
+occupies capacity. A recovered receipt still enters the normal remote receipt validation;
 its presence alone neither clears the repair classification nor releases resources.
 Confirmed complete source conditions clear the saved repair classification before
 a full cleanup attempt, which must pass every archive and ownership check. Later
 transient upload failures use normal cleanup backoff or the 60-second historical
 backfill retry. A failed classification write preserves the repair wait; successful
-classification changes still retain cleanup responsibility and capacity until
-complete cleanup succeeds. Repeated checks do not repair missing history or clear
+classification changes still retain cleanup responsibility until complete cleanup
+succeeds; execution capacity follows the original stop observation. Repeated checks do not repair missing history or clear
 its completeness flags.
 
-On supported macOS APFS volumes, an immutable identity sidecar lets a newer
-Worker verify the original worktree after mount device numbers change. Existing
-worktrees acquire this evidence only while their original ownership checks still
-pass. A worktree that already drifted without saved evidence needs explicit
-reconciliation; restarting cannot manufacture the missing proof. Other platforms
-retain strict identity checks. Keep the original marker and sidecar intact.
+The Worker prepares each selected or retained repository by converting legacy
+ownership into durable manifests before admitting file operations. Conversion
+preserves existing checkouts and frozen cwd, and leaves conflicting or unknown
+resources visible. A manifest locates a worktree but does not authorize deleting
+unregistered nonempty content. The old Worker cannot manage converted resources.
 
 A fully enumerated, independently attributed damaged worktree can be quarantined
 only for static local validation failures under stable observations, while
-unrelated tasks use remaining capacity. It retains its claim's slot and blocks
-reuse of the same task. Observed changes to ownership, metadata, current directory
-objects or Git pointers during inspection leave coverage unknown. An early
-validation failure cannot bypass the scan's recheck of the indexed ownership
-marker. Unreadable inventory, changing observations or conflicting ownership
-still blocks new acquisition globally. An online heartbeat or zero remote active
+unrelated tasks use remaining capacity. It blocks reuse of the same task; a confirmed stopped execution does not retain
+an execution slot. Observed changes to ownership, metadata, current directory
+objects or Git pointers during inspection leave coverage unknown. A manifest and independent execution evidence must agree before a damaged
+resource can be attributed. Unreadable inventory, changing observations or
+conflicting ownership can make capacity unknown. An online heartbeat or zero remote active
 tasks does not establish that local capacity is available.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including

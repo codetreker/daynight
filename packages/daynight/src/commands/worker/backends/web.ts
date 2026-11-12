@@ -10,7 +10,8 @@ import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
-import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
+import { WorktreePreconditionError } from "../worktrees.js";
+import { sameWorktreeLocation } from "../worktrees/paths.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
@@ -169,9 +170,14 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
       phase(task, { kind: "execution", phase: "worktree-preparation" });
       const preparing = task.resources.worktree === null;
-      try { monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree?.worktreePath ?? selectedWorktreePath(task.repositoryPath, task.taskId)); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
+      if (preparing && task.webExecution !== null && (task.webExecution.launchSubmission !== "not-submitted" || task.webExecution.controllerProcess !== null || task.webExecution.nativeProcesses.length > 0)) throw new Error("An already started Web execution has no original worktree binding.");
       if (preparing) task = options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
-      else { await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal); task = current(task); }
+      else {
+        const verified = await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal);
+        if (task.resources.worktree === null || !await sameWorktreeLocation(verified.worktreePath, task.resources.worktree.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, task.resources.worktree.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, task.resources.worktree.commonDirectory) || verified.branch !== task.resources.worktree.branch) throw new Error("The original Web worktree binding differs from its manifest.");
+        task = current(task);
+      }
+      try { if (task.resources.worktree !== null) monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree.worktreePath); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
       success(task, { kind: "execution", phase: "worktree-preparation" });
       if (preparing) phase(task, { kind: "execution", phase: "worktree-preparation" }, true);
       return task;
@@ -559,11 +565,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         signal.throwIfAborted();
         if (!launched) { await notifyStopped(); success(task, { kind: "cleanup", phase: "agent-stop" }); }
-        if (kind === "shutdown") return { task, complete: true };
+        if (kind === "shutdown" || task.status === "done") return { task, complete: true };
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
-        const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
-        stage = "observation";
-        if (enroll) await cleanupOperation(operation => enroll.call(options.git, project, task, operation), signal);
         if (launched) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
@@ -574,8 +577,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-        if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation), signal);
+        if (binding === null) {
+          if (launched || task.resources.worktree !== null) throw new Error("The original Web execution has no worktree manifest.");
+          await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, task, operation), signal);
+        } else {
+          if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
+          if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
+          await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
+          if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        }
         success(task, { kind: "cleanup", phase: "worktree-removal" });
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
         waiting.delete(task.claimId); rejected.delete(task.claimId);

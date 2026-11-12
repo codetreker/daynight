@@ -84,8 +84,8 @@ describe("worker synchronous management runtime ownership", () => {
   it("submits once under the instance lock and leaves sibling resources and shared Herdr intact", async () => {
     const f = await fixture();
     let held = false;
-    mocks.submit.mockImplementationOnce(async ({ store, coordinator }: { store: WorkerStore; coordinator: unknown }) => {
-      expect(coordinator).toBe(mocks.coordinator.mock.results[0]!.value);
+    mocks.submit.mockImplementationOnce(async ({ store, coordinator }: { store: WorkerStore; coordinator: { tick: unknown } }) => {
+      expect(coordinator.tick).toBe(mocks.coordinator.mock.results[0]!.value.tick);
       let competing: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
       try { competing = await acquireWorkerInstanceLock(f.paths); }
       catch { held = true; }
@@ -100,6 +100,47 @@ describe("worker synchronous management runtime ownership", () => {
     for (const result of mocks.herdr.mock.results) expect(result.value.stopInstance).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)?.status).toBe("done"); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();
+  });
+
+  it("stops the original execution before preparing only its repository for cleanup", async () => {
+    const f = await fixture();
+    await mkdir(f.project.localPath);
+    const unrelated = { projectId: uuid(30), repoUrl: "https://example.test/org/unrelated.git", localPath: path.join(f.homeDirectory, "unrelated") };
+    await mkdir(unrelated.localPath); f.store.registerProject(unrelated);
+    const events: string[] = [];
+    const prepareRepository = vi.fn(async (project: typeof f.project) => { events.push(`prepare:${project.projectId}`); });
+    mocks.git.mockReturnValue({ prepareRepository, dispose: vi.fn(async () => {}) });
+    const owner = { ...f.task, worktreeId: uuid(9) };
+    const cleanupSource = vi.fn(async (_identity: typeof f.task, _settings: { deleteWorktree: boolean }) => { events.push("stop"); return owner; });
+    const completeSource = vi.fn(async (_owner: typeof owner) => { events.push("cleanup"); });
+    mocks.coordinator.mockReturnValue({ cleanupSource, completeSource, tick: vi.fn(), shutdown: vi.fn() });
+    mocks.submit.mockImplementationOnce(async ({ coordinator }: { coordinator: { cleanupSource: typeof cleanupSource; completeSource: typeof completeSource } }) => {
+      const observed = await coordinator.cleanupSource(f.task, { deleteWorktree: false });
+      events.push("release");
+      await coordinator.completeSource(observed);
+      return { task: f.task, message: "release completed" };
+    });
+    await runWorkerControl(f);
+    expect(events).toEqual(["stop", "release", `prepare:${f.project.projectId}`, "cleanup"]);
+    expect(prepareRepository).toHaveBeenCalledOnce();
+    expect(prepareRepository).toHaveBeenCalledWith(f.project, expect.anything());
+  });
+
+  it("stops and releases even when the original repository format cannot be prepared", async () => {
+    const f = await fixture(); await mkdir(f.project.localPath);
+    const failure = new Error("original format unavailable"), events: string[] = [];
+    mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => { events.push("prepare"); throw failure; }), dispose: vi.fn(async () => {}) });
+    const owner = { ...f.task, worktreeId: uuid(9) };
+    const completeSource = vi.fn(async () => { events.push("cleanup"); });
+    mocks.coordinator.mockReturnValue({ cleanupSource: vi.fn(async () => { events.push("stop"); return owner; }), completeSource, tick: vi.fn(), shutdown: vi.fn() });
+    mocks.submit.mockImplementationOnce(async ({ coordinator }: { coordinator: { cleanupSource: (identity: typeof f.task, settings: { deleteWorktree: boolean }) => Promise<typeof owner>; completeSource: (value: typeof owner) => Promise<void> } }) => {
+      const observed = await coordinator.cleanupSource(f.task, { deleteWorktree: false }); events.push("release");
+      await coordinator.completeSource(observed);
+      return { task: f.task, message: "release completed" };
+    });
+    await expect(runWorkerControl(f)).rejects.toBe(failure);
+    expect(events).toEqual(["stop", "release", "prepare"]);
+    expect(completeSource).not.toHaveBeenCalled();
   });
 
   it("rejects management while run owns the lock before submission or native controller construction", async () => {

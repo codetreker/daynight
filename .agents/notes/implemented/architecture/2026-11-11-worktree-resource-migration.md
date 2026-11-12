@@ -20,10 +20,10 @@ resume from observed resources, preserving the original checkout and frozen cwd.
 The [manifest store](2026-11-11-worktree-manifest-storage.md) supplies durable
 publication and uniqueness checks.
 
-The converter is callable in isolation; production Worker startup continues to
-use the legacy format until all consumers switch together. The caller must hold
+The Worker invokes the converter during repository preparation before admitting
+file operations. The caller must hold
 the existing instance ownership and repository gate, stop the old Worker, and
-provide complete backend and schedule inventories.
+provide complete backend and schedule inventories. The [adoption decision](2026-11-12-worktree-manifest-adoption.md) owns the runtime integration and retirement.
 
 Completed Web cleanup and verified Herdr retirement evidence distinguish
 historical bindings from owners that still require a manifest. Historical cwd

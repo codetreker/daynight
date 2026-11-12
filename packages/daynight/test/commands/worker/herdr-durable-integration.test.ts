@@ -276,6 +276,19 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("only permits checkout preparation when the original lifecycle proves it has not started", async () => {
+    const f = fixture();
+    expect(f.facade.lifecycle!.hasStarted!(f.context)).toBe(true);
+    f.register();
+    expect(f.facade.lifecycle!.hasStarted!(f.context)).toBe(false);
+    expect(f.facade.lifecycle!.hasStarted!({ ...f.context, worktreeId: uuid(777) })).toBe(true);
+    expect(f.facade.lifecycle!.migration!.listLifecycles()).toEqual([f.read()]);
+    expect(() => f.facade.lifecycle!.migration!.assertOrigin(f.read())).not.toThrow();
+    expect(() => f.facade.lifecycle!.migration!.assertOrigin({ ...f.read(), owner: { ...f.read().owner, serverOrigin: "https://foreign.example" } })).toThrow("another server or worker");
+    expect(() => f.facade.lifecycle!.migration!.assertOrigin({ ...f.read(), owner: { ...f.read().owner, workerId: uuid(778) } })).toThrow("another server or worker");
+    await f.prepare();
+    expect(f.facade.lifecycle!.hasStarted!(f.context)).toBe(true);
+  });
   it("captures a fresh recovery input without replaying the original assignment", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen();

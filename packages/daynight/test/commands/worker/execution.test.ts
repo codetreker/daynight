@@ -104,7 +104,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   } };
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
   const events: WorkerEvent[] = [];
-  const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
+  const git = { resolveWorktreeBinding: vi.fn(async () => worktree), prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = { type: "task", parentId: null,
     projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
@@ -235,7 +235,7 @@ describe("execution from current Herdr resources", () => {
     const failure = new Error("original worktree failure");
     f.dependencies.observePhase = () => { throw new Error("monitoring failure"); };
     f.dependencies.observeSuccess = () => { throw new Error("monitoring failure"); };
-    vi.mocked(f.dependencies.git.prepareWorktree).mockRejectedValueOnce(failure);
+    vi.mocked(f.dependencies.git.verifyWorktree).mockRejectedValueOnce(failure);
     await expect(f.driver.advance(f.input)).rejects.toBe(failure);
   });
 
@@ -317,7 +317,7 @@ describe("execution from current Herdr resources", () => {
     await expect(f.driver.advance(f.input)).rejects.toThrow("stop_unknown");
     expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
     expect(f.dependencies.git.verifyWorktree).not.toHaveBeenCalled();
-    expect(f.calls).toEqual([]);
+    expect(f.calls.filter(call => ["workspace.create", "workspace.close", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
   it("finishes a pending durable stop before applying replacement admission", async () => {
@@ -849,6 +849,11 @@ describe("execution from current Herdr resources", () => {
     const otherOwner = { ...f.input.owner, taskId: uuid(11), claimId: uuid(12), worktreeId: uuid(13) };
     const otherContext = { ...f.context, ...otherOwner, cwd: path.join(f.input.project.localPath, ".worktrees", "daynight", otherOwner.taskId) };
     await mkdir(otherContext.cwd, { recursive: true });
+    const otherWorktree = { repositoryPath: f.input.project.localPath, commonDirectory: path.join(f.input.project.localPath, ".git"), worktreePath: otherContext.cwd, branch: `daynight/${otherOwner.taskId}` };
+    const originalResolve = vi.mocked(f.dependencies.git.resolveWorktreeBinding).getMockImplementation()!;
+    const originalVerify = vi.mocked(f.dependencies.git.verifyWorktree).getMockImplementation()!;
+    vi.mocked(f.dependencies.git.resolveWorktreeBinding).mockImplementation((project, owner, operation) => owner.claimId === otherOwner.claimId ? Promise.resolve(otherWorktree) : originalResolve(project, owner, operation));
+    vi.mocked(f.dependencies.git.verifyWorktree).mockImplementation((project, owner, operation) => owner.claimId === otherOwner.claimId ? Promise.resolve(otherWorktree) : originalVerify(project, owner, operation));
     f.store.registerPending({ ...otherOwner, agent: "codex", sessionId: staleId });
     const otherInput = { ...f.input, owner: otherOwner, task: f.store.activateTask(otherOwner) };
     f.workspaces.push({ workspace_id: "other-workspace", label: herdrExecutionLabel(otherContext, "Other task") });

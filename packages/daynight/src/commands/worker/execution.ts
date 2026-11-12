@@ -15,11 +15,13 @@ import { validateMacosPromptInput } from "./herdr/terminal-input.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
-import { selectedWorktreePath, type createWorkerGitManager } from "./worktrees.js";
+import type { createWorkerGitManager } from "./worktrees.js";
+import { managedNamespace, sameWorktreeLocation } from "./worktrees/paths.js";
+import path from "node:path";
 
 export type WorkerEvent = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
-export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
+export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration; freshClaim?: boolean; onBeforeStart?: () => void };
 export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large"; observation: HerdrAgentObservation | null };
 export type WorkerObservedPhase =
   | { kind: "execution"; phase: "observation" | "worktree-preparation" | "agent-start" | "agent-observation" | "input-submission" | "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused" }
@@ -74,9 +76,15 @@ export const actualTaskPane = (owner: ResourceOwner, resources: readonly HerdrOw
 };
 export const liveAgent = (pane: { kind: string | null; launchPending: boolean; interactiveReady: boolean }): boolean =>
   pane.kind !== null || pane.launchPending || pane.interactiveReady;
-export const executionContext = (input: Pick<ExecutionInput, "owner" | "project"> & { task: Pick<LocalTask, "agent"> }): HerdrExecutionContext => ({
-  ...input.owner, cwd: selectedWorktreePath(input.project.localPath, input.owner.taskId), agent: input.task.agent,
+export const executionContext = (input: Pick<ExecutionInput, "owner"> & { task: Pick<LocalTask, "agent"> }, cwd: string): HerdrExecutionContext => ({
+  ...input.owner, cwd, agent: input.task.agent,
 });
+export const newWorktreePath = (project: WorkerProject, owner: ResourceOwner): string => path.join(managedNamespace(project.localPath), owner.worktreeId);
+export const originalWorktreePath = async (project: WorkerProject, owner: ResourceOwner, cwd: string | null): Promise<string> => {
+  if (cwd !== null && [owner.taskId, owner.worktreeId].some(name => cwd === path.join(managedNamespace(project.localPath), name))) return cwd;
+  if (cwd === null || !(await Promise.all([owner.taskId, owner.worktreeId].map(name => sameWorktreeLocation(cwd, path.join(managedNamespace(project.localPath), name))))).some(Boolean)) throw new Error("The original execution has no matching worktree path.");
+  return cwd;
+};
 export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal, runOperation = workerOperation): Promise<boolean> => {
   const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
   for (const stop of pending) {
@@ -209,23 +217,31 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const identity = key(task);
-      const context = executionContext({ ...input, task });
+      const original = await workerOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
+      if (original === null && task.sessionId !== null) throw new Error("The original execution has no worktree manifest.");
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "observation" }, false);
       await settleWorkerStops(deps, input.owner, signal);
-      deps.herdr.lifecycle?.assertCanAdvance(context);
       const resources = await workerOperation((operation) => deps.herdr.tasks.listResources(operation), signal);
       const actual = actualTaskPane(input.owner, resources);
+      const savedCwd = deps.herdr.lifecycle?.worktreePath?.(input.owner) ?? actual?.cwd ?? original?.worktreePath ?? newWorktreePath(input.project, input.owner);
+      const cwd = await originalWorktreePath(input.project, input.owner, savedCwd);
+      if (original !== null && !await sameWorktreeLocation(cwd, original.worktreePath)) throw new Error("The original execution path differs from its manifest.");
+      const context = executionContext({ ...input, task }, cwd);
+      deps.herdr.lifecycle?.assertCanAdvance(context);
       success(input.owner, "observation");
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "worktree-preparation" }, false);
-      const worktree = task.sessionId === null
+      const mayPrepare = task.sessionId === null && actual === undefined && (deps.herdr.lifecycle?.hasStarted !== undefined ? !deps.herdr.lifecycle.hasStarted(input.owner) : input.freshClaim === true);
+      const worktree = mayPrepare
         ? await workerOperation((operation) => deps.git.prepareWorktree(input.project, input.owner, operation), signal, 180_000)
         : await workerOperation((operation) => deps.git.verifyWorktree(input.project, input.owner, operation), signal);
+      if (!await sameWorktreeLocation(worktree.worktreePath, context.cwd)) throw new Error("The prepared worktree differs from the original execution binding.");
       success(input.owner, "worktree-preparation");
       if (task.sessionId === null && !preparedWorktrees.has(identity)) {
         preparedWorktrees.add(identity);
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "worktree-preparation" }, true);
       }
       if (actual !== undefined && liveAgent(actual)) {
+        input.onBeforeStart?.();
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-observation" }, false);
         let observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual.binding, operation, () => success(input.owner, "preparing", "herdr-attachment")), signal);
         assertNativeSession(task, observed);
@@ -299,7 +315,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       success(input.owner, "agent-start", "workspace-preparation");
       if (deps.herdr.lifecycle === undefined) await prepareSource(task, signal);
       if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });
-      const assignment: ManagedAssignment = { ...task, serverOrigin: deps.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
+      const assignment: ManagedAssignment = { ...task, serverOrigin: deps.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree: { ...worktree, worktreePath: context.cwd }, configuration: input.configuration };
       let prompt: string;
       try { prompt = deps.herdr.lifecycle === undefined
         ? preparePrompt(task, input.configuration, binding, "startup", () => deps.buildPrompt(assignment, deps.platform))
@@ -317,6 +333,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       let startupTransportCompleted = false;
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false);
       try {
+        input.onBeforeStart?.();
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
           ...(deps.herdr.lifecycle === undefined ? {} : { preparePrompt: (recovery: boolean) => {

@@ -1,7 +1,7 @@
 import { ensureCleanupSchedule } from "../../../src/commands/worker/cleanup-schedule.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { performance } from "node:perf_hooks";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
@@ -70,6 +70,20 @@ describe("cleanup from resource observations", () => {
     expect(observe).not.toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
     await f.advance();
     expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+  });
+
+  it("stops a migrated original pane using its unchanged aliased cwd", async () => {
+    const f = fixture();
+    const project = f.store.getProject(f.owner)!;
+    const real = path.join(project.localPath, ".worktrees", "daynight", f.owner.taskId);
+    mkdirSync(real, { recursive: true });
+    const aliasRoot = path.join(path.dirname(project.localPath), "old-repository-alias");
+    symlinkSync(project.localPath, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+    const originalCwd = path.join(aliasRoot, ".worktrees", "daynight", f.owner.taskId);
+    const list = f.listResources.getMockImplementation()!;
+    f.listResources.mockImplementation(async operation => (await list(operation)).map(workspace => ({ ...workspace, panes: workspace.panes.map(pane => ({ ...pane, cwd: originalCwd })) })));
+    await f.advance();
+    expect(f.stopAndClose).toHaveBeenCalledWith(expect.objectContaining({ cwd: originalCwd, worktreeId: f.owner.worktreeId }), expect.anything(), expect.anything());
   });
 
   it("keeps the original cleanup error and resources when monitoring throws", async () => {

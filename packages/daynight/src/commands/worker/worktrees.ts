@@ -12,7 +12,9 @@ import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
-import { bootstrapWorktreeIdentity, inspectWorktreeIdentity, verifyWorktreeIdentityMetadata } from "./worktree-identity.js";
+import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
+import { bindingForManifest, managedNamespace } from "./worktrees/paths.js";
+import { sameResourceOwner } from "./resource-owner.js";
 
 import { WorktreeValidationError } from "./worktree-errors.js";
 
@@ -20,14 +22,12 @@ type GitRunner = typeof runRepositoryGit;
 export class WorktreePreconditionError extends WorktreeValidationError {
   constructor(readonly code: "branch_mismatch" | "validation_failed", message: string, options?: ErrorOptions) { super(message, options); this.name = "WorktreePreconditionError"; }
 }
-type Owner = ResourceOwner & { leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
 
 /** The Git manager and execution backends share the selected task target. */
-export const selectedWorktreePath = (repositoryRoot: string, taskId: string): string => path.join(repositoryRoot, ".worktrees", "daynight", taskId);
-const prefix = "daynight-worker:";
+export const selectedWorktreePath = (repositoryRoot: string, worktreeId: string): string => path.join(managedNamespace(repositoryRoot), uuid(worktreeId, "Worktree ID"));
 const removing = new Set<string>();
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
@@ -61,23 +61,10 @@ const ensureDirectory = async (target: string): Promise<void> => {
   if (await directory(target) === null) throw new Error(`Managed directory ${target} disappeared.`);
 };
 const coordinates = canonicalResourceOwner;
-const markerOwner = (marker: string): Owner => {
-  if (!marker.startsWith(prefix)) throw new Error("The task worktree has a different ownership marker.");
-  const value: unknown = JSON.parse(marker.slice(prefix.length));
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("The task worktree ownership marker is invalid.");
-  const fields = ["projectId", "taskId", "claimId", "worktreeId", "leaf", "root", "common"];
-  if (Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field) || typeof (value as Record<string, unknown>)[field] !== "string")) throw new Error("The task worktree ownership marker is invalid.");
-  const owner = value as Owner;
-  for (const field of ["leaf", "root", "common"] as const) if (!/^\d+:\d+$/.test(owner[field])) throw new Error("The task worktree ownership fingerprint is invalid.");
-  if (Object.entries(coordinates(owner)).some(([key, value]) => owner[key as keyof Owner] !== value)) throw new Error("The task worktree ownership coordinates are not canonical.");
-  return owner;
-};
-const sameCoordinates = (owner: Owner, identity: ResourceOwner): boolean => Object.entries(coordinates(identity)).every(([key, value]) => owner[key as keyof Owner] === value);
-
 export type WorkerGitPending = { error: RepositoryGitCleanupPendingError; attemptId: string; projectId: string; owner?: ResourceOwner; command: "clone" | "fetch" | "worktree-add" | "update-ref" | "worktree-remove" };
 class WorkerGitCleanupError extends AggregateError {}
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm }) => {
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void> }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
   const startOwnedGit = options.startOwnedGit ?? startOwnedRepositoryGit;
@@ -86,6 +73,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const preparations = new Set<Promise<unknown>>();
   const handles = new Set<OwnedRepositoryGit>();
   let disposed: Promise<void> | undefined;
+  const prepared = new Set<string>();
+  const preparationByPath = new Map<string, Promise<WorkerRepository>>();
+  const migrationByCommon = new Map<string, Promise<void>>();
+  const preparedByPath = new Map<string, string>();
+  const repositoryKey = (repository: WorkerRepository): string => JSON.stringify([repository.root, repository.commonDirectory, repository.rootIdentity, repository.commonIdentity]);
   const tracked = <T>(operation: Operation, action: (operation: Operation) => Promise<T>): Promise<T> => {
     if (closing.signal.aborted) return Promise.reject(closing.signal.reason);
     const signal = AbortSignal.any([operation.signal, closing.signal]);
@@ -164,65 +156,57 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     if (commonIdentity === null) throw new Error("The Git common directory is missing.");
     return { root, commonDirectory, rootIdentity, commonIdentity };
   };
-  const bindingFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeBinding => {
+  const requirePrepared = async (project: WorkerProject, operation: Operation): Promise<WorkerRepository> => {
+    const repository = await inspectRepository(project, operation);
+    if (!prepared.has(repositoryKey(repository))) throw new Error("The repository worktree format has not been prepared.");
+    return repository;
+  };
+  const manifestFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeManifest | null => {
     const identity = coordinates(owner);
     if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
-    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: selectedWorktreePath(repository.root, identity.taskId), branch: `daynight/${identity.taskId}` };
+    const store = createWorktreeManifestStore(repository.commonDirectory);
+    const manifest = store.read(identity.worktreeId);
+    const claim = store.findClaim(identity);
+    if (manifest !== null && !sameResourceOwner(manifest, identity) || claim !== null && !sameResourceOwner(claim, identity)) throw new WorktreeValidationError("The worktree manifest belongs to another original resource.");
+    return manifest;
   };
-  const readers = { directory, ordinaryFile, markerOwner: (marker: string) => coordinates(markerOwner(marker)) };
+  // Old Worker lock parsing is confined to the one-time migration.
+  const readers = { directory, ordinaryFile, markerOwner: (_marker: string): ResourceOwner => { throw new Error("Legacy Worker lock remains in the current worktree format."); } };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>
     registrationsFor(index ?? await readRegistrationIndex(repository, readers, operation), target, readers);
   const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex, observedPointer?: string | null) => {
-    const binding = bindingFor(project, identity, repository);
-    for (const parent of [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")]) {
-      await directory(parent);
-    }
+    const manifest = manifestFor(project, identity, repository);
+    if (manifest === null) return null;
+    const binding = bindingForManifest(project.localPath, repository.commonDirectory, manifest);
+    for (const parent of [path.join(repository.root, ".worktrees"), managedNamespace(repository.root)]) await directory(parent);
     const leaf = await directory(binding.worktreePath);
     if (leaf === null && observedPointer !== undefined && observedPointer !== null) throw new Error("The worktree Git pointer disappeared during inspection.");
     const matches = await registrations(repository, binding.worktreePath, operation, index);
-    if (matches.length > 1) throw new WorktreeValidationError("The task worktree registration is ambiguous.");
+    if (matches.length > 1) throw new Error("The task worktree registration is ambiguous.");
     const registration = matches[0] ?? null;
     if (registration === null) {
-      if (leaf !== null && (!terminal || (await readdir(binding.worktreePath)).length > 0)) throw new WorktreeValidationError("An existing task worktree path has no matching ownership registration; it was retained.");
-      return { binding, leaf, registration, identityEvidence: null };
+      if (leaf !== null && (await readdir(binding.worktreePath)).length > 0) throw new Error("An existing task worktree path has no matching Git registration; it was retained.");
+      return { manifest, binding, leaf, registration };
     }
-    if (registration.marker === null) throw new WorktreeValidationError("The task worktree has no ownership marker; it was retained.");
-    const owner = markerOwner(registration.marker);
-    if (!sameCoordinates(owner, identity)) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim.");
-    if (await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree repository identity changed during inspection.");
-    let verifyLeaf = false;
+    if (registration.marker !== null) throw new WorktreeValidationError("The task worktree has an external Git lock; it was retained.");
+    if (await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
       if (observedPointer !== undefined && pointer !== observedPointer) throw new Error("The worktree Git pointer changed during inspection.");
       if (pointer === null) {
         if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new WorktreeValidationError("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
-        verifyLeaf = true;
         if (!pointer.startsWith("gitdir: ") || await resolveGitDirectory(binding.worktreePath, pointer.slice(8)) !== await resolveGitDirectory(registration.directory, ".")) throw new Error("The original worktree Git pointer has changed.");
         const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
         if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
         if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
       }
     }
-    const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
-    if (branch !== `refs/heads/${binding.branch}`) throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
-    const identityEvidence = await inspectWorktreeIdentity({ owner: identity,
-      paths: { root: repository.root, common: repository.commonDirectory, admin: registration.directory, leaf: binding.worktreePath },
-      runtime: { root: repository.rootIdentity, common: repository.commonIdentity, leaf }, marker: registration.marker, verifyLeaf,
-    }, operation);
-    if (identityEvidence.sidecar === null) {
-      if (owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity) throw new WorktreeValidationError("The task worktree ownership marker or repository identity does not match this claim. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
-      if (verifyLeaf && owner.leaf !== leaf) throw new WorktreeValidationError("The original task worktree directory was replaced; it was retained. Historical stable identity evidence is missing; automatic device-drift recovery is unavailable.");
+    if (!terminal) {
+      const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
+      if (branch !== `refs/heads/${binding.branch}`) throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
     }
-    return { binding, leaf, registration, identityEvidence };
-  };
-  const ensureStableIdentity = async (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository, operation: Operation, result: Awaited<ReturnType<typeof inspectWorktree>>, terminal = false): Promise<void> => {
-    if (result.registration === null || result.identityEvidence?.candidate == null) return;
-    await bootstrapWorktreeIdentity(result.registration.directory, result.identityEvidence.candidate, operation, async () => {
-      const current = await inspectWorktree(project, owner, repository, operation, terminal);
-      if (current.registration?.directory !== result.registration!.directory || current.identityEvidence === null) throw new Error("Worktree registration changed before stable identity publication.");
-      return current.identityEvidence;
-    });
+    return { manifest, binding, leaf, registration };
   };
   const removeEmptyDirectory = async (target: string, operation: Operation): Promise<void> => {
     operation.check();
@@ -230,9 +214,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     catch (error) { if (!missing(error) || await directory(target) !== null) throw error; }
     operation.check();
   };
-  const removeEmptyReservation = async (repository: WorkerRepository, taskId: string, operation: Operation): Promise<void> => {
+  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation): Promise<void> => {
     const parents = [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")];
-    const target = path.join(parents[1]!, uuid(taskId, "Task ID"));
+    const target = path.join(parents[1]!, uuid(directoryName, "Worktree directory"));
     const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
     for (const parent of parents) {
       const observed = await directory(parent);
@@ -258,11 +242,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         operation.check();
         if (physical.missingComponents.length > 0) return { enumerationComplete: true, validated: [], quarantined: [], unknown: [] };
       }
-      const repository = await inspectRepository(project, operation);
+      const repository = await requirePrepared(project, operation);
       const index = await readRegistrationIndex(repository, readers, operation);
       return await scanRepositoryWorktrees(project, repository, index, operation, readers, async (owner, observedPointer) => {
-        const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true, index, observedPointer);
-        if (observed.registration === null) throw new Error("The owned task worktree registration disappeared.");
+        const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, false, index, observedPointer);
+        if (observed === null) throw new Error("The worktree manifest disappeared.");
         return { owner, binding: observed.binding };
       }, includeOtherProjects);
     } catch (error) {
@@ -291,51 +275,65 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           throw error;
         }
       }
-      return inspectRepository(project, operation);
+      const repository = await inspectRepository(project, operation);
+      if (!options.prepareFormat) throw new Error("The repository worktree format preparation is unavailable.");
+      for (const key of prepared) if ((JSON.parse(key) as string[])[1] === repository.commonDirectory) prepared.delete(key);
+      let migration = migrationByCommon.get(repository.commonDirectory);
+      if (migration === undefined) {
+        migration = options.prepareFormat(project, repository, operation);
+        migrationByCommon.set(repository.commonDirectory, migration);
+        void migration.then(() => { if (migrationByCommon.get(repository.commonDirectory) === migration) migrationByCommon.delete(repository.commonDirectory); }, () => { if (migrationByCommon.get(repository.commonDirectory) === migration) migrationByCommon.delete(repository.commonDirectory); });
+      }
+      await migration;
+      operation.check();
+      prepared.add(repositoryKey(repository));
+      return repository;
     },
     prepareWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
-      const repository = await inspectRepository(project, operation);
-      const parent = path.join(repository.root, ".worktrees");
-      await ensureDirectory(parent);
-      await ensureDirectory(path.join(parent, "daynight"));
-      const reservation = await inspectWorktree(project, owner, repository, operation, true);
-      if (reservation.registration === null && reservation.leaf !== null) await removeEmptyReservation(repository, owner.taskId, operation);
-      const before = await inspectWorktree(project, owner, repository, operation, false);
-      if (before.registration !== null) {
-        if (before.leaf === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
-        await ensureStableIdentity(project, owner, repository, operation, before);
-        return before.binding;
+      const repository = await requirePrepared(project, operation), identity = coordinates(owner);
+      const store = createWorktreeManifestStore(repository.commonDirectory);
+      const existing = manifestFor(project, identity, repository);
+      const manifest: WorktreeManifest = existing ?? { schemaVersion: 1, ...identity, directoryName: identity.worktreeId };
+      const binding = bindingForManifest(project.localPath, repository.commonDirectory, manifest);
+      await ensureDirectory(path.join(repository.root, ".worktrees"));
+      await ensureDirectory(managedNamespace(repository.root));
+      if (existing !== null) {
+        const before = await inspectWorktree(project, identity, repository, operation, false);
+        if (before?.registration !== null && before?.registration !== undefined) {
+          if (before.leaf === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
+          return before.binding;
+        }
+      } else {
+        if (await directory(binding.worktreePath) !== null) await removeEmptyReservation(repository, manifest.directoryName, operation);
+        if ((await registrations(repository, binding.worktreePath, operation)).length > 0) throw new Error("The worktree path is already registered.");
       }
-      const names = (await git(repository.root, ["for-each-ref", "--format=%(refname)", `refs/heads/${before.binding.branch}`], operation)).split("\n");
-      const reference = `refs/heads/${before.binding.branch}`;
-      if (names.some((name) => name.startsWith(`${reference}/`))) throw new Error("An existing branch namespace conflicts with the task branch.");
-      const existing = names.includes(reference);
-      if (existing && await git(repository.root, ["for-each-ref", "--format=%(worktreepath)", reference], operation) !== "") throw new Error("The retained task branch is already checked out in another worktree.");
-      const baseRef = `refs/daynight/worker-bases/${coordinates(owner).worktreeId}`;
+      const names = (await git(repository.root, ["for-each-ref", "--format=%(refname)", `refs/heads/${binding.branch}`], operation)).split("\n");
+      const reference = `refs/heads/${binding.branch}`;
+      if (names.some(name => name.startsWith(`${reference}/`))) throw new Error("An existing branch namespace conflicts with the task branch.");
+      const hasBranch = names.includes(reference);
+      if (hasBranch && await git(repository.root, ["for-each-ref", "--format=%(worktreepath)", reference], operation) !== "") throw new Error("The retained task branch is already checked out in another worktree.");
+      if (await directory(binding.worktreePath) === null) await mkdir(binding.worktreePath);
+      const reserved = await directory(binding.worktreePath);
+      if (reserved === null || (await readdir(binding.worktreePath)).length > 0) throw new Error("The unregistered worktree reservation is not empty.");
+      operation.check();
+      store.publish(manifest);
+      operation.check();
+      const baseRef = `refs/daynight/worker-bases/${identity.worktreeId}`;
       let fetchedRef: string | undefined;
-      let baseCommit: string | undefined;
-      if (!existing) {
-        await git(repository.root, ["fetch", "--no-recurse-submodules", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", "--", "origin", `+HEAD:${baseRef}`], operation, 120_000, { projectId: project.projectId, owner, command: "fetch" });
-      }
-      let binding: WorktreeBinding;
       try {
-        if (!existing) {
-          const observedRef = await git(repository.root, ["rev-parse", "--verify", baseRef], operation);
-          if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(observedRef)) throw new Error("Git returned an invalid remote HEAD object ID.");
-          fetchedRef = observedRef;
+        let baseCommit: string | undefined;
+        if (!hasBranch) {
+          await git(repository.root, ["fetch", "--no-recurse-submodules", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", "--", "origin", `+HEAD:${baseRef}`], operation, 120_000, { projectId: project.projectId, owner, command: "fetch" });
+          fetchedRef = await git(repository.root, ["rev-parse", "--verify", baseRef], operation);
+          if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(fetchedRef)) throw new Error("Git returned an invalid remote HEAD object ID.");
           baseCommit = await git(repository.root, ["rev-parse", "--verify", `${baseRef}^{commit}`], operation);
           if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(baseCommit)) throw new Error("Git returned an invalid remote HEAD commit ID.");
         }
-        await mkdir(before.binding.worktreePath);
-        const leaf = await directory(before.binding.worktreePath);
-        if (leaf === null) throw new Error("The reserved task worktree directory disappeared.");
-        const marker = `${prefix}${JSON.stringify({ ...coordinates(owner), leaf, root: repository.rootIdentity, common: repository.commonIdentity } satisfies Owner)}`;
-        const branchArgs = !existing ? ["-b", before.binding.branch, "--", before.binding.worktreePath, baseCommit!] : ["--", before.binding.worktreePath, before.binding.branch];
-        await git(repository.root, ["worktree", "add", "--lock", "--reason", marker, ...branchArgs], operation, undefined, { projectId: project.projectId, owner, command: "worktree-add" });
+        if (await directory(binding.worktreePath) !== reserved || (await readdir(binding.worktreePath)).length > 0 || (await registrations(repository, binding.worktreePath, operation)).length > 0) throw new Error("The worktree reservation changed before Git add.");
+        const branchArgs = !hasBranch ? ["-b", binding.branch, "--", binding.worktreePath, baseCommit!] : ["--", binding.worktreePath, binding.branch];
+        await git(repository.root, ["worktree", "add", ...branchArgs], operation, undefined, { projectId: project.projectId, owner, command: "worktree-add" });
         const after = await inspectWorktree(project, owner, repository, operation, false);
-        if (after.leaf === null || after.registration === null) throw new Error("Git did not create the expected owned task worktree.");
-        await ensureStableIdentity(project, owner, repository, operation, after);
-        binding = after.binding;
+        if (after?.leaf == null || after.registration === null) throw new Error("Git did not create the expected task worktree.");
       } catch (error) {
         if (fetchedRef !== undefined) {
           try { await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation, undefined, { projectId: project.projectId, owner, command: "update-ref" }); }
@@ -346,27 +344,42 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (fetchedRef !== undefined) await git(repository.root, ["update-ref", "-d", baseRef, fetchedRef], operation, undefined, { projectId: project.projectId, owner, command: "update-ref" });
       return binding;
     },
-    removeEmptyReservation: async (project: WorkerProject, taskId: string, operation: Operation): Promise<void> => {
-      await removeEmptyReservation(await inspectRepository(project, operation), taskId, operation);
+    removeEmptyReservation: async (project: WorkerProject, _taskId: string, operation: Operation): Promise<void> => {
+      // A claim identity alone cannot identify its directory after migration.
+      await requirePrepared(project, operation);
+      throw new Error("A task ID alone cannot locate the original worktree reservation.");
+    },
+    removeUnpublishedReservation: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
+      const repository = await requirePrepared(project, operation), identity = coordinates(owner);
+      if (manifestFor(project, identity, repository) !== null) throw new Error("The original worktree has a published manifest; reservation cleanup is prohibited.");
+      if (createWorktreeManifestStore(repository.commonDirectory).list().some(manifest => manifest.directoryName === identity.worktreeId)) throw new Error("The worktree reservation belongs to another published manifest.");
+      await removeEmptyReservation(repository, identity.worktreeId, operation);
     },
     verifyWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
-      const repository = await inspectRepository(project, operation);
+      const repository = await requirePrepared(project, operation);
       const result = await inspectWorktree(project, owner, repository, operation, false);
-      if (result.leaf === null || result.registration === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
-      return result.binding;
-    },
-    enrollWorktreeIdentity: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
-      const repository = await inspectRepository(project, operation);
-      const result = await inspectWorktree(project, owner, repository, operation, true);
-      if (result.registration === null) return null;
-      await ensureStableIdentity(project, owner, repository, operation, result, true);
+      if (result?.leaf == null || result.registration === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
       return result.binding;
     },
     findWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
-      const repository = await inspectRepository(project, operation);
+      const repository = await requirePrepared(project, operation);
       const result = await inspectWorktree(project, owner, repository, operation, true);
-      if (result.registration === null) return null;
-      return result.binding;
+      if (result === null) throw new Error("The original worktree manifest is missing; resource absence cannot be inferred.");
+      return result.leaf === null && result.registration === null ? null : result.binding;
+    },
+    resolveWorktreeBinding: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
+      const repository = await requirePrepared(project, operation), manifest = manifestFor(project, owner, repository);
+      return manifest === null ? null : bindingForManifest(project.localPath, repository.commonDirectory, manifest);
+    },
+    listWorktreeManifests: async (project: WorkerProject, operation: Operation): Promise<OwnedWorktree[]> => {
+      const repository = await requirePrepared(project, operation);
+      return createWorktreeManifestStore(repository.commonDirectory).list().filter(manifest => manifest.projectId === project.projectId).map(manifest => ({ owner: coordinates(manifest), binding: bindingForManifest(project.localPath, repository.commonDirectory, manifest) }));
+    },
+    retireWorktreeManifest: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
+      const repository = await requirePrepared(project, operation), manifest = manifestFor(project, owner, repository);
+      if (manifest === null) return;
+      operation.check();
+      createWorktreeManifestStore(repository.commonDirectory).remove(manifest);
     },
     scanWorktrees,
     listWorktrees: async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false): Promise<OwnedWorktree[]> => {
@@ -376,27 +389,24 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       return scan.validated;
     },
     removeWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
-      const repository = await inspectRepository(project, operation);
+      const repository = await requirePrepared(project, operation);
       const key = `${repository.rootIdentity}/${repository.commonIdentity}/${uuid(owner.taskId, "Task ID")}`;
       if (removing.has(key)) throw new Error("Task worktree cleanup is already in progress.");
       removing.add(key);
       try {
         let result = await inspectWorktree(project, owner, repository, operation, true);
+        if (result === null) throw new Error("The original worktree manifest is missing; resource removal cannot be authorized.");
         if (result.registration === null) {
-          await removeEmptyReservation(repository, owner.taskId, operation);
+          if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation);
           return;
         }
         if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
-          // Nonrecursive removal also settles an interrupted final unlink or an
-          // empty reservation without authorizing deletion of unattributed bytes.
-          operation.check();
           await removeEmptyDirectory(result.binding.worktreePath, operation);
           result = await inspectWorktree(project, owner, repository, operation, true);
         }
-        if (result.registration === null) return;
+        if (result?.registration === null || result === null) return;
         if (result.leaf !== null) {
-          const { registration, binding, leaf } = result;
-          const identityEvidence = result.identityEvidence!;
+          const { registration, binding, leaf, manifest } = result;
           const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
           for (const target of [path.join(repository.root, ".worktrees"), path.dirname(binding.worktreePath), path.dirname(registration.directory), registration.directory]) {
             const identity = await directory(target);
@@ -405,39 +415,33 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           }
           directories.set(binding.worktreePath, leaf);
           const metadata = new Map<string, string>();
-          for (const target of [path.join(binding.worktreePath, ".git"), ...["locked", "gitdir", "commondir"].map(name => path.join(registration.directory, name))]) {
+          for (const target of [path.join(binding.worktreePath, ".git"), ...["gitdir", "commondir"].map(name => path.join(registration.directory, name))]) {
             const contents = await ordinaryFile(target);
-            if (contents === null) throw new Error(`Worktree ownership metadata ${target} disappeared.`);
+            if (contents === null) throw new Error(`Worktree metadata ${target} disappeared.`);
             metadata.set(target, contents);
           }
           const verifyOwnership = async (): Promise<void> => {
             operation.check();
-            for (const [target, identity] of directories) {
-              if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-            }
-            for (const [target, contents] of metadata) {
-              if (await ordinaryFile(target) !== contents) throw new Error(`Worktree ownership metadata ${target} changed during cleanup.`);
-            }
-            await verifyWorktreeIdentityMetadata(registration.directory, identityEvidence);
+            const current = manifestFor(project, owner, repository);
+            if (current === null || current.directoryName !== manifest.directoryName) throw new Error("The worktree manifest changed during cleanup.");
+            for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+            for (const [target, contents] of metadata) if (await ordinaryFile(target) !== contents) throw new Error(`Worktree metadata ${target} changed during cleanup.`);
+            if (await ordinaryFile(path.join(registration.directory, "locked")) !== null) throw new Error("The worktree acquired a Git lock during cleanup.");
             operation.check();
           };
-          // Bind the lightweight mutation guards to a second complete ownership inspection.
           const confirmed = await inspectWorktree(project, owner, repository, operation, true);
-          if (confirmed.leaf !== leaf || confirmed.registration?.directory !== registration.directory || confirmed.registration.marker !== registration.marker) throw new Error("The task worktree ownership changed before cleanup.");
+          if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
           await verifyOwnership();
           await removeWorktreeContents(binding.worktreePath, leaf, operation, verifyOwnership, removeDirectory);
-          await inspectWorktree(project, owner, repository, operation, true);
           await verifyOwnership();
           await unlink(path.join(binding.worktreePath, ".git"));
           operation.check();
-          for (const [target, identity] of directories) {
-            if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-          }
-          operation.check();
+          for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
           await removeEmptyDirectory(binding.worktreePath, operation);
         }
         operation.check();
         result = await inspectWorktree(project, owner, repository, operation, true);
+        if (result === null) throw new Error("The worktree manifest disappeared during cleanup.");
         if (result.leaf !== null) throw new Error("The original task worktree directory still exists after removal.");
         if (result.registration !== null) {
           try { await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation, undefined, { projectId: project.projectId, owner, command: "worktree-remove" }); }
@@ -446,26 +450,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
             try { operation.check(); }
             catch (cancellation) { if (cancellation === error) throw error; throw new AggregateError([error, cancellation], "Worktree removal failed before cancellation.", { cause: error }); }
             const observed = await inspectWorktree(project, owner, repository, operation, true);
-            if (observed.leaf !== null || observed.registration !== null) throw error;
+            if (observed === null || observed.leaf !== null || observed.registration !== null) throw error;
           }
         }
         result = await inspectWorktree(project, owner, repository, operation, true);
-        if (result.leaf !== null || result.registration !== null) throw new Error("The original task worktree removal is incomplete.");
-      } finally {
-        removing.delete(key);
-      }
+        if (result === null || result.leaf !== null || result.registration !== null) throw new Error("The original task worktree removal is incomplete.");
+      } finally { removing.delete(key); }
     },
-  };
-  return {
-    prepareRepository: (project: WorkerProject, operation: Operation) => tracked(operation, scoped => manager.prepareRepository(project, scoped)),
-    prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped)),
-    removeEmptyReservation: (project: WorkerProject, taskId: string, operation: Operation) => tracked(operation, scoped => manager.removeEmptyReservation(project, taskId, scoped)),
-    verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),
-    enrollWorktreeIdentity: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.enrollWorktreeIdentity(project, owner, scoped)),
-    findWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.findWorktree(project, owner, scoped)),
-    scanWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.scanWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
-    listWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
-    removeWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeWorktree(project, owner, scoped)),
     dispose: (): Promise<void> => {
       if (disposed !== undefined) return disposed;
       closing.abort(new Error("Worker Git manager is closing."));
@@ -477,6 +468,30 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       })();
       return disposed;
     },
+  };
+  return {
+    prepareRepository: (project: WorkerProject, operation: Operation) => tracked(operation, async scoped => {
+      const key = absolute(project.localPath, "Repository path");
+      const prior = preparationByPath.get(key);
+      if (prior !== undefined) { const result = await prior; scoped.check(); return result; }
+      const previous = preparedByPath.get(key);
+      if (previous !== undefined) { prepared.delete(previous); preparedByPath.delete(key); }
+      const pending = manager.prepareRepository(project, scoped);
+      preparationByPath.set(key, pending);
+      try { const result = await pending; preparedByPath.set(key, repositoryKey(result)); return result; } finally { if (preparationByPath.get(key) === pending) preparationByPath.delete(key); }
+    }),
+    prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped)),
+    removeEmptyReservation: (project: WorkerProject, taskId: string, operation: Operation) => tracked(operation, scoped => manager.removeEmptyReservation(project, taskId, scoped)),
+    removeUnpublishedReservation: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeUnpublishedReservation(project, owner, scoped)),
+    verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),
+    findWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.findWorktree(project, owner, scoped)),
+    resolveWorktreeBinding: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.resolveWorktreeBinding(project, owner, scoped)),
+    listWorktreeManifests: (project: WorkerProject, operation: Operation) => tracked(operation, scoped => manager.listWorktreeManifests(project, scoped)),
+    retireWorktreeManifest: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.retireWorktreeManifest(project, owner, scoped)),
+    scanWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.scanWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
+    listWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
+    removeWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeWorktree(project, owner, scoped)),
+    dispose: manager.dispose,
   };
 };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;

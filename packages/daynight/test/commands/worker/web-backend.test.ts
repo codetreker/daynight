@@ -133,9 +133,10 @@ it("reports in-flight Web worktree and startup stages without changing operation
   const result = backend.advance(input, new AbortController().signal);
   try {
     await worktreeEntered;
-    expect(selected).toHaveBeenCalledWith(expect.objectContaining({ claimId: input.claimId }), input.repositoryPath, path.join(input.repositoryPath, ".worktrees", "daynight", input.taskId));
+    expect(selected).not.toHaveBeenCalled();
     expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "worktree-preparation" }, false, undefined);
     releaseWorktree(); await startEntered;
+    expect(selected).toHaveBeenCalledWith(expect.objectContaining({ claimId: input.claimId }), input.repositoryPath, binding.worktreePath);
     expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
     releaseStart(); await expect(result).rejects.toBe(original);
   } finally { releaseWorktree(); releaseStart(); await result.catch(() => {}); }
@@ -898,7 +899,7 @@ it("retries endpoint closure after native stop without replaying native cleanup"
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
 });
 
-it("reobserves recreated endpoint and Git resources after the local execution was marked done", async () => {
+it("reobserves the endpoint without deleting a successor path after terminal completion", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const binding = await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never);
   let worktreePresent = true;
@@ -913,10 +914,11 @@ it("reobserves recreated endpoint and Git resources after the local execution wa
   if (process.platform !== "win32") await writeFile(source.ticket.ipcEndpoint, "retained endpoint");
   const second = await backend.cleanup(completed, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: completed }, onExecutionStopped: () => {} } });
   expect(second).toMatchObject({ complete: true, task: { status: "done" } });
-  expect(worktreePresent).toBe(false);
+  expect(worktreePresent).toBe(true);
   if (process.platform !== "win32") await expect(access(source.ticket.ipcEndpoint)).rejects.toMatchObject({ code: "ENOENT" });
   expect(source.stopped).toHaveBeenCalledTimes(2);
-  expect(archive).toHaveBeenCalledTimes(2);
+  expect(archive).toHaveBeenCalledOnce();
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
 });
 
@@ -1183,4 +1185,68 @@ it("does not report a stopped incomplete initialization as still starting", asyn
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
   expect(backend.observeStartupReport(source.task)?.startup).toEqual({ state: "unknown", reasonCode: "controller_start_unknown" });
+});
+
+it("settles an unpublished reservation only when the original Web execution never launched", async () => {
+  const f = await fixture();
+  vi.mocked(f.git.resolveWorktreeBinding).mockResolvedValue(null);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  const task = f.store.getTask(f.identity)!;
+  const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
+  expect(result.complete).toBe(true);
+  expect(f.git.removeUnpublishedReservation).toHaveBeenCalledOnce();
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("records a discovered original manifest binding before settling an unlaunched Web execution", async () => {
+  const f = await fixture();
+  const task = f.store.getTask(f.identity)!;
+  const binding = await f.git.resolveWorktreeBinding(f.identity, f.identity, {} as never);
+  expect(binding).not.toBeNull();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async () => { expect(f.store.getTask(task)?.resources.worktree).toEqual(binding); });
+  const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
+  expect(result.complete).toBe(true);
+  expect(f.store.getTask(task)?.resources.worktree).toEqual(binding);
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+});
+
+it("retains a launched Web execution whose original worktree manifest is missing", async () => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 30 }, 3);
+  const source = await cleanupSource(f, task);
+  vi.mocked(f.git.resolveWorktreeBinding).mockResolvedValue(null);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive: async () => {}, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toThrow("no worktree manifest");
+  expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("retains an unlaunched Web worktree when the original binding cannot be persisted", async () => {
+  const f = await fixture(), task = f.store.getTask(f.identity)!;
+  const failure = new Error("binding persistence failed");
+  vi.spyOn(f.store, "bindWorktree").mockImplementationOnce(() => { throw failure; });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
+  expect(f.store.getTask(task)?.resources.worktree).toBeNull();
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.git.removeUnpublishedReservation).not.toHaveBeenCalled();
+});
+
+it("retains the original binding across a failed Web worktree deletion and retry", async () => {
+  const f = await fixture(), task = f.store.getTask(f.identity)!;
+  const binding = await f.git.resolveWorktreeBinding(f.identity, f.identity, {} as never);
+  const failure = new Error("worktree deletion failed");
+  const persist = vi.spyOn(f.store, "bindWorktree");
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  const request = { kind: "terminal" as const, deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } };
+  await expect(backend.cleanup(task, request)).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
+  expect(f.store.getTask(task)?.resources.worktree).toEqual(binding);
+  const result = await backend.cleanup(f.store.getTask(task)!, request);
+  expect(result.complete).toBe(true);
+  expect(f.store.getTask(task)?.resources.worktree).toEqual(binding);
+  expect(persist).toHaveBeenCalledOnce();
+  expect(f.git.removeWorktree).toHaveBeenCalledTimes(2);
 });

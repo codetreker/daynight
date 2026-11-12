@@ -54,7 +54,7 @@ import { buildWorkerPrompt } from "./prompts.js";
 import { createWorkerPromptSource } from "./prompt-source.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter, syncWorkerConfigurationOnce } from "./reporter.js";
-import { createWorkerRepositoryAdmission } from "./repository-admission.js";
+import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { shutdownWorkerExecutions } from "./shutdown.js";
@@ -65,6 +65,7 @@ import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModel
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
+import { sameWorktreeLocation } from "./worktrees/paths.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
 import { createWorkerToolSelectionRuntime } from "./tool-selection-runtime.js";
@@ -324,7 +325,13 @@ export const runWorker = async (options: {
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
-    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit) })) : git;
+    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
+      prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: getStore(), project, repository, operation, platform, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered, getHerdr: async () => {
+        const environment = await nativeApplication.prepareEnvironment();
+        herdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...environment });
+        return herdr;
+      } }),
+    })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
     const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
       unobservedLocalMappings.add(binding.projectId);
@@ -587,18 +594,14 @@ export const runWorker = async (options: {
                 throw error;
               }
               if (mapping.invalidProjectId) {
-                const operation = createOperation({ signal });
-                try {
-                  const worktrees = await getGit().listWorktrees({ projectId: "00000000-0000-4000-8000-000000000000", repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
-                  if (worktrees.length > 0) throw new Error("A local repository with an invalid Project ID contains managed resources.");
-                } finally { operation.dispose(); }
-                unobservedLocalMappings.delete(projectId);
-                return;
+                throw new Error("A local repository with an invalid Project ID cannot be prepared for resource observation.");
               }
               const project = await resolveProject({ repoUrl: mapping.remote }, signal);
               const operation = createOperation({ signal });
               try {
-                const scan = await getGit().scanWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                const candidate = { projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path };
+                await getGit().prepareRepository(candidate, operation);
+                const scan = await getGit().scanWorktrees(candidate, operation, false, true);
                 if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Local repository resource coverage is incomplete.");
                 if ([...scan.validated, ...scan.quarantined].some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
                 // Mapping admission proves the project/path association only. The
@@ -844,6 +847,14 @@ export const runWorker = async (options: {
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+          prepareProject: async (projectId, preparationSignal) => {
+            const project = currentStore.getProject({ projectId });
+            if (project === null) throw new Error("The retained project binding is unavailable.");
+            // Missing retained repositories are not new clones.
+            await lstat(project.localPath);
+            const operation = createOperation({ signal: preparationSignal });
+            try { await getGit().prepareRepository(project, operation); } finally { operation.dispose(); }
+          },
           monitoring: observer,
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
@@ -1044,7 +1055,10 @@ export const runWorkerControl = async (options: {
     const userId = await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit) });
+    let getControlHerdr: () => WorkerHerdrAdapter;
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit),
+      prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: store!, project, repository, operation, platform, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered, getHerdr: async () => getControlHerdr() }),
+    });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths, readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...legacyHerdrToolSelections(store)] });
@@ -1096,6 +1110,7 @@ export const runWorkerControl = async (options: {
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
     const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
+    getControlHerdr = () => herdr;
     const machine = machineDescription(platform);
     const retryPromptSource = options.request.kind === "retry" ? createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId }) : undefined;
     controlPromptSource = retryPromptSource;
@@ -1147,9 +1162,32 @@ export const runWorkerControl = async (options: {
       availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
       buildPrompt: buildWorkerPrompt, ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
     });
+    const prepareControlProject = async (identity: { projectId: string }): Promise<void> => {
+      const project = store!.getProject(identity);
+      if (project === null) throw new Error("The original project repository binding is unavailable.");
+      // Management never recreates a missing retained repository.
+      await lstat(project.localPath);
+      const operation = createOperation({ signal });
+      try { await git!.prepareRepository(project, operation); } finally { operation.dispose(); }
+    };
+    const controlCoordinator = {
+      ...coordinator,
+      advanceRetry: async (identity: Parameters<typeof coordinator.advanceRetry>[0]) => {
+        await prepareControlProject(identity);
+        return coordinator.advanceRetry(identity);
+      },
+      cleanupSource: async (identity: Parameters<typeof coordinator.cleanupSource>[0], settings: Parameters<typeof coordinator.cleanupSource>[1]) => {
+        if (settings?.deleteWorktree === true) await prepareControlProject(identity);
+        return coordinator.cleanupSource(identity, settings);
+      },
+      completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0]) => {
+        await prepareControlProject(owner);
+        return coordinator.completeSource(owner);
+      },
+    };
     const result = await submitWorkerControl({
       store, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories: coordinatorConfiguration.repositories,
-      request: options.request, signal, coordinator, verifyWebServer: web.verifyWebServer,
+      request: options.request, signal, coordinator: controlCoordinator, verifyWebServer: web.verifyWebServer,
       emit: diagnostics.emit,
     });
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
@@ -1203,11 +1241,14 @@ export const runWorkerResources = async (options: {
     }
     store = openWorkerStore(paths.databaseFile);
     const project = store.getProject(request);
-    if (!project || path.join(project.localPath, ".worktrees", "daynight", request.taskId) !== resource.worktreePath) throw new Error("The original worktree path has no matching project binding.");
+    if (!project) throw new Error("The original worktree path has no matching project binding.");
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory,
       reportPending: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local cleanup remains pending for project ${pending.projectId}; waiting for local close.\n`),
       reportSettled: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local resources closed for project ${pending.projectId}.\n`),
+      prepareFormat: (candidate, repository, scoped) => prepareWorkerWorktreeFormat({ paths, store: store!, project: candidate, repository, operation: scoped, platform, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered, getHerdr: async () => herdr! }),
     });
+    await lstat(project.localPath);
+    await git.prepareRepository(project, operation);
     const result = await archive.dispose(request, operation, async () => {
       operation.check();
       const fresh = archive.resources().find(value => value.sessionId === request.sessionId);
@@ -1216,10 +1257,20 @@ export const runWorkerResources = async (options: {
       // intent. A local shutdown record alone cannot decide claim finality.
       if (fresh.disposition?.operationId !== request.operationId || fresh.disposition.action !== request.action) throw new Error("The original authorized disposal intent is missing.");
       assertHerdrDisposalTarget(fresh, request);
+      const binding = await git!.resolveWorktreeBinding(project, request, operation);
+      if (binding === null || !await sameWorktreeLocation(binding.worktreePath, fresh.worktreePath)) throw new Error("The original worktree path has no matching project binding.");
       await git!.removeWorktree(project, request, operation);
       if (await git!.findWorktree(project, request, operation) !== null) throw new Error("The original worktree remains after explicit deletion.");
     });
-    reconcileDeletedHerdrResource(store, result);
+    if (reconcileDeletedHerdrResource(store, result)) {
+      const original = await git.resolveWorktreeBinding(project, request, operation);
+      if (original !== null) {
+        // The durable deletion decision predates any successor at this path.
+        // Reconcile only the recorded directory name; do not inspect that path.
+        if (path.basename(original.worktreePath) !== path.basename(result.worktreePath)) throw new Error("The original retained binding differs from its manifest.");
+        await git.retireWorktreeManifest(project, request, operation);
+      }
+    }
     options.output(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     operation.dispose();

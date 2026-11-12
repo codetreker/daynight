@@ -42,11 +42,11 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离资源继续保留文件责任；独立归档队列继续发布 ledger、冻结并上传归档，读回 ready/unavailable receipt 后才清理原 worktree。失败保留源和工作区并维持同 task 路径屏障，不用本机 done 认定归档或工作区已删除。采样、预算与处置规则由 [Herdr 录制设计](herdr-recording.md)拥有。
 
-## 归属清单存储组件
+## 归属清单与格式转换
 
-`worktrees/manifest.ts` 提供独立的同步清单存储，路径为 Git common 目录下的 `daynight/worktrees/<worktreeId>.json`。记录仅接受版本 1 的六个字段，按 worktreeId、完整 claim 和目录名分别拒绝冲突。发布先持久化两级命名空间，再 flush 文件并发布；重试已可见的相同记录时重新完成文件和目录屏障。读取不逐文件 flush，退休只在 expected 字段匹配后移除元数据。该组件尚未接入 Worker 运行路径，也不激活格式标记或迁移旧资源；现有 Git lock、物理身份与目录规则继续生效。平台目录同步能力的限制与现有持久文件原语相同。
+`worktrees/manifest.ts` 提供独立的同步清单存储，路径为 Git common 目录下的 `daynight/worktrees/<worktreeId>.json`。记录仅接受版本 1 的六个字段，按 worktreeId、完整 claim 和目录名分别拒绝冲突。发布先持久化两级命名空间，再 flush 文件并发布；重试已可见的相同记录时重新完成文件和目录屏障。读取不逐文件 flush，退休只在 expected 字段匹配后移除元数据。Worker 通过该清单定位当前资源；后端和本地责任结算后才退休元数据。平台目录同步能力的限制与现有持久文件原语相同。
 
-`worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。转换器尚未接入生产启动，现有运行路径仍使用旧格式。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
+`worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。选中和保留的仓库在文件操作准入前完成转换；失败仅关闭对应仓库的文件 gate。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
 历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，以及 Herdr 已确认资源删除或已核验的 never-started 退休记录；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
 
@@ -66,7 +66,7 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
     tmp/
     h/                 # legacy 私有 Herdr 配置与状态
       r/<instance>/    # macOS 每个实际运行代次的独占实例
-<local_path>/.worktrees/daynight/<task_id>/
+<local_path>/.worktrees/daynight/<worktree_id>/
 ```
 
 每个配置根目录一个 worker；不同根不得管理同一任务 worktree。Run 和人工管理命令使用同一个实例锁，以同一 SQLite 作为取得/释放锁时的 gate，不添加锁表。失效锁可回收，但不能据此认定原生进程已停。一个状态目录绑定单一 service origin、账号和 workerId；切换前先处理原执行并重建本机状态，索引不提供跨服务或账号接续。
@@ -77,7 +77,7 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
-云端尚无目标且首次候选中有明确不可用的 Project 时，runtime 保留完整本地选择，在进程内分别验证和准备可用项目；不把局部集合提交为云配置。所有项目重新可访问并完成验证后，才提交完整首次候选。身份、协议和网络错误保持原分类；已有云目标始终是配置权威。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 标记属于其他 Project 时保留责任，不按新 ID 重绑。
+云端尚无目标且首次候选中有明确不可用的 Project 时，runtime 保留完整本地选择，在进程内分别验证和准备可用项目；不把局部集合提交为云配置。所有项目重新可访问并完成验证后，才提交完整首次候选。身份、协议和网络错误保持原分类；已有云目标始终是配置权威。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 清单属于其他 Project 时保留责任，不按新 ID 重绑。
 
 `worker repo list` 只读本地注册。云端目标尚未建立时，setup 与 repo add/remove 仍通过现有完整 Project 清单、身份和路径计算处理本地候选。已有传输 URL、路径和兼容 native 值保留；同类型逐字段继承，切换类型清除未覆盖的 model/args，args 整体替换。repositoryRoot 与 review 独立，只为新路径展开，改变根不搬移已有仓库。
 
@@ -223,7 +223,7 @@ Worker 状态库以原索引结构作为版本 5 基线，版本 6 增加 cleanu
 
 每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。执行容量按 claim 去重，普通启动或恢复先预留名额；终态清理确认精确原执行停止或权威未启动后不再占槽。未知或仍运行继续计占。文件、归档、隔离及同 task 旧 claim 屏障独立保留，不能凭已释放的执行槽删除资源或启动同 task 后继。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择，每分配一个名额就从下一项目继续，直到没有可启动项或容量已满。新领取在所有配置项目中每轮合计最多一个。preferPlatformSpecificTasks=false 时按原项目轮转读取兼容候选；为 true 时先轮转全部可领取项目的当前平台专用候选，耗尽该类别后才轮转不限平台候选。专用候选使用独立的项目游标；不限平台候选与关闭优先模式时的混合候选沿用常规项目游标。各游标跨轮保留，在各自类别内从下一项目继续，专用候选的扫描、跳过和成功领取均不推进常规游标。项目内保留服务端 createdAt、id 顺序，不能从一个项目取得不限平台候选后忽略其他项目的专用任务。空项目和被原资源准入屏障拒绝的候选可以跳过；确认授予并登记 pending 后立即结束本轮领取，即使任务暂不能 active。真实配置变化使旧候选流失效。所有类别的候选生成器在退出时关闭；后续新领取等待下一轮，由 pollIntervalMs、有效容量变化或配置变化触发。[领取节奏决策](../../.agents/notes/archived/feature/2026-11-04-worker-single-acquisition.md)记录其吞吐代价。
 
-仍属于自己的本机 active 已占名额，先为这些任务排队，在各自串行操作内读取当前 Herdr 并恢复；全局 Git 发现中其他工作区的文件系统错误不阻塞它们。新的 pending 启动和新 claim 分配要求完整清单、资源枚举覆盖与可证明的全局容量。不可用 ID 自身不占执行槽；若仓库确实不存在则可确认没有该仓库的 worktree。枚举不完整或未知责任无可靠上界时保持容量不确定性并阻止新准入。
+仍属于自己的本机 active 已占名额，先为这些任务排队，在各自串行操作内读取当前 Herdr 并恢复；全局 Git 发现中其他工作区的文件系统错误不阻塞它们。新的 pending 启动和新 claim 分配要求完整自有清单、目标仓库的资源枚举与可证明的执行容量。可定位的其他仓库格式准备失败只关闭其文件 gate；未知执行责任或无法界定范围的观察失败仍保守计占或阻止准入。
 
 Git 扫描将完整枚举结果分为 validated、quarantined 与 unknown。注册索引一次收集各 admin 的 pointer、marker、common 和读取错误，并按物理目标证明注册唯一性；人工或无 marker 注册也参加目标核对，路径别名不能隐藏重复注册。
 
@@ -231,13 +231,13 @@ Git 扫描将完整枚举结果分为 validated、quarantined 与 unknown。注�
 
 Windows 的 drive-relative 路径（如 `C:foo`）和 root-relative 路径（如 `\foo`、`/foo`）不能确定目标卷，必须拒绝，不能借进程当前盘符或当前目录补全；完整盘符绝对路径、完整 UNC 路径和普通相对路径都遵守上述父目录遍历证明。缺失组件中的未验证 . 或 .. 遍历保持 unknown。两个目标均缺失且路径拼写仅大小写不同时，不能证明它们是独立目标，注册唯一性保持 unknown；该约束适用于所有平台，不能根据缺失路径猜测文件系统的大小写语义。
 
-明确指向其他目标的局部失败不污染当前目标，无法解析 pointer 或歧义关系仍保持 unknown。只有完整 owner、仓库和唯一固定注册位置可定位，且错误明确属于稳定观察下的静态局部校验失败时，才能成为 quarantine 候选。当前对象与历史身份证据的静态失配不同于同次观察之间的变化：观察过程中发现 owner、marker 或 sidecar 元数据、当前目录对象或 Git 指针变化时，必须保持 unknown，不能按旧索引中的 owner 隔离。branch 或 sidecar 的局部失败可能先于完整身份复核发生，因此 scan 采用该失败前仍须稳定读回 locked marker，并与索引记录核对；marker 改变、缺失或无法确认时转为 unknown，不能让早期校验失败掩盖新 owner 冲突。
+明确指向其他目标的局部失败不污染当前目标，无法解析 pointer 或歧义关系仍保持 unknown。只有完整 owner、仓库和唯一注册位置可定位，且错误明确属于稳定观察下的静态局部校验失败时，才能成为 quarantine 候选。清单、当前目录对象或 Git 指针在观察期间变化时保持 unknown；损坏或未知清单不能当作无资源。
 
 读取、原生查询及响应解析失败属于观察不完整；未分类异常保持 unknown，不按错误码拼写推断可隔离。上述复核沿用受控文件系统写入前提，不提供抵御恶意同用户并发替换的原子快照保证。严格 listWorktrees 对隔离或未知结果仍抛错，不将未验证资源省略为不存在；普通未注册路径和人工注册沿既有发现规则保留。
 
-Coordinator 交叉核对隔离候选与本机持久执行、Web/Herdr 原责任、待确认停止记录或本轮自有 claim 的完整四字段身份。工作区已关闭但进程停止未确认的原 owner 仍参与 worktreeId 冲突检查，不能仅按 claim 去重计数后忽略身份矛盾。候选 marker 不是 Worker 所有权证明；LocalTask 仅有 claim 坐标，也不能单独证明 worktreeId。映射及 Web 冻结仓库路径必须与扫描的物理仓库和规范 repo identity 一致；Herdr 保留的原始 worktreePath 和待确认停止记录的原 cwd 必须指向该仓库下的固定任务路径，矛盾或无法解析保持 unknown。只有不存在矛盾且归属可证明的隔离资源才能保守纳入责任并保持库存覆盖完整。隔离项不提供可用 binding，阻止同 task 后继与自身 pending 启动；精确原执行停止后不再占执行槽，文件责任仍保留。健康任务在余量内继续调度。未知项不能按一个固定名额估计，也不能以历史快照代替当前容量上界。
+Coordinator 交叉核对隔离候选与本机持久执行、Web/Herdr 原责任、待确认停止记录或本轮自有 claim 的完整四字段身份。工作区已关闭但进程停止未确认的原 owner 仍参与 worktreeId 冲突检查，不能仅按 claim 去重计数后忽略身份矛盾。清单本身不是 Worker 进程归属证明；LocalTask 仅有 claim 坐标，也不能单独证明 worktreeId。映射及 Web 冻结仓库路径必须与扫描的物理仓库和规范 repo identity 一致；Herdr 保留的原始 worktreePath 和待确认停止记录的原 cwd 必须与清单所定位的实际路径一致，矛盾或无法解析保持 unknown。只有不存在矛盾且归属可证明的隔离资源才能保守纳入责任并保持库存覆盖完整。隔离项不提供可用 binding，阻止同 task 后继与自身 pending 启动；精确原执行停止后不再占执行槽，文件责任仍保留。健康任务在余量内继续调度。未知项不能按一个固定名额估计，也不能以历史快照代替当前容量上界。
 
-Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 validated 与 quarantined 的全部项目身份；unknown 或外项目资源拒绝登记。映射登记只确认项目和路径，之后仍由 coordinator 重新证明资源归属及容量。无效 Project ID 的无资源证明、缺 worktreeId 的旧责任清理继续使用严格查询。prepareRepository 不增加全工作树 preflight，以免把单项失败重新变成项目准备失败。扫描恢复后下一轮正常对账解除对应失败；监控报告具体 claim 隔离，或项目观察不完整造成的全局准入影响。
+Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 validated 与 quarantined 的全部项目身份；unknown 或外项目资源拒绝登记。映射登记只确认项目和路径，之后仍由 coordinator 重新证明资源归属及容量。缺 worktreeId 的旧责任清理继续使用严格查询，无法证明来源时保留责任。prepareRepository 先完成格式转换；转换失败只关闭该仓库的文件准入。扫描恢复后下一轮正常对账解除对应失败；监控报告具体 claim 隔离，或项目观察不完整造成的全局准入影响。
 
 终态停止观察独立于文件 gate 和退避。Web 校验原 ticket、journal 与 Controller 身份，Controller 停止后重读 journal 并验证 native 记录前缀，再检查已记录 provider 的原实例；未登记或逃逸后代不在这一观察保证内。legacy 使用本次 Worker 内原绑定和停止回执，原生 Herdr 使用对应运行已提交的 stop proof。读取失败或身份冲突为 unknown；恢复先预留并使旧观察失效，旧异步观察与旧清理通知不能覆盖新运行。运行时在轮次前捕获 wake revision，配置或有效容量事实变化请求下一串行轮次；重复事实不自唤醒。
 
@@ -245,7 +245,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 当前运行监控消费同一容量准入投影与真实操作边界，不增加资源发现或改变清理责任。[上报设计](daynight-worker-reporting.md#当前运行监控)说明观测与独立发送的生命周期。
 
-原 claim 在完整自有清单中缺席后，即使全局资源快照未发现它，本机未完成行也进入与已知资源相同的串行清理 job。清理目标由原 claim 身份及可选的真实 worktreeId 表示；Herdr、Web 或 Git 观察发现完整 owner 后沿用该身份。尚无 worktreeId 时不创建虚假 owner 或另建台账：先确认原模式没有剩余执行，再核对目标 Git 注册；没有原注册时只允许 removeEmptyReservation 移除无注册空目录。已识别的同 task 其他 claim 资源保持不变，旧 claim 的资源已消失便可结束旧索引。身份不完整的失败使用进程内退避，重启由保留的未完成索引行重新发现；完整 owner 才可持久保存 cleanup_schedules。
+原 claim 在完整自有清单中缺席后，即使全局资源快照未发现它，本机未完成行也进入与已知资源相同的串行清理 job。清理目标由原 claim 身份及可选的真实 worktreeId 表示；Herdr、Web 或 Git 观察发现完整 owner 后沿用该身份。尚无 worktreeId 时不创建虚假 owner 或另建台账：先确认原模式没有剩余执行，再核对目标 Git 注册；没有完整 owner 时不推测目录。已识别的同 task 其他 claim 资源保持不变，旧 claim 的资源已消失便可结束旧索引。身份不完整的失败使用进程内退避，重启由保留的未完成索引行重新发现；完整 owner 才可持久保存 cleanup_schedules。
 
 新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；macOS 随即保存该新 claim 的空运行记录，证明资源尚未启动，再确认名额和旧执行收尾后提交 active、准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。macOS 不把这种库存找回解释为 fresh launch provenance；缺少原 lifecycle 记录时保留未知，不因远端 native 摘要为空而补建运行。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 
@@ -253,23 +253,16 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 ## Git 工作区与资源身份
 
-每 task 使用分支 `daynight/<task_id>` 和目录 `.worktrees/daynight/<task_id>`。准备新工作区时先检查固定路径；无 Git 注册的空预留目录可通过 removeEmptyReservation 非递归移除，再完成原有独占预留及 Git add。这个恢复不采纳未知内容，也不绕过其他 claim 的有效注册。已有目录必须与仓库、Git 注册、静态 claim/worktree 身份及精确 .git 指针匹配；正常恢复保留 dirty state，不 reset/clean。原生会话已知而原 worktree 丢失时报告错误并保留 active。
-
+每 task 使用分支 `daynight/<task_id>`，新 claim 使用 `.worktrees/daynight/<worktree_id>`。迁移的旧 claim 使用清单记录的原 taskId 目录，不改变冻结 cwd。准备新工作区先独占 mkdir、可靠发布清单，再执行 unlocked Git add；空无主预留可非递归移除，非空无关联内容不能采纳。恢复验证清单、仓库、唯一 Git 注册和双向指针，保留 dirty state；已启动执行的 checkout 丢失时不重建。
 确认任务分支不存在后，Git manager 使用受控、有期限且可取消的 Git 执行器从 origin 获取远端 HEAD 到绑定 worktreeId 的私有临时 ref，解析并固定 commit SHA，以该 SHA 创建分支和 worktree；新 clone 也执行此刷新。Fetch 禁止写入 FETCH_HEAD、额外 ref 映射、tags、递归子模块及自动 maintenance，使不同任务并发获取时不会共享基线。成功创建后以所读 SHA compare-and-delete 临时 ref；中断后同一 worktreeId 的后续尝试可覆盖并回收它，不作为旧基线复用。清理错误保持可见，不能掩盖创建错误。远端 HEAD 获取、commit 解析或 fetch 失败，以及刷新取消或超时时，不回退到本地 HEAD 或 origin/HEAD，也不创建新分支或 worktree。保留分支继续从原 tip 创建 worktree，已核验 worktree 直接复用；这两条路径不依赖网络。主 checkout 的分支、HEAD、内容及本地主线不因刷新而改变。决策及权衡见[远端默认分支基线](../../.agents/notes/implemented/bug-fix/2026-11-09-worker-remote-default-base.md)。
 
 Worker 的 clone、fetch、worktree add/remove 和临时 ref 清理使用 owned Git：有界结果报告收尾仍在途时，原 project/task gate 保留至原 Git 子进程、已创建输出流及停止 helper 的本地 close 均完成。错误和迟到的收尾错误保持可见；不能以目录缺失代替 join。普通 Git 查询仍使用有界执行器。manager 关闭时拒绝新准备和修改，取消并等待已准入的仓库准备与 Git 句柄，再删除私有 hooks。已确认停止的 Agent 执行容量仍独立释放。local-closed 不证明逃逸或脱离 stdio 的后代停止，它们可能在资源交接后继续写入；取舍见[Worker Git 收尾决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-git-mutation-closure.md)。
 
-统一的资源身份为 `projectId/taskId/claimId/worktreeId` 四项 canonical UUID。Herdr 标签后缀和 Git locked-worktree 所有权标记使用同一份身份；服务地址参与 API 请求和 managed assignment；macOS lifecycle 的完整 owner 另绑定 serverOrigin、workerId、ownerUserId 和 provider，不能与四字段静态标记混为一谈。动态执行进度与 title 不进入 Git 标记。实际 pane、cwd、Git 注册和目录每次读取。Device/inode 只作辅助核对；符号链接、外来路径、非空目录的缺失指针或歧义注册不能授权递归删除。
-
-macOS APFS 的跨重启身份由不可变 `daynight-identity.json` 补充记录提供，旧 locked marker 的七字段和原字节保持不变。记录绑定 owner、原 marker SHA-256，以及 root/common/admin/leaf 各自的卷 UUID 和持久对象 ID。平台使用已打开目录句柄读取 fgetattrlist，分别验证文件属性、卷属性、APFS 类型与持久对象 ID 能力，采样前后复核句柄和路径。对象 ID 以十进制字符串保存；当前 dev/inode 仍用于同次操作中的替换检查，不使用 HEAD、mtime、ctime 或写入计数作为持久身份。
-
-新建、准备及显式 enrollWorktreeIdentity 路径在旧身份和全部 Git 证明成立时补录；普通 inventory 和 verifyWorktree 保持只读。终态归档前的有权清理路径负责为仍完整的旧工作树补录，避免归档长期阻塞使该资源始终缺少稳定证据。补充文件要求限长、普通文件、当前用户所有、0600 和单链接，读取不跟随符号链接。发布在 admin 目录独占写入临时文件并同步，复验所有证据后通过无覆盖原子操作发布、同步目录并读回。既有相同证据可幂等复用，不覆盖冲突或损坏文件。旧 marker 不更新，因此不需要两个身份文件的更新事务；发布后设备号变化仅需重新验证稳定证据。
-
-有效补充记录只替代旧历史指纹比较，四 UUID、唯一注册、分支、origin、双向 Git 指针和当前 common 物理一致性仍完整验证。清理 mutation guard 同时保护补充记录和当前目录身份。leaf 已消失时只按既有终态规则验证剩余资源，不能重建原执行。缺少历史证据且旧设备号已漂移、卷或对象变化、摘要不一致、记录损坏均明确拒绝；非支持平台继续旧严格规则。旧 Worker 可识别并计数原 marker，但不获得跨设备号恢复能力。完整卷克隆可能复制全部证据，仍依赖受控文件系统写入和单 Worker 归属，不能当作反克隆或恶意并发替换防护。
+清单以 `projectId/taskId/claimId/worktreeId` 和目录名绑定资源。Herdr 标签使用相同四字段；macOS lifecycle 的完整 owner 另绑定 serverOrigin、workerId、ownerUserId 和 provider。清单不单独授权删除：非空目录还须具备唯一匹配的 Git 注册及双向指针。普通运行不使用旧锁或跨重启物理指纹；同次删除仍核验当前目录和元数据，外来锁保持错误。
 
 仅在 backend 允许终态删除时，清理先确认原进程停止、workspace 关闭及必要归档，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。Worktree 目录和 Git 管理注册分别观察：目录消失即满足目录目标，原注册仍在时独立移除。中断留下的无指针空目录及未创建注册的空预留目录可通过非递归 rmdir 清除，非空且缺少归属证明的路径保留并报告。操作结果未知时再次观察资源，最终判定来自实际目录和注册的消失。分支和提交历史保留。
 
-`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留 locked marker、gitdir、commondir 和 .git 内容。内容删除前再次完成归属检查，每次修改前用这些只读快照核验资源。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
+`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留清单、gitdir、commondir 和 .git 内容。内容删除前再次完成归属检查，每次修改前用这些只读快照核验资源。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
 
 `remove-worktree-contents.ts` 逐层遍历普通目录，以非递归 unlink 删除文件和链接，以 rmdir 删除空目录。POSIX 目录通过 `O_NOFOLLOW | O_DIRECTORY` 打开，核对 bigint dev/ino、有效用户 uid、设备和 owner 读取/搜索权限；缺少 owner 写权限时，仅通过已验证的 FileHandle 补充 `0o200`。0555 因而成为 0755，而 0444 文件、文件硬链接和外部 symlink 目标不需要改权限。不可读、不可搜索、异所有者、跨设备目录和底层 I/O 错误直接保留；Windows 不执行 POSIX 权限恢复，使用普通目录身份检查和非递归删除。
 
@@ -277,13 +270,13 @@ macOS APFS 的跨重启身份由不可变 `daynight-identity.json` 补充记录�
 
 每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 的停止证明、归档成功、worktree 删除保持独立：归档失败不得删除源，shutdown 跳过归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
 
-资源扫描与清理 job 可交错，扫描返回的旧资源可能已经完成删除。Coordinator 从一次新的资源观察取得临时清理结果；Web 状态库不持久保存 agentStopped、backendResourcesClosed、worktreeDeleted 或重复的 input/result 回执。即使 Web execution 已写 done，重复收尾仍检查原 Controller journal、进程实例和 endpoint，正常终态清理还继续移除归属明确的 Git 剩余资源。只有本次观察满足全部目标才结束残留责任，done 本身不能释放名额。Web done 已保存、最小 Worker 行或调度责任尚未更新的中断窗口遵守同一规则。Shutdown 重新核验原进程和 endpoint，仍保留 worktree，不因 done 跳过停止证明。
+资源扫描与清理 job 可交错。原 backend 的停止与归档条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。仅剩清单时，根据原 backend 已结算证据及已完成的文件责任，在 task gate 内重试元数据退休，不重新停止或归档、不恢复执行槽或同 task 屏障。已有 durable worktreeDeleted 后的本地结算只核对原 retained binding，不重新删除旧路径。仅 LocalTask.done 不证明归档条件。local-closed 不排除脱离 stdio 的后代之后继续写入。
 
-资源发现检查未结束行、done 行和遗留资源。Git 标记只含 project/task/claim/worktree 身份及物理校验信息，不含 workerId；必须关联本机行、专用 Herdr 或当前自有 claim，才能认定由本 worker 管理。仅有 Git 标记、无法证明属于本 worker 的资源报告并保留，不因自有清单缺席就删除，也不猜测 agent 构造任务行。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
+资源发现结合清单、Git 注册和目录；清单不含 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能认定由本 worker 管理。无法证明归属的资源报告并保留。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
 
 ## Workspace 名称与身份
 
-Herdr 的 label 同时承担 workspace 显示名称。名称以经过终端安全转义的完整 title 开头，随后是 ` | daynight:` 与四字段 canonical JSON。解析器只读取最后一个分隔符之后的严格身份 JSON；标题可包含相同分隔符或 JSON 片段，不参与归属比较。读取时只按身份后缀识别，展示标题为空或含未转义字符不改变归属；身份格式不符返回 null，忽略该 workspace；Git 注册扫描跳过无 Daynight 前缀的人工 marker，但带受管前缀的损坏或未知格式进入 unknown；无注册普通目录不会成为全局扫描失败的依据。Herdr 的格式容忍不适用于 Git 受管记录的库存覆盖，IO 与已识别资源的完整性校验继续报告。Unicode Cc、行分隔符和双向显示控制字符转为字面量 `\u{hex}`；其余文本包括 emoji 的 ZWJ 保留。完整 title 和身份不在 CLI 中截断，Herdr 决定当前终端宽度内的显示。
+Herdr 的 label 同时承担 workspace 显示名称。名称以经过终端安全转义的完整 title 开头，随后是 ` | daynight:` 与四字段 canonical JSON。解析器只读取最后一个分隔符之后的严格身份 JSON；标题可包含相同分隔符或 JSON 片段，不参与归属比较。读取时只按身份后缀识别，展示标题为空或含未转义字符不改变归属；身份格式不符返回 null，忽略该 workspace；Git 注册扫描跳过无 Daynight 前缀的人工 marker，但带受管前缀的损坏或未知格式进入 unknown；无注册普通目录不会成为全局扫描失败的依据。Herdr 的格式容忍不适用于清单的库存覆盖，IO 与已识别资源的完整性校验继续报告。Unicode Cc、行分隔符和双向显示控制字符转为字面量 `\u{hex}`；其余文本包括 emoji 的 ZWJ 保留。完整 title 和身份不在 CLI 中截断，Herdr 决定当前终端宽度内的显示。
 
 Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进制字符，与 title 无关。创建、发现、观察、停止和清理比较四项身份，再核对实际 workspace/pane/terminal；workspace 创建时指定 shell 的初始 cwd；每次新 agent.start 前，在调用方准入后核对原 pane 的 canonical cwd 与任务 worktree 一致。发现、活 agent 重连、输入和停止不重复要求 cwd 元数据相等。创建 workspace 只按稳定归属查重，其他 workspace 使用同一 cwd 不构成身份冲突；实际创建错误由 workspace.create 返回。停止依赖原绑定及进程停止证据；Git 删除保留独立的目录归属校验；清理不需要可读取的 task title。名称与归属分离的选择和 Herdr API 限制见[命名决策](../../.agents/notes/archived/architecture/2026-10-28-worker-workspace-names.md)。
 
@@ -291,7 +284,7 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 只有 rename RPC 或回执故障属于 `workspace-name-error`，保留原 cause，留待后续重新观察且不计入执行恢复预算。binding/身份冲突及取消仍是生命周期错误。title 不进入 prompt 或 agent 输入，因此不能改变任务指令。
 
-运行资源使用当前四项身份格式，启动和人工管理直接执行正常的配置、实例锁、资源观察与执行流程，不读取迁移清单或转换历史 label、Git marker。发现时跳过格式不符的候选；针对明确目标的所有权和物理绑定检查保持严格。删除格式转换、备份、回滚及启动阻塞机制的决定见[迁移机制移除决策](../../.agents/notes/archived/simplification/2026-10-28-remove-worker-workspace-migration.md)。
+运行资源使用当前四项身份格式。仓库准备期间显式转换旧 Git marker 与已知 sidecar，普通运行仅读取当前清单；Herdr label 的既有发现规则不变。转换与回退边界见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
 ## Web backend 与执行证据
 
@@ -424,9 +417,9 @@ macOS shutdown 只结束原运行与段，保留 active claim 和同一 Session�
 
 `shutdownWorkerExecutions` 等待各执行所有者的停止尝试后汇总错误，单个所有者失败不会跳过其它所有者。Task 继续使用 coordinator 与 backend 的停止责任；可调用的 Bot 运行层先等待管理 job，再确认每个原 writer 停止并保留恢复资料，详见[Bot 执行层设计](worker-bot-runtime.md)。共享汇总接口不启用正式 `runWorker` 的 Bot 调度或能力广告。
 
-Legacy 关闭 workspace 会移除私有 Herdr 标签，标签可能是缺失本机行的遗留执行最后一份 worker 归属证明。普通清理与退出都先在 task 串行操作内重新观察资源；若已验证归属的 claim 缺少本机行，则以观察到的原 agent 类型登记 pending，仅在 agent 存活时保存观察到的原生会话 ID，随后才允许关闭 workspace。Pending 不占用同 task 唯一 active 行；重启通过该行与 Git 标记继续终止清理，清理完成后再允许后继 claim 启动。类型无法确认时保留 workspace 并报告错误，不从当前配置推断历史类型；未知归属的 Git-only 资源仍只报告并保留。
+Legacy 关闭 workspace 会移除私有 Herdr 标签，标签可能是缺失本机行的遗留执行最后一份 worker 归属证明。普通清理与退出都先在 task 串行操作内重新观察资源；若已验证归属的 claim 缺少本机行，则以观察到的原 agent 类型登记 pending，仅在 agent 存活时保存观察到的原生会话 ID，随后才允许关闭 workspace。Pending 不占用同 task 唯一 active 行；重启通过该行与 worktree 清单继续终止清理，清理完成后再允许后继 claim 启动。类型无法确认时保留 workspace 并报告错误，不从当前配置推断历史类型；未知归属的 Git-only 资源仍只报告并保留。
 
-macOS 依据独立 lifecycle 责任，不用远端摘要或现存 foreground 覆盖原始证据。已知目标的停止独立于其他仓库或同项目 sibling worktree 的错误；删除仍按原 Git 物理身份检查。
+macOS 依据独立 lifecycle 责任，不用远端摘要或现存 foreground 覆盖原始证据。已知目标的停止独立于其他仓库或同项目 sibling worktree 的错误；删除仍按清单、Git 注册及当前目录检查。
 
 Legacy 退出还须结算适配层待确认的停止操作，再停止私有 Herdr。停止失败保留原错误与实际资源；无法确认停止时保留私有 daemon，不能以停止 daemon 掩盖未确认的 agent 停止。正常完成、release、强制撤回与人工管理均使用本节的建议性通知和资源目标。此边界的理由见[直接退出决策](../../.agents/notes/archived/bug-fix/2026-10-28-worker-direct-shutdown.md)。
 
@@ -476,6 +469,6 @@ macOS lifecycle 验证严格 schema、原 owner/binding 不可更换、先身份
 
 Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证覆盖首发失败、下一轮读取新版本重试和稳定后无重复写；retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原 assignment 不重发、claim 与容量责任保留。健康 orderly restart 与 Herdr 回归保持独立；这些受控证据不替代真实 provider 和完整集成验收。
 
-命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。迁移验证覆盖各阶段故障/中断、启动阻塞、持久读回、原子 marker、恢复快照、全组回滚与重入，不用成功退出码替代持久状态观察。
+命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。迁移验证覆盖清单发布、解锁、sidecar 和格式提交各阶段的故障与重入、持久读回及原 cwd 保留，不用成功退出码替代持久状态观察。
 
 Herdr 的业务恢复累计次数和中断管理意图保持进程内语义；新 claim 的原生 model/args 独立持久冻结；两种模式具备完整资源身份的终态清理责任、原期限和退避由 cleanup_schedules 持久保存；身份不完整时保留索引、使用进程内退避并在重启重新发现，Linux/Windows legacy Herdr 不保存通知步骤状态；macOS 的输入操作与条件 cleanup 由独立持久仲裁保存。Web 的冻结配置、恢复暂停及清理操作身份由独立执行库保留，操作回执和原生 generation 来自 Controller journal。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/archived/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。

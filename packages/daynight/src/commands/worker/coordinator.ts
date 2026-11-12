@@ -3,6 +3,7 @@ import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js"
 import { readWorkerClaim, readSessionStartupReport, readTaskPaused } from "../../api/task-properties.js";
 import { legacyBranchLatch } from "./backends/orchestration.js";
 import { WorktreePreconditionError } from "./worktrees.js";
+import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
 import { sameStartupReport, type SessionStartupReport } from "../../session/startup.js";
 import { WebRecoveryBlockedError, type WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
@@ -22,8 +23,8 @@ import { WorkerCleanupError } from "./cleanup-error.js";
 import { createExecutionCapacity } from "./execution-capacity.js";
 import type { CleanupTarget, TerminalCleanupContext } from "./execution-stop.js";
 import { createCleanupDriver } from "./cleanup.js";
-import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
-import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
+import { assertHerdrResourceBudget, hasConfirmedHerdrResourceDeletion, reconcileDeletedHerdrResource } from "./resource-disposal.js";
+import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, newWorktreePath, originalWorktreePath, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager, WorkerObservedPhase } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
 import { HerdrInputWaitingError } from "./herdr/agents.js";
@@ -207,6 +208,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }) });
     });
   });
+  const freshClaims = new Set<string>();
+  const settledMetadata = new Map<string, string>();
+  const metadataFailures = new Map<string, string>();
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
   const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
@@ -305,10 +309,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return project;
   };
   const projectInvalidations = new Map<string, number>();
+  const preparedProjects = new Set<string>();
+  const preparationJobs = new Map<string, Promise<void>>();
   const promptUnavailable = new Set<string>();
   let activeCoverage: { covered: Set<string>; unavailable: Set<string> } | undefined;
   const invalidateProject = (projectId: string): void => {
     promptUnavailable.add(projectId);
+    preparedProjects.delete(projectId);
     updatePromptDemand();
     projectInvalidations.set(projectId, (projectInvalidations.get(projectId) ?? 0) + 1);
     activeCoverage?.covered.delete(projectId);
@@ -367,7 +374,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
 
   const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
-  const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set()): Promise<Snapshot> => {
+  const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set(), fileGated: ReadonlySet<string> = new Set()): Promise<Snapshot> => {
     const observed = await listHerdr(signal);
     const herdr = observed;
     const owners = new Map<string, ResourceOwner>();
@@ -419,22 +426,32 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         nativePaths = records.map(record => record.worktreePath);
       }
       nativePaths.push(...stopping.filter(context => key(context) === key(owner)).map(context => context.cwd));
+      for (const workspace of herdr.filter(value => key(value.owner) === key(owner))) {
+        if (workspace.owner.worktreeId !== owner.worktreeId || workspace.panes.some(pane => pane.cwd === null)) return false;
+        nativePaths.push(...workspace.panes.map(pane => pane.cwd!));
+      }
       for (const nativePath of nativePaths) {
         if (!path.isAbsolute(nativePath)) return false;
         const original = await resolvePhysicalDirectory(nativePath);
-        const expected = await resolvePhysicalDirectory(path.join(root, ".worktrees", "daynight", owner.taskId));
+        const binding = await workerOperation(operation => options.git.resolveWorktreeBinding(scannedProject, owner, operation), signal);
+        if (binding === null) return false;
+        const expected = await resolvePhysicalDirectory(binding.worktreePath);
         if (path.join(original.ancestorPath, ...original.missingComponents) !== path.join(expected.ancestorPath, ...expected.missingComponents)) return false;
       }
       const web = options.webStore?.getTask(owner);
       if (web != null) {
         if (web.worktreeId !== owner.worktreeId || await realpath(web.repositoryPath) !== root || repositoryIdentity(web.repoUrl) !== remote) return false;
-        if (web.resources.worktree !== null && await realpath(web.resources.worktree.repositoryPath) !== root) return false;
+        if (web.resources.worktree !== null) {
+          const binding = await workerOperation(operation => options.git.resolveWorktreeBinding(scannedProject, owner, operation), signal);
+          if (binding === null || await realpath(web.resources.worktree.repositoryPath) !== root || !await sameWorktreeLocation(web.resources.worktree.worktreePath, binding.worktreePath) || web.resources.worktree.branch !== binding.branch || !await sameWorktreeLocation(web.resources.worktree.commonDirectory, binding.commonDirectory)) return false;
+        }
       }
       return true;
     };
     for (const project of options.store.listProjects()) {
       const warnings = new Map<string, string>();
       currentWarnings.set(project.projectId, warnings);
+      if (fileGated.has(project.projectId)) continue;
       const warn = (category: string, owner: ResourceOwner, message: string): void => {
         warnings.set(JSON.stringify([category, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
       };
@@ -457,6 +474,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           observe(m => m.fail({ operationId: failure.operationId, component: "resources", phase: "resource-observation", scope: { kind: "claim", projectId: item.owner.projectId, taskId: item.owner.taskId, claimId: item.owner.claimId }, ...worktreeContext(item.owner), error }));
           warn("quarantined", item.owner, `Quarantined worktree ${identity} retains capacity and blocks its task; unrelated tasks may use remaining capacity.`);
           if (!snapshotWarnings.get(project.projectId)?.has(JSON.stringify(["quarantined", item.owner.projectId, item.owner.taskId, item.owner.claimId, item.owner.worktreeId]))) options.emit({ kind: "resource-quarantined", message: `Worktree ${identity} failed validation; its original resources are retained.`, error: item.error });
+        }
+        for (const worktree of scan.validated) {
+          const mapping = options.store.getProject(worktree.owner);
+          if (mapping !== null && (mapping.localPath !== project.localPath && await realpath(mapping.localPath) !== await realpath(project.localPath) || repositoryIdentity(mapping.repoUrl) !== repositoryIdentity(project.repoUrl))) throw new Error("The worktree manifest conflicts with its original project repository.");
+          if (independentOwners.some(other => key(other) === key(worktree.owner)) && !await provenQuarantine(worktree.owner, project)) throw new Error("The worktree manifest conflicts with its original execution binding.");
         }
         worktrees = scan.validated;
       }
@@ -687,14 +709,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (actual !== undefined) { ending.set(key(owner), actual); return runCleanup(actual, deleteWorktree, signal); }
       }
       if (deleteWorktree) {
-        const worktrees = await cleanupOperation(operation => options.git.listWorktrees(projectFor(owner), operation), signal);
+        const project = projectFor(owner);
+        const manifests = await cleanupOperation(operation => options.git.listWorktreeManifests(project, operation), signal);
+        const original = manifests.filter(resource => sameClaim(resource.owner, owner));
+        if (original.length > 1) throw new Error("The claim has conflicting worktree manifests.");
+        if (original[0] !== undefined) { ending.set(key(owner), original[0].owner); return runCleanup(original[0].owner, true, signal); }
+        const worktrees = await cleanupOperation(operation => options.git.listWorktrees(project, operation), signal);
         const sameTask = worktrees.filter(resource => resource.owner.taskId === owner.taskId);
         if (sameTask.length > 1) throw new Error("The task has conflicting Git resources before reservation cleanup.");
         const actual = sameTask[0]?.owner;
         if (actual !== undefined && sameClaim(actual, owner)) { ending.set(key(owner), actual); return runCleanup(actual, true, signal); }
         if (actual !== undefined) { options.store.completeTask(owner); return; }
-        try { await cleanupOperation(operation => options.git.removeEmptyReservation(projectFor(owner), owner.taskId, operation), signal); }
-        catch (error) { throw new WorkerCleanupError("worktree-removal", error); }
+        if (local.agentControlMode !== "web" && local.status !== "pending") throw new WorkerCleanupError("agent-stop", new Error("The original legacy execution stop cannot be proven from a missing workspace."));
         options.store.completeTask(owner);
       }
       return;
@@ -712,7 +738,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal, CLEANUP_OPERATION_MS);
         if (deleteWorktree) {
           scope!.onExecutionStopped({ attempt: scope!.attempt, observation: { kind: "not-started", owner, observedAt: now() } });
-          await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal);
+          const project = projectFor(owner);
+          const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
+          if (binding === null) await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, owner, operation), signal);
+          else await cleanupOperation(operation => options.git.removeWorktree(project, owner, operation), signal);
           if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner);
         }
         return;
@@ -790,7 +819,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await runCleanup(owner, true, signal);
         const actual = ending.get(identityKey);
         if (actual && hasWorktreeIdentity(actual) && !executionCapacity.stopped(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
+        const local = options.store.getTask(owner), web = options.webStore?.getTask(owner);
+        if (hasWorktreeIdentity(owner) && web == null && local?.agentControlMode !== "web" && lifecycle()?.archive !== undefined) return;
+        const completedBinding = hasWorktreeIdentity(owner) ? await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), signal) : null;
         options.store.deleteCleanupSchedule(owner);
+        if (hasWorktreeIdentity(owner) && completedBinding !== null) settledMetadata.set(key(owner), completedBinding.worktreePath);
         selectedWorktrees.release(ending.get(identityKey) ?? owner);
         ending.delete(identityKey);
         cleanupRetries.delete(identityKey);
@@ -831,8 +864,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       recoverName("discovery");
       if (pane === undefined) return;
       workspaceId = pane.binding.workspaceId;
+      const cwd = await originalWorktreePath(projectFor(task), owner, pane.cwd);
       await workerOperation((operation) => options.herdr.tasks.syncWorkspaceName(
-        executionContext({ task, owner, project: projectFor(task) }), pane.binding, title, operation,
+        executionContext({ task, owner }, cwd), pane.binding, title, operation,
       ), signal);
       recoverName("rename");
     } catch (error) {
@@ -952,8 +986,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (currentConfiguration === null) return;
     if (task.sessionId === null && options.store.getNativeConfiguration(task) === null && options.freezeConfiguration !== undefined) currentConfiguration = await options.freezeConfiguration(currentConfiguration, signal);
     if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
-    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
-    observe(() => selectWorktree(owner, input.project.localPath, executionContext(input).cwd));
+    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration, freshClaim: freshClaims.has(key(owner)), onBeforeStart: () => freshClaims.delete(key(owner)) };
+    const selectedBinding = await workerOperation(operation => options.git.resolveWorktreeBinding(input.project, owner, operation), signal);
+    if (selectedBinding !== null || input.freshClaim) observe(() => selectWorktree(owner, input.project.localPath, selectedBinding?.worktreePath ?? newWorktreePath(input.project, owner)));
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
@@ -1058,7 +1093,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const resources = await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal);
     const pane = actualTaskPane(owner, resources);
     if (pane !== undefined) {
-      const context = { ...owner, cwd: path.join(projectFor(owner).localPath, ".worktrees", "daynight", owner.taskId) };
+      const context = { ...owner, cwd: await originalWorktreePath(projectFor(owner), owner, pane.cwd) };
       await cleanupOperation(operation => options.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
     }
     await settleWorkerStops(deps, owner, signal, cleanupOperation);
@@ -1204,8 +1239,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
-      const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
-      if (enroll) await cleanupOperation(operation => enroll.call(options.git, projectFor(owner), owner, operation), normalSignal);
       const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
       if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
       observe(m => {
@@ -1261,7 +1294,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         || schedule !== null && schedule.worktreeId !== owner.worktreeId) throw new Error("Never-started retirement conflicts with the original local ownership.");
       if (task !== null && task.status !== "done" || schedule !== null) {
         const project = projectFor(owner);
-        if (path.join(project.localPath, ".worktrees", "daynight", owner.taskId) !== cwd) throw new Error("Never-started retirement has no matching original project path.");
+        if (!retainedWorktreePathInScope(project.localPath, owner, cwd)) throw new Error("Never-started retirement has no matching original project path.");
       }
       // A failure aborts this tick before admission. Restart retries only these original SQLite rows,
       // never filesystem paths that a successor may now own.
@@ -1281,8 +1314,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await serialize(owner, async () => {
           const project = projectFor(owner);
           await cleanupOperation(operation => retirement.retire(owner, operation, async cwd => {
-            if (cwd !== path.join(project.localPath, ".worktrees", "daynight", owner.taskId)) throw new Error("Never-started retirement has no matching original project path.");
-            if (await options.git.findWorktree(project, owner, operation) !== null) throw new Error("The original Git worktree still exists; never-started retirement is prohibited.");
+            const binding = await options.git.resolveWorktreeBinding(project, owner, operation);
+            if (binding === null) {
+              if (!await sameWorktreeLocation(cwd, newWorktreePath(project, owner))) throw new Error("Never-started retirement has no matching original worktree manifest.");
+              await options.git.removeUnpublishedReservation(project, owner, operation);
+            } else {
+              if (!await sameWorktreeLocation(cwd, binding.worktreePath)) throw new Error("Never-started retirement conflicts with its original worktree manifest.");
+              if (await options.git.findWorktree(project, owner, operation) !== null) throw new Error("The original Git worktree still exists; never-started retirement is prohibited.");
+            }
           }), normalSignal);
         });
       } catch (error) {
@@ -1290,6 +1329,55 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.emit({ kind: "cleanup-error", message: `Never-started retirement for ${key(owner)} remains unconfirmed; original ownership is retained.`, error });
       }
       reconcileNeverStarted();
+    }
+  };
+  const retireSettledMetadata = async (inventory: ReadonlyMap<string, Task>, prepared: ReadonlySet<string>): Promise<void> => {
+    for (const project of options.store.listProjects()) {
+      if (!prepared.has(project.projectId)) continue;
+      let manifests: Awaited<ReturnType<WorkerGitManager["listWorktreeManifests"]>>;
+      try { manifests = await workerOperation(operation => options.git.listWorktreeManifests(project, operation), normalSignal); }
+      catch (error) {
+        if (isWorkerCancellation(error, normalSignal)) throw error;
+        options.emit({ kind: "cleanup-error", message: `Could not observe worktree manifests for project ${project.projectId}.`, error });
+        continue;
+      }
+      for (const { owner, binding } of manifests) {
+        const identity = key(owner);
+        if (inventory.has(identity) || jobs.has(identity) || ending.has(identity) || tails.has(taskKey(owner))) continue;
+        const web = options.webStore?.getTask(owner);
+        const matchesRetained = (cwd: string): boolean => retainedWorktreePathInScope(project.localPath, owner, cwd)
+          && path.basename(cwd) === path.basename(binding.worktreePath);
+        const archived = (lifecycle()?.archive?.resources() ?? []).filter(resource => key(resource.owner) === identity && hasConfirmedHerdrResourceDeletion(resource));
+        const retired = (lifecycle()?.neverStarted?.retired() ?? []).filter(record => key(record.owner) === identity);
+        const webDone = web != null && web.status === "done" && web.cleanup?.kind === "terminal";
+        const webCwd = web?.resources.worktree?.worktreePath ?? null;
+        const settledCwd = settledMetadata.get(identity);
+        if (settledCwd === undefined && !webDone && archived.length === 0 && retired.length === 0) continue;
+        try {
+          if (settledCwd !== undefined && !matchesRetained(settledCwd)
+            || webDone && (web!.worktreeId !== owner.worktreeId || webCwd === null || !matchesRetained(webCwd))
+            || archived.some(resource => resource.owner.worktreeId !== owner.worktreeId || !matchesRetained(resource.worktreePath))
+            || retired.some(record => record.owner.worktreeId !== owner.worktreeId || !matchesRetained(record.cwd))) throw new Error("The settled backend binding conflicts with its worktree manifest.");
+          const complete = await serialize(owner, async () => {
+            if (jobs.has(identity) || ending.has(identity) || options.store.getCleanupSchedule(owner) !== null) return false;
+            const local = options.store.getTask(owner);
+            if (local !== null && local.status !== "done") return false;
+            await workerOperation(operation => options.git.retireWorktreeManifest(project, owner, operation), normalSignal);
+            return true;
+          });
+          if (!complete) continue;
+          const failure = metadataFailures.get(owner.worktreeId);
+          if (failure !== undefined) { observe(m => m.recover(failure)); metadataFailures.delete(owner.worktreeId); }
+          settledMetadata.delete(identity);
+        } catch (error) {
+          if (isWorkerCancellation(error, normalSignal)) throw error;
+          const previous = metadataFailures.get(owner.worktreeId);
+          const failure = previous ?? randomUUID();
+          metadataFailures.set(owner.worktreeId, failure);
+          observe(m => m.fail({ operationId: failure, component: "cleanup", phase: "worktree-removal", scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId }, ...worktreeContext(owner), error, retryState: "scheduled" }));
+          if (previous === undefined) options.emit({ kind: "cleanup-error", identity: owner, message: "Worktree metadata retirement remains pending.", error });
+        }
+      }
     }
   };
   const reconcile = async (): Promise<void> => {
@@ -1328,31 +1416,36 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     options.onInventory?.(unavailable.size === 0 && configurationObserved()
       ? { observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: readWorkerClaim(task.properties)!.claimId })) }
       : null);
-    const prepared = new Set(coveredProjects);
+    const prepared = new Set<string>();
     const preparationFailed = new Set<string>();
     reconciliationPhase = "project-preparation";
     observe(m => m.setPhase("project-preparation"));
-    for (const repository of configuration.repositories) {
-      const projectId = repository.project.projectId;
-      if (!coveredProjects.has(projectId) || !options.prepareProject) continue;
-      try {
-        await options.prepareProject(projectId, normalSignal);
+    for (const project of options.store.listProjects()) {
+      const projectId = project.projectId;
+      if (!coveredProjects.has(projectId)) continue;
+      if (!options.prepareProject || preparedProjects.has(projectId)) { prepared.add(projectId); continue; }
+      preparationFailed.add(projectId);
+      if (preparationJobs.has(projectId)) continue;
+      const generation = projectInvalidations.get(projectId) ?? 0;
+      const job = options.prepareProject(projectId, normalSignal).then(() => {
+        if (normalSignal.aborted || (projectInvalidations.get(projectId) ?? 0) !== generation) return;
+        preparedProjects.add(projectId);
         const previous = projectMonitoringFailures.get(projectId);
         if (previous !== undefined) { observe(m => m.recover(previous)); projectMonitoringFailures.delete(projectId); }
-      }
-      catch (error) {
-        if (isWorkerCancellation(error, normalSignal)) throw error;
-        if (isUnavailableProject(error)) { invalidateProject(projectId); coveredProjects.delete(projectId); unavailable.add(projectId); }
-        prepared.delete(projectId);
-        preparationFailed.add(projectId);
+        options.requestReconcile?.();
+      }).catch(error => {
+        if (isWorkerCancellation(error, normalSignal)) return;
+        if (isUnavailableProject(error)) invalidateProject(projectId);
         const operationId = projectMonitoringFailures.get(projectId) ?? randomUUID();
         projectMonitoringFailures.set(projectId, operationId);
         observe(m => m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error }));
         options.emit({ kind: "warning", message: `Could not prepare project ${projectId}; its work is not admitted.`, error });
-      }
+      }).finally(() => { preparationJobs.delete(projectId); });
+      preparationJobs.set(projectId, job);
     }
-    await retireNeverStarted(inventory, coveredProjects);
-    advanceArchive(inventory, coveredProjects);
+    await retireNeverStarted(inventory, prepared);
+    advanceArchive(inventory, prepared);
+    await retireSettledMetadata(inventory, prepared);
     // Ownership loss is authoritative even when the following resource observations fail.
     for (const local of options.store.listUnfinishedTasks()) {
       if (unavailable.has(local.projectId)) {
@@ -1364,6 +1457,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const running = controllers.get(key(local));
       if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
       const identity = key(local), activity = monitoringActivities.get(`false/${identity}`);
+      freshClaims.delete(identity);
       discardWebClaim(identity);
       if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`false/${identity}`); }
       for (const [failureKey, operationId] of monitoringFailures) if (failureKey.startsWith(`false/${identity}/`)) { observe(m => m.discardFailure(operationId)); monitoringFailures.delete(failureKey); }
@@ -1391,12 +1485,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const local = options.store.getTask(remoteOwner(remoteTask));
       if (local !== null && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && local.status === "active" && !blockedByOldClaim(local, knownOwners)) schedule(local, remoteTask);
     }
-    const resources = await snapshot(normalSignal, coveredProjects, [...inventory.values()].map((task) => remoteOwner(task)), unavailable);
+    const resources = await snapshot(normalSignal, coveredProjects, [...inventory.values()].map((task) => remoteOwner(task)), unavailable, preparationFailed);
     if (resources.unavailableProjects.size === 0 && resources.quarantined.size === 0) recoverScheduler("resource-observation");
     const observedAt = new Date(now()).toISOString();
     const publishCapacity = (): void => {
       const projection = latestReservations;
-      if (unavailable.size > 0 || resources.unavailableProjects.size > 0 || !allMappingsObserved()) { observe(m => m.staleCapacity()); return; }
+      if (unavailable.size > 0 || resources.unavailableProjects.size > 0 || preparationFailed.size > 0 || !allMappingsObserved()) { observe(m => m.staleCapacity()); return; }
       publishedReservations = projection.map(item => ({ ...item, roles: [...item.roles] }));
       observe(m => m.setCapacity({ limit: configuration.maxConcurrent, occupied: projection.filter(item => item.occupied).length, observedAt,
         reservations: projection.map(({ identity, roles, occupied }) => {
@@ -1406,7 +1500,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     };
     // New mappings require both a claim inventory and resource discovery before admission.
     const allMappingsObserved = (): boolean => configurationObserved()
-      && options.store.listProjects().every(project => resources.scannedProjects.has(project.projectId))
+      && options.store.listProjects().every(project => resources.scannedProjects.has(project.projectId) || preparationFailed.has(project.projectId))
       && (configuration.targetProjectIds ?? []).every(id => unavailable.has(id) || options.store.getProject({ projectId: id }) !== null);
     const quarantinedTask = (task: Pick<ClaimIdentity, "projectId" | "taskId">): boolean => [...resources.quarantined.values()].some(owner => taskKey(owner) === taskKey(task));
     const quarantinedReasons = (observedAt: string) => [...resources.quarantined.values()].map(owner => ({
@@ -1420,7 +1514,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!resources.quarantined.has(identityKey) && coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !isStopped(owner)) ending.set(identityKey, owner);
     }
     for (const local of options.store.listUnfinishedTasks()) {
-      if (!coveredProjects.has(local.projectId) || resources.unavailableProjects.has(local.projectId) || resources.quarantined.has(key(local)) || inventory.has(key(local))) continue;
+      if (!coveredProjects.has(local.projectId) || preparationFailed.has(local.projectId) || resources.unavailableProjects.has(local.projectId) || resources.quarantined.has(key(local)) || inventory.has(key(local))) continue;
       const owner = resources.owners.get(key(local));
       if (owner !== undefined && isStopped(owner)) {
         ending.delete(key(local));
@@ -1626,7 +1720,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const owner = remoteOwner(task);
     const local = options.store.getTask(owner);
     if (local?.status !== "pending" || local.agent !== claim.agent || (local.agentControlMode ?? "herdr") !== claim.agentControlMode) throw new Error("Fresh claim registration requires its matching pending local task.");
-    if (claim.agentControlMode === "herdr") options.herdr.lifecycle?.registerClaim(executionContext({ task: local, owner, project: projectFor(task) }), claim.userId);
+    if (claim.agentControlMode === "herdr") {
+      options.herdr.lifecycle?.registerClaim(executionContext({ task: local, owner }, newWorktreePath(projectFor(task), owner)), claim.userId);
+      freshClaims.add(key(owner));
+    }
   };
   const readSource = async (identity: ClaimIdentity): Promise<{ task: LocalTask; owner: ResourceOwner; remoteTask: Task }> => {
     const task = options.store.getTask(identity);
@@ -1709,7 +1806,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
         if (settings.deleteWorktree === true) {
           if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
+          const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), normalSignal);
           options.store.deleteCleanupSchedule(owner);
+          if (binding !== null) settledMetadata.set(key(owner), binding.worktreePath);
         }
       });
       return owner;
@@ -1719,13 +1818,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await serialize(owner, async () => {
         await runCleanup(owner, true, normalSignal, undefined, true);
         if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
+        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), normalSignal);
         options.store.deleteCleanupSchedule(owner);
+        if (binding !== null) settledMetadata.set(key(owner), binding.worktreePath);
       });
     },
     shutdown: async (): Promise<boolean> => {
       cancel();
       normalSignal.removeEventListener("abort", cancel);
       await Promise.all(jobs.values());
+      await Promise.allSettled(preparationJobs.values());
       await Promise.allSettled(projectStops.values());
       await archiveJob;
       let complete = true;
@@ -1803,7 +1905,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             const resources = await cleanupOperation((operation) => options.herdr.tasks.listResources(operation));
             const pane = actualTaskPane(owner, resources);
             if (pane === undefined) return;
-            const context = { ...owner, cwd: path.join(projectFor(owner).localPath, ".worktrees", "daynight", owner.taskId) };
+            const context = { ...owner, cwd: await originalWorktreePath(projectFor(owner), owner, pane.cwd) };
             await cleanupOperation((operation) => options.herdr.tasks.stopAndClose(context, pane.binding, operation));
           });
         }

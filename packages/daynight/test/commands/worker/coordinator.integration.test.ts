@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import Database from "better-sqlite3";
@@ -23,6 +24,7 @@ import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agent
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
+import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
@@ -80,6 +82,10 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 1_000 ? 1 : milliseconds, value, options);
   } };
 });
+const emptyFormatSources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+const prepareFormat: NonNullable<Parameters<typeof createWorkerGitManager>[0]["prepareFormat"]> = async (_project, repository, operation) => {
+  await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources: emptyFormatSources });
+};
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const unknownStop = async (target: CleanupTarget): Promise<StopObservation> => ({ kind: "unknown", target, error: new Error("Unobserved test backend"), observedAt: Date.now() });
 const origin = "https://daynight.example";
@@ -104,19 +110,25 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const candidates = [task(project.projectId, uuid(100)), task(project.projectId, uuid(101))];
   const grants = new Map<string, Task>();
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
+  const manifests = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const resources = new Map<string, HerdrOwnedWorkspace>();
   const stoppedRuns = new Set<string>();
   const events: WorkerEvent[] = []; const order: string[] = []; let clock = 1000; let sequence = 0;
   let blockedStartupInput = false;
   const bind = (owner: ResourceOwner): WorktreeBinding => {
     const source = store.getProject(owner)!;
-    return { repositoryPath: source.localPath, commonDirectory: path.join(source.localPath, ".git"), worktreePath: path.join(source.localPath, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
+    mkdirSync(source.localPath, { recursive: true });
+    return { repositoryPath: source.localPath, commonDirectory: path.join(source.localPath, ".git"), worktreePath: path.join(source.localPath, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
   };
   const observe = (context: ResourceOwner, binding: HerdrTaskBinding): HerdrAgentObservation => ({ ...resources.get(context.claimId)!.panes[0]!, name: "managed", binding });
   const git = {
     prepareRepository: vi.fn(), dispose: vi.fn(), removeEmptyReservation: vi.fn(async () => {}),
-    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); return binding; }),
+    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
+    resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
+    listWorktreeManifests: vi.fn(async (source: WorkerProject) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId)),
+    retireWorktreeManifest: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { manifests.delete(owner.claimId); }),
+    removeUnpublishedReservation: vi.fn(async () => {}),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
     scanWorktrees: scanFromList, listWorktrees: vi.fn(async (source: WorkerProject) => [...worktrees.values()].filter(({ owner }) => owner.projectId === source.projectId)),
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
@@ -332,13 +344,12 @@ describe("minimal worker resource reconciliation", () => {
     } finally { release(); }
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await restarted.tick();
-    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error" })));
     const successor = f.store.listTasks().find((local) => local.claimId !== owner.claimId)!;
-    expect(successor).toMatchObject({ taskId: owner.taskId, status: "active", agent: "codex" });
-    expect(successor.sessionId).not.toBe(row.sessionId);
+    expect(successor).toMatchObject({ taskId: owner.taskId, status: "active", agent: "codex", sessionId: null });
+    expect(f.tasks.start).not.toHaveBeenCalled();
     expect(f.store.getTask(owner)).toEqual({ ...row, status: "done" });
     expect(vi.mocked(f.git.removeWorktree).mock.calls.map(([, identity]) => identity.claimId)).toEqual([owner.claimId]);
-    expect(f.order.indexOf("remove-worktree")).toBeLessThan(f.order.indexOf("start"));
     expect(f.worktrees.has(unproven.claimId)).toBe(true); expect(f.store.getTask(unproven)).toBeNull();
   });
 
@@ -572,7 +583,8 @@ it.each([
       expect(f.store.getCleanupSchedule(owner)).toBeNull();
     });
     expect(webStore.getTask(owner)).toMatchObject({ status: "done", cleanup: { deadline: expectedDeadline } });
-    expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    expect(f.git.removeUnpublishedReservation).toHaveBeenCalledOnce();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
     expect(advance).not.toHaveBeenCalled();
     expect(launcher.launch).not.toHaveBeenCalled();
     expect(f.tasks.start).not.toHaveBeenCalled();
@@ -621,9 +633,10 @@ describe("explicit resume with cloud project selection", () => {
     runner.updateConfiguration({ repositories: [{ project: f.project, configuration }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false });
     f.candidates.splice(0);
     await runner.tick();
-    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error" })));
     expect(f.store.getTask(resumed)).toMatchObject({ claimId: resumed.claimId, status: "active" });
-    expect(f.tasks.start.mock.calls[0]![0]).toMatchObject({ projectId: f.project.projectId, taskId, claimId: resumed.claimId });
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.git.prepareWorktree).not.toHaveBeenCalled();
     expect(f.remote.claim).not.toHaveBeenCalled();
     await runner.shutdown();
   });
@@ -762,7 +775,7 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
   const joined = Promise.withResolvers<import("../../../src/repository/git-owned.js").GitSettlement>();
   const interrupt = new AbortController();
   let originalSignal: AbortSignal | undefined; let ownedSignal: AbortSignal | undefined; let shutdown: Promise<boolean> | undefined;
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"),
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat,
     startOwnedGit: (cwd, args, op, options) => {
       const remove = args.includes("worktree") && args.includes("remove");
       if (!remove) return startOwnedRepositoryGit(cwd, args, op, options);
@@ -776,6 +789,8 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
     reportPending: (event) => { if (event.command === "worktree-remove") pending = event; },
     reportSettled: (event, settlement) => { if (event.command === "worktree-remove") joined.resolve(settlement); },
   });
+  const operation = createOperation();
+  try { await manager.prepareRepository(f.project, operation); } finally { operation.dispose(); }
   const coordinator = createWorkerCoordinator({ ...f.options, git: manager, monitoring });
   try {
     await coordinator.tick();

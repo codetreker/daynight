@@ -45,7 +45,7 @@ vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: m
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
-vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: mocks.webBackend }));
+vi.mock("../../../src/commands/worker/backends/web.js", async original => ({ ...await original<object>(), createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
@@ -1150,7 +1150,7 @@ it("admits another task through the real coordinator after a stop wake with both
   const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
   const stopEntered = deferred<void>(), stopRelease = deferred<void>(), archiveEntered = deferred<void>(), removeEntered = deferred<void>(), removeRelease = deferred<void>(), promptsReceived = deferred<void>();
   const owner = { projectId: uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
-  const repo = path.join(f.homeDirectory, "repo"), binding = { repositoryPath: repo, commonDirectory: path.join(repo, ".git"), worktreePath: path.join(repo, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
+  const repo = path.join(f.homeDirectory, "repo"), binding = { repositoryPath: repo, commonDirectory: path.join(repo, ".git"), worktreePath: path.join(repo, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
   const oldBinding = { session: "w", workspaceId: "old-workspace", paneId: "old-pane", terminalId: "old-terminal" };
   await mkdir(repo, { recursive: true }); await mkdir(f.paths.workerDirectory, { recursive: true });
   const seed = openWorkerStore(f.paths.databaseFile);
@@ -1173,8 +1173,8 @@ it("admits another task through the real coordinator after a stop wake with both
   const herdr = { tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} };
   mocks.herdr.mockReturnValue(herdr);
   mocks.durable.mockReturnValue(herdr);
-  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
-    prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.taskId), branch: `daynight/${target.taskId}` }; worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
+  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], listWorktreeManifests: async () => [...worktrees.values()], resolveWorktreeBinding: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null, retireWorktreeManifest: async () => {}, removeUnpublishedReservation: async () => {}, findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
+    prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.worktreeId), branch: `daynight/${target.taskId}` }; worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
     removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); },
   });
   mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: () => null, listCompletedTasks: mocks.completed });

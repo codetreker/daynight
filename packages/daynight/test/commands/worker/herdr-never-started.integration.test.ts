@@ -6,7 +6,7 @@ import { ApiError } from "../../../src/api/client.js";
 import { execFileSync } from "node:child_process";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
 import { afterEach, expect, it, onTestFailed, vi } from "vitest";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
@@ -92,6 +92,18 @@ it("rejects resources or lifecycle evidence that appear during asynchronous Git 
     try { writer.update(writer.get(owner)!, draft => { draft.preparation = { instanceId: "changed", instanceDirectory: f.root, phase: "prepared", daemon: null }; }); } finally { writer.close(); }
   })).rejects.toThrow(/changed/);
   expect(f.herdr.lifecycle!.neverStarted!.retired()).toEqual([]);
+});
+it("verifies other original evidence before allowing an empty reservation to be removed", async () => {
+  const f = fixture(), owner = f.register(0); f.end(owner);
+  const record = f.read(owner); mkdirSync(record.cwd, { recursive: true });
+  const source = path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId); mkdirSync(source, { recursive: true });
+  const remove = vi.fn(async (cwd: string) => { rmdirSync(cwd); });
+  await expect(retirement(f, owner, remove)).rejects.toThrow("filesystem resources");
+  expect(remove).not.toHaveBeenCalled(); expect(existsSync(record.cwd)).toBe(true);
+  rmdirSync(source);
+  await retirement(f, owner, remove);
+  expect(remove).toHaveBeenCalledOnce(); expect(existsSync(record.cwd)).toBe(false);
+  expect(f.herdr.lifecycle!.neverStarted!.retired()).toHaveLength(1);
 });
 it("retires an old claim replaced by an active successor and never revisits its reused path", async () => {
   const f = fixture(), owner = f.register(0), task = f.tasks.get(owner.taskId)!;
