@@ -449,7 +449,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           const confirmed = await inspectWorktree(project, owner, repository, operation, true);
           if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
           await verifyOwnership();
-          await removeWorktreeContents(binding.worktreePath, leaf, operation, verifyOwnership, removeDirectory);
+          await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation }, removeDirectory);
           await verifyOwnership();
           await unlink(path.join(binding.worktreePath, ".git"));
           operation.check();
