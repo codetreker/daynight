@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -111,13 +112,13 @@ func TestAppCredentialUsageSharesWriterAndPreservesCompletedFailure(t *testing.T
 	defer stop()
 	err := app.Drain(ctx)
 	complete, ok := err.(interface{ Drained() bool })
-	if !errors.Is(err, failure) || !ok || !complete.Drained() || backend.closes != 0 {
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "credential usage drain completed with 0 unconfirmed samples") || !ok || !complete.Drained() || backend.closes != 0 {
 		t.Fatalf("completed drain lost cause or closed dependencies: %v", err)
 	}
 	for range 2 {
 		err = app.Close(ctx)
 		closed, ok := err.(interface{ Closed() bool })
-		if !errors.Is(err, failure) || !ok || !closed.Closed() || backend.closes != 1 || calls.Load() != 1 {
+		if !errors.Is(err, failure) || !strings.Contains(err.Error(), "credential usage drain completed with 0 unconfirmed samples") || !ok || !closed.Closed() || backend.closes != 1 || calls.Load() != 1 {
 			t.Fatalf("completed application failure was lost or replayed: %v", err)
 		}
 	}
