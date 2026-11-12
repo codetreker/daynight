@@ -40,7 +40,11 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if empty.Items == nil || len(empty.Items) != 0 {
 		t.Fatalf("empty tokens: %+v", empty)
 	}
-	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin), 201)
+	createResponse := h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin)
+	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createResponse, 201)
+	if !strings.Contains(createResponse.Body.String(), `"lastUsedAt":null`) {
+		t.Fatal("created PAT must contain null lastUsedAt")
+	}
 	if !strings.HasPrefix(minted.Token, "dnpat_") || minted.ExpiresAt != nil {
 		t.Fatalf("token: %+v", minted)
 	}
@@ -59,7 +63,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	}
 	listResponse := h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, "")
 	list := testsupport.DecodeResponse[api.PersonalAccessTokenList](t, listResponse, 200)
-	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") || strings.Contains(listResponse.Body.String(), "lastUsedAt") {
+	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") || list.Items[0].LastUsedAt == nil || !list.Items[0].LastUsedAt.Equal(usedAt) || !strings.Contains(listResponse.Body.String(), `"lastUsedAt":"`+usedAt.Format(time.RFC3339Nano)+`"`) {
 		t.Fatal("PAT list exposed secret")
 	}
 	bearer := []string{"Bearer " + minted.Token}
