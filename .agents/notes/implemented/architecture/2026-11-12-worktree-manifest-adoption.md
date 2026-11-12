@@ -26,10 +26,10 @@ Legacy Herdr can settle an orphan manifest from complete current observations
 after in-process operations join; loss of an in-memory receipt does not require
 inventing historical stop evidence. An independently confirmed successor binding
 permits retiring only the old metadata without inspecting the successor cwd.
-Standalone release retires its manifest before returning successfully. Web and
+Standalone release retires its manifest before returning successfully. The
+[cleanup outcome decision](2026-11-12-worktree-cleanup-outcome.md) defines fresh
+resource observation and error propagation before retirement. Web and
 durable Herdr retain their own stop and archive obligations.
-The [cleanup outcome decision](../bug-fix/2026-11-12-worktree-cleanup-outcome.md)
-defines how a fresh resource observation preserves effect errors during retirement.
 The [migration decision](2026-11-11-worktree-resource-migration.md) describes
 source validation and recovery, while the [Worker design](../../../../docs/design/daynight-worker.md#git-工作区与资源身份) owns the current mechanisms.
 
