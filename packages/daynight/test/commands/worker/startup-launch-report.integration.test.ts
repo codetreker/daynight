@@ -43,6 +43,13 @@ vi.mock("../../../src/commands/controller/process-proof.js", async importOrigina
     },
   };
 });
+vi.mock("../../../src/commands/controller/launch-observation.js", () => ({
+  reconcileSubmittedControllerLaunch: async ({ spawnProof }: { spawnProof: unknown }) => {
+    const child = native.children.at(-1)!;
+    if (child.exitCode === null) await new Promise<void>(resolve => child.once("exit", () => resolve()));
+    return { kind: "pre-writer-exited", process: spawnProof, journal: "missing" };
+  },
+}));
 
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -112,7 +119,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   disposals.push(async () => { await coordinator.shutdown(); });
   const reconcile = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   const launch = async () => {
-    await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before its authenticated initialization");
+    await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before authenticated initialization");
     expect(native.children.at(-1)?.exitCode).toBe(1);
     expect(readControllerSnapshot(journalFile)?.startup).toEqual({ state: "starting", reasonCode: "initializing" });
     return store.getTask(task)!.webExecution!.startupReport!;
@@ -149,7 +156,7 @@ test("ordinary unpaused Coordinator advancement preserves pre-hello uncertainty 
   await vi.waitFor(() => expect(f.update).toHaveBeenCalledOnce());
   expect(f.advance).toHaveBeenCalledOnce();
   expect(f.advance.mock.calls[0]![0].recovery.pauseReason).toBeNull();
-  await expect(f.advance.mock.results[0]!.value).rejects.toThrow("no proven session identity");
+  await expect(f.advance.mock.results[0]!.value).resolves.toMatchObject({ task: { recovery: { reasonCode: "native_identity_missing" }, webExecution: { launchSubmission: "unknown" } } });
   const report = readSessionStartupReport(f.remote().properties)!;
   expect(report).toMatchObject({ revision: "2", observedAt: new Date(30).toISOString(), startup: original.startup,
     executionGeneration: original.executionGeneration, controllerInstanceId: original.controllerInstanceId,
@@ -176,7 +183,7 @@ test.each<StartupObservation>([
   await f.reconcile();
   await vi.waitFor(() => expect(f.update).toHaveBeenCalledOnce());
   expect(f.advance).toHaveBeenCalledOnce();
-  await expect(f.advance.mock.results[0]!.value).rejects.toThrow("no proven session identity");
+  await expect(f.advance.mock.results[0]!.value).resolves.toMatchObject({ task: { recovery: { reasonCode: "native_identity_missing" }, webExecution: { launchSubmission: "unknown" } } });
   expect(readSessionStartupReport(f.remote().properties)).toMatchObject({ startup,
     recovery: { state: "blocked", reasonCode: "native_identity_missing" } });
   expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, retryAuthorized: false });

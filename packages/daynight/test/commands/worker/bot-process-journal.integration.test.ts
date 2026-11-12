@@ -4,7 +4,7 @@ import { cleanupBotProcesses, fixture } from "./bot-process.fixtures.js";
 
 afterEach(cleanupBotProcesses);
 
-test("recovers a native initialization rejection from the original journal after IPC closes",async()=>{
+test("blocks journal recovery when the original spawn proof is missing",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   f.launch.mockImplementationOnce(async options=>{
     await options.onSubmitting();
@@ -13,7 +13,8 @@ test("recovers a native initialization rejection from the original journal after
     throw new Error("IPC closed before observation");
   });
   await expect(f.process.advance(f.current(),signal)).rejects.toThrow("IPC closed");f.observe.mockRejectedValue(new Error("unreachable"));
-  expect(await f.createProcess().advance(f.current(),signal)).toMatchObject({startup:{state:"failed",reasonCode:"native_rejected"}});
+  await expect(f.createProcess().advance(f.current(),signal)).rejects.toThrow(/spawn proof.*unavailable/);
+  expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
   expect(f.launch).toHaveBeenCalledTimes(1);
 });
 

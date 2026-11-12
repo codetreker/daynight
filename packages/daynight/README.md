@@ -2908,11 +2908,19 @@ input/results and stopped/closed/deleted flags, preserving cleanup intent,
 identity and deadline. Version 0 resets its schema and data through the common
 SQLite policy. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
-format version 6. Both Worker stores must open successfully before scheduling.
+format version 8. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
 Unknown initial inputs and operations are reconciled without replay.
+
+An unconfirmed Controller launch retains its original ticket and spawn identity
+across observation windows. Only authenticated IPC acknowledges the launch;
+a preceding or missing journal cannot do so. Cancellation stops the original
+bootstrap process within the cleanup deadline, then checks the journal. If the
+current generation was committed, complete Controller and native stop evidence
+is still required. A pre-writer exit retains the launch and its resources as
+blocked, without inventing a stopped generation or replaying input.
 
 Web recovery counts and diagnostic pause reasons persist across worker restarts.
 Exhausted automatic recovery or the execution failure threshold pauses the

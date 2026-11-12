@@ -5,10 +5,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn(), reconcile: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: native.spawn }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: native.observe }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture, confirmControllerProcessesStopped: vi.fn() }));
+vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ reconcileSubmittedControllerLaunch: native.reconcile }));
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -29,6 +30,7 @@ const fixture = async () => {
   native.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
   native.capture.mockResolvedValue({ pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) });
   native.observe.mockResolvedValue({ snapshot: { nativeProcesses: [] } });
+  native.reconcile.mockImplementation(async () => ({ kind: "observed", snapshot: (await native.observe()).snapshot }));
   const grant = { token: "controller-token", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: ticket.sessionId, testExecutionId: undefined, claimId: task.claimId, executionGeneration: "1", controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId };
   const sessionApi = { grant: vi.fn(async () => grant) } as unknown as WorkerSessionApi;
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5 });
@@ -61,8 +63,8 @@ test.each(["event", "synchronous"] as const)("persists a definite pre-hello cont
 test("retains uncertainty when the controller exits before authenticated initialization", async () => {
   const { store, task, ticket, launcher, child } = await fixture();
   child.exitCode = 1 as never;
-  native.observe.mockRejectedValue(new Error("No authenticated response"));
-  await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before its authenticated initialization");
+  native.reconcile.mockResolvedValue({ kind: "pre-writer-exited", process: { pid: 987 }, journal: "missing" });
+  await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow("before authenticated initialization");
   expect(store.getTask(task)?.webExecution?.startupReport?.startup).toEqual({ state: "unknown", reasonCode: "controller_start_unknown" });
   expect(store.getTask(task)?.recovery.count).toBe(0);
 });

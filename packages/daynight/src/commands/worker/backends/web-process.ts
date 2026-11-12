@@ -7,6 +7,7 @@ import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
+import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
@@ -69,10 +70,14 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
   const cleanupStopped = async (task: LocalTask): Promise<boolean> => {
     if (task.cleanup === null) return false;
     const execution = task.webExecution!;
-    const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
-    if (saved !== null && (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId)) throw new Error("Controller credential renewal has conflicting cleanup evidence.");
-    const proof = saved?.controllerProcess ?? execution.controllerProcess;
-    return proof !== null && await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
+    if (execution.launchSubmission === "not-submitted" || execution.controllerProcess === null) return false;
+    const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+    checkTicket(task, ticket);
+    const observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), ticket, spawnProof: execution.controllerProcess, signal: new AbortController().signal });
+    if (observation.kind === "unknown") throw new Error("Controller credential renewal cannot determine cleanup process status.", { cause: observation.cause });
+    if (observation.kind === "running-unobserved" || observation.kind === "pre-writer-exited") return false;
+    const saved = observation.snapshot;
+    return saved.controllerProcess !== null && await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
   };
   const methods = {
     prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {

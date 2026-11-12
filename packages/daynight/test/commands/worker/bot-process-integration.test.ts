@@ -469,6 +469,11 @@ test.each([false, true])("launches one real Controller with no user turn after u
   const browser = new WebSocket(f.owner.serverOrigin.replace(/^http/, "ws") + "/browser-fixture"); await once(browser, "open");
   const closed = once(browser, "close"); browser.close(); await closed;
   expect(f.browserConnections()).toBe(1);
+  if (interruptedObservation) {
+    await expect(f.create().advance(f.current(), signal)).rejects.toThrow(/spawn proof.*unavailable/);
+    expect(await f.launches()).toHaveLength(1);
+    return;
+  }
   const observed = await f.create().advance(f.current(), signal);
   expect(observed.controllerProcess).toEqual(first.controllerProcess);
   expect(observed.nativeProcesses).toEqual(first.nativeProcesses);

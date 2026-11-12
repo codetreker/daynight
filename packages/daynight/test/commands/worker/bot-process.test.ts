@@ -6,6 +6,7 @@ import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/en
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import type { reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
 
 afterEach(cleanupBotProcesses);
@@ -31,8 +32,8 @@ test("never repeats a possible spawn even after constructing a new process manag
   const f=fixture(); f.launch.mockImplementationOnce(async options=>{await options.onSubmitting();throw new Error("spawn outcome unknown");});
   await expect(f.process.advance(f.current(),new AbortController().signal)).rejects.toThrow("spawn outcome unknown");
   expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown"); f.observe.mockRejectedValueOnce(new Error("IPC unavailable"));
-  await expect(f.process.advance(f.current(),new AbortController().signal)).rejects.toThrow(/IPC.*unavailable/);
-  await f.createProcess().advance(f.current(),new AbortController().signal); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1);
+  await expect(f.process.advance(f.current(),new AbortController().signal)).rejects.toThrow(/spawn proof.*unavailable/);
+  await expect(f.createProcess().advance(f.current(),new AbortController().signal)).rejects.toThrow(/spawn proof.*unavailable/); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1);
 });
 
 test("rejects unsupported native configuration before registration and leaves failures visible",async()=>{
@@ -74,18 +75,31 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) => {
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false) => {
   const f = fixture("codex", configuration), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
-  await f.process.advance(f.current(), signal);
-  let saved: ControllerSnapshot = { ...f.executions.get(f.current())!.snapshot!, controllerProcess: proof };
+  if (unacknowledged) {
+    f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); await options.onSpawned(proof); throw new Error("observation unavailable"); });
+    await expect(f.process.advance(f.current(), signal)).rejects.toThrow("observation unavailable");
+  } else await f.process.advance(f.current(), signal);
+  let saved: ControllerSnapshot = { ...(unacknowledged ? await f.observe(await f.process.readTicket(f.current())) : f.executions.get(f.current())!.snapshot!), controllerProcess: proof };
   f.executions.update(f.current(), { snapshot: saved });
   const confirmStopped = vi.fn(async () => false);
   const stopProcesses = vi.fn(async () => { confirmStopped.mockResolvedValue(true); });
   const request = vi.fn(async () => ({ snapshot: saved }));
   const recordStopped = vi.fn(async () => (saved = { ...saved, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" }));
   f.observe.mockImplementation(async () => { if (saved.nativeStopped) throw new Error("IPC unavailable"); return saved; });
-  const deps = { confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved };
+  let exited = false;
+  const stopBootstrap = vi.fn(async () => { exited = true; });
+  const reconcileLaunch = vi.fn<typeof reconcileSubmittedControllerLaunch>(async ({ ticket, spawnProof }) => {
+    if (exited || await confirmStopped()) {
+      if (ticket.executionGeneration !== saved.executionGeneration) return { kind: "pre-writer-exited" as const, process: spawnProof, journal: "preceding-generation" as const };
+      return { kind: "controller-exited" as const, process: spawnProof, snapshot: saved };
+    }
+    try { return { kind: "observed" as const, snapshot: await f.observe(ticket) }; }
+    catch { return { kind: "running-unobserved" as const, process: spawnProof }; }
+  });
+  const deps = { confirmStopped, stopProcesses, request, recordStopped, readSnapshot: () => saved, reconcileLaunch, stopBootstrap };
   return { ...f, signal, deps, manager: f.createProcess(deps), saved: () => saved,
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps) };
@@ -135,16 +149,15 @@ test("an abnormal stopped writer consumes one recovery attempt and a healthy lat
   expect(f.current().intent!.executionGeneration).toBe("2");
 });
 
-test("reattaching a surviving writer cancels stale orderly-stop provenance before a later crash", async () => {
+test("a failed native stop remains blocked after bootstrap exits until complete stop is proven", async () => {
   const f = await recoveryFixture();
   f.deps.stopProcesses.mockRejectedValueOnce(new Error("stop failed"));
   await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow("stop failed");
   expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(true);
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/stop is unproven/);
+  f.deps.confirmStopped.mockResolvedValue(true);
   await f.restart().advance(f.current(), f.signal);
-  expect(f.executions.get(f.current())!.restartAfterShutdown).toBe(false);
-  f.observe.mockRejectedValue(new Error("IPC disappeared")); f.deps.confirmStopped.mockResolvedValue(true);
-  await f.restart().advance(f.current(), f.signal);
-  expect(f.executions.get(f.current())!.recoveryCount).toBe(1);
+  expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
 });
 
 test("shutdown ignores a never-started deletion projection without inventing a missing writer", async () => {
@@ -167,9 +180,9 @@ test("shutdown stops a persisted recovery child before reporting that its journa
   expect(f.current().intent!.executionGeneration).toBe("2");
   f.deps.confirmStopped.mockResolvedValue(false);
   f.deps.stopProcesses.mockClear();
-  f.deps.recordStopped.mockRejectedValueOnce(new Error("Original controller stop evidence is unavailable"));
-  await expect(f.restart().shutdown(f.current(), f.signal)).rejects.toThrow(/stop evidence is unavailable/);
-  expect(f.deps.stopProcesses).toHaveBeenCalledWith(nextProof, [], expect.any(Number));
+  await expect(f.restart().shutdown(f.current(), f.signal)).rejects.toThrow(/before committing.*preceding-generation/);
+  expect(f.deps.stopBootstrap).toHaveBeenCalledWith(nextProof, expect.any(Number));
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
   expect(f.executions.get(f.current())).toMatchObject({ controllerProcess: nextProof, launchSubmission: "unknown", snapshot: null });
 });
 
@@ -296,7 +309,7 @@ test("deletion preserves an unknown spawn without a process proof instead of cla
   await expect(f.process.advance(f.current(), signal)).rejects.toThrow("unknown submission");
   f.observe.mockRejectedValue(new Error("unavailable"));
   const record = markDeleting(f);
-  await expect(f.process.withDeletion(record, signal, stop => stop())).rejects.toThrow(/process proof/);
+  await expect(f.process.withDeletion(record, signal, stop => stop())).rejects.toThrow(/spawn proof/);
   expect(existsSync(record.intent!.ticketPath)).toBe(true);
   expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
 });
@@ -427,4 +440,30 @@ test("keeps new frozen model and effort through original-session recovery", asyn
   await f.restart().advance(f.current(), f.signal);
   expect(f.getTicket()).toMatchObject({ resumeNativeSessionId: id(9), executionGeneration: "2", sessionId: original.sessionId, configuration: original.configuration });
   expect(f.register).toHaveBeenCalledTimes(1);
+});
+
+test.each(["running-unobserved", "pre-writer-exited", "unknown"] as const)("keeps submitted Bot identity and never acknowledges %s", async kind => {
+  const f = await recoveryFixture({}, true);
+  const original = f.current().intent!;
+  f.deps.reconcileLaunch.mockImplementation(async ({ spawnProof }) => kind === "running-unobserved"
+    ? { kind, process: spawnProof }
+    : kind === "pre-writer-exited"
+      ? { kind, process: spawnProof, journal: "preceding-generation" }
+      : { kind, cause: new Error("process inspection unavailable") });
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow();
+  expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
+  expect(f.current().intent).toEqual(original);
+  expect(f.launch).toHaveBeenCalledTimes(1); expect(f.grant).toHaveBeenCalledTimes(1);
+  expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+test.each(["missing", "preceding-generation"] as const)("Bot cleanup retains pre-writer %s and finishes despite business cancellation", async journal => {
+  const f = await recoveryFixture({}, true);
+  const abort = new AbortController(); abort.abort(new Error("business cancelled"));
+  f.deps.reconcileLaunch.mockImplementation(async ({ spawnProof }) => ({ kind: "pre-writer-exited", process: spawnProof, journal }));
+  await expect(f.manager.shutdown(f.current(), abort.signal)).rejects.toThrow(/before committing/);
+  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+  expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
+  expect(f.current().intent!.executionGeneration).toBe("1");
 });

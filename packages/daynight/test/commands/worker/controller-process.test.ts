@@ -5,15 +5,16 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn(), reconcile: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: native.spawn }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: native.observe }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture }));
+vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ reconcileSubmittedControllerLaunch: native.reconcile }));
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../../../src/commands/worker/backends/controller-process.js";
 
 const roots: string[] = [];
-afterEach(async () => { vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.useRealTimers(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-process"); await mkdir(base, { recursive: true });
   const homeDirectory = await mkdtemp(path.join(base, "h-")); roots.push(homeDirectory);
@@ -27,6 +28,7 @@ const fixture = async () => {
   native.spawn.mockImplementation(() => { order.push("spawn"); queueMicrotask(() => child.emit("spawn")); return child; });
   native.capture.mockImplementation(async () => { order.push("capture"); return proof; });
   native.observe.mockImplementation(async () => { order.push("observe"); return { snapshot }; });
+  native.reconcile.mockImplementation(async () => { order.push("observe"); return { kind: "observed", snapshot }; });
   const options = { homeDirectory, packageDirectory: homeDirectory, ticket, env: { HOME: "/real/home", PATH: "/real/path", DN_CONFIG_DIR: "/worker/state" }, signal: new AbortController().signal,
     onSubmitting: async () => { order.push("submitting"); }, onSpawned: async () => { order.push("spawned"); }, onObserved: async () => { order.push("observed"); } };
   return { options, order, child, snapshot, proof };
@@ -49,7 +51,7 @@ test("does not spawn when durable submission fails", async () => {
 test("does not repeat launch or observation after acknowledgement storage fails", async () => {
   const f = await fixture(), failure = new Error("acknowledgement storage unavailable");
   await expect(launchControllerProcess({ ...f.options, onObserved: () => { throw failure; } })).rejects.toBe(failure);
-  expect(native.spawn).toHaveBeenCalledOnce(); expect(native.observe).toHaveBeenCalledOnce();
+  expect(native.spawn).toHaveBeenCalledOnce(); expect(native.reconcile).toHaveBeenCalledOnce();
 });
 
 test("retains the original spawn outcome when process proof cannot be captured", async () => {
@@ -59,9 +61,24 @@ test("retains the original spawn outcome when process proof cannot be captured",
 });
 
 test("reports an exited controller without an authenticated response as unknown", async () => {
-  const f = await fixture(); f.child.exitCode = 1 as never; native.observe.mockRejectedValue(new Error("unreachable"));
+  const f = await fixture(); native.reconcile.mockResolvedValue({ kind: "pre-writer-exited", process: f.proof, journal: "missing" });
   await expect(launchControllerProcess(f.options)).rejects.toMatchObject({ observation: { state: "unknown", reasonCode: "controller_start_unknown" } });
   expect(native.spawn).toHaveBeenCalledOnce();
+});
+
+test("keeps observing one spawned instance through the launch window without acknowledging it", async () => {
+  const f = await fixture();
+  native.reconcile.mockResolvedValue({ kind: "running-unobserved", process: f.proof });
+  let started!: () => void;
+  const spawned = new Promise<void>(resolve => { started = resolve; });
+  const pending = launchControllerProcess({ ...f.options, onSpawned: () => { vi.useFakeTimers(); started(); } });
+  const result = expect(pending).rejects.toMatchObject({ observation: { state: "unknown", reasonCode: "controller_start_unknown" } });
+  await spawned;
+  await vi.advanceTimersByTimeAsync(30_100);
+  await result;
+  expect(native.spawn).toHaveBeenCalledOnce();
+  expect(native.reconcile.mock.calls.every(([input]) => input.spawnProof === f.proof && input.ticket === f.options.ticket)).toBe(true);
+  expect(f.order).not.toContain("observed");
 });
 
 test("observes the original ticket without spawning or submitting user input", async () => {

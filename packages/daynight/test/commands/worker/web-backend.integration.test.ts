@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import * as launchTickets from "../../../src/commands/controller/launch-ticket.j
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import type { requestController } from "../../../src/commands/controller/local-client.js";
+import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebBackendFixtures("file");
@@ -192,7 +192,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue(undefined);
   source.request.mockImplementation(async (ticket, action) => {
     if (phase === "resuming") {
-      if (ticket.executionGeneration === "1") throw new Error("Original controller is stopped.");
+      if (ticket.executionGeneration === "1") throw new ControllerIpcOutcomeUnknownError("Original controller is stopped.");
       return { requestId: randomUUID(), ok: true, snapshot: { ...snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeStopped: false, stoppedAt: null } };
     }
     if (action.kind === "submit_initial") {
@@ -259,7 +259,7 @@ it.skipIf(process.platform === "win32")("uses the actual OS process group and co
   journal.patchSnapshot({ controllerProcess: proof, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null });
   journal.close();
   expect(await processProof.confirmControllerProcessesStopped(proof, [])).toBe(false);
-  const request = vi.fn<typeof requestController>().mockRejectedValue(new Error("Original IPC endpoint is unavailable."));
+  const request = vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original IPC endpoint is unavailable."));
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 20, request });
   const outcome = await backend.cleanup(task, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(outcome.complete).toBe(true);
@@ -267,3 +267,25 @@ it.skipIf(process.platform === "win32")("uses the actual OS process group and co
   expect(lifecycle.readControllerSnapshot(journalPath)).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: proof });
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
+
+it.skipIf(process.platform === "win32")("stops the original bootstrap when its IPC accepts connections without replying", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");
+  vi.restoreAllMocks();
+  // A relative socket keeps the address below the macOS Unix socket limit.
+  const endpoint = `../../.tmp/stall-${randomUUID()}.sock`;
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue({ ...source.ticket, ipcEndpoint: endpoint });
+  const script = "const net=require('node:net'); net.createServer(() => {}).listen(process.argv[1], () => process.stdout.write('ready\\n'));";
+  const child = spawn(process.execPath, ["-e", script, endpoint], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  children.push(child);
+  await new Promise<void>((resolve, reject) => { child.stdout!.once("data", () => resolve()); child.once("error", reject); child.once("exit", () => reject(new Error("bootstrap exited before listening"))); });
+  const proof = await processProof.captureProcessProof(child.pid!);
+  const task = f.store.updateWebExecution(source.task, { controllerProcess: proof }, 6);
+  const cancelled = new AbortController(); cancelled.abort(new Error("caller cancelled"));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  try {
+    await expect(backend.cleanup(task, { kind: "shutdown", deadline: 20, immediateStop: true, signal: cancelled.signal })).rejects.toThrow("before committing");
+    expect(await processProof.inspectProcessProof(proof)).toBe("stopped");
+    expect(f.store.getTask(task)?.webExecution).toMatchObject({ launchId: source.ticket.launchId, launchSubmission: "unknown", controllerProcess: proof });
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  } finally { await rm(endpoint, { force: true }); }
+}, 15_000);

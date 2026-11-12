@@ -38,3 +38,15 @@ it.skipIf(process.platform === "win32")("keeps process identity and cleanup stab
   expect(await confirmControllerProcessesStopped(controller, [native])).toBe(true);
   expect(process.env.LC_ALL).toBe("zh_TW.UTF-8");
 });
+it.skipIf(process.platform === "win32")("recognizes the original exited child while its parent has not reaped the zombie", async () => {
+  const script = 'import os,sys,time\nr,w=os.pipe()\npid=os.fork()\nif pid == 0:\n os.close(w); os.read(r,1); os._exit(0)\nos.close(r); print(pid,flush=True); sys.stdin.buffer.read(1); os.write(w,b"x"); time.sleep(20)';
+  const parent = spawn("python3", ["-c", script], { stdio: ["pipe", "pipe", "ignore"] }); children.push(parent);
+  const pid = await new Promise<number>((resolve, reject) => { parent.once("error", reject); parent.stdout!.once("data", data => resolve(Number(String(data).trim()))); });
+  const proof = await captureProcessProof(pid);
+  parent.stdin!.write("x");
+  const deadline = Date.now() + 5000;
+  let state = await inspectProcessProof(proof);
+  while (state === "running" && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 25)); state = await inspectProcessProof(proof); }
+  expect(state).toBe("stopped");
+  expect(() => process.kill(pid, 0)).not.toThrow();
+}, 10_000);

@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const f = vi.hoisted(() => ({ open: vi.fn(), times: vi.fn(), query: vi.fn(), close: vi.fn(), load: vi.fn(), pointerSize: 8, error: 5, now: 0 }));
+const f = vi.hoisted(() => ({ open: vi.fn(), times: vi.fn(), query: vi.fn(), close: vi.fn(), terminate: vi.fn(), wait: vi.fn(), load: vi.fn(), pointerSize: 8, error: 5, now: 0 }));
 vi.mock("koffi", () => ({
   load: f.load, sizeof: () => f.pointerSize, address: () => 0x100000n,
 }));
 const handle = {}, pid = 4101, parentPid = 4000;
 const command = '"C:\\Program Files\\node.exe" "C:\\controller 📖.mjs" --role "a  b"';
 const fileTime = 134067744001234567n;
+let stop: typeof import("../../../src/commands/controller/windows-process-proof.js").stopWindowsBootstrapProcess;
 let capture: typeof import("../../../src/commands/controller/windows-process-proof.js").captureWindowsProcessProof;
 const writePointer = (data: Buffer, offset: number, value: bigint) => f.pointerSize === 8 ? data.writeBigUInt64LE(value, offset) : data.writeUInt32LE(Number(value), offset);
 const basic = (data: Buffer, returned: Buffer) => {
@@ -28,18 +29,20 @@ beforeEach(async () => {
     if (declaration.includes("OpenProcess")) return f.open;
     if (declaration.includes("GetProcessTimes")) return f.times;
     if (declaration.includes("NtQueryInformationProcess")) return f.query;
+    if (declaration.includes("TerminateProcess")) return f.terminate;
+    if (declaration.includes("WaitForSingleObject")) return f.wait;
     if (declaration.includes("CloseHandle")) return f.close;
     if (declaration.includes("GetLastError")) return () => f.error;
     throw new Error(`Unexpected native declaration: ${declaration}`);
   } }));
-  f.open.mockReturnValue(handle); f.close.mockReturnValue(1);
+  f.open.mockReturnValue(handle); f.close.mockReturnValue(1); f.terminate.mockReturnValue(1); f.wait.mockReset().mockReturnValueOnce(258).mockReturnValue(0);
   f.times.mockImplementation((observed, creation: Buffer) => { expect(observed).toBe(handle); creation.writeBigUInt64LE(fileTime); return 1; });
   f.query.mockImplementation((observed, kind, data: Buffer, size, returned: Buffer) => {
     expect(observed).toBe(handle); expect(size).toBe(data.length);
     if (kind === 0) basic(data, returned); else if (kind === 60) commandLine(data, returned); else throw new Error("Unexpected information class");
     return 0;
   });
-  ({ captureWindowsProcessProof: capture } = await import("../../../src/commands/controller/windows-process-proof.js"));
+  ({ captureWindowsProcessProof: capture, stopWindowsBootstrapProcess: stop } = await import("../../../src/commands/controller/windows-process-proof.js"));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -147,5 +150,30 @@ describe("Windows native process identity", () => {
     f.load.mockImplementation(() => { f.now = 5001; return { func: () => vi.fn() }; });
     await expect(capture(pid, 5000)).rejects.toThrow(/deadline/);
     expect(f.open).not.toHaveBeenCalled(); expect(f.close).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Windows bootstrap stop handle", () => {
+  const proof = { pid, parentPid, processGroupId: null, startedAt: "2025-11-05T00:00:00.1234560Z", commandHash: createHash("sha256").update(command).digest("hex") };
+  it("checks identity, terminates and waits on the same handle", async () => {
+    await stop(proof, Date.now() + 5000);
+    expect(f.open).toHaveBeenCalledExactlyOnceWith(0x101001, 0, pid);
+    expect(f.terminate).toHaveBeenCalledExactlyOnceWith(handle, 1);
+    expect(f.wait.mock.calls).toHaveLength(2);
+    expect(f.wait.mock.calls.every(call => call[0] === handle)).toBe(true);
+    expect(f.wait.mock.calls[0]?.[1]).toBe(0);
+    expect(f.wait.mock.calls[1]?.[1]).toBeGreaterThan(0);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("does not terminate a different instance", async () => {
+    await expect(stop({ ...proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/identity mismatch/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("retains wait and close failures", async () => {
+    f.wait.mockReset().mockReturnValue(258); f.close.mockReturnValue(0);
+    const error = await stop(proof, Date.now() + 5000).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toMatch(/deadline/);
+    expect(error.errors[1]).toMatchObject({ stage: "close-process-handle" });
   });
 });
