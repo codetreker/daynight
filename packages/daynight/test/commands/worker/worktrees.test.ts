@@ -51,19 +51,28 @@ const manager = (root: string, options: Partial<Parameters<typeof createWorkerGi
     await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
       sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
   }, ...options });
-  const prepared = new Set<string>();
+  const prepared = new Map<string, string>();
+  const pathKey = (project: WorkerProject) => path.normalize(project.localPath);
+  const bindingKey = (project: WorkerProject) => JSON.stringify([project.projectId, project.repoUrl]);
+  const prepare = async (project: WorkerProject, op: Operation) => {
+    const key = pathKey(project);
+    prepared.delete(key);
+    const repository = await raw.prepareRepository(project, op);
+    prepared.set(key, bindingKey(project));
+    return repository;
+  };
   const result = new Proxy(raw, { get(target, property) {
     const value = Reflect.get(target, property) as unknown;
     if (typeof value !== "function" || property === "dispose") return value;
-    if (property === "prepareRepository") return async (project: WorkerProject, op: Operation) => { const result = await raw.prepareRepository(project, op); prepared.add(project.localPath); return result; };
+    if (property === "prepareRepository") return prepare;
     return async (project: WorkerProject, ...args: unknown[]) => {
-      if (!prepared.has(project.localPath)) {
+      if (prepared.get(pathKey(project)) !== bindingKey(project)) {
         if (property === "scanWorktrees" || property === "listWorktrees") {
           const entry = await lstat(project.localPath).catch(() => null);
           if (entry === null || entry.isSymbolicLink()) return Reflect.apply(value, target, [project, ...args]);
         }
         const op = createOperation();
-        try { await raw.prepareRepository(project, op); prepared.add(project.localPath); } finally { op.dispose(); }
+        try { await prepare(project, op); } finally { op.dispose(); }
       }
       return Reflect.apply(value, target, [project, ...args]);
     };
