@@ -11,6 +11,8 @@ import { stringify } from "yaml";
 import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
+import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
+import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
@@ -80,6 +82,24 @@ const fixture = async (warm = false, configured = true) => {
 };
 const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), archiveYield: () => false, updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
 const reporter = () => ({ trigger: vi.fn(), publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
+const observeCommittedConfiguration = () => {
+  // Encoding alone is not committed evidence; publication follows the real atomic writer's successful completion.
+  let encoded: WorkerConfigurationCache | undefined, published: WorkerConfigurationCache | undefined;
+  const chunks = configurationCache.configurationCacheChunks, create = cloudConfiguration.createWorkerConfigurationManager;
+  const encoding = vi.spyOn(configurationCache, "configurationCacheChunks").mockImplementation(snapshot => { encoded = snapshot; return chunks(snapshot); });
+  const manager = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementation(options => create({ ...options, onChange: snapshot => {
+    options.onChange?.(snapshot);
+    published = encoded;
+  } }));
+  return {
+    current: (): WorkerConfigurationCache => {
+      if (published === undefined) throw new Error("Worker has not published a configuration checkpoint.");
+      expect(Object.isFrozen(published)).toBe(true);
+      return published;
+    },
+    restore: () => { manager.mockRestore(); encoding.mockRestore(); },
+  };
+};
 const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof runWorker>[0]> = {}) => {
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const running = runWorker({ ...f, signal: cancellation.signal, ...extra }); executions.add(running);
@@ -140,37 +160,42 @@ describe("worker cloud-first startup", () => {
     mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
     const stopProject = vi.fn(async (_projectId: string, _signal: AbortSignal) => {}), tick = vi.fn(async () => {});
     mocks.coordinator.mockImplementation(() => ({ stopProject, tick, archiveYield: () => false, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
-    for (let pass = 0; pass < 2; pass++) {
-      reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
-      const { cancellation, running } = start(f);
-      await vi.waitFor(async () => {
-        expect(reporterOptions).toBeDefined();
-        expect(stopProject).toHaveBeenCalledTimes(2);
-        const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
-        expect(saved.schemaVersion).toBe(5);
-        expect(saved.authority.desired).toEqual(target);
-        if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
-        for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
-        expect(reporterOptions!.configuration!.capture(reportSample).observation!.items.length).toBeLessThanOrEqual(1025);
-      }, { timeout: 10_000, interval: 50 });
-      const acknowledged = new Set<string>();
-      let remaining = 0;
-      for (let batch = 0; batch < 3; batch++) {
-        const sent = reporterOptions!.configuration!.capture(reportSample);
-        expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
-        for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
-        await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true });
-        const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
-        remaining = [...saved.currentItems, ...saved.retainedItems].filter(item => item.value.key.kind === "projectRemoval").length;
-        if (remaining === 0) break;
+    const observed = observeCommittedConfiguration();
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
+        const { cancellation, running } = start(f);
+        try {
+          await vi.waitFor(() => {
+            expect(reporterOptions).toBeDefined();
+            expect(stopProject).toHaveBeenCalledTimes(2);
+            const saved = observed.current();
+            expect(saved.schemaVersion).toBe(5);
+            expect(saved.authority.desired).toEqual(target);
+            if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
+            for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
+            expect(reporterOptions!.configuration!.capture(reportSample).observation!.items.length).toBeLessThanOrEqual(1025);
+          }, { timeout: 10_000, interval: 50 });
+          const acknowledged = new Set<string>();
+          let remaining = 0;
+          for (let batch = 0; batch < 3; batch++) {
+            const sent = reporterOptions!.configuration!.capture(reportSample);
+            expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
+            for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
+            await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+            const saved = observed.current();
+            remaining = [...saved.currentItems, ...saved.retainedItems].filter(item => item.value.key.kind === "projectRemoval").length;
+            if (remaining === 0) break;
+          }
+          expect(remaining).toBe(0);
+          expect(acknowledged.size).toBe(pass === 0 ? 1021 : 2);
+          expect(new Set(ids.filter(id => acknowledged.has(id)))).toEqual(new Set(ids));
+          expect(new Set(stopProject.mock.calls.map(([id]) => id))).toEqual(new Set(ids));
+          await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 10_000, interval: 100 });
+        } finally { cancellation.abort(); await running; }
+        expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8"))).toEqual(observed.current());
       }
-      expect(remaining).toBe(0);
-      expect(acknowledged.size).toBe(pass === 0 ? 1021 : 2);
-      expect(new Set(ids.filter(id => acknowledged.has(id)))).toEqual(new Set(ids));
-      expect(new Set(stopProject.mock.calls.map(([id]) => id))).toEqual(new Set(ids));
-      await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 10_000, interval: 100 });
-      cancellation.abort(); await running;
-    }
+    } finally { observed.restore(); }
   }, 30_000);
   it("installs a valid target over a full cache before reporting and acknowledges its current removal", async () => {
     // Stable IDs put the selected stop at a known point in the bounded job order.
@@ -184,18 +209,19 @@ describe("worker cloud-first startup", () => {
     await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(next));
+    const observed = observeCommittedConfiguration();
     let assertionFailure: unknown;
     mocks.reporter.mockImplementation((options: ReporterOptions) => {
       queueMicrotask(() => { void (async () => {
         try {
-          const installed = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+          const installed = observed.current();
           expect(installed.schemaVersion).toBe(5);
           expect(installed.authority.desired).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThan(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
             value: { key: { kind: "projectRemoval", projectId: uuid(10) }, targetRevision: "1" } });
-          await vi.waitFor(async () => {
-            const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+          await vi.waitFor(() => {
+            const saved = observed.current();
             const removal = saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10));
             const blocker = saved.retainedItems.find(item => item.recordId === removal?.blockedByRemovalId);
             expect(removal?.value.state, JSON.stringify({ state: removal?.value.state, started: removal?.started, blocker: removal?.blockedByRemovalId, blockerState: blocker?.value.state,
@@ -210,7 +236,7 @@ describe("worker cloud-first startup", () => {
             expect(sent.observation?.desiredRevision).toBe("2");
             expect(sent.observation!.items.every(item => BigInt(item.targetRevision) <= 2n)).toBe(true);
             await options.configuration!.accept(sent, { desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true });
-            const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+            const saved = observed.current();
             expect(saved.authority.desired).toEqual(next);
             removed = ![...saved.currentItems, ...saved.retainedItems].some(entry => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10));
             if (removed) break;
@@ -221,9 +247,12 @@ describe("worker cloud-first startup", () => {
       })(); });
       return reporter();
     });
-    await runWorker({ ...f, signal: cancellation.signal });
-    if (assertionFailure !== undefined) throw assertionFailure;
-    expect(mocks.reporter).toHaveBeenCalledOnce();
+    try {
+      await runWorker({ ...f, signal: cancellation.signal });
+      if (assertionFailure !== undefined) throw assertionFailure;
+      expect(mocks.reporter).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8"))).toEqual(observed.current());
+    } finally { observed.restore(); }
   }, 30_000);
   it("applies persistent local overrides to registered cloud targets without rewriting desired", async () => {
     const f = await fixture(), cancellation = new AbortController();
