@@ -33,6 +33,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
    const identity={...project,taskId:randomUUID(),claimId:randomUUID(),workerId:randomUUID(),worktreeId:randomUUID()};
    store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit,...(agent === "claude" ? {} : {toolLaunch:frozenToolLaunch(agent)})}, userId: randomUUID() }, 1);
    const binding={repositoryPath:home,commonDirectory:path.join(home,".git"),worktreePath:path.join(home,".worktrees","daynight",identity.worktreeId),branch:`daynight/${identity.taskId}`};
+   await mkdir(binding.worktreePath,{recursive:true});
    const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),resolveWorktreeBinding:vi.fn(async()=>binding),removeUnpublishedReservation:vi.fn(async()=>{}),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>{}),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
    return {home,store,identity,git};
   };

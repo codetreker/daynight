@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
+import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -141,10 +142,23 @@ describe("cleanup from resource observations", () => {
 
   it("cleans an already absent pane without inventing stop evidence", async () => {
     const f = fixture(); f.state(null);
+    f.observeExecutionStop.mockImplementation(async target => ({ kind: "unknown", target, error: new LegacyBindingUnavailableError("No original legacy binding"), observedAt: 1000 }));
     await f.advance();
     expect(f.submitPrompt).not.toHaveBeenCalled(); expect(f.stopAndClose).not.toHaveBeenCalled();
     expect(f.onExecutionStopped).not.toHaveBeenCalled();
     expect(f.order).toEqual(["delete"]);
+  });
+
+  it.each(["unknown", "running"] as const)("retains the worktree when an empty workspace has a %s stop observation", async kind => {
+    const f = fixture(); f.state(null);
+    const failure = new Error("stop observation failed");
+    f.observeExecutionStop.mockImplementation(async target => kind === "unknown"
+      ? { kind, target, error: failure, observedAt: 1000 }
+      : { kind, execution: { owner: f.owner, backend: "herdr-legacy", runKey: "fixture" }, observedAt: 1000 });
+    await expect(f.advance()).rejects.toThrow("stop is unconfirmed");
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.onExecutionStopped).not.toHaveBeenCalled();
+    expect(f.store.getCleanupSchedule(f.owner)).not.toBeNull();
   });
 
   it("notifies the matching legacy stop before worktree removal", async () => {
@@ -269,7 +283,7 @@ describe("cleanup operation budgets", () => {
     await advanceTime(240_000);
     expect(f.removeWorktree).toHaveBeenCalledOnce();
     await advanceTime(240_000);
-    expect(await completion).toMatchObject({ branch: `daynight/${f.owner.taskId}` });
+    expect(await completion).toBeUndefined();
     expect(f.order).toEqual(["stop-close", "delete"]);
     expect(f.findWorktree).toHaveBeenCalledOnce();
   });
@@ -287,7 +301,7 @@ describe("cleanup operation budgets", () => {
     expect(f.store.getTask(f.task)?.status).toBe("active");
     f.clock(301_000);
     expect(f.store.getCleanupSchedule(f.owner)?.deadline).toBe(601_000);
-    expect(await f.advance()).toMatchObject({ branch: `daynight/${f.owner.taskId}` });
+    expect(await f.advance()).toBeUndefined();
     expect(f.submitPrompt).toHaveBeenCalledOnce();
     expect(f.findWorktree).toHaveBeenCalledOnce();
     expect(f.order).toEqual(["stop-close", "delete"]);

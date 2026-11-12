@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
+import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, HerdrInputBlockedError, LegacyBindingUnavailableError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
@@ -1107,7 +1107,7 @@ describe("direct task resource management", () => {
     expect(await f.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
     f.workspaces.splice(0);
     const restarted = await fixture();
-    expect(await restarted.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown" });
+    expect(await restarted.manager.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown", error: expect.any(LegacyBindingUnavailableError) });
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
   });
 

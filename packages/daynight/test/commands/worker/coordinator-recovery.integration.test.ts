@@ -9,6 +9,8 @@ import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
+import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
+import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrPromptResult, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
@@ -72,7 +74,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const observe = (context: ResourceOwner, binding: HerdrTaskBinding): HerdrAgentObservation => ({ ...resources.get(context.claimId)!.panes[0]!, name: "managed", binding });
   const git = {
     prepareRepository: vi.fn(), dispose: vi.fn(), removeEmptyReservation: vi.fn(async () => {}),
-    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
+    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); await mkdir(binding.worktreePath, { recursive: true }); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
     listWorktreeManifests: vi.fn(async (source: WorkerProject, _operation: Operation, includeOtherProjects = false) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId || includeOtherProjects && store.getProject(owner)?.localPath === source.localPath)),
@@ -83,6 +85,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {
+    observeExecutionStop: vi.fn(async (target: CleanupTarget): Promise<StopObservation> => ({ kind: "unknown", target, error: new LegacyBindingUnavailableError("No original legacy Herdr binding exists in this Worker run."), observedAt: clock })),
     pendingStops: vi.fn((): { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] => []),
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
     prepareWorkspace: vi.fn(async (context: HerdrExecutionContext, _title: string) => {
@@ -148,6 +151,7 @@ it("rebuilds an active server claim from empty SQLite with both projects invento
   const owner = { projectId: candidate.projectId, taskId: candidate.id, claimId: uuid(901), worktreeId: uuid(902) };
   f.grant(candidate, { claimId: owner.claimId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: owner.worktreeId });
   f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+  await mkdir(f.bind(owner).worktreePath, { recursive: true });
   f.candidates.splice(0);
   expect(f.store.listTasks()).toEqual([]);
   try {

@@ -10,7 +10,7 @@ import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
-import { WorktreePreconditionError } from "../worktrees.js";
+import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
 import { sameWorktreeLocation } from "../worktrees/paths.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
@@ -170,11 +170,48 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
       phase(task, { kind: "execution", phase: "worktree-preparation" });
       const preparing = task.resources.worktree === null;
+      const original = task.resources.worktree;
       if (preparing && task.webExecution !== null && (task.webExecution.launchSubmission !== "not-submitted" || task.webExecution.controllerProcess !== null || task.webExecution.nativeProcesses.length > 0)) throw new Error("An already started Web execution has no original worktree binding.");
-      if (preparing) task = options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
+      let allowRestore = task.webExecution === null;
+      const admitRestore = async (): Promise<void> => {
+        const execution = task.webExecution;
+        if (execution !== null) {
+          let ticket: ControllerLaunchTicket | undefined;
+          try { ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); }
+          catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT") || execution.ticketPath !== null || execution.launchSubmission !== "not-submitted") throw error;
+          }
+          if (ticket !== undefined && original === null) throw new Error("The original Web ticket has no worktree binding.");
+          if (ticket !== undefined && (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration
+            || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.controllerId !== execution.controllerId || ticket.claimId !== task.claimId
+            || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.workerId !== task.workerId || ticket.worktreeId !== task.worktreeId
+            || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin || ticket.provider !== task.configuration?.agent
+            || ticket.cwd !== original!.worktreePath || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
+            || execution.nativeHome !== null && ticket.nativeHome !== execution.nativeHome
+            || BigInt(execution.executionGeneration) > 1n && ticket.resumeNativeSessionId !== task.resources.nativeSession?.sessionId
+            || task.configuration === null || !matchesLaunchConfiguration(ticket.configuration, task.configuration))) throw new Error("The original Web ticket conflicts with its worktree binding.");
+        }
+        const observation = await workerOperation(operation => observeExecutionStop(task, operation), signal);
+        if (observation.kind !== "not-started" && observation.kind !== "stopped") throw new Error("The original Web processes have not been confirmed stopped; the worktree cannot be restored.", observation.kind === "unknown" ? { cause: observation.error } : undefined);
+        allowRestore = true;
+      };
+      if (preparing && task.webExecution !== null) await admitRestore();
+      if (original !== null && task.webExecution !== null) {
+        let missing = false;
+        try { await lstat(original.worktreePath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; missing = true; }
+        if (missing) await admitRestore();
+      }
+      const prepare = () => workerOperation(operation => options.git.prepareWorktree(project, task, operation, original?.worktreePath, original !== null || task.webExecution?.launchSubmission !== undefined && task.webExecution.launchSubmission !== "not-submitted", original ?? undefined, allowRestore), signal, 180_000);
+      let verified;
+      try { verified = await prepare(); }
+      catch (error) {
+        if (!(error instanceof WorktreeRestoreRequiredError) || allowRestore) throw error;
+        await admitRestore();
+        verified = await prepare();
+      }
+      if (preparing) task = options.store.bindWorktree(task, verified, options.now());
       else {
-        const verified = await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal);
-        if (task.resources.worktree === null || !await sameWorktreeLocation(verified.worktreePath, task.resources.worktree.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, task.resources.worktree.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, task.resources.worktree.commonDirectory) || verified.branch !== task.resources.worktree.branch) throw new Error("The original Web worktree binding differs from its manifest.");
+        if (original === null || !await sameWorktreeLocation(verified.worktreePath, original.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, original.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, original.commonDirectory) || verified.branch !== original.branch) throw new Error("The original Web worktree binding differs from its manifest.");
         task = current(task);
       }
       try { if (task.resources.worktree !== null) monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree.worktreePath); } catch { /* Optional monitoring cannot alter worktree preparation. */ }

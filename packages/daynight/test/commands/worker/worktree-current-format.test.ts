@@ -1,7 +1,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
@@ -87,8 +87,90 @@ it("retains unknown content and never treats a missing manifest as proof of abse
     await expect(f.adapter.findWorktree(f.project, f.owner, operation)).rejects.toThrow(/manifest is missing/);
     const leaf = path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId);
     await mkdir(leaf, { recursive: true }); await writeFile(path.join(leaf, "important"), "keep");
-    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/not empty/);
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/no matching Git registration/);
     expect(await readFile(path.join(leaf, "important"), "utf8")).toBe("keep");
+  } finally { operation.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("restores a missing checkout and stale registration from its original branch", async () => {
+  const f = await fixture(), operation = createOperation();
+  try {
+    const repository = await f.adapter.prepareRepository(f.project, operation);
+    const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
+    const commit = git(binding.worktreePath, "rev-parse", "HEAD");
+    await rm(binding.worktreePath, { recursive: true });
+    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath)).toEqual(binding);
+    expect(git(binding.worktreePath, "rev-parse", "HEAD")).toBe(commit);
+    expect(git(binding.worktreePath, "branch", "--show-current")).toBe(binding.branch);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    const store = createWorktreeManifestStore(repository.commonDirectory);
+    store.remove(store.read(f.owner.worktreeId)!);
+    await rm(binding.worktreePath, { recursive: true });
+    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation)).toEqual(binding);
+    expect(git(binding.worktreePath, "rev-parse", "HEAD")).toBe(commit);
+    expect(store.read(f.owner.worktreeId)).not.toBeNull();
+  } finally { operation.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("does not restore a checkout that disappears after a live execution was observed", async () => {
+  const f = await fixture(), operation = createOperation();
+  try {
+    await f.adapter.prepareRepository(f.project, operation);
+    const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    await rm(path.join(f.repository, ".worktrees"), { recursive: true });
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath, true, undefined, false)).rejects.toThrow(/may still be running/);
+    await expect(lstat(path.join(f.repository, ".worktrees"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(git(f.repository, "worktree", "list", "--porcelain")).toContain(binding.worktreePath);
+    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath, true)).toEqual(binding);
+  } finally { operation.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("restores a missing manifest from the exact retained legacy binding", async () => {
+  const f = await fixture(), operation = createOperation();
+  try {
+    const repository = await f.adapter.prepareRepository(f.project, operation);
+    const legacy = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
+    const store = createWorktreeManifestStore(repository.commonDirectory);
+    store.publish({ schemaVersion: 1, ...f.owner, directoryName: f.owner.taskId });
+    git(f.repository, "branch", `daynight/${f.owner.taskId}`);
+    const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy);
+    const original = store.read(f.owner.worktreeId)!;
+    store.remove(original);
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation)).rejects.toThrow(/already checked out/);
+    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy)).toEqual(binding);
+    expect(store.read(f.owner.worktreeId)).toEqual(original);
+    git(f.repository, "worktree", "remove", binding.worktreePath);
+    store.remove(original);
+    expect(await f.adapter.prepareWorktree(f.project, f.owner, operation, legacy)).toEqual(binding);
+    expect(store.read(f.owner.worktreeId)).toEqual(original);
+  } finally { operation.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("does not replace a missing original branch or overwrite an unregistered directory", async () => {
+  const f = await fixture(), operation = createOperation();
+  try {
+    await f.adapter.prepareRepository(f.project, operation);
+    const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
+    git(f.repository, "worktree", "remove", binding.worktreePath);
+    git(f.repository, "branch", "-D", binding.branch);
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath, true)).rejects.toThrow(/original task branch is missing/);
+    await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep");
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, binding.worktreePath)).rejects.toThrow(/no matching Git registration/);
+    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("keep");
+  } finally { operation.dispose(); await f.adapter.dispose(); }
+}, 30_000);
+
+it("rejects a conflicting retained binding before creating a checkout", async () => {
+  const f = await fixture(), operation = createOperation();
+  try {
+    const repository = await f.adapter.prepareRepository(f.project, operation);
+    git(f.repository, "branch", `daynight/${f.owner.taskId}`);
+    const cwd = path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId);
+    const binding = { repositoryPath: f.repository, commonDirectory: repository.commonDirectory, worktreePath: cwd, branch: `daynight/${f.owner.taskId}` };
+    await expect(f.adapter.prepareWorktree(f.project, f.owner, operation, cwd, true, { ...binding, commonDirectory: f.root })).rejects.toThrow(/binding differs/);
+    expect(await f.adapter.resolveWorktreeBinding(f.project, f.owner, operation)).toBeNull();
+    expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain(cwd);
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 

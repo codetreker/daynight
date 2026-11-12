@@ -24,7 +24,7 @@ import { ApiError } from "../../../src/api/client.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
-import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
+import { HerdrInputBlockedError, LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
@@ -132,7 +132,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const observe = (context: ResourceOwner, binding: HerdrTaskBinding): HerdrAgentObservation => ({ ...resources.get(context.claimId)!.panes[0]!, name: "managed", binding });
   const git = {
     prepareRepository: vi.fn(), dispose: vi.fn(), removeEmptyReservation: vi.fn(async () => {}),
-    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
+    prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); await mkdir(binding.worktreePath, { recursive: true }); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
     listWorktreeManifests: vi.fn(async (source: WorkerProject, _operation: Operation, includeOtherProjects = false) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId || includeOtherProjects && store.getProject(owner)?.localPath === source.localPath)),
@@ -147,7 +147,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
       if (target.worktreeId === undefined) return unknownStop(target);
       const execution = { owner: { ...target, worktreeId: target.worktreeId }, backend: "herdr-legacy" as const, runKey: target.claimId };
       if (resources.has(target.claimId)) return { kind: "running", execution, observedAt: clock };
-      return stoppedRuns.has(target.claimId) ? { kind: "stopped", execution, observedAt: clock } : unknownStop(target);
+      return stoppedRuns.has(target.claimId) ? { kind: "stopped", execution, observedAt: clock } : { kind: "unknown", target, error: new LegacyBindingUnavailableError("No original legacy Herdr binding exists in this Worker run."), observedAt: clock };
     }),
     pendingStops: vi.fn((): { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] => []),
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
@@ -401,6 +401,43 @@ describe("worker report publication boundaries", () => {
       expect(vi.mocked(f.remote.claim).mock.calls[0]![0].id).toBe(owner.taskId);
       await eventually(async () => { await coordinator.tick(); expect(f.manifests.has(owner.claimId)).toBe(false); });
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it("retires settled Web metadata without initializing an unrelated Herdr backend", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(951), worktreeId: uuid(952) };
+    const config = { ...configuration, args: [], agentControlMode: "web" as const };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+    record = webStore.bindWorktree(record, f.bind(owner), 2);
+    record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 2); webStore.completeTask(record, 3);
+    f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
+    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: () => { throw new Error("Herdr initialization failed"); } });
+    const coordinator = createWorkerCoordinator({ ...f.options, herdr, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn() } });
+    try {
+      await coordinator.tick();
+      expect(f.manifests.has(owner.claimId)).toBe(false);
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it("preserves a Web manifest without its backend record while admitting another Web task", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(951), worktreeId: uuid(952) };
+    const config = { ...configuration, args: [], agentControlMode: "web" as const };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
+    f.candidates.splice(0, 1);
+    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: () => { throw new Error("Herdr initialization failed"); } });
+    const coordinator = createWorkerCoordinator({ ...f.options, herdr, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn() } });
+    try {
+      await coordinator.tick();
+      expect(f.manifests.has(owner.claimId)).toBe(true);
+      expect(f.git.retireWorktreeManifest).not.toHaveBeenCalled();
+      expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(101)]);
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -1262,9 +1299,8 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture();
     vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { f.grant(candidate, descriptor); throw new Error("response lost"); });
     await f.coordinator.tick(); expect(f.store.listTasks()).toHaveLength(0); expect(f.tasks.start).not.toHaveBeenCalled();
-    await f.coordinator.tick(); await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error" })));
-    expect(f.tasks.start).not.toHaveBeenCalled();
-    expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
     expect(f.remote.claim).toHaveBeenCalledOnce();
   });
 
@@ -1668,9 +1704,7 @@ describe("minimal worker resource reconciliation", () => {
     await mkdir(path.dirname(unrelated), { recursive: true }); await writeFile(unrelated, "retain");
     try {
       await f.coordinator.tick();
-      if (status === "pending") await eventually(() => expect(f.store.getTask(local)?.status).toBe("done"));
-      else await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
-      expect(f.store.getTask(local)?.status).toBe(status === "pending" ? "done" : "active");
+      await eventually(() => expect(f.store.getTask(local)?.status).toBe("done"));
       expect(f.git.removeEmptyReservation).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       await access(unrelated);
@@ -1863,9 +1897,10 @@ describe("minimal worker resource reconciliation", () => {
     const row = f.store.listTasks()[0]!;
     const owner = await f.coordinator.cleanupSource(row);
     f.tasks.observeExecutionStop.mockImplementation(unknownStop);
-    await expect(f.coordinator.completeSource(owner)).rejects.toThrow("original execution stop remains unknown");
+    await expect(f.coordinator.completeSource(owner)).rejects.toThrow("execution stop is unconfirmed");
     expect(f.store.getTask(row)?.status).toBe("active");
     expect(f.store.getCleanupSchedule(owner)).not.toBeNull();
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
   });
 
   it("continues a known Herdr claim's terminal cleanup despite a corrupt sibling scan", async () => {
@@ -2894,11 +2929,13 @@ describe("cloud project removal", () => {
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
+    const candidates = f.candidates.splice(0);
     vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await pending; f.worktrees.delete(current.claimId); });
     const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
     try {
       await f.coordinator.tick();
       await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
+      f.candidates.push(...candidates);
       vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => {
         if (project.projectId === broken.projectId) throw new Error("cannot inspect repository");
         return list(project, operation);

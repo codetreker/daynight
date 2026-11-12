@@ -3,7 +3,7 @@ import type { Operation } from "../../api/operation.js";
 import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
-import { HerdrInputWaitingError } from "./herdr/agents.js";
+import { HerdrInputWaitingError, LegacyBindingUnavailableError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
@@ -16,8 +16,10 @@ import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
 import type { createWorkerGitManager } from "./worktrees.js";
+import { WorktreeRestoreRequiredError } from "./worktrees.js";
 import { managedNamespace, sameWorktreeLocation } from "./worktrees/paths.js";
 import path from "node:path";
+import { lstat } from "node:fs/promises";
 
 export type WorkerEvent = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
@@ -218,22 +220,56 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const identity = key(task);
       const original = await workerOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
-      if (original === null && task.sessionId !== null) throw new Error("The original execution has no worktree manifest.");
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "observation" }, false);
       await settleWorkerStops(deps, input.owner, signal);
       const resources = await workerOperation((operation) => deps.herdr.tasks.listResources(operation), signal);
-      const actual = actualTaskPane(input.owner, resources);
-      const savedCwd = deps.herdr.lifecycle?.worktreePath?.(input.owner) ?? actual?.cwd ?? original?.worktreePath ?? newWorktreePath(input.project, input.owner);
+      let actual = actualTaskPane(input.owner, resources);
+      const lifecycleCwd = deps.herdr.lifecycle?.worktreePath?.(input.owner) ?? null;
+      if (actual !== undefined && actual.cwd === null && lifecycleCwd === null && original === null) throw new Error("The original Herdr workspace has no worktree path evidence.");
+      const savedCwd = lifecycleCwd ?? actual?.cwd ?? original?.worktreePath ?? newWorktreePath(input.project, input.owner);
+      const originalCwd = lifecycleCwd ?? actual?.cwd ?? original?.worktreePath ?? undefined;
       const cwd = await originalWorktreePath(input.project, input.owner, savedCwd);
       if (original !== null && !await sameWorktreeLocation(cwd, original.worktreePath)) throw new Error("The original execution path differs from its manifest.");
       const context = executionContext({ ...input, task }, cwd);
       deps.herdr.lifecycle?.assertCanAdvance(context);
+      let checkoutMissing = false;
+      let legacyStopped = false;
+      try { await lstat(cwd); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; checkoutMissing = true; }
+      const requireExistingBranch = task.sessionId !== null || actual !== undefined || deps.herdr.lifecycle?.hasStarted?.(input.owner) === true;
+      const stopForRestore = async (): Promise<void> => {
+        if (!(actual !== undefined || deps.herdr.lifecycle?.hasStarted?.(input.owner) === true && !deps.herdr.lifecycle.isStopped(input.owner))) return;
+        if (deps.herdr.lifecycle !== undefined) {
+          await workerOperation(operation => deps.herdr.lifecycle!.stop(input.owner, "shutdown", operation), signal);
+          if (!deps.herdr.lifecycle.isStopped(input.owner)) throw new Error("The original Herdr execution has not stopped; its worktree cannot be restored.");
+          deps.herdr.lifecycle.assertCanAdvance(context);
+        } else if (actual !== undefined) {
+          await workerOperation(operation => deps.herdr.tasks.stopAndClose(context, actual!.binding, operation), signal);
+          await settleWorkerStops(deps, input.owner, signal);
+        }
+        actual = actualTaskPane(input.owner, await workerOperation(operation => deps.herdr.tasks.listResources(operation), signal));
+        if (actual !== undefined) throw new Error("The original Herdr workspace still exists; its worktree cannot be restored.");
+      };
+      if (checkoutMissing) await stopForRestore();
+      const observeLegacyStop = async (): Promise<void> => {
+        if (actual !== undefined || deps.herdr.lifecycle !== undefined) return;
+        const stop = await workerOperation(operation => deps.herdr.tasks.observeExecutionStop(input.owner, operation), signal);
+        if (stop.kind !== "stopped" && stop.kind !== "not-started" && !(stop.kind === "unknown" && stop.error instanceof LegacyBindingUnavailableError)) throw new Error("The original Herdr execution stop is unconfirmed; its worktree cannot be restored.", stop.kind === "unknown" ? { cause: stop.error } : undefined);
+        legacyStopped = true;
+      };
+      await observeLegacyStop();
       success(input.owner, "observation");
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "worktree-preparation" }, false);
-      const mayPrepare = task.sessionId === null && actual === undefined && (deps.herdr.lifecycle?.hasStarted !== undefined ? !deps.herdr.lifecycle.hasStarted(input.owner) : input.freshClaim === true);
-      const worktree = mayPrepare
-        ? await workerOperation((operation) => deps.git.prepareWorktree(input.project, input.owner, operation), signal, 180_000)
-        : await workerOperation((operation) => deps.git.verifyWorktree(input.project, input.owner, operation), signal);
+      const allowRestore = () => actual === undefined && (deps.herdr.lifecycle === undefined ? legacyStopped : !(deps.herdr.lifecycle.hasStarted?.(input.owner) === true && !deps.herdr.lifecycle.isStopped(input.owner)));
+      const prepare = () => workerOperation((operation) => deps.git.prepareWorktree(input.project, input.owner, operation, originalCwd, requireExistingBranch, undefined, allowRestore()), signal, 180_000);
+      let worktree;
+      try { worktree = await prepare(); }
+      catch (error) {
+        if (!(error instanceof WorktreeRestoreRequiredError) || allowRestore()) throw error;
+        await stopForRestore();
+        await observeLegacyStop();
+        if (!allowRestore()) throw error;
+        worktree = await prepare();
+      }
       if (!await sameWorktreeLocation(worktree.worktreePath, context.cwd)) throw new Error("The prepared worktree differs from the original execution binding.");
       success(input.owner, "worktree-preparation");
       if (task.sessionId === null && !preparedWorktrees.has(identity)) {
@@ -243,7 +279,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (actual !== undefined && liveAgent(actual)) {
         input.onBeforeStart?.();
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-observation" }, false);
-        let observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual.binding, operation, () => success(input.owner, "preparing", "herdr-attachment")), signal);
+        let observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual!.binding, operation, () => success(input.owner, "preparing", "herdr-attachment")), signal);
         assertNativeSession(task, observed);
         success(input.owner, "agent-observation");
         const observedState = inputState(observed);
@@ -307,7 +343,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "observation" }, false, undefined, "resource-stop");
         await workerOperation((operation) => deps.herdr.lifecycle
           ? deps.herdr.lifecycle.stop(input.owner, "shutdown", operation)
-          : deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
+          : deps.herdr.tasks.stopAndClose(context, actual!.binding, operation), signal);
         success(input.owner, "observation", "resource-stop");
       }
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false, undefined, "workspace-preparation");

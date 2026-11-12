@@ -823,10 +823,12 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(target, "tracked.txt"), "utf8")).toBe("changed\n"); expect(await readFile(path.join(target, "untracked"), "utf8")).toBe("kept\n");
   });
 
-  it("never recreates a missing original worktree or repository", async () => {
+  it("restores a missing original worktree but never recreates its repository", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await rm(binding.worktreePath, { recursive: true });
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated"); await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
+    expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+    expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await rename(f.repository, path.join(f.root, "old repository"));
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("original repository");
   });

@@ -860,6 +860,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           await legacy.ensureInstance(operation);
           return legacy.tasks.listResources(operation);
         },
+        listLegacyPendingStops: () => legacy.tasks.pendingStops(),
       },
       neverStarted: {
         candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),

@@ -237,7 +237,7 @@ Coordinator 交叉核对隔离候选与本机持久执行、Web/Herdr 原责任�
 
 Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 validated 与 quarantined 的全部项目身份；unknown 或外项目资源拒绝登记。映射登记只确认项目和路径，之后仍由 coordinator 重新证明资源归属及容量。缺 worktreeId 的旧责任清理继续使用严格查询，无法证明来源时保留责任。prepareRepository 先完成格式转换；转换失败只关闭该仓库的文件准入。扫描恢复后下一轮正常对账解除对应失败；监控报告具体 claim 隔离，或项目观察不完整造成的全局准入影响。
 
-终态停止观察独立于文件 gate 和退避。Web 校验原 ticket、journal 与 Controller 身份，Controller 停止后重读 journal 并验证 native 记录前缀，再检查已记录 provider 的原实例；未登记或逃逸后代不在这一观察保证内。legacy 使用本次 Worker 内原绑定和停止回执，原生 Herdr 使用对应运行已提交的 stop proof。读取失败或身份冲突为 unknown；恢复先预留并使旧观察失效，旧异步观察与旧清理通知不能覆盖新运行。运行时在轮次前捕获 wake revision，配置或有效容量事实变化请求下一串行轮次；重复事实不自唤醒。
+终态停止观察独立于文件 gate 和退避。Web 校验原 ticket、journal 与 Controller 身份，Controller 停止后重读 journal 并验证 native 记录前缀，再检查已记录 provider 的原实例；未登记或逃逸后代不在这一观察保证内。Legacy 使用本次 Worker 内原绑定和停止回执；重启后完整当前资源观察为空时按当前事实收敛，容量投影不补造历史停止证明或 StopObservation。原生 Herdr 使用对应运行已提交的 stop proof。读取失败或身份冲突为 unknown；恢复先预留并使旧观察失效，旧异步观察与旧清理通知不能覆盖新运行。运行时在轮次前捕获 wake revision，配置或有效容量事实变化请求下一串行轮次；重复事实不自唤醒。
 
 每轮 Herdr 快照只用于调度和容量判断。实际启动或恢复在该 task 的串行操作内部重新读取 Herdr，再选择连接、重建 workspace 或启动原生进程。等待前一个操作期间，原 pane 可能已从 inactive 变为存活 agent；使用当轮旧快照不能授权重建或替换它。macOS 还须通过持久准入核对原运行，旧快照和空 pane 都不能替代原始停止证据；legacy 路径只依据当前资源检查。
 
@@ -251,7 +251,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 ## Git 工作区与资源身份
 
-每 task 使用分支 `daynight/<task_id>`，新 claim 使用 `.worktrees/daynight/<worktree_id>`。迁移的旧 claim 使用清单记录的原 taskId 目录，不改变冻结 cwd。准备新工作区先独占 mkdir、可靠发布清单，再执行 unlocked Git add；空无主预留可非递归移除，非空无关联内容不能采纳。恢复验证清单、仓库、唯一 Git 注册和双向指针，保留 dirty state；已启动执行的 checkout 丢失时不重建。
+每 task 使用分支 `daynight/<task_id>`，新 claim 使用 `.worktrees/daynight/<worktree_id>`。迁移的旧 claim 使用清单记录的原 taskId 目录，不改变冻结 cwd。准备工作区先独占 mkdir、可靠发布清单，再执行 unlocked Git add；空无主预留可非递归移除，非空无关联内容不能采纳。恢复核对原归属、仓库、唯一 Git 注册和双向指针，保留现存 dirty state。有效 claim 的原 checkout 缺失时，在原绑定位置从保留分支重建，不以历史未启动证明作为前置条件；目录内已丢失的未提交内容无法恢复。原 Git mutation 仍须完成本地收尾，原 backend 的身份、停止、启动及输入准入独立生效；重建工作树不授予 Web 或 macOS 原生执行的恢复许可。
 确认任务分支不存在后，Git manager 使用受控、有期限且可取消的 Git 执行器从 origin 获取远端 HEAD 到绑定 worktreeId 的私有临时 ref，解析并固定 commit SHA，以该 SHA 创建分支和 worktree；新 clone 也执行此刷新。Fetch 禁止写入 FETCH_HEAD、额外 ref 映射、tags、递归子模块及自动 maintenance，使不同任务并发获取时不会共享基线。成功创建后以所读 SHA compare-and-delete 临时 ref；中断后同一 worktreeId 的后续尝试可覆盖并回收它，不作为旧基线复用。清理错误保持可见，不能掩盖创建错误。远端 HEAD 获取、commit 解析或 fetch 失败，以及刷新取消或超时时，不回退到本地 HEAD 或 origin/HEAD，也不创建新分支或 worktree。保留分支继续从原 tip 创建 worktree，已核验 worktree 直接复用；这两条路径不依赖网络。主 checkout 的分支、HEAD、内容及本地主线不因刷新而改变。决策及权衡见[远端默认分支基线](../../.agents/notes/implemented/bug-fix/2026-11-09-worker-remote-default-base.md)。
 
 Worker 的 clone、fetch、worktree add/remove 和临时 ref 清理使用 owned Git：有界结果报告收尾仍在途时，原 project/task gate 保留至原 Git 子进程、已创建输出流及停止 helper 的本地 close 均完成。错误和迟到的收尾错误保持可见；不能以目录缺失代替 join。普通 Git 查询仍使用有界执行器。manager 关闭时拒绝新准备和修改，取消并等待已准入的仓库准备与 Git 句柄，再删除私有 hooks。已确认停止的 Agent 执行容量仍独立释放。local-closed 不证明逃逸或脱离 stdio 的后代停止，它们可能在资源交接后继续写入；取舍见[Worker Git 收尾决策](../../.agents/notes/implemented/architecture/2026-11-11-worker-git-mutation-closure.md)。
@@ -268,7 +268,7 @@ Worker 的 clone、fetch、worktree add/remove 和临时 ref 清理使用 owned 
 
 每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 的停止证明、归档成功、worktree 删除保持独立：归档失败不得删除源，shutdown 跳过归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
 
-资源扫描与清理 job 可交错。原 backend 的停止与归档条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。仅剩清单时，根据原 backend 已结算证据及已完成的文件责任，在 task gate 内重试元数据退休，不重新停止或归档、不恢复执行槽或同 task 屏障。已有 durable worktreeDeleted 后的本地结算只核对原 retained binding，不重新删除旧路径。仅 LocalTask.done 不证明归档条件。local-closed 不排除脱离 stdio 的后代之后继续写入。
+资源扫描与清理 job 可交错。原 backend 所需停止与归档条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。Legacy 不以进程内回执丢失要求历史停止证明：完整自有清单缺少原 claim、本地无未完成责任或清理调度、无 Web 或 durable Herdr 冲突、当前 Herdr workspace 和待停止责任缺席，且本进程原 job 已收尾时，核对原目录与精确 Git 注册均不存在后可退休孤立清单。已独立确认后继绑定原位置时，只按原清单身份退休元数据，不访问后继 cwd。仅剩清单的重试不重新停止或归档、不恢复执行槽或同 task 屏障；独立 release 正常返回前完成退休，失败报告已确认释放并保留元数据重试。已有 durable worktreeDeleted 后的本地结算只核对原 retained binding，不重新删除旧路径。仅 LocalTask.done 不证明 Web 或原生 Herdr 的归档条件。local-closed 不排除脱离 stdio 的后代之后继续写入。
 
 资源发现结合清单、Git 注册和目录；清单不含 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能认定由本 worker 管理。无法证明归属的资源报告并保留。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
 

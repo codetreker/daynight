@@ -13,7 +13,7 @@ import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
-import { bindingForManifest, managedNamespace } from "./worktrees/paths.js";
+import { bindingForManifest, managedNamespace, sameWorktreeLocation } from "./worktrees/paths.js";
 import { sameResourceOwner } from "./resource-owner.js";
 
 import { WorktreeValidationError } from "./worktree-errors.js";
@@ -21,6 +21,9 @@ import { WorktreeValidationError } from "./worktree-errors.js";
 type GitRunner = typeof runRepositoryGit;
 export class WorktreePreconditionError extends WorktreeValidationError {
   constructor(readonly code: "branch_mismatch" | "validation_failed", message: string, options?: ErrorOptions) { super(message, options); this.name = "WorktreePreconditionError"; }
+}
+export class WorktreeRestoreRequiredError extends Error {
+  constructor() { super("The original execution may still be running; its worktree cannot be restored."); this.name = "WorktreeRestoreRequiredError"; }
 }
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
@@ -176,8 +179,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const readers = { directory, ordinaryFile, markerOwner: (_marker: string): ResourceOwner => { throw new Error("Legacy Worker lock remains in the current worktree format."); } };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>
     registrationsFor(index ?? await readRegistrationIndex(repository, readers, operation), target, readers);
-  const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex, observedPointer?: string | null) => {
-    const manifest = manifestFor(project, identity, repository);
+  const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex, observedPointer?: string | null, original?: WorktreeManifest) => {
+    const manifest = original ?? manifestFor(project, identity, repository);
     if (manifest === null) return null;
     const binding = bindingForManifest(project.localPath, repository.commonDirectory, manifest);
     for (const parent of [path.join(repository.root, ".worktrees"), managedNamespace(repository.root)]) await directory(parent);
@@ -291,28 +294,40 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       prepared.add(repositoryKey(repository));
       return repository;
     },
-    prepareWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
+    prepareWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation, originalCwd?: string, requireExistingBranch = false, originalBinding?: WorktreeBinding, allowRestore = true): Promise<WorktreeBinding> => {
       const repository = await requirePrepared(project, operation), identity = coordinates(owner);
+      if (originalBinding !== undefined && (!await sameWorktreeLocation(originalBinding.repositoryPath, repository.root) || !await sameWorktreeLocation(originalBinding.commonDirectory, repository.commonDirectory) || originalBinding.branch !== `daynight/${identity.taskId}` || originalCwd === undefined || !await sameWorktreeLocation(originalBinding.worktreePath, originalCwd))) throw new Error("The original worktree binding differs from its repository.");
       const store = createWorktreeManifestStore(repository.commonDirectory);
       const existing = manifestFor(project, identity, repository);
-      const manifest: WorktreeManifest = existing ?? { schemaVersion: 1, ...identity, directoryName: identity.worktreeId };
+      let directoryName = identity.worktreeId;
+      if (originalCwd !== undefined) {
+        const name = path.basename(originalCwd);
+        if (![identity.taskId, identity.worktreeId].includes(name) || !await sameWorktreeLocation(originalCwd, path.join(managedNamespace(project.localPath), name))) throw new Error("The original execution has no matching worktree path.");
+        directoryName = name;
+      }
+      const manifest: WorktreeManifest = existing ?? { schemaVersion: 1, ...identity, directoryName };
       const binding = bindingForManifest(project.localPath, repository.commonDirectory, manifest);
+      if (originalCwd !== undefined && !await sameWorktreeLocation(originalCwd, binding.worktreePath)) throw new Error("The original execution path differs from its manifest.");
+      const before = await inspectWorktree(project, identity, repository, operation, false, undefined, undefined, manifest);
+      if (!allowRestore && (before?.leaf == null || before.registration === null)) throw new WorktreeRestoreRequiredError();
       await ensureDirectory(path.join(repository.root, ".worktrees"));
       await ensureDirectory(managedNamespace(repository.root));
-      if (existing !== null) {
-        const before = await inspectWorktree(project, identity, repository, operation, false);
-        if (before?.registration !== null && before?.registration !== undefined) {
-          if (before.leaf === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
-          return before.binding;
-        }
-      } else {
-        if (await directory(binding.worktreePath) !== null) await removeEmptyReservation(repository, manifest.directoryName, operation);
-        if ((await registrations(repository, binding.worktreePath, operation)).length > 0) throw new Error("The worktree path is already registered.");
-      }
       const names = (await git(repository.root, ["for-each-ref", "--format=%(refname)", `refs/heads/${binding.branch}`], operation)).split("\n");
       const reference = `refs/heads/${binding.branch}`;
       if (names.some(name => name.startsWith(`${reference}/`))) throw new Error("An existing branch namespace conflicts with the task branch.");
       const hasBranch = names.includes(reference);
+      if (!hasBranch && (requireExistingBranch || before?.registration != null)) throw new Error("The original task branch is missing; the worktree cannot be restored.");
+      if (before?.registration !== null && before?.registration !== undefined) {
+        if (existing === null && originalCwd === undefined && before.leaf !== null) throw new Error("The existing worktree registration has no original binding.");
+        operation.check();
+        store.publish(manifest);
+        if (before.leaf !== null) return before.binding;
+        // The exact original registration points to an absent checkout. Remove
+        // only that registration before restoring the retained branch.
+        await git(repository.root, ["worktree", "remove", "--force", "--force", "--", binding.worktreePath], operation, undefined, { projectId: project.projectId, owner, command: "worktree-remove" });
+        const after = await inspectWorktree(project, identity, repository, operation, false);
+        if (after === null || after.leaf !== null || after.registration !== null) throw new Error("The original stale registration remains after removal.");
+      }
       if (hasBranch && await git(repository.root, ["for-each-ref", "--format=%(worktreepath)", reference], operation) !== "") throw new Error("The retained task branch is already checked out in another worktree.");
       if (await directory(binding.worktreePath) === null) await mkdir(binding.worktreePath);
       const reserved = await directory(binding.worktreePath);
@@ -495,7 +510,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         } finally { if (preparationByPath.get(key) === pending) preparationByPath.delete(key); }
       }
     }),
-    prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped)),
+    prepareWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation, originalCwd?: string, requireExistingBranch = false, originalBinding?: WorktreeBinding, allowRestore = true) => tracked(operation, scoped => manager.prepareWorktree(project, owner, scoped, originalCwd, requireExistingBranch, originalBinding, allowRestore)),
     removeEmptyReservation: (project: WorkerProject, taskId: string, operation: Operation) => tracked(operation, scoped => manager.removeEmptyReservation(project, taskId, scoped)),
     removeUnpublishedReservation: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeUnpublishedReservation(project, owner, scoped)),
     verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),

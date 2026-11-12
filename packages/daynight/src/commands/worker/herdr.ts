@@ -82,6 +82,7 @@ export type WorkerHerdrLifecycle = {
     assertOrigin(record: import("./herdr/lifecycle-types.js").HerdrLifecycleRecord): void;
     listBindings(projectId: string, operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
     listLegacyBindings(operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
+    listLegacyPendingStops(): readonly import("./herdr/agents.js").HerdrPendingStop[];
   };
   neverStarted?: {
     candidates(): HerdrExecutionOwner[];
