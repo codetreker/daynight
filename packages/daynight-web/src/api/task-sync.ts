@@ -62,7 +62,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const properties = parseTaskProperties(data.properties);
   readTaskPaused(properties);
   const worker = readWorkerClaim(properties);
-  if (worker?.state === "active" && data.status !== "in_progress" || worker?.state === "released" && data.status !== "todo" && data.status !== "cancelled") return malformed();
+  if (worker?.state === "active" && data.status !== "in_progress") return malformed();
   const result: TaskSummary = {
     id: id(data.id), version, properties,
     ...taskTypeFields(data),

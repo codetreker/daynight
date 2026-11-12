@@ -1,6 +1,6 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 10、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 11、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
 [需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍。
 
@@ -207,9 +207,9 @@ cacheGeneration，覆盖仅有磁盘历史或在途首次同步、尚无在线�
 
 ## 5. IndexedDB 与去重
 
-采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 10，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
+采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 11，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
 
-schema 10 在升级事务中重建不兼容 Type/Parent 与依赖状态表示的 projects/summaries/details 及水位，完整 snapshot 重新建立 Task 基线；从 schema 9 升级保留 userScopes、profiles 和兼容 Session 目录。从 schema 1–4 升级同时轮换 userFence，从 schema 7 升级清除缺少完整空证明的 Session 目录。缺少必需字段的旧记录不能补默认值。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
+schema 11 在严格解析前于升级事务中清空 projects/summaries/details 及水位，以移除旧 released 数据和其他不兼容表示；完整 snapshot 重新建立 Task 基线，并可清除项目的可重取 Session 目录。升级保留 userScopes、profiles 和兼容 Session 目录。从 schema 1–4 升级同时轮换 userFence，从 schema 7 升级清除缺少完整空证明的 Session 目录。缺少必需字段的旧记录不能补默认值。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
 
 同源数据库 `daynight-task-cache`：
 

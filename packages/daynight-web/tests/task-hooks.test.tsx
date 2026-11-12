@@ -828,7 +828,7 @@ describe("detail freshness", () => {
 });
 
 it('publishes the matching claim through sync, removes it on later updates, and fences old project responses', async () => {
-  const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  const claim = (name: string, state: 'active' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
   let properties: TaskDetail['properties'] = {};
   const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
   vi.mocked(getTaskSync).mockImplementation(async (id, query) => taskSyncReadFixture(fixture.toSync(graph(id), query)));

@@ -105,7 +105,7 @@ CLI 通过既有 set-status 提交 cancelled，继续支持 daynight/dn、项目
 
 MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_list/task_set_status 识别相应状态，状态写入复用同一 service 事务，claimId⇒done 条件保持。普通 Task 的取消不增加新的工具或操作流程往返。
 
-服务端不再产生 released；现有 CLI/Web 读端仍接受旧 released 表示，并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
+服务端不再产生 released；CLI/Web 读端只接受 active/completed，并拒绝未知状态及 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 
 仓库流程默认登记 proposed；内部已确认的方案后继和交付拆分显式创建 todo。明确授权的普通执行可从 proposed 直接进入 in_progress，不要求先确认到 todo；自动调度仍只选择 ready todo。仓库流程把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
 

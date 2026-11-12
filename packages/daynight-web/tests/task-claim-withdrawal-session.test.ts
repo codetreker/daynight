@@ -87,18 +87,12 @@ describe('worker claim withdrawal mutation ownership', () => {
     expect(canWithdrawClaim(sessions.snapshot(projectId, taskId))).toBe(true);
   });
 
-  it('withdraws a released claim without requiring an in-progress task', async () => {
+  it('does not withdraw when release removed the current claim', async () => {
     const sessions = createSessions();
-    const released: TaskDetail = { ...initial, status: 'todo', ready: true, startedAt: null, properties: { ...initial.properties, worker: { ...worker, state: 'released' } } };
-    await open(sessions, released);
-    expect(canWithdrawClaim(sessions.snapshot(projectId, taskId))).toBe(true);
-    const pending = deferred<TaskDetail>();
-    writes.mockReturnValueOnce(pending.promise);
-    sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
-    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
-    await synchronize(sessions, reset);
-    pending.resolve(reset);
-    await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.phase).toBe('confirmed'));
+    await open(sessions, reset);
+    expect(canWithdrawClaim(sessions.snapshot(projectId, taskId))).toBe(false);
+    sessions.withdrawClaim(projectId, taskId, claimId, reset.version);
+    expect(writes).not.toHaveBeenCalled();
     expect(sessions.snapshot(projectId, taskId).detail).toEqual(reset);
   });
 
@@ -196,8 +190,8 @@ describe('worker claim withdrawal mutation ownership', () => {
   });
 });
 
-it('keeps cancelled released history readable while rejecting every execution restoration before dispatch', async () => {
-  const cancelled: TaskDetail = { ...initial, status: 'cancelled', cancelledAt: time, properties: { ...initial.properties, worker: { ...worker, state: 'released' } } };
+it('keeps cancelled task material readable without a current claim while rejecting every execution restoration before dispatch', async () => {
+  const cancelled: TaskDetail = { ...initial, status: 'cancelled', cancelledAt: time, properties: resetProperties };
   const sessions = createSessions();
   await open(sessions, cancelled);
   expect(sessions.snapshot(projectId, taskId).detail).toEqual(cancelled);
