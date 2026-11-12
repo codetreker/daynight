@@ -106,40 +106,45 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
       throw error;
     }
   }
-  const remaining = () => { if (Date.now() >= deadline) throw new Error("Controller bootstrap stop exceeded its deadline."); };
-  const check = async () => {
+  let uncertainty: Error | undefined;
+  const deadlineError = () => new Error("Controller bootstrap stop exceeded its deadline.", uncertainty === undefined ? {} : { cause: uncertainty });
+  const remaining = () => { if (Date.now() >= deadline) throw deadlineError(); };
+  const check = async (): Promise<"running" | "stopped" | "exiting" | "uncertain"> => {
     remaining();
-    let mismatch: unknown;
-    const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; });
+    let mismatch: { sameBirth: boolean; sameParent: boolean; sameGroup: boolean } | undefined;
+    let state: Awaited<ReturnType<typeof inspectBootstrapProcessProof>>;
+    try { state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; }); }
+    catch (cause) {
+      if (Date.now() >= deadline || uncertainty !== undefined) throw new AggregateError(uncertainty === undefined ? [cause] : [uncertainty, cause], Date.now() >= deadline ? "Controller bootstrap observation failed at its deadline." : "Controller bootstrap identity and process observation are uncertain.", { cause });
+      throw cause;
+    }
+    const conflict = state === "replaced" ? new Error(`Controller bootstrap process identity conflicts (${JSON.stringify(mismatch)}).`) : undefined;
+    if (Date.now() >= deadline && conflict !== undefined) uncertainty = conflict;
     remaining();
     if (state === "replaced") {
-      const message = `Controller bootstrap process identity ${mismatch !== undefined && (mismatch as { sameBirth: boolean }).sameBirth === false ? "was replaced" : "conflicts"} (${JSON.stringify(mismatch)}).`;
-      if (mismatch !== undefined && (mismatch as { sameBirth: boolean }).sameBirth === false) throw new ControllerBootstrapReplacedError(message);
-      throw new Error(message);
+      if (mismatch?.sameBirth === false) throw new ControllerBootstrapReplacedError(conflict!.message);
+      if (mismatch?.sameBirth === true && mismatch.sameParent && mismatch.sameGroup) {
+        uncertainty = conflict;
+        return "uncertain";
+      }
+      throw conflict;
     }
+    uncertainty = undefined;
     return state;
   };
-  const signal = async (value: NodeJS.Signals): Promise<"signaled" | "stopped" | "exiting"> => {
-    const state = await check();
-    if (state === "stopped" || state === "exiting") return state;
-    try { process.kill(proof.pid, value); }
-    catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw error; }
-    return "signaled";
-  };
-  if (await signal("SIGTERM") === "stopped") return;
-  const graceful = Math.min(deadline, Date.now() + 2000);
-  while (Date.now() < graceful) {
-    if (await check() === "stopped") return;
-    await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(0, graceful - Date.now()))));
-  }
-  let killed = false;
+  let gracefulUntil: number | undefined, killed = false;
   while (Date.now() < deadline) {
-    if (!killed) {
-      const state = await signal("SIGKILL");
-      if (state === "stopped") return;
-      killed = state === "signaled";
-    } else if (await check() === "stopped") return;
-    await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(0, deadline - Date.now()))));
+    const state = await check();
+    if (state === "stopped") return;
+    if (state === "running" && (!killed && (gracefulUntil === undefined || Date.now() >= gracefulUntil))) {
+      const value = gracefulUntil === undefined ? "SIGTERM" : "SIGKILL";
+      try { process.kill(proof.pid, value); }
+      catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return; throw error; }
+      if (value === "SIGTERM") gracefulUntil = Date.now() + 2000;
+      else killed = true;
+    }
+    const delay = Math.min(25, Math.max(0, deadline - Date.now()), gracefulUntil !== undefined && !killed && gracefulUntil > Date.now() ? gracefulUntil - Date.now() : 25);
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
   }
-  throw new Error("Controller bootstrap stop exceeded its deadline.");
+  throw deadlineError();
 };

@@ -6,7 +6,7 @@ import os from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { ControllerBootstrapReplacedError, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
@@ -63,7 +63,7 @@ it("reads current and exact preceding generations with ticket and identity fence
 
 it.skipIf(process.platform === "win32")("uses TERM then KILL for a resistant original and refuses a replacement or expired deadline", async () => {
   const f = await fixture();
-  await expect(stopControllerBootstrap({ ...f.proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/identity/);
+  await expect(stopControllerBootstrap({ ...f.proof, commandHash: "replacement" }, Date.now() + 150)).rejects.toThrow();
   await expect(stopControllerBootstrap(f.proof, Date.now() - 1)).rejects.toThrow(/deadline/);
   expect(await inspectProcessProof(f.proof)).toBe("running");
   f.child.kill("SIGKILL"); await once(f.child, "close");
@@ -150,7 +150,20 @@ it.skipIf(process.platform === "win32")("retains unknown for a same-birth POSIX 
   const f = await fixture(), conflicting = { ...f.proof, commandHash: "a".repeat(64) };
   const observation = await reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: conflicting, signal: new AbortController().signal });
   expect(observation.kind).toBe("unknown");
-  const failure = await stopControllerBootstrap(conflicting, Date.now() + 5000).catch(error => error);
+  const failure = await stopControllerBootstrap(conflicting, Date.now() + 150).catch(error => error);
   expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(ControllerBootstrapReplacedError);
   expect(await inspectProcessProof(f.proof)).toBe("running");
 }, 20_000);
+
+it.skipIf(process.platform === "win32")("waits through a real process identity conflict until the original process exits", async () => {
+  const f = await fixture(), conflicting = { ...f.proof, commandHash: "a".repeat(64) };
+  const kill = vi.spyOn(process, "kill");
+  const stopping = stopControllerBootstrap(conflicting, Date.now() + 5000);
+  try {
+    await vi.waitFor(() => expect(kill.mock.calls.filter(([pid, signal]) => pid === f.proof.pid && signal === 0).length).toBeGreaterThanOrEqual(2), { timeout: 3000, interval: 25 });
+    expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+    expect(await inspectProcessProof(f.proof)).toBe("running");
+    f.child.kill("SIGTERM"); await once(f.child, "close");
+    await expect(stopping).resolves.toBeUndefined();
+  } finally { kill.mockRestore(); }
+}, 15_000);
