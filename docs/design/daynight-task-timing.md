@@ -127,7 +127,7 @@ const currentServerTime = (anchor: ClockAnchor) =>
 仅时钟或设置变化都不重建 `GraphIndex`。
 时钟与阈值不得进入投影、节点位置或边路由的 memo 依赖。
 
-`TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。
+`TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。项目任务区由 `ProjectTaskWorkspace` 提供该上下文；Goal 详情属于独立的详情树，由 `GoalDetailSurface` 在已有非空项目快照的任务链对话框分支提供同样的上下文。该 Provider 包含整个图 portal，覆盖普通成员和直接外部前置，使用完整 `GraphSnapshot` 的最新时间样本与项目阈值。图关闭时卸载时钟；同项目快照更新只更新稳定 store，不重挂图或 Goal 的草稿、附件与阅读内容。带计时字段的任务缺少 Provider 仍抛出装配错误，不以客户端墙钟或空耗时掩盖缺失上下文。
 仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅、实际服务端样本且页面可见时才有一个一秒定时器。没有服务端样本时不显示运行中耗时或可能卡住提醒；已完成任务仍按持久起止端点计算耗时。
 完成任务只订阅设置变化以更新说明，不订阅时钟；未知计时无活动订阅。隐藏页暂停 ticker，恢复可见时立即发布单调差值结果，
 既有项目摘要同步随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
