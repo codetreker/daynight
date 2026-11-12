@@ -23,6 +23,7 @@ vi.mock("../../../src/commands/worker/herdr/preflight.js", () => ({ createHerdrP
 
 const directories: string[] = [], stores: WorkerStore[] = [], operations: Operation[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const hostPlatform = process.platform;
 const operation = () => { const result = createOperation({ limits: { totalMs: 3000 } }); operations.push(result); return result; };
 const uuid = (id: number) => `00000000-0000-4000-8000-${String(id).padStart(12, "0")}`;
 const owner: HerdrExecutionOwner = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
@@ -85,7 +86,8 @@ const fixture = async (platform: "darwin" | "win32", recipe: "frozen" | "legacy"
 };
 
 describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s)", platform => {
-  it("uses the default Herdr mode for a frozen owner-only stop", async () => {
+  const platformIt = it.skipIf(hostPlatform === "win32" && platform === "darwin");
+  platformIt("uses the default Herdr mode for a frozen owner-only stop", async () => {
     const f = await fixture(platform), readOriginal = f.readConfiguration.getMockImplementation()!;
     f.readConfiguration.mockImplementation(identity => {
       const { agentControlMode: _mode, ...configuration } = readOriginal(identity)!;
@@ -97,7 +99,7 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     expect(f.calls.filter(method => method === "workspace.close")).toHaveLength(1);
   });
 
-  it("retires a pre-launch mapping after store reopen and rotates shell and layout evidence", async () => {
+  platformIt("retires a pre-launch mapping after store reopen and rotates shell and layout evidence", async () => {
     const f = await fixture(platform), mapping = f.mapping!, journal = path.join(path.dirname(mapping.manifestPath), "processes.json");
     const originalJournal = await readFile(journal, "utf8");
     const adapter = f.build();
@@ -115,7 +117,7 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     expect(await readFile(journal, "utf8")).toBe(originalJournal);
   });
 
-  it("refuses an owner-only cold stop before close when the frozen mapping index is missing", async () => {
+  platformIt("refuses an owner-only cold stop before close when the frozen mapping index is missing", async () => {
     const f = await fixture(platform), mapping = f.mapping!, manifest = await readFile(mapping.manifestPath, "utf8");
     const index = path.join(path.dirname(path.dirname(mapping.manifestPath)), "index.json");
     await rm(index);
@@ -128,7 +130,7 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     await expect(readFile(path.join(path.dirname(mapping.manifestPath), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("retains the original stop responsibility when frozen process ownership remains unknown", async () => {
+  platformIt("retains the original stop responsibility when frozen process ownership remains unknown", async () => {
     const f = await fixture(platform), failure = new Error("Original shell birth is unknown"), adapter = f.build();
     f.inspect.mockRejectedValue(failure);
     await expect(adapter.tasks.stopAndClose(f.context, f.binding, operation())).rejects.toBe(failure);
@@ -138,14 +140,14 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     await expect(readFile(path.join(path.dirname(f.mapping!.manifestPath), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["legacy", "missing"] as const)("refuses to downgrade an existing mapping when the original recipe is %s", async recipe => {
+  platformIt.each(["legacy", "missing"] as const)("refuses to downgrade an existing mapping when the original recipe is %s", async recipe => {
     const f = await fixture(platform, recipe);
     await expect(f.build().tasks.stopAndClose(f.context, f.binding, operation())).rejects.toThrow("frozen");
     expect(f.calls).not.toContain("workspace.close");
     await expect(readFile(path.join(path.dirname(f.mapping!.manifestPath), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["legacy", "missing"] as const)("keeps a true %s execution without mapping on its original stop path", async recipe => {
+  platformIt.each(["legacy", "missing"] as const)("keeps a true %s execution without mapping on its original stop path", async recipe => {
     const f = await fixture(platform, recipe, false), adapter = f.build();
     await adapter.tasks.stopAndClose(f.context, f.binding, operation());
     expect(f.calls.filter(method => method === "workspace.close")).toHaveLength(1);
@@ -153,21 +155,21 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
     await expect(readFile(path.join(f.paths.herdrDirectory, "tool-launch"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("retains a known mapping when its configuration reader is unavailable", async () => {
+  platformIt("retains a known mapping when its configuration reader is unavailable", async () => {
     const f = await fixture(platform), adapter = f.build(false);
     await expect(adapter.tasks.stopAndClose(f.context, f.binding, operation())).rejects.toThrow("no frozen execution recipe");
     expect(f.calls).not.toContain("workspace.close");
     await expect(readFile(path.join(path.dirname(f.mapping!.manifestPath), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("refuses an explicit provider that differs from the original owner configuration", async () => {
+  platformIt("refuses an explicit provider that differs from the original owner configuration", async () => {
     const f = await fixture(platform), context = { ...f.context, agent: "copilot" as const };
     await expect(f.build().tasks.stopAndClose(context, f.binding, operation())).rejects.toThrow("another provider or mode");
     expect(f.calls).not.toContain("workspace.close");
     expect(f.readConfiguration.mock.calls.map(([identity]) => identity)).toEqual([owner]);
   });
 
-  it.each(["mode", "provider", "recipe-context"] as const)("refuses a conflicting persisted %s before closing the original pane", async conflict => {
+  platformIt.each(["mode", "provider", "recipe-context"] as const)("refuses a conflicting persisted %s before closing the original pane", async conflict => {
     const f = await fixture(platform), readOriginal = f.readConfiguration.getMockImplementation()!;
     f.readConfiguration.mockImplementationOnce(identity => {
       const original = readOriginal(identity)!;
@@ -181,7 +183,7 @@ describe.each(["darwin", "win32"] as const)("owner-only frozen stop assembly (%s
   });
 });
 
-it("uses the default Herdr mode when preparing an original mapped workspace", async () => {
+it.skipIf(hostPlatform === "win32")("uses the default Herdr mode when preparing an original mapped workspace", async () => {
   const f = await fixture("darwin"), readOriginal = f.readConfiguration.getMockImplementation()!;
   f.readConfiguration.mockImplementation(identity => {
     const { agentControlMode: _mode, ...configuration } = readOriginal(identity)!;
