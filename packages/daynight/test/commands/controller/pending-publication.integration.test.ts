@@ -54,7 +54,7 @@ test("a WAL reader retains one entry and metadata snapshot across another connec
   f.db.prepare("INSERT INTO image_runtime_state VALUES('publication','old')").run();
   const observer = new Database(f.file, { readonly: true }); connections.push(observer);
   const content = openPendingContent(f.file, f.sessionId, observer);
-  const inspection = createLocalSessionContent(content, f.sessionId, { read: action => observer.transaction(action).deferred(), write: action => observer.transaction(action).immediate() });
+  const inspection = createLocalSessionContent(content, content, f.sessionId, { read: action => observer.transaction(action).deferred(), write: action => observer.transaction(action).immediate() });
   observer.exec("BEGIN DEFERRED");
   expect(content.getEntry(f.entry.entryId)).toEqual(f.entry);
   f.db.transaction(() => {

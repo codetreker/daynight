@@ -551,6 +551,10 @@ journal 格式迁移007、008与精确 schema 检查拥有以下表；状态和�
 | image_runtime_state | 持久能力 revision、active_history_sync、active_history_checkpoint，以及 Markdown projection/source/context、来源请求计费和 capture-source 私有预留等运行状态 |
 | image_captures | captureId/attemptId/imageId 的私有文件及完整验证结果 |
 
+`controller/content/resource-files.ts` 拥有 Session 绑定的 manifest、共享资源索引、descriptor、blob、持久 pin 和进程内 lease；它不加载正文或初始化 timeline 目录。`pending-content.ts` 组合资源与 v8 正文，统一计算正文和 descriptor 的元数据用量，并在同一同步读事务核对 `native_input_publication_images` 与当前正文引用后才委托删除资源。媒体导入使用带此删除保护的资源 facade。旧资源导出及迁移继续使用同一资源索引和校验，磁盘目录与格式不变。
+
+资源删除期间保留 descriptor 与 blob 的硬链接备份；失败时恢复原文件，恢复本身失败则保留备份并报告路径。同一所有者会在后续资源准入时重试已确认删除的备份清理。其他进程无法区分遗留备份与正在进行的删除，因此不自动清理；独立原件的遗留备份按孤儿计入预算，可能需要人工核对恢复。
+
 pending-content 的 timeline 候选先完成文件及适用平台的目录持久化，再在同一 SQLite 事务提交指针。未被指针引用的文件不得由目录扫描自动公开；SQL 回滚保留旧完整视图。所有 timeline、inspection、完整历史同步、归档及引用判断读取同一连接的提交快照。旧 WAL 快照可能仍引用旧候选，因此保守保留并计入真实元数据预算；没有跨 reader 生命周期证明时不在线删除旧文件。v8 迁移精确校验旧 SQL 与文件，不接纳超前或未知来源。缺失、损坏、路径或摘要不符明确失败。
 
 具名 `publishNativeInputAssociation` 验证已存在的原接受证据及完整 intent，基于当前 entry 保留原生槽并绑定或追加原件，在同一事务提交 alias、实际引用、occurrence、真实 revision 和确切 outbox 水位。`queryNativeInputAssociation` 返回原不可变回执与当前视图；后续 capture 可以推进当前 revision，不能改变 publication revision。未知结果只查原身份，不重发原生输入。若 COMMIT 与 ROLLBACK 都未确认且连接仍有事务，隔离该连接的所有业务读取和写入；同连接的未提交行不能充当 committed 查询结果。关闭连接不清除原 writer 身份，后续由独立生命周期恢复核对。原生来源采集继续遵守位置 ACK 后 register，不扩张为跨服务的分布式事务。Provider 接线由[Provider 设计](session-image-providers.md#copilot)拥有。存储的 canonical intent 不含传输 `requestId`；本地恢复仅补解析所需的该字段，再重核原 operationId、规范编码及 SHA，不改持久 intent，不把恢复对象当作新的发送请求。
@@ -581,7 +585,7 @@ Controller和服务采用同一 `image-validation-v1`、隔离 Node.js 24 + shar
 
 `stageCapture` 只接受 register reserved 后取得的完整私有文件；实际参数为 `CaptureStageInput {captureId,attemptId,imageId,inputPath,byteLength,sha256,declaredMediaType?}`，调用方持有原来源授权和文件租约，存储层重核原 attempt、位置 ACK、私有普通文件及完整摘要/解码。`reserveCaptureSource` 为来源 reader 创建0600空文件，并将来源与验证副本的最坏双份容量计入同一媒体账本；reader 不自行创建资源身份。`readPrepared` 按 upload/capture命名空间、attempt与lease读；`ensureLocalResource` 校验服务原bytes后重建本地verified；`acquireInput` 整组验证并原子保存原intent/pin，返回有序只读native路径，不调用Provider。稳定native文件写随机临时副本、核hash、fsync、设只读、rename并持久目录后才准许pin/dispatching；既有有pin路径不得覆盖。
 
-`media.adoptCaptureResource(captureId,attemptId,resource)` 将已提交的capture原件交给pending-content。它要求原请求、耐久committed回执、原occurrence及完整resource严格一致，并逐项比对validated的MIME、byteLength、SHA-256、宽高和frameCount。复制前取得共用IO槽并检查保存副本的第三份峰值预算，经`pending-content.importResourceFile`按512 KiB分块验证和耐久导入。已有available原件仅核验原descriptor和原bytes；missing/corrupt不得从stage或旧source重建。coordinator只有在导入与原位置投影都成功后才持久settled，失败保留原capture以query协调。
+`media.adoptCaptureResource(captureId,attemptId,resource)` 将已提交的capture原件交给pending-content。它要求原请求、耐久committed回执、原occurrence及完整resource严格一致，并逐项比对validated的MIME、byteLength、SHA-256、宽高和frameCount。复制前取得共用IO槽并检查保存副本的第三份峰值预算，经资源 facade 的 `importResourceFile` 按512 KiB分块验证和耐久导入。已有available原件仅核验原descriptor和原bytes；missing/corrupt不得从stage或旧source重建。coordinator只有在导入与原位置投影都成功后才持久settled，失败保留原capture以query协调。
 
 生产runtime通过capture桥向Provider和Markdown来源coordinator提供register/query/commit/failed/stage接口，先持久原请求、等待当前完整历史账本确认，再发register；回执校验原出现、当前attempt及单调revision。重试沿原请求调用可信来源resolver，重核当前可写身份后才stage：local/external交给coordinator的`retry`，其他可信原生来源沿Provider的`retryImageCapture`。query观察到新service retry attempt只持久`awaitingRetry`并观察；原`retry_capture`控制才授权启动该attempt的writer。缺少对应resolver时明确component_unsupported，不自行读取locator或启动来源扫描。coordinator的原生读取证明、网络出口证明和平台opener限制由[来源设计](session-image-sources.md#当前实现与权限边界)拥有；resolver已接线不表示真实来源IO已获准。
 

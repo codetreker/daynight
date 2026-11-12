@@ -134,7 +134,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   });
   const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
   const assertInputCapacity = (): void => { assertUsable(); metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
-  const localContent = createLocalSessionContent(pendingContent, ticket.sessionId, { read, write: atomic });
+  const localContent = createLocalSessionContent(pendingContent, pendingContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
       const event = parseSourceEvent({ sourceSeq: "1", ...payload });

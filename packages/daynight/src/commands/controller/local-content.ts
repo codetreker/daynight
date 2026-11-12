@@ -1,5 +1,6 @@
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import type { PendingContent } from "./pending-content.js";
+import type { ResourceFiles } from "./content/resource-files.js";
 import { createHash } from "node:crypto";
 import { parseSessionResource, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import type { TimelinePage } from "../../session/controller-protocol.js";
@@ -14,12 +15,12 @@ const sequence = (value: string): bigint => {
 
 type ContentTransactions = { read: <T>(action: () => T) => T; write: <T>(action: () => T) => T };
 
-export const createLocalSessionContent = (store: PendingContent, sessionId: string, transactions: ContentTransactions) => {
+export const createLocalSessionContent = (store: PendingContent, resources: ResourceFiles, sessionId: string, transactions: ContentTransactions) => {
   const inspection = createInspectionContent(store, sessionId);
   const resourcesFor = (items: readonly TimelineEntry[]): SessionResource[] => {
     const ids = sessionArchiveReferences(items, false).resources;
     return [...ids].flatMap(id => {
-      const row = store.resources.get(id);
+      const row = resources.resources.get(id);
       return row ? [row.resource] : [];
     });
   };
@@ -68,21 +69,21 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
     saveResource(resource: SessionResource, content?: Uint8Array): void {
       parseSessionResource(resource);
       if (content && (content.byteLength > 10_485_760 || String(content.byteLength) !== resource.byteLength || createHash("sha256").update(content).digest("hex") !== resource.sha256)) throw new Error("Local session resource content does not match its descriptor.");
-      const previous = store.resources.get(resource.resourceId);
+      const previous = resources.resources.get(resource.resourceId);
       if (previous) {
         const old = previous.resource;
         if (old.status === "available" && JSON.stringify(old) !== JSON.stringify(resource)) throw new Error("An available local resource cannot change identity.");
       }
-      store.saveResource({ resource, data: null }, content);
+      resources.saveResource({ resource, data: null }, content);
     },
     readResource(resourceId: string, offset: string, limit: number): { kind: "resource"; resource: SessionResource; offset: string; data: string; eof: boolean } {
       const position = sequence(offset);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 524288) throw new Error("Invalid local resource chunk limit.");
-      const row = store.resources.get(resourceId);
+      const row = resources.resources.get(resourceId);
       if (row === undefined) throw new Error("Local session resource is unavailable.");
       const resource = row.resource;
       if (resource.status !== "available" || position > BigInt(resource.byteLength!)) throw new Error("Local session resource is unavailable.");
-      const lease = store.acquireResource(resourceId);
+      const lease = resources.acquireResource(resourceId);
       try { const block = lease.read(offset, limit); return { kind: "resource", resource, offset, data: block.toString("base64"), eof: position + BigInt(block.length) === BigInt(resource.byteLength!) }; }
       finally { lease.close(); }
     },
