@@ -24,7 +24,6 @@ import { createWorkerCoordinator } from "../../../src/commands/worker/coordinato
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
-import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -578,55 +577,6 @@ it.each([
     expect(f.tasks.start).not.toHaveBeenCalled();
     expect(f.remote.claim).not.toHaveBeenCalled();
   } finally { await coordinator.shutdown(); webStore.close(); }
-});
-
-describe("explicit resume with cloud project selection", () => {
-  it("keeps an explicitly resumed retained project pending until it is selected and ready", async () => {
-    const f = await fixture(2), previousClaim = uuid(700), taskId = uuid(701);
-    const released: Task = { ...task(f.project.projectId, taskId), version: 8n, properties: { worker: {
-      claimId: previousClaim, worktreeId: uuid(702), userId: uuid(2), workerId, machine: f.options.machine,
-      platform: "linux", agent: "codex", agentControlMode: "herdr", state: "released", phase: "preparing",
-      herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z",
-    } } };
-    vi.mocked(f.remote.readTask).mockResolvedValue(released);
-    Object.assign(f.remote, {
-      authorizeControl: vi.fn(async () => {}),
-      resume: vi.fn(async (_projectId: string, _taskId: string, input: WorkerClaimDescriptor & { version: bigint; previousClaimId: string }) => {
-        expect(input.previousClaimId).toBe(previousClaim); expect(input.version).toBe(8n);
-        const { version: _version, previousClaimId: _previousClaim, ...descriptor } = input;
-        return f.grant(released, descriptor);
-      }),
-    });
-    const result = await submitWorkerControl({ ...f.options, signal: new AbortController().signal, coordinator: f.coordinator,
-      request: { kind: "resume", projectId: f.project.projectId, taskId, claimId: previousClaim, version: 8n } });
-    expect(result.message).toContain("worker run will start");
-    expect(result.task).toMatchObject({ projectId: f.project.projectId, taskId, status: "pending" });
-    const resumed = result.task!;
-    vi.mocked(f.remote.readTask).mockImplementation(async (_projectId, id) => [...f.grants.values()].find(value => value.id === id)!);
-    f.reopenStore();
-    const selectedTargets = [f.project.projectId];
-    const runner = createWorkerCoordinator({ ...f.options, repositories: [], readyProjectIds: [], targetProjectIds: selectedTargets, globalConfiguration: configuration });
-    selectedTargets.length = 0;
-    await runner.tick();
-    expect(f.store.getTask(resumed)?.status).toBe("pending");
-    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
-    runner.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: null, maxConcurrent: 2, preferPlatformSpecificTasks: false });
-    await runner.tick();
-    expect(f.store.getTask(resumed)?.status).toBe("pending");
-    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
-    runner.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false });
-    await runner.tick();
-    expect(f.store.getTask(resumed)?.status).toBe("pending");
-    expect(f.tasks.start).not.toHaveBeenCalled();
-    runner.updateConfiguration({ repositories: [{ project: f.project, configuration }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: configuration, maxConcurrent: 2, preferPlatformSpecificTasks: false });
-    f.candidates.splice(0);
-    await runner.tick();
-    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
-    expect(f.store.getTask(resumed)).toMatchObject({ claimId: resumed.claimId, status: "active" });
-    expect(f.tasks.start.mock.calls[0]![0]).toMatchObject({ projectId: f.project.projectId, taskId, claimId: resumed.claimId });
-    expect(f.remote.claim).not.toHaveBeenCalled();
-    await runner.shutdown();
-  });
 });
 
 it("keeps ordinary Web failures separate from native recovery and retries after restart", async () => {

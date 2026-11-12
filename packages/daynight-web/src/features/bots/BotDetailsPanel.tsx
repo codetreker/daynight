@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
@@ -98,7 +99,7 @@ export function BotDetailsPanel({ id, bot, worker, stale, opener, onClose, cache
         event.stopPropagation();
       }
     }}>
-    <header><h2>{m.details}</h2><button ref={close} className="button quiet" type="button" aria-label={m.closeDetails} onClick={onClose}>×</button></header>
+    <header><h2>{m.details}</h2>{narrow && <AccountRefreshNotice />}<button ref={close} className="button quiet" type="button" aria-label={m.closeDetails} onClick={onClose}>×</button></header>
     <div className="bot-details-scroll">
       {bot === null ? <p role="status">{m.loading}</p> : <>
         <div className="bot-details-profile"><span>{m.name}</span><strong>{bot.name}</strong></div>

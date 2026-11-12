@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { AccountSessionProvider, useAccountSession } from "../../app/AccountSessionProvider";
+import { useAccountSession } from "../../app/AccountSessionProvider";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { LanguageSelector } from "../../i18n/LanguageSelector";
 import { AccountChangeBanner } from "./AccountChangeBanner";
@@ -33,5 +33,5 @@ export function LoginCompletePage({ replace = replaceLocation }: { readonly repl
   const target = parseLoginCompletionTarget(window.location.search, window.location.href.includes("#") ? "#" : "");
   const { messages: { auth: { shell } } } = useI18n();
   if (target === null) return <div className="invite-page"><main className="invite-card"><LanguageSelector /><h1>{shell.invalidLoginTarget}</h1><p>{shell.invalidLoginTargetDetail}</p><a className="button" href="/login">{shell.startFreshLogin}</a></main></div>;
-  return <AccountSessionProvider><Completion target={target} replace={replace} /></AccountSessionProvider>;
+  return <Completion target={target} replace={replace} />;
 }

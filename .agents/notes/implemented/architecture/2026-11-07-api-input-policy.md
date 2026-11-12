@@ -19,7 +19,7 @@ Task and Step share text limits. Protocol projections and measurement share the
 actual response representation without a core dependency on HTTP handlers.
 Typed violations report measurements without retaining the input. The
 [specification](../../../../docs/spec/daynight-api-input-limits.md) records the
-candidate limits and their activation state.
+candidate limits and their activation state. The [Task dependency limit](2026-11-12-task-dependency-limit.md) records the later count policy.
 
 ## Alternatives
 

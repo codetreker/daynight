@@ -142,7 +142,7 @@ func (h *AuthHarness[A]) Login(t *testing.T, code string) *http.Cookie {
 	t.Helper()
 	state, binding := h.Start(t, "/projects?view=all")
 	response := h.Request("GET", "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {code}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if response.Code != 303 || response.Header().Get("Location") != "/projects?view=all" {
+	if response.Code != 303 || response.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects%3Fview%3Dall" {
 		t.Fatalf("callback: %d %s %s", response.Code, response.Header().Get("Location"), response.Body)
 	}
 	for _, cookie := range response.Result().Cookies() {

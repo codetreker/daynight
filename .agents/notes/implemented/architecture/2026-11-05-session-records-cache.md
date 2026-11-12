@@ -27,6 +27,10 @@ empty with a continuation, the background read follows later pages until a
 record appears or the catalogue is exhausted. Equivalent results preserve
 reading and selection state.
 
+Direct catalogue denial requires a principal-validated response or the existing
+401 session-expiry path, even when a refusal body cannot be decoded. A missing,
+malformed or different principal cannot withdraw the catalogue or notify peers.
+
 The cache uses the existing user fence and project generation lifecycle and
 bounded retention. A per-task lease coordinates simultaneous refreshes across
 tabs, with completion notification and takeover after expiry. Retained denial

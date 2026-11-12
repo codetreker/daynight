@@ -400,3 +400,59 @@ it('retries confirmed identity admission when another pause starts at the ready 
   expect(assistantCreateSubmit()).toBeEnabled();
   expect(api.getBot).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled();
 });
+
+it('ends confirmed creation admission after a retained scope observes a different principal', async () => {
+  const { getTask, pauseAuthRequests } = await import('../src/api/client');
+  const { createTaskCacheScope } = await import('../src/features/task-cache/project-cache');
+  const { pendingBotCreation, rememberConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+  let resume = () => {};
+  const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const request = { id: wid(3), name: 'Helper' };
+  rememberBotCreation(scope, request); rememberConfirmedBotCreation(scope, request, bot);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Daynight-User-ID': wid(2) } })));
+  await expect(getTask(wid(4), wid(5), new AbortController().signal, { userId: owner, onPrincipalMismatch: scope.principalMismatch })).rejects.toMatchObject({ kind: 'protocol', code: 'principal_mismatch' });
+  const ready = scope.ready.bind(scope); let attempts = 0, exceeded = false;
+  vi.spyOn(scope, 'ready').mockImplementation(async signal => {
+    if (++attempts > 10) { exceeded = true; resume(); throw new Error('Identity admission retried indefinitely'); }
+    return ready(signal);
+  });
+  const unresolvedChanged = vi.fn();
+  const view = renderWithLocale(<BotCreateDialog unresolvedRequest={request} onUnresolvedRequestChange={unresolvedChanged} onClose={onClose} onCreated={onCreated} />, { locale: 'en', taskCache: { scope } });
+  try {
+    await flush();
+    expect(attempts).toBeGreaterThan(0); expect(exceeded).toBe(false);
+    expect(scope.hasIdentityMismatch).toBe(true); expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+    expect(pendingBotCreation(scope)).toEqual(request); expect(unresolvedChanged).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled(); expect(api.getBot).not.toHaveBeenCalled();
+  } finally { view.unmount(); resume(); scope.dispose(); }
+});
+
+it('retains a confirmed creation when identity changes between readiness and publication', async () => {
+  const { getTask } = await import('../src/api/client');
+  const { createTaskCacheScope } = await import('../src/features/task-cache/project-cache');
+  const { confirmedBotCreations, pendingBotCreation, rememberConfirmedBotCreation } = await import('../src/features/bots/pending-creation');
+  const mismatch = vi.fn();
+  const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: mismatch });
+  const request = { id: wid(3), name: 'Helper' };
+  rememberBotCreation(scope, request); rememberConfirmedBotCreation(scope, request, bot);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Daynight-User-ID': wid(2) } })));
+  const ready = scope.ready.bind(scope); let triggered = false, failure: unknown;
+  vi.spyOn(scope, 'ready').mockImplementation(async signal => {
+    await ready(signal);
+    if (!triggered) {
+      triggered = true;
+      try { await getTask(wid(4), wid(5), new AbortController().signal, { userId: owner, onPrincipalMismatch: scope.principalMismatch }); }
+      catch (error) { failure = error; }
+    }
+  });
+  const unresolvedChanged = vi.fn();
+  const view = renderWithLocale(<BotCreateDialog unresolvedRequest={request} onUnresolvedRequestChange={unresolvedChanged} onClose={onClose} onCreated={onCreated} />, { locale: 'en', taskCache: { scope } });
+  try {
+    await flush();
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(failure).toMatchObject({ kind: 'protocol', code: 'principal_mismatch' });
+    expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+    expect(pendingBotCreation(scope)).toEqual(request); expect(confirmedBotCreations(scope)).toEqual([{ request, bot }]);
+    expect(unresolvedChanged).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled();
+  } finally { view.unmount(); scope.dispose(); }
+});

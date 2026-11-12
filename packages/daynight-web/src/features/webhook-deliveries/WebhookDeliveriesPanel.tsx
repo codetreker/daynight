@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError } from "../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { getWebhookDelivery, getWebhookPayload, isWebhookIssuedAt, listWebhookAttempts, listWebhookDeliveries, type WebhookEndpoint, type WebhookAttempt, type WebhookAttemptQuery, type WebhookCatalog, type WebhookDelivery, type WebhookDeliveryQuery, type WebhookOwner, type WebhookPayload } from "../../api/webhooks";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { WebhookIntentController, WebhookIntentInput, WebhookIntentState, WebhookIntentTarget } from "../webhook-intents/controller";
@@ -36,7 +36,10 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
   const detailRequest = useRef<AbortController | null>(null), detailSequence = useRef(0), payloadRequest = useRef<AbortController | null>(null), payloadSequence = useRef(0), detailRef = useRef(detailState), rejectedReads = useRef(new Set<AbortController>()), observations = useRef(new WebhookDeliveryObservations());
   detailRef.current = detailState;
   const selected = selection?.scope === scope ? selection : null;
-  const live = useRef({ scope, active, visible, selected, endpoint, manageOwner }); live.current = { scope, active, visible, selected, endpoint, manageOwner };
+  const live = useRef({ scope, active, visible, selected, endpoint, manageOwner, confirm, intent, controller }); live.current = { scope, active, visible, selected, endpoint, manageOwner, confirm, intent, controller };
+  const operation = useRef<object | null>(null), mounted = useRef(true);
+  const publication = useRef<{ readonly abort: AbortController; readonly resume: () => void } | null>(null);
+  const observation = useRef<{ readonly controller: WebhookIntentController; readonly id: string; readonly stopRevision: number; readonly pauseRevision: number; readonly scope: string; readonly selected: typeof selected; readonly confirm: typeof confirm } | null>(null);
   const requestAdmission = { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: (signal: AbortSignal) => admission.ready(signal) };
   const clearPayload = (preserveError = false) => { payloadSequence.current++; payloadRequest.current?.abort(); setPayload(null); if (!preserveError) setPayloadError(null); setPayloadBusy(false); };
   const assertTargetDisclosure = (value: WebhookDelivery) => {
@@ -110,11 +113,11 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
       const next = { scope: requested.scope, value: webhookHistoryMissing(error) || webhookHistoryDenied(error) ? null : old.scope === requested.scope && old.value?.id === requested.selected.id ? old.value : null, error, refreshing: false }; detailRef.current = next; setDetailState(next);
     }
   };
-  const revalidateRejectedDelivery = async (requestedScope: string, requestedId: string): Promise<void> => {
-    if (live.current.scope !== requestedScope || !live.current.active || admission.isInvalidated) return;
+  const revalidateRejectedDelivery = async (requestedScope: string, requestedId: string, isOriginal: () => boolean): Promise<void> => {
+    if (!isOriginal()) return;
     const controller = new AbortController(); rejectedReads.current.add(controller);
     const signal = AbortSignal.any([admission.signal, controller.signal]), startedAt = observations.current.beginRead();
-    const current = () => !signal.aborted && !admission.isInvalidated && live.current.scope === requestedScope && live.current.active;
+    const current = () => !signal.aborted && isOriginal();
     try {
       const value = await getWebhookDelivery(owner, endpoint.id, requestedId, signal, requestAdmission);
       await admission.ready(signal); if (!current()) return;
@@ -170,6 +173,25 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
     window.addEventListener("focus", check); document.addEventListener("visibilitychange", visible);
     return () => { window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", visible); };
   }, []);
+  useLayoutEffect(() => {
+    const stop = () => { publication.current?.abort.abort(); publication.current = null; for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); };
+    const unsubscribe = controller?.subscribeStop(stop);
+    return () => { unsubscribe?.(); stop(); };
+  }, [controller]);
+  useLayoutEffect(() => {
+    if (controller === null) return;
+    let observing = false;
+    const capture = () => {
+      const state = controller.getSnapshot();
+      if (state.reconciling && !observing && state.prepared !== null) {
+        publication.current?.abort.abort(); publication.current = null;
+        observation.current = { controller, id: state.prepared.operationId, stopRevision: controller.getStopRevision(), pauseRevision: authRequestsPauseRevision(), scope: live.current.scope, selected: live.current.selected, confirm: live.current.confirm };
+      }
+      observing = state.reconciling;
+    };
+    const unsubscribe = controller.subscribe(capture); capture();
+    return unsubscribe;
+  }, [controller]);
   useEffect(() => {
     if (detail === null) return;
     const deadline = Date.parse(detail.payloadExpiresAt), observedAt = Date.now();
@@ -193,7 +215,13 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
     const timer = window.setInterval(() => history.check(), 30_000);
     return () => window.clearInterval(timer);
   }, [active, visible, selected?.id]);
-  useEffect(() => () => { detailSequence.current++; detailRequest.current?.abort(); for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); payloadSequence.current++; payloadRequest.current?.abort(); }, []);
+  useEffect(() => {
+    mounted.current = true;
+    const stopPause = subscribeAuthPause(() => { for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); });
+    return () => { mounted.current = false; operation.current = null; publication.current?.abort.abort(); publication.current = null; stopPause(); detailSequence.current++; detailRequest.current?.abort(); for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); payloadSequence.current++; payloadRequest.current?.abort(); };
+  }, []);
+  useEffect(() => () => { publication.current?.abort.abort(); publication.current = null; for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); }, [scope, selected, confirm]);
+  useEffect(() => { publication.current?.resume(); }, [active, visible, intent.phase, intent.prepared?.operationId]);
   const open = (value: WebhookDelivery, opener: HTMLElement) => { const known = observations.current.current(value.id); if (known === null) return; setNow(Date.now()); clearPayload(); setConfirm(null); setWriteError(null); const next = { scope, value: known === undefined ? value : known, error: null, refreshing: false }; detailRef.current = next; setDetailState(next); setSelection({ scope, id: value.id, opener }); onSelectDelivery(value.id); };
   const close = () => { detailSequence.current++; detailRequest.current?.abort(); clearPayload(); setSelection(null); setConfirm(null); onSelectDelivery(null); };
   const revealPayload = async () => {
@@ -222,12 +250,73 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
   const canRedeliver = active && visible && redeliveryReason === null && !busy;
   const receipt = intent.phase === "confirmed" && intent.result?.operation.kind === "delivery.redeliver" && intent.result.operation.deliveryId === selected?.id && intent.result.operation.endpointId === endpoint.id ? intent.result.operation : null;
   const handled = useRef<string | null>(null);
-  useEffect(() => { if (receipt !== null && handled.current !== receipt.operationId) { handled.current = receipt.operationId; setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); onRefreshEndpoint(); } }, [receipt?.operationId]);
+  const operationGuard = useRef<{ readonly belongs: () => boolean; readonly revision: number; id: string | null } | null>(null);
+  const publishWhenAdmitted = (belongs: () => boolean, revision: number) => {
+    publication.current?.abort.abort();
+    const abort = new AbortController(), signal = AbortSignal.any([admission.signal, abort.signal]);
+    let waiting = false, admittedRevision = revision;
+    const resume = () => {
+      if (signal.aborted || !belongs()) { abort.abort(); if (publication.current?.abort === abort) publication.current = null; return; }
+      if (authRequestsPaused() || authRequestsPauseRevision() !== admittedRevision) {
+        if (!waiting) {
+          waiting = true;
+          void (async () => {
+            while (!signal.aborted && belongs()) {
+              await waitForAuthRequests(signal);
+              await admission.ready(signal);
+              if (authRequestsPaused()) continue;
+              admittedRevision = authRequestsPauseRevision(); waiting = false; resume(); return;
+            }
+          })().catch(error => { if (!signal.aborted && belongs()) setWriteError(error); if (publication.current?.abort === abort) publication.current = null; }).finally(() => { if (signal.aborted && publication.current?.abort === abort) publication.current = null; });
+        }
+        return;
+      }
+      if (!live.current.active || !live.current.visible) return;
+      publication.current = null; setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); onRefreshEndpoint();
+    };
+    publication.current = { abort, resume };
+    resume();
+  };
+  useEffect(() => {
+    if (receipt === null || handled.current === receipt.operationId) return;
+    handled.current = receipt.operationId;
+    const observed = observation.current;
+    if (observed !== null && observed.id === receipt.operationId && observed.controller === controller) {
+      publishWhenAdmitted(() => mounted.current && !admission.isInvalidated && live.current.controller === observed.controller && observed.controller.getStopRevision() === observed.stopRevision && live.current.scope === observed.scope && live.current.selected === observed.selected && live.current.confirm === observed.confirm && live.current.intent.phase === "confirmed" && live.current.intent.result?.operation.operationId === observed.id, observed.pauseRevision);
+      return;
+    }
+    const guard = operationGuard.current;
+    if (guard !== null && guard.id === null) guard.id = receipt.operationId;
+    if (guard?.id === receipt.operationId) { if (guard.belongs()) publishWhenAdmitted(guard.belongs, guard.revision); return; }
+    if (authRequestsPaused()) return;
+    const requestedScope = scope, requestedSelection = selected, requestedConfirm = confirm;
+    const stopRevision = controller?.getStopRevision();
+    publishWhenAdmitted(() => mounted.current && !admission.isInvalidated && live.current.controller === controller && controller?.getStopRevision() === stopRevision && live.current.scope === requestedScope && live.current.selected === requestedSelection && live.current.confirm === requestedConfirm && live.current.intent.phase === "confirmed" && live.current.intent.result?.operation.operationId === receipt.operationId, authRequestsPauseRevision());
+  }, [receipt?.operationId]);
   const register = async () => {
-    if (!canRedeliver || confirm === null || displayedDetail === null || controller === null || currentEndpoint === null) return;
-    const requestedScope = scope, requestedId = displayedDetail.id;
-    try { const outcome = await submit({ kind: "delivery.redeliver", endpointId: endpoint.id, deliveryId: requestedId, ifVersion: confirm.version, ifGeneration: confirm.generation, destinationRevision: currentEndpoint.destinationRevision, body: {} }); if (outcome.phase === "confirmed") { setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); } else if (outcome.phase === "rejected") { void revalidateRejectedDelivery(requestedScope, requestedId); } }
-    catch (error) { setWriteError(error); }
+    if (!canRedeliver || authRequestsPaused() || confirm === null || displayedDetail === null || controller === null || currentEndpoint === null) return;
+    publication.current?.abort.abort(); publication.current = null; for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear();
+    const requestedScope = scope, requestedId = displayedDetail.id, requestedSelection = selected, requestedConfirm = confirm, revision = authRequestsPauseRevision(), stopRevision = controller.getStopRevision(), token = {};
+    operation.current = token;
+    const belongs = () => {
+      const state = controller.getSnapshot();
+      return mounted.current && operation.current === token && !admission.isInvalidated && live.current.controller === controller && controller.getStopRevision() === stopRevision && live.current.scope === requestedScope && live.current.selected === requestedSelection && live.current.confirm === requestedConfirm && (guard.id === null || state.phase === "idle" || state.prepared?.operationId === guard.id);
+    };
+    const current = () => belongs() && !authRequestsPaused() && authRequestsPauseRevision() === revision && live.current.active && live.current.visible;
+    const guard = { belongs, revision, id: null as string | null }; operationGuard.current = guard;
+    try {
+      const outcome = await submit({ kind: "delivery.redeliver", endpointId: endpoint.id, deliveryId: requestedId, ifVersion: confirm.version, ifGeneration: confirm.generation, destinationRevision: currentEndpoint.destinationRevision, body: {} });
+      guard.id ??= outcome.prepared?.operationId ?? outcome.result?.operation.operationId ?? null;
+      if (outcome.phase === "rejected" && operationGuard.current === guard) operationGuard.current = null;
+      if (outcome.phase === "confirmed") {
+        const id = outcome.result?.operation.operationId;
+        if (id !== undefined && handled.current === id) return;
+        if (id !== undefined) handled.current = id;
+        if (belongs()) publishWhenAdmitted(belongs, revision);
+      }
+      else if (!current()) return;
+      else if (outcome.phase === "rejected") void revalidateRejectedDelivery(requestedScope, requestedId, current).catch(error => { if (current()) setWriteError(error); });
+    } catch (error) { if (operationGuard.current === guard) operationGuard.current = null; if (current()) setWriteError(error); }
   };
   const items = history.page?.items;
   return <div id="webhook-panel-deliveries" role="tabpanel" aria-labelledby="webhook-tab-deliveries" hidden={!visible}>

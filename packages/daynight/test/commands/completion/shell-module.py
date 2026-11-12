@@ -318,7 +318,6 @@ def scenarios():
         ("worker repository JSON", "daynight worker repo list --js\t", ["worker", "repo", "list", "--json"]),
         ("worker retry", "daynight worker ret\t", ["worker", "retry"]),
         ("worker release", "daynight worker rel\t", ["worker", "release"]),
-        ("worker resume", "daynight worker resu\t", ["worker", "resume"]),
         ("worker resources group", "daynight worker reso\t", ["worker", "resources"]),
         ("worker resources list", "daynight worker resources li\t", ["worker", "resources", "list"]),
         ("worker resources retry", "daynight worker resources ret\t", ["worker", "resources", "retry"]),

@@ -21,7 +21,9 @@ The [standalone reading-history decision](2026-11-11-standalone-resource-reading
 places standalone Goal child selections in the page history while preserving
 those owners. Cross-scope navigation uses the target's actual Parent and
 locates its Task in the destination.
-The [Web design](../../../../docs/design/daynight-web.md) describes the current
+The [Goal description tab decision](2026-11-12-goal-description-tab.md) separates
+description reading from Task browsing while retaining these owners. The
+[Web design](../../../../docs/design/daynight-web.md) describes the current
 presentation and lifecycle.
 
 ## Alternatives

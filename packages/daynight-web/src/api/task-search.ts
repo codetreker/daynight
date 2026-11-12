@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, request, requestId, type TaskResponseAdmission } from './client';
+import { ApiError, assertResponsePrincipal, request, responseSignal, requestId, type TaskResponseAdmission } from './client';
 import { jsonObjectSources } from './json-source';
 import { parseServerError } from './parse';
 import { array, count, id, malformed, nonemptyString, nullableId, record, taskStatusFields, string, timestamp } from './validation';
@@ -82,17 +82,19 @@ export const searchTasks = async (projectId: string, query: string, filters: Tas
   const responseId = response.headers.get('X-Request-ID');
   if (responseId !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(responseId)) correlation?.onResponseId(responseId);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
+  const responseLifetime = responseSignal(response, signal);
   let source: string, body: unknown;
   try {
+    responseLifetime.throwIfAborted();
     if (!/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get('Content-Type') ?? '')) throw new Error('Invalid media type');
-    source = await response.text(); body = JSON.parse(source); signal.throwIfAborted();
+    source = await response.text(); body = JSON.parse(source); responseLifetime.throwIfAborted();
     if (!response.ok) throw searchError(body, source, response.status, query);
     if (response.status !== 200) return malformed();
     record(body);
     integerSource(jsonObjectSources(source), 'total');
     return parseTaskSearchPage(body, project, { ...filters, assignedTo: assignedTo ?? '' }, userId);
   } catch (error) {
-    signal.throwIfAborted();
+    responseLifetime.throwIfAborted();
     if (error instanceof ApiError) throw error;
     throw new ApiError('protocol', response.status, 'protocol', null, error);
   }

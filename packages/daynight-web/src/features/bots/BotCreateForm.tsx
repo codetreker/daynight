@@ -1,8 +1,10 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { BotCreationUnknown, createBot, getBot, getBotDefaults, type Bot, type BotConfiguration, type BotDefaults, type CreateBotInput } from '../../api/bots';
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from '../../api/client';
 import type { WorkerAgent } from '../../api/types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
 import { useBotMessages } from './messages';
 import { BotDirectoryBrowser } from './BotDirectoryBrowser';
 import { useBotCreationModels } from './useBotCreationModels';
@@ -48,7 +50,8 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
       try {
         while (!signal.aborted && !scope.isInvalidated) {
           try { await scope.ready(signal); }
-          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause)) continue; throw cause; }
+          catch (cause) { if (!signal.aborted && authRequestsPaused() && isAbortError(cause) && !(cause instanceof TaskCacheLifecycleChanged && !cause.retryable)) continue; throw cause; }
+          if (scope.hasIdentityMismatch) return;
           if (authRequestsPaused()) continue;
           if (!signal.aborted && pendingBotCreation(scope)?.id === confirmedRequestId && confirmedBotCreations(scope).some(result => result.request.id === confirmedRequestId)) unresolvedChange.current(null);
           return;
@@ -225,7 +228,7 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
     event.preventDefault(); event.stopPropagation();
     if (!busy) close();
   }}>
-      <header className="bot-create-header"><h2 id="bot-create-title">{m.createTitle}</h2><button className="close-button" type="button" aria-label={m.closeCreate} disabled={busy} onClick={close}>×</button></header>
+      <header className="bot-create-header"><h2 id="bot-create-title">{m.createTitle}</h2><AccountRefreshNotice /><button className="close-button" type="button" aria-label={m.closeCreate} disabled={busy} onClick={close}>×</button></header>
       <div className="bot-create-body">
         {!unknown ? <>
           <div className="field"><label htmlFor="bot-name">{m.name}</label><input id="bot-name" ref={nameInput} value={name} onChange={event => { revision.current++; setName(event.target.value); setValidation(null); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} required autoComplete="off" disabled={busy} aria-invalid={validation === 'name'} /></div>

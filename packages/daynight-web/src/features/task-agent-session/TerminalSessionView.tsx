@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { SessionV2Key } from '../../../../daynight/src/session/v2/types';
-import { ApiError, authRequestsPaused } from '../../api/client';
+import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../api/client';
 import type { TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { TerminalSessionClient, sameTerminalFence, type TerminalClientSnapshot } from './terminal-client';
@@ -8,6 +8,7 @@ import { TerminalText } from './TerminalText';
 import { useTerminalHostMessages } from './terminal-host-messages';
 import { useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 
 type ConfirmationAction = 'resume_automation' | 'resolve_initial_assignment' | 'acknowledge_unknown';
 function sameConfirmationIdentity(before: TerminalClientSnapshot, current: TerminalClientSnapshot, action: ConfirmationAction): boolean {
@@ -27,9 +28,11 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   useEffect(() => {
     const sync = () => client.setVisible(active && current && !scope.isInvalidated && !authRequestsPaused() && document.visibilityState !== 'hidden');
     const invalidate = () => client.invalidate();
+    const unsubscribePause = subscribeAuthPause(client.suspendForAccountRefresh);
+    if (authRequestsPaused()) client.suspendForAccountRefresh();
     sync(); const timer = setInterval(sync, 250); document.addEventListener('visibilitychange', sync); scope.signal.addEventListener('abort', invalidate);
     const unsubscribe = scope.subscribe(event => { if (event.projectId === projectId && event.accessRevoked) client.invalidate(); else sync(); });
-    return () => { clearInterval(timer); unsubscribe(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', invalidate); client.setVisible(false); };
+    return () => { clearInterval(timer); unsubscribe(); unsubscribePause(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', invalidate); client.setVisible(false); };
   }, [client, scope, projectId, active, current]);
   useEffect(() => () => client.close(), [client]);
   const [draft, setDraft] = useState(''); const [confirmation, setConfirmation] = useState<{ action: ConfirmationAction; snapshot: TerminalClientSnapshot; client: TerminalSessionClient } | null>(null);
@@ -75,7 +78,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   else if (control?.state === 'closing' || control?.state === 'closed') reason = m[control.state];
   else if (!view.session?.connected) reason = view.session?.snapshot ? m.disconnected : m.disconnectedPlain;
   return <section ref={fullscreen.sectionRef} className={`task-agent-session terminal-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} onKeyDown={fullscreen.onKeyDown}>
-    <div className="terminal-host-toolbar"><strong>{stateLabel}</strong><button className="button" disabled={view.pending} onClick={() => client.refresh()}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button></div>
+    <div className="terminal-host-toolbar"><strong>{stateLabel}</strong><button className="button" disabled={view.pending || authRequestsPaused()} onClick={() => client.refresh()}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button>{fullscreen.fullscreen && <AccountRefreshNotice />}</div>
     {view.phase === 'loading' ? <p role="status">{m.loading}</p> : null}
     {view.phase === 'unavailable' && view.availability ? <p role="status">{view.availability === 'not_registered' ? m.notRegistered : m.notApplicable}</p> : null}
     {view.error ? <p role="alert" className="session-error">{reason === m.readonlyReason ? m.error : reason}</p> : null}
@@ -91,7 +94,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
       <details className="terminal-input-reason"><summary id={reasonId}>{m.reason}</summary><p>{reason}</p></details>
     </div>
     {view.pending ? <p role="status">{m.busy}</p> : null}
-    {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={!isOwner || view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
+    {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending || authRequestsPaused()} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={!isOwner || view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
     {confirmation && confirmationCurrent ? <div className="terminal-confirmation" role="group" aria-label={confirmation.action === 'resume_automation' ? m.resume : confirmation.action === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation.action === 'resume_automation' ? m.resumeConfirm : confirmation.action === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || !active || !current || !view.inputReady || confirmation.action !== 'acknowledge_unknown' && !allowed(confirmation.action)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
   </section>;
 }

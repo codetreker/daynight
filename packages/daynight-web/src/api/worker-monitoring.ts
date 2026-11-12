@@ -1,5 +1,5 @@
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
-import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { array, boolean, count, malformed, record, string, timestamp } from './validation';
 import type { WorkerReadAdmission } from './workers';
 
@@ -226,6 +226,8 @@ const validateMonitoringNumbers = (source: string): void => {
 // Inspect the original bytes before object keys can be collapsed by JSON.parse.
 // The service owns these encoded response budgets, including the final newline.
 const decodeMonitoringJson = async (response: Response, signal: AbortSignal, limit: number): Promise<unknown> => {
+  signal = responseSignal(response, signal);
+  signal.throwIfAborted();
   if (response.body === null) throw new Error('Missing monitoring response body');
   const length = response.headers.get('Content-Length');
   if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(limit))) {
@@ -234,7 +236,8 @@ const decodeMonitoringJson = async (response: Response, signal: AbortSignal, lim
   }
   const reader = response.body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
-  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  let cancelled = false;
+  const cancel = () => { cancelled = true; void reader.cancel(signal.reason).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
@@ -254,7 +257,7 @@ const decodeMonitoringJson = async (response: Response, signal: AbortSignal, lim
     return value;
   } finally {
     signal.removeEventListener('abort', cancel);
-    void reader.cancel().catch(() => undefined);
+    if (!cancelled) void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 };

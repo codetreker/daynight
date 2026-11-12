@@ -95,10 +95,10 @@ const navigate = async (projectId: string, heading: string) => {
 };
 
 describe('authenticated status ownership', () => {
-  it('retains a pending status through same-user revalidation, split-panel selection and P/Q/P navigation', async () => {
-    const revalidation = deferred<CurrentUser>(); const mutation = deferred<TaskDetail>();
+  it('retains a pending status through focus, split-panel selection and P/Q/P navigation', async () => {
+    const mutation = deferred<TaskDetail>();
     const original = initial();
-    vi.mocked(me).mockResolvedValueOnce(alice).mockReturnValueOnce(revalidation.promise);
+    vi.mocked(me).mockResolvedValueOnce(alice);
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
     let dialog = await open('Alice task P');
@@ -106,10 +106,8 @@ describe('authenticated status ownership', () => {
     const attachmentTab = within(dialog).getByRole('tab', { name: 'Attachments' });
     fireEvent.click(attachmentTab);
     returnFromAnotherWindow();
-    await waitFor(() => expect(me).toHaveBeenCalledTimes(2));
+    expect(me).toHaveBeenCalledTimes(1);
     expect(dialog.isConnected).toBe(true);
-    await act(async () => { revalidation.resolve(alice); });
-    await waitFor(() => expect(document.body).not.toHaveClass('auth-session-checking'));
     expect(within(dialog).getByRole('tab', { name: 'Attachments' })).toBe(attachmentTab);
     expect(attachmentTab).toHaveAttribute('aria-selected', 'true');
     close(dialog);
@@ -127,22 +125,19 @@ describe('authenticated status ownership', () => {
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
   });
 
-  it('replaces pending and cached status state on identity change and ignores the previous identity late result', async () => {
+  it('retains the old account and suppresses a late status result after identity change', async () => {
     const mutation = deferred<TaskDetail>(); const original = initial();
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
-    let dialog = await open('Alice task P');
-    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
-    currentUser = bob; returnFromAnotherWindow();
-    await screen.findByRole('heading', { name: 'Bob project P' });
-    dialog = await open('Bob task P');
-    expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
-    expect(within(dialog).queryByText('Alice reviewed content')).toBeNull();
+    const dialog = await open('Alice task P');
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    localStorage.setItem('daynight.activeUser', JSON.stringify(bob.id));
+    fireEvent(window, new StorageEvent('storage', { key: 'daynight.activeUser' }));
+    expect(await within(dialog).findByText('Account changed')).toBeVisible();
     const graphCalls = graphRequest.mock.calls.length;
     await act(async () => { mutation.resolve({ ...original, status: 'in_progress', ready: false, startedAt: '2026-10-22T00:01:00Z', version: original.version + 1n }); });
-    expect(within(dialog).getByRole('heading', { name: 'Bob task P' })).toBeVisible();
-    expect(within(dialog).getByRole('button', { name: 'To do' })).toBeVisible();
-    expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
+    expect(within(dialog).getByRole('heading', { name: 'Alice task P' })).toBeVisible();
+    expect(within(dialog).queryByRole('button', { name: 'In progress' })).toBeNull();
     expect(graphRequest).toHaveBeenCalledTimes(graphCalls);
     expect(setTaskStatus).toHaveBeenCalledTimes(1);
   });

@@ -57,6 +57,28 @@ describe('prompt editor state', () => {
     expect(conflict).toMatchObject({ draft: '', conflict: true, resource: resource('2', 'other') });
   });
 
+  it('requires a decision on an observed newer resource after a retained refusal', () => {
+    const pending = submit(apply(loaded(), { type: 'edit', text: 'sent' }));
+    const observed = apply(pending, { type: 'edit', text: 'later' }, { type: 'read/start', id: 3 },
+      { type: 'read/success', id: 3, resource: resource('2', 'theirs') });
+    const refused = apply(observed, { type: 'write/settle', id: 2, outcome: 'refused' });
+    expect(refused).toMatchObject({ draft: 'later', baseline: resource('1', 'original'), resource: resource('2', 'theirs'), write: 'idle', conflict: true, conflictReady: true });
+    expect(freezeSubmission(refused, userId, 4)).toBeNull();
+    expect(freezeSubmission(apply(refused, { type: 'keepDraft' }), userId, 4)).toMatchObject({ revision: '2', text: 'later' });
+    const conflict = apply(observed, { type: 'write/settle', id: 2, outcome: 'conflict' });
+    expect(conflict).toMatchObject({ draft: 'later', conflict: true, conflictReady: false });
+    expect(apply(conflict, { type: 'keepDraft' })).toBe(conflict);
+  });
+
+  it.each(['refused', 'conflict'] as const)('keeps an abandoned draft discarded after a retained %s', outcome => {
+    const pending = submit(apply(loaded(), { type: 'edit', text: 'sent' }));
+    const abandoned = apply(pending, { type: 'abandon' }, { type: 'read/start', id: 3 },
+      { type: 'read/success', id: 3, resource: resource('2', 'theirs') });
+    const settled = apply(abandoned, { type: 'write/settle', id: 2, outcome });
+    expect(settled).toMatchObject({ draft: 'theirs', baseline: resource('2', 'theirs'), resource: resource('2', 'theirs'), submission: null, write: 'idle', conflict: false, conflictReady: false, abandoned: false });
+    expect(promptDirty(settled)).toBe(false);
+  });
+
   it('does not present a stale baseline as the latest value after a conflict read fails', () => {
     const pending = submit(apply(loaded(), { type: 'edit', text: 'mine' }));
     const conflicted = apply(pending, { type: 'write/conflict', id: 2, error: 'conflict' }, { type: 'read/start', id: 3 }, { type: 'read/error', id: 3, error: 'offline' });
@@ -102,6 +124,11 @@ describe('prompt editor state', () => {
     const checked = apply(unknown, { type: 'read/start', id: 3 }, { type: 'reconcile/success', id: 3, resource: resource('2', 'sent') });
     expect(checked).toMatchObject({ draft: 'sent', baseline: resource('2', 'sent'), write: 'idle', reconciled: true });
     expect(promptDirty(checked)).toBe(false);
+    const confirmed = apply(left, { type: 'write/confirmed', id: 2 }, { type: 'write/success', id: 2, resource: resource('2', 'sent') });
+    expect(confirmed).toMatchObject({ draft: 'sent', baseline: resource('2', 'sent'), write: 'idle', abandoned: false });
+    expect(promptDirty(confirmed)).toBe(false);
+    const resumedEdit = apply(left, { type: 'edit', text: 'newer' }, { type: 'write/confirmed', id: 2 }, { type: 'write/success', id: 2, resource: resource('2', 'sent') });
+    expect(resumedEdit.draft).toBe('newer'); expect(promptDirty(resumedEdit)).toBe(true);
   });
 
   it('protects edits back to the old baseline while a submission or conflicting result is outstanding', () => {

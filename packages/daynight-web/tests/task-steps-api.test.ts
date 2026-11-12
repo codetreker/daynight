@@ -71,7 +71,7 @@ describe("Steps transport", () => {
     vi.stubGlobal("fetch", fetcher);
     const signal = new AbortController().signal;
     await expect(getTaskSteps(projectId.toUpperCase(), taskId.toUpperCase(), signal, admission())).resolves.toEqual(resource);
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, { signal, cache: "no-store", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Daynight-Worker-Protocol": "2" } });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, { signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Daynight-Worker-Protocol": "2" } });
   });
   it.each([null, taskId])("rejects a missing or different response principal %s", async (principal) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(resource, 200, principal)));

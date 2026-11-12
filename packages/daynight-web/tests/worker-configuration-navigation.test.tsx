@@ -3,6 +3,8 @@ import { StrictMode, useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
 import { navigate } from '../src/app/router';
+import { assertResponsePrincipal, pauseAuthRequests } from '../src/api/client';
+import * as promptApi from '../src/api/worker-prompts';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -38,7 +40,7 @@ const mount = async (strict = false, withProject = false) => {
     return Promise.resolve(missing ? configurationError(404, 'not_found') : configurationResponse(resource));
   });
   vi.stubGlobal('fetch', fetch);
-  const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
   browserNavigation().navigate(path);
   const view = (enabled = true) => { const content = <TaskCacheProvider scope={scope}><Workspace enabled={enabled} /></TaskCacheProvider>; return strict ? <StrictMode>{content}</StrictMode> : content; };
   const rendered = renderWithLocale(view(), { locale: 'en' });
@@ -60,7 +62,7 @@ describe('Worker configuration navigation', () => {
       if (url.endsWith('/configuration')) return config.promise;
       return Promise.resolve(workerResponse(workerDetail()));
     }));
-    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
@@ -85,7 +87,7 @@ describe('Worker configuration navigation', () => {
       if (url.endsWith('/configuration')) return Promise.resolve(configurationResponse(configurationResource()));
       return Promise.resolve(workerResponse(workerDetail()));
     }));
-    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { void scope.invalidateScope(); } }); scopes.push(scope);
     browserNavigation().navigate(path);
     renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
@@ -385,4 +387,35 @@ describe('Worker configuration navigation', () => {
     response.resolve(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }))); await flush();
     expect(location.pathname).toBe('/projects'); expect(result.writes).toHaveLength(1);
   });
+});
+
+
+it('retains a confirmed prompt and later draft while leaving and returning to the Worker', async () => {
+  const put = Promise.withResolvers<Response>(); let resume = () => {}; const retain = vi.fn();
+  const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: () => { resume = pauseAuthRequests(); } }); scopes.push(scope);
+  const save = promptApi.saveWorkerPrompt; const mismatch = workerResponse({}, workerId(99));
+  const spy = vi.spyOn(promptApi, 'saveWorkerPrompt').mockImplementation((target, submission, signal, admission) => save(target, submission, signal, {
+    ...admission, onReceipt: receipt => { admission.onReceipt?.(receipt); try { assertResponsePrincipal(mismatch, WORKER_USER, scope.principalMismatch); } catch { /* The other principal is rejected. */ } },
+  }));
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+    if (url === `/api/v1/me/workers/${target}/prompt`) return init.method === 'PUT' ? put.promise : Promise.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '1', text: 'old', updatedAt: '2026-11-09T10:00:00Z' }));
+    if (url.endsWith('/configuration')) return Promise.resolve(configurationResponse(configurationResource()));
+    return Promise.resolve(workerResponse(workerDetail()));
+  }));
+  const view = (active: boolean) => <TaskCacheProvider scope={scope}><WorkerDetailPage userId={WORKER_USER} workerId={target} active={active} readEnabled={active} onRetentionChange={retain} /></TaskCacheProvider>;
+  browserNavigation().navigate(path);
+  const rendered = renderWithLocale(view(true), { locale: 'en' });
+  try {
+    await flush(); fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' }); fireEvent.change(prompt, { target: { value: 'submitted' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' })); await flush();
+    fireEvent.change(prompt, { target: { value: 'continued' } });
+    await act(async () => { put.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '2', text: 'submitted', updatedAt: '2026-11-09T10:00:00Z' })); }); await flush();
+    expect(screen.getByText('Save confirmed. Refresh the page to continue.')).toBeVisible(); expect(retain).toHaveBeenLastCalledWith(true);
+    rendered.rerender(view(false)); await flush(); expect(retain).toHaveBeenLastCalledWith(true);
+    rendered.rerender(view(true)); await flush();
+    expect(screen.getByRole('textbox', { name: 'Prompt text' })).toHaveValue('continued');
+    expect(screen.getByText('Save confirmed. Refresh the page to continue.')).toBeVisible(); expect(retain).toHaveBeenLastCalledWith(true);
+  } finally { spy.mockRestore(); resume(); }
 });

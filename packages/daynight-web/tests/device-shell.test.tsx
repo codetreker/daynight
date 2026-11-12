@@ -55,34 +55,28 @@ describe("device authorization shell integration", () => {
     expect(document.title).toBe("授权 CLI · Daynight");
   });
 
-  it("invalidates the displayed account when the response belongs to another principal", async () => {
-    let checks = 0;
-    const fetcher = vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(++checks === 1 ? user : other, 200, checks === 1 ? user.id : other.id) : checks === 1 ? response(inspection(), 200, other.id) : response({ error: { code: "not_found", message: "Unavailable", requestId: "device-other" } }, 404, other.id)));
+  it("retains the account and stops when the response belongs to another principal", async () => {
+    const fetcher = vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(user) : response(inspection(), 200, other.id)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-    await screen.findByRole("heading", { name: "登录请求不可用" });
-    expect(checks).toBe(2);
+    await screen.findByText("账户已变化");
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "授权 CLI" })).toBeNull();
     expect(fetcher.mock.calls.every(([url]) => !url.endsWith("/decision"))).toBe(true);
   });
 
-  it("gates an approval queued during foreground identity checking and discards it on account change", async () => {
-    let focused = true;
-    vi.mocked(document.hasFocus).mockImplementation(() => focused);
-    let checks = 0, finishIdentity!: (value: Response) => void;
-    const fetcher = vi.fn((url: string) => {
-      if (url === "/api/v1/me") return ++checks === 1 ? Promise.resolve(response(user)) : new Promise<Response>((resolve) => { finishIdentity = resolve; });
-      return Promise.resolve(response(inspection(), 200, checks === 1 ? user.id : other.id));
-    });
+  it("retains the selected code and blocks approval after a shared account change", async () => {
+    const fetcher = vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? response(user) : response(inspection(), 200, user.id)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("checkbox"));
-    focused = false; fireEvent(window, new Event("blur"));
-    focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(checks).toBe(2));
+    const checkbox = await screen.findByRole("checkbox");
+    fireEvent.click(checkbox);
+    act(() => {
+      localStorage.setItem("daynight.activeUser", JSON.stringify(other.id));
+      window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" }));
+    });
+    await screen.findByText("账户已变化");
+    expect(checkbox).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "授权 CLI" }));
-    expect(fetcher.mock.calls.every(([url]) => !url.endsWith("/decision"))).toBe(true);
-    await act(async () => finishIdentity(response(other, 200, other.id)));
-    await screen.findByText("Bob");
-    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
     expect(fetcher.mock.calls.every(([url]) => !url.endsWith("/decision"))).toBe(true);
   });
 });

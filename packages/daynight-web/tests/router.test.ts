@@ -23,6 +23,10 @@ describe("route parsing", () => {
   it("parses task entries and explicit tabs while retaining a hidden file selection", () => {
     const task = `/projects/${projectId}/tasks/${taskId}`;
     expect(parseRoute(task)).toEqual({ kind: "task", projectId, taskId, tab: "overview", path: null });
+    expect(parseRoute(task, "?tab=description")).toEqual({ kind: "task", projectId, taskId, tab: "description", path: null });
+    expect(taskDetailUrl(projectId, taskId, { tab: "description", path: null })).toBe(`${task}?tab=description`);
+    expect(parseRoute(`${task}/attachments/result.md`, "?tab=description")).toEqual({ kind: "attachment", projectId, taskId, tab: "description", path: "result.md" });
+    expect(isLoginReturnPath(`${task}?tab=description`)).toBe(true);
     expect(parseRoute(task, "?tab=session")).toEqual({ kind: "task", projectId, taskId, tab: "session", path: null });
     expect(taskDetailUrl(projectId, taskId, { tab: "session", path: null })).toBe(`${task}?tab=session`);
     expect(parseRoute(task, "?tab=attachments")).toEqual({ kind: "task", projectId, taskId, tab: "attachments", path: null });

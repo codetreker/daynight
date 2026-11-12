@@ -118,7 +118,7 @@ export const useTaskGraph = (projectId: string) => {
       console.debug("Task sync", { cycle_id: cycleId, project_id: projectId, received: response.tasks.length,
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
-      if (signal.aborted || revision !== generation.current) return;
+      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
       if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess);
       if (sessionAdmission === authRequestsPauseRevision()) {
         sessionStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, response), sessions: response.sessions, receivedMonotonic });
@@ -127,17 +127,18 @@ export const useTaskGraph = (projectId: string) => {
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
       publish(result.project);
     } catch (error) {
-      if (signal.aborted || revision !== generation.current || isAbortError(error)) return;
+      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch || isAbortError(error)) return;
       sessionStore.clear();
       console.warn("Task sync failed", { cycle_id: cycleId, project_id: projectId, ...taskCacheFailureDiagnostic(error) });
       const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
       if (missing) {
         try { if (ticket !== null && !await scope.revokeProject(ticket, signal, true, error as ApiError)) return; }
         catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
+        if (scope.hasIdentityMismatch) return;
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error });
       }
-      if (signal.aborted || revision !== generation.current) return;
+      if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
       setState((previous) => {
         const snapshot = missing ? null : previous.projectId === projectId && previous.scope === scope ? previous.snapshot : null;
         return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
@@ -179,12 +180,12 @@ export const useTaskGraph = (projectId: string) => {
       }).catch((error: unknown) => { if (!lifetime.signal.aborted && !isAbortError(error)) setState((previous) => ({ ...previous, error, refreshing: false })); });
     });
     let timer: ReturnType<typeof setInterval> | null = null;
-    const pause = () => { if (timer !== null) clearInterval(timer); timer = null; };
-    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, pollingInterval('taskSync')); };
-    const onVisibilityChange = () => { resume(); if (document.visibilityState !== "hidden") void request(true); };
-    resume(); document.addEventListener("visibilitychange", onVisibilityChange);
+    const clearTimer = () => { if (timer !== null) clearInterval(timer); timer = null; };
+    const resetTimer = () => { clearTimer(); timer = setInterval(() => { void request(true); }, pollingInterval(document.visibilityState === "hidden" ? 'taskSyncInactive' : 'taskSync')); };
+    const onVisibilityChange = () => { resetTimer(); if (document.visibilityState !== "hidden") void request(true); };
+    resetTimer(); document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      pause(); unsubscribe(); lifetime.abort();
+      clearTimer(); unsubscribe(); lifetime.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       ++generation.current; active.current?.abort(); active.current = null;
       liveAccess.current = false; receipt.current = null;

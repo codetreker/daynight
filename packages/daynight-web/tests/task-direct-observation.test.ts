@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { waitForState as waitFor } from "./helpers/waitForState";
-import { getTaskObservation, pauseAuthRequests } from "../src/api/client";
+import { assertResponsePrincipal, getTaskObservation, pauseAuthRequests } from "../src/api/client";
+import * as taskApi from "../src/api/client";
+import * as stepApi from "../src/api/task-steps";
 import { createTaskCacheScope, TaskCacheLifecycleChanged, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TaskCacheError, TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from "../src/features/task-cache/database";
 import { openDB } from "idb";
@@ -19,8 +21,8 @@ const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const response = (value: unknown, taskEpoch: string | null = epoch, status = 200) => wireResponse(value, { status, headers: viewerHeaders(TEST_VIEWER_ID, taskEpoch === null ? {} : { "Daynight-Task-Epoch": taskEpoch }) });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 const worlds: { scope: TaskCacheScope; sessions: TaskDetailSessions }[] = [];
-const world = () => {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+const world = (onMismatch: (scope: TaskCacheScope) => void = (scope) => { void scope.invalidateScope(); }) => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => onMismatch(scope) });
   const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
   sessions.subscribe(project, task, () => {});
   return { scope, sessions };
@@ -1138,6 +1140,52 @@ it("does not publish a direct write receipt after the persisted identity changes
   expect(sessions.snapshot(project, task).mutation.phase).not.toBe("confirmed");
 });
 
+it.each(["success", "error"] as const)("keeps direct content when a late %s write encounters a changed fence and the owner pauses", async (outcome) => {
+  const mismatch = deferred<void>(); let resume = () => {}; let notifications = 0;
+  const { sessions, scope } = world((current) => {
+    notifications++;
+    expect(current.signal.aborted).toBe(false);
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    resume = pauseAuthRequests(); mismatch.resolve();
+  });
+  const write = deferred<Response>(); let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => init.method === "PUT" ? (writes++, write.promise) : Promise.resolve(response(body()))));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(1));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  await db.put("userScopes", { userId: TEST_VIEWER_ID, userFence: crypto.randomUUID() }); db.close();
+  write.resolve(outcome === "success"
+    ? response({ ...body(2n), title: "Late", status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" })
+    : response({ error: { code: "forbidden", message: "Denied", requestId: "late" } }, null, 403));
+  try {
+    await mismatch.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(scope.isInvalidated).toBe(false);
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe(outcome === "success" ? "confirmed" : "refused"));
+    expect(writes).toBe(1);
+  } finally { resume(); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(notifications).toBe(1); expect(writes).toBe(1);
+});
+
+it("does not retry a direct mutation preparation after a retaining owner resumes", async () => {
+  const mismatch = deferred<void>(); let resume = () => {}; let notifications = 0; let writes = 0;
+  const { sessions, scope } = world(() => { notifications++; resume = pauseAuthRequests(); mismatch.resolve(); });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => { if (init.method === "PUT") writes++; return Promise.resolve(response(body())); }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  await db.put("userScopes", { userId: TEST_VIEWER_ID, userFence: crypto.randomUUID() }); db.close();
+  sessions.setStatus(project, task, "in_progress", 1n);
+  try {
+    await mismatch.promise;
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe("refused"));
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(scope.signal.aborted).toBe(false);
+  } finally { resume(); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(notifications).toBe(1); expect(writes).toBe(0);
+});
+
 it("withdraws a reopened task and keeps it locked while a retired write's 404 is revalidated", async () => {
   const { sessions } = world(); const write = deferred<Response>(); const access = deferred<Response>(); let writes = 0;
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
@@ -1466,4 +1514,52 @@ it.each([200, 404] as const)('revalidates a fresh parent 404 without an open vie
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
   await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
   reopen();
+});
+
+it.each([404, 410] as const)("keeps direct content when a pre-mismatch read returns a late %s", async (status) => {
+  let resume = () => {}; const { sessions, scope } = world(() => { resume = pauseAuthRequests(); });
+  const late = deferred<Response>(); let reads = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if ((init.method === undefined || init.method === "GET") && ++reads === 2) return late.promise;
+    if (reads > 2) return Promise.resolve(wireResponse(body(), { headers: viewerHeaders("99999999-9999-4999-8999-999999999999") }));
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.load(project, task, 2, "refresh"); await waitFor(() => expect(reads).toBe(2));
+  try {
+    await expect(getTaskObservation(project, task, signal(), { userId: TEST_VIEWER_ID, onPrincipalMismatch: scope.principalMismatch })).rejects.toMatchObject({ code: "principal_mismatch" });
+    late.resolve(response({ error: { code: status === 410 ? "task_deleted" : "not_found", message: "Gone", requestId: "late" } }, null, status));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(sessions.snapshot(project, task).detail?.title).toBe("Original");
+    expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+  } finally { resume(); }
+});
+
+
+it.each(["task", "step"] as const)("keeps a verified %s conflict when mismatch wins the promise race", async (kind) => {
+  let resume = () => {}; const { sessions, scope } = world(() => { resume = pauseAuthRequests(); });
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  const mismatch = wireResponse(body(), { headers: viewerHeaders("99999999-9999-4999-8999-999999999999") });
+  const trigger = () => { try { assertResponsePrincipal(mismatch, TEST_VIEWER_ID, scope.principalMismatch); } catch { /* The other principal is rejected. */ } };
+  const taskWrite = taskApi.setTaskStatus, stepWrite = stepApi.setTaskStepStatus;
+  const taskSpy = vi.spyOn(taskApi, "setTaskStatus").mockImplementation((projectId, taskId, status, version, signal, admission) => taskWrite(projectId, taskId, status, version, signal, {
+    ...admission, onWriteRejected: error => { admission.onWriteRejected?.(error); trigger(); },
+  }));
+  const stepSpy = vi.spyOn(stepApi, "setTaskStepStatus").mockImplementation((projectId, taskId, stepId, status, version, signal, admission, correlationId) => stepWrite(projectId, taskId, stepId, status, version, signal, {
+    ...admission, onWriteRejected: error => { admission.onWriteRejected?.(error); trigger(); },
+  }, correlationId));
+  let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "version_conflict", message: "changed", requestId: "conflict" } }, null, 409)); }
+    return Promise.resolve(response(url.endsWith("/steps") ? { projectId: project, taskId: task, version: 1n, steps: [step] } : body()));
+  }));
+  sessions.openDirect(project, task); if (kind === "step") sessions.subscribeSteps(project, task, () => {});
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  if (kind === "step") { sessions.loadSteps(project, task); await waitFor(() => expect(sessions.stepsSnapshot(project, task).status).toBe("ready")); }
+  try {
+    if (kind === "task") sessions.setStatus(project, task, "in_progress", 1n); else sessions.setStepStatus(project, task, step.id, "done", 1n);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe("conflict"));
+    expect(scope.hasIdentityMismatch).toBe(true); expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(writes).toBe(1);
+    if (kind === "step") expect(sessions.stepsSnapshot(project, task).resource?.steps[0]?.status).toBe("todo");
+  } finally { taskSpy.mockRestore(); stepSpy.mockRestore(); resume(); }
 });

@@ -101,9 +101,3 @@ func (operations *inputTaskOperations) WithdrawWorker(arg0 context.Context, arg1
 	var zero model.Task
 	return zero, errors.New("unexpected Task WithdrawWorker")
 }
-
-func (operations *inputTaskOperations) ResumeWorker(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.ResumeWorker) (model.Task, error) {
-	operations.t.Error("unexpected Task ResumeWorker")
-	var zero model.Task
-	return zero, errors.New("unexpected Task ResumeWorker")
-}

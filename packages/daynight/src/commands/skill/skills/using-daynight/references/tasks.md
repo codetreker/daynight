@@ -116,7 +116,7 @@ filters me/unassigned. `--clear-assigned-to` clears assignment and conflicts wit
 A real assignment change resets allowAgents=false; equal assignment preserves it.
 Assignment grants no Project access or execution transfer. Automatic claiming
 needs a non-null assignee matching the Worker's authenticated account; existing
-claim/manual-resume authority is separate. Actual assignment, permission and platform
+claim authority is separate. Actual assignment, permission and platform
 changes are locked in_progress and do not change status. Task/graph JSON retain
 assignedTo as UUID/null; text shows UUID/unassigned.
 
@@ -144,7 +144,7 @@ The following lifecycle and timing rules describe ordinary Tasks.
 
 | Status | Meaning |
 | --- | --- |
-| proposed | Unconfirmed/unfinished; never ready, cannot satisfy prerequisites or be automatically claimed/resumed from released execution. |
+| proposed | Unconfirmed/unfinished; never ready, cannot satisfy prerequisites or be automatically claimed. |
 | todo | Confirmed work not started this interval; ready only when every prerequisite is done/cancelled. |
 | in_progress | Recorded progress, not an executor lock or lease. |
 | done | Successful delivery supported by results and applicable acceptance. |
@@ -178,7 +178,7 @@ establish cancelled delivery.
 
 Status writes neither release, stop, withdraw nor transfer Workers. An active
 claim needs authorized release before cancellation. Released history on cancelled
-Tasks authorizes neither resume nor withdrawal to proposed/todo. Cancellation
+Tasks authorizes neither a new claim nor withdrawal to proposed/todo. Cancellation
 preserves readable Task material, properties, Steps, Thread, execution history
 and attachment bytes; it does not mark deletion, rotate Project epoch or close
 PRs/branches. Resource cleanup retains its ownership/retry rules. Ordinary

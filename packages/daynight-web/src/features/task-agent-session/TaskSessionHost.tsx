@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
 import { sessionFence, sessionFenceKey } from '../../../../daynight/src/session/protocol';
-import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration, subscribeAuthPause } from '../../api/client';
 import type { LoadedSessionArchive } from '../../api/sessions';
-import { createTerminalSessionApi, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
+import { createTerminalSessionApi, SessionDenialProtocolError, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import type { SyncTicket, TaskCacheScope } from '../task-cache/project-cache';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
@@ -24,6 +24,7 @@ import { useTerminalHostMessages } from './terminal-host-messages';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
 import { useDirectSessionRecords } from './useDirectSessionRecords';
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import './terminal-session.css';
 import './terminal-host.css';
 
@@ -146,6 +147,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
     let wake: (() => void) | null = null;
     let recovering = false;
     const valid = () => {
+      if (scope.hasIdentityMismatch) return false;
       if (authRequestsPaused()) {
         if (!recovering) { recovering = true; void scope.ready(signal).then(() => setLifecycle(value => value + 1)).catch(() => {}); }
         return false;
@@ -166,7 +168,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
         wake?.();
       }
       if (!valid()) {
-        if (!signal.aborted && !scope.isInvalidated && !scope.isProjectSuspended(projectId) && !authRequestsPaused()) {
+        if (!signal.aborted && !scope.isInvalidated && !scope.hasIdentityMismatch && !scope.isProjectSuspended(projectId) && !authRequestsPaused()) {
           const project = scope.getAuthorizedProject(projectId);
           if (project === null || project.summaries.has(taskId)) setState({ ...initial(), denied: true });
           else setState(old => old.owner === owner ? { ...old, page: null, first: null, error: new ApiError('server', 404), loading: false, checking: false, denied: true } : old);
@@ -251,6 +253,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
           }
         }
       } catch (error) {
+        if (scope.hasIdentityMismatch) return;
         if (isAbortError(error)) {
           if (authRequestsPaused()) { void scope.ready(signal).then(() => setLifecycle(value => value + 1)).catch(() => {}); return; }
           if (!signal.aborted && !scope.isInvalidated && !scope.isProjectSuspended(projectId) && scope.canPreviewProject(projectId)) {
@@ -473,7 +476,7 @@ function SessionHostContent({ projectId, taskId, claimId, ownerUserId, mode, act
   const loading = history.loading || history.checking;
   const refresh = history.refresh;
   return <div className="task-session-host">
-    {error ? <p className="session-error" role="alert">{recordingError(error, m)} <button className="button" disabled={loading || !current} onClick={refresh}>{m.refresh}</button></p> : null}
+    {error ? <p className="session-error" role="alert">{recordingError(error, m, direct)} <button className="button" disabled={loading || !current} onClick={refresh}>{m.refresh}</button></p> : null}
     {item ? <FixedSessionRecording key={`${item.sessionId}/${item.executionGeneration}`} projectId={projectId} api={history.api} item={item} active={active && presentationCurrent} current={current} /> : !error ? <div className="session-empty" role="status"><p>{loading ? m.loading : m.empty}</p></div> : null}
   </div>;
 }
@@ -497,7 +500,7 @@ function SummaryManagedRecords(props: ManagedRecordsProps) {
   const history = useRecords(props.projectId, props.taskId, props.active);
   return <ManagedRecordsContent {...props} history={history} />;
 }
-function ManagedRecordsContent({ projectId, taskId, active, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
+function ManagedRecordsContent({ projectId, taskId, active, direct, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
   const m = useTerminalHostMessages();
   const [selection, setSelection] = useState<{ scope: typeof history.scope; projectId: string; taskId: string; item: SessionHistoryItem | null }>(() => ({ scope: history.scope, projectId, taskId, item: null }));
   const selected = selection.scope === history.scope && selection.projectId === projectId && selection.taskId === taskId && !history.denied ? selection.item : null;
@@ -505,9 +508,9 @@ function ManagedRecordsContent({ projectId, taskId, active, resetSelection, chil
   useLayoutEffect(() => { setSelection({ scope: history.scope, projectId, taskId, item: null }); }, [resetSelection, history.scope, projectId, taskId]);
   useLayoutEffect(() => { if (history.denied) setSelection({ scope: history.scope, projectId, taskId, item: null }); }, [history.denied, history.scope, projectId, taskId]);
   const clearSelection = () => setSelected(null);
-  const sidebar = history.checking ? null : history.confirmedEmpty ? (history.error ? <div className="session-error" role="alert">{recordingError(history.error, m)} <button className="button" onClick={history.refresh}>{m.refresh}</button></div> : null) : <section className="managed-session-records" aria-label={m.records}>
+  const sidebar = history.checking ? null : history.confirmedEmpty ? (history.error ? <div className="session-error" role="alert">{recordingError(history.error, m, direct)} <button className="button" onClick={history.refresh}>{m.refresh}</button></div> : null) : <section className="managed-session-records" aria-label={m.records}>
     <div className="terminal-host-toolbar"><h4>{m.records}</h4><button className="button" disabled={history.loading} onClick={history.refresh}>{m.refresh}</button></div>
-    {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m)}</p> : null}
+    {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m, direct)}</p> : null}
     {history.loading && history.items.length === 0 ? <p role="status">{m.loading}</p> : null}
     <ul className="managed-session-list">{history.items.map(item => <li key={item.sessionId}><button className="button" aria-pressed={selected?.sessionId === item.sessionId} onClick={() => setSelected(item)}>{recordLabel(item)} · {m[item.archive.state === 'ready' ? 'readonly' : item.archive.state]}</button></li>)}</ul>
     {history.cursor ? <button className="button" disabled={history.loading} onClick={history.more}>{m.more}</button> : null}
@@ -567,7 +570,8 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
       setState(old => ({ owner, loaded: old.owner === owner && old.loaded?.status === 'ready' && loaded.status === 'ready' && old.referenceKey === referenceKey && old.loaded.nativeRevision === loaded.nativeRevision ? old.loaded : loaded, error: null, loading: false, referenceKey }));
       if (loaded.status === 'pending' || loaded.status === 'unavailable' && preparing) timer = setTimeout(() => refresh(value => value + 1), 3000);
     })().catch(error => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || scope.hasIdentityMismatch) return;
+      if (error instanceof ApiError && error.kind === 'protocol' && error.code === 'principal_mismatch') return;
       const denied = error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0);
       if (denied) { denyResources(error); return; }
       setState(old => ({ owner, loaded: !denied && old.owner === owner ? old.loaded : null, error, loading: false }));
@@ -589,7 +593,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
       <button className="button session-refresh-toggle" aria-label={m.refresh} disabled={view.loading || !active || !current || authRequestsPaused()} onClick={() => refresh(value => value + 1)}>
         <span className="session-refresh-label">{m.refresh}</span><svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
       </button>
-    </div></header>
+    </div>{fullscreen.fullscreen && <AccountRefreshNotice />}</header>
     {view.error ? <p role="alert" className="session-error">{recordingError(view.error, m)}</p> : null}
     {loaded?.terminal ? <TerminalRecordingView archive={loaded.terminal} active={active} /> : loaded?.native ? <NativeRecording archive={loaded.native} archiveRevision={loaded.nativeRevision!} api={api} projectId={projectId} rootRef={fullscreen.sectionRef} resourcesRef={nativeResources} onDenied={denyResources} onInvalidImageBindings={invalidImageBindings} active={active} displayMode={display.mode} current={current} /> : !view.error ? <p role="status">{!loaded ? m.loading : loaded.status === 'unavailable' && preparing ? sm.archivePreparing : m[loaded.status === 'pending' ? 'pending' : loaded.status === 'failed' ? 'failed' : 'unavailable']}</p> : null}
   </section>;
@@ -608,7 +612,7 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
     const remote = new AbortController();
     let retired = false, stopped = owners.stopped, draining: Promise<void> | null = null, readerDrain: Promise<void> | null = null;
     let reader: ReturnType<TerminalSessionApi['resources']> | null = null;
-    const admitted = () => !retired && !stopped && !owners.stopped && admission.current.active && admission.current.current && !authority.isInvalidated && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
+    const admitted = () => !retired && !stopped && !owners.stopped && admission.current.active && admission.current.current && !authority.isInvalidated && !authority.hasIdentityMismatch && !authRequestsPaused() && readAuthRequestGeneration() === generation && (projectId === undefined || !authority.isProjectSuspended(projectId));
     const read = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
       signal = AbortSignal.any([signal, remote.signal]);
       signal.throwIfAborted();
@@ -631,7 +635,7 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
         if (!admitted()) throw new ImageFailure('access_pending', 'Archived resource access is being checked.');
         return blob;
       } catch (error) {
-        if (!retired && !stopped && !owners.stopped && error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
+        if (!retired && !stopped && !owners.stopped && !authority.hasIdentityMismatch && error instanceof ApiError && !(error.kind === 'protocol' && error.code === 'principal_mismatch') && [401, 403, 404, 410].includes(error.status ?? 0)) { void close(); onDenied(error); }
         throw error;
       }
     };
@@ -660,17 +664,19 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
   useLayoutEffect(() => {
     resourcesRef.current = lifetime.close;
     lifetime.owners.owners.add(lifetime.suspend);
+    const unsubscribePause = subscribeAuthPause(() => suspendStaticSessionMediaForAccountRefresh(authority));
+    if (authRequestsPaused()) suspendStaticSessionMediaForAccountRefresh(authority);
     if (lifetime.owners.stopped) lifetime.suspend();
-    return () => { lifetime.owners.owners.delete(lifetime.suspend); if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
-  }, [lifetime, resourcesRef]);
+    return () => { unsubscribePause(); lifetime.owners.owners.delete(lifetime.suspend); if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
+  }, [authority, lifetime, resourcesRef]);
   const state = useMemo(() => ({ ...emptySessionState(), entries: archive.entries, resources: new Map(archive.resources.map(item => [item.resource.resourceId, item.resource])) }), [archive]);
   return <SessionImageScope scope={lifetime.images} rootRef={rootRef} active={active} readAdmitted={current && !authRequestsPaused()}>
     <SessionTimeline state={state} active={active} displayMode={displayMode} canRespond={false} onRespond={async () => {}} hasOlder={false} loadingOlder={false} onLoadOlder={async () => {}} historyReady historyComplete recordIdentity={{ scope: lifetime.images.key, historyEpoch: archiveRevision }} onLoadResource={lifetime.read} onInvalidImageBindings={onInvalidImageBindings} />
   </SessionImageScope>;
 }
 
-function recordingError(error: unknown, m: ReturnType<typeof useTerminalHostMessages>): string {
-  if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) return m.permission;
+function recordingError(error: unknown, m: ReturnType<typeof useTerminalHostMessages>, direct = false): string {
+  if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0) && (!direct || error.kind === 'server' || error instanceof SessionDenialProtocolError)) return m.permission;
   if (error instanceof ApiError && ['unsupported_protocol', 'unsupported_content_kind'].includes(error.code)) return m.unsupported;
   return m.error;
 }

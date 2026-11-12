@@ -90,7 +90,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     let version: bigint;
     try { version = parseVersionArgument(option("--if-version")); }
     catch (cause) { throw new UsageError(cause instanceof Error ? cause.message : String(cause), help); }
-    request = { ...original, kind: command.command.name as "release" | "resume", version };
+    request = { ...original, kind: "release", version };
   }
   await dependencies.manage({ ...runtime(), version: context.version, request });
 };

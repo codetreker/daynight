@@ -38,5 +38,7 @@ the old operation to replace the user's later choice.
 
 Member facts remain visible or are withdrawn according to the confirmed receipt,
 while later navigation is preserved. A retained confirmation cannot repeat a
-completed operation. The shared operation's pending and admission timing is
-unchanged; other consumers retain their own result handling.
+completed operation. The original delivery retained the shared operation's pending
+and admission timing; the [local settlement decision](2026-11-12-team-operation-local-settlement.md)
+subsequently separated settlement from publication. Other consumers retain their
+own presentation handling.

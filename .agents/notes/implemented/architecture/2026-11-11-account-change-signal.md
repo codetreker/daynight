@@ -21,8 +21,8 @@ A same-value publication is a no-op unless a failed notification remains pending
 Notification retry rereads the record and sends only while it still matches the
 expected value, without rewriting it. A different known value supersedes retry.
 The signal closes its channel and listeners on disposal and cannot authorize a
-session or call an identity API. The independent [account session owner](2026-11-12-account-session-initialization.md)
-adopts this module; the existing business authentication lifecycle does not yet use it.
+session or call an identity API. The document [account session owner](2026-11-12-account-session-initialization.md)
+adopts this module for the business authentication lifecycle.
 
 ## Alternatives
 
@@ -44,5 +44,4 @@ can be notified again without overwriting a newer known account. Notification
 completion proves only local steps, not delivery to every tab. Browser storage,
 Cookie changes and broadcasts are not atomic; frozen tabs check the current
 record when they resume and cannot observe a missed intermediate change that has
-already reverted. The module does not itself change the existing workspace or
-foreground authentication behavior.
+already reverted. The module does not itself authorize a session; the [document account synchronization decision](2026-11-11-document-account-sync.md) owns the resulting workspace policy.

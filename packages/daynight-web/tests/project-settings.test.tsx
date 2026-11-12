@@ -2,12 +2,13 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
+import { ApiError, assertResponsePrincipal, cancelAuthNetworkRequests, getTask, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { getProject, saveProjectSettings } from "../src/api/project-settings";
+import * as settingsApi from "../src/api/project-settings";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { ProjectSettingsPanel } from "../src/features/management/ProjectSettingsPanel";
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from "../src/features/projects/ProjectAccess";
-import { TaskCacheLifecycleChanged, TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { createTaskCacheScope, TaskCacheLifecycleChanged, TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { parseWarningDraft, useProjectSettings } from "../src/features/management/useProjectSettings";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { wireResponse } from "./helpers/wireJson";
@@ -22,7 +23,7 @@ let serverActor = userId;
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const project = (minutes = 60, version = 9_007_199_254_740_993n) => ({ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id, name: "私有项目 Alpha", repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now, settings: { version, executionWarningMinutes: minutes } });
 const members = (role = "admin", actor = userId) => ({ items: [{ inheritedFrom: null, userId: actor, profile: { name: "Alice", email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId: id, userId: actor, role, version: 1n, createdAt: now, updatedAt: now } }] });
-const json = (body: unknown, status = 200) => wireResponse(body, { status });
+const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { "Daynight-User-ID": serverActor } });
 const fail = (status: number, code = "internal_error") => json({ error: { code, message: "private server diagnostic", requestId: "safe-request" } }, status);
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const install = (handler: (url: string, init: RequestInit) => Response | Promise<Response> = (url) => url.endsWith("/members") ? json(members()) : json(project())) => {
@@ -465,7 +466,7 @@ describe("project settings form", () => {
   it("ignores a late initial read after the actor changes", async () => {
     const stale = deferred<Response>(); let projectReads = 0;
     install((url) => url.endsWith("/members") ? json(members("admin", projectReads <= 1 ? userId : other)) : ++projectReads === 1 ? stale.promise : json(project(75)));
-    const view = render(<TestTaskCacheBoundary viewerId={userId} key={userId}><ProjectSettingsPanel projectId={id} user={user} /></TestTaskCacheBoundary>); serverActor = other; view.rerender(<TestTaskCacheBoundary viewerId={other} key={other}><ProjectSettingsPanel projectId={id} user={{ ...user, id: other }} /></TestTaskCacheBoundary>); await ready(); expect(screen.getByLabelText("提醒阈值")).toHaveValue(75);
+    const view = render(<TestTaskCacheBoundary viewerId={userId} key={userId}><ProjectSettingsPanel projectId={id} user={user} /></TestTaskCacheBoundary>); await waitFor(() => expect(projectReads).toBe(1)); serverActor = other; view.rerender(<TestTaskCacheBoundary viewerId={other} key={other}><ProjectSettingsPanel projectId={id} user={{ ...user, id: other }} /></TestTaskCacheBoundary>); await ready(); expect(screen.getByLabelText("提醒阈值")).toHaveValue(75);
     await act(async () => stale.resolve(json(project(20)))); expect(screen.getByLabelText("提醒阈值")).toHaveValue(75);
   });
 
@@ -487,14 +488,279 @@ describe("settings navigation and authenticated identity", () => {
     expect(document.title).toBe("项目设置 · Daynight"); const nav = screen.getByRole("navigation", { name: "项目设置" }); expect(within(nav).getByRole("link", { name: "项目设置" })).toHaveAttribute("aria-current", "page"); expect(screen.getByRole("navigation", { name: "面包屑" })).toHaveTextContent("项目设置");
   });
 
-  it("preserves drafts on same-account foreground confirmation and resets them for a changed account", async () => {
-    let actor = userId; let focused = true; vi.mocked(document.hasFocus).mockImplementation(() => focused);
-    window.history.replaceState(null, "", `/projects/${id}/settings`); const fetcher = install((url) => url === "/api/v1/me" ? json({ ...user, id: actor }) : url.endsWith("/members") ? json(members("admin", actor)) : json(project())); render(<AuthenticatedApp />); await ready(); change("95");
-    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(2)); await act(async () => { await Promise.resolve(); }); expect(screen.getByLabelText("提醒阈值")).toHaveValue(95);
-    actor = other; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(screen.getByLabelText("提醒阈值")).toHaveValue(60)); expect(screen.queryByText(/存在未保存的修改/)).toBeNull();
+  it("preserves drafts through focus and an account change until refresh", async () => {
+    let focused = true; vi.mocked(document.hasFocus).mockImplementation(() => focused);
+    window.history.replaceState(null, "", `/projects/${id}/settings`); const fetcher = install((url) => url === "/api/v1/me" ? json(user) : url.endsWith("/members") ? json(members()) : json(project())); render(<AuthenticatedApp />); await ready(); change("95");
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+    localStorage.setItem("daynight.activeUser", JSON.stringify(other));
+    fireEvent(window, new StorageEvent("storage", { key: "daynight.activeUser" }));
+    await screen.findByText("账户已变化");
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(95);
+    expect(screen.getByText(/存在未保存的修改/)).toBeInTheDocument();
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
   });
 
   it("renders the English form without untranslated feedback", async () => {
     install(); createLocaleRender("en")(<ProjectSettingsPanel projectId={id} user={user} />, { taskCache: { viewerId: userId } }); const field = await screen.findByLabelText("Alert threshold"); await waitFor(() => expect(field).not.toBeDisabled()); fireEvent.change(field, { target: { value: "0" } }); fireEvent.submit(screen.getByRole("button", { name: "Save settings" }).closest("form")!); expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number of minutes");
   });
+});
+
+
+it.each(["confirmed", "conflict", "unknown"] as const)("settles a %s settings write without publication after real principal mismatch", async outcome => {
+  const saving = deferred<Response>(), mismatch = deferred<Response>(); let resume = () => {};
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const fetcher = install((url, init) => {
+    if (url.includes('/tasks/')) return mismatch.promise;
+    if (init.method === 'PATCH') return saving.promise;
+    return url.endsWith('/members') ? json(members()) : json(project());
+  });
+  let completion: Promise<void> | undefined;
+  const Probe = () => { const state = useProjectSettings(id, userId, true, true); return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.project?.settings.executionWarningMinutes}</span><span>{state.notice ?? 'no notice'}</span><span>{state.reconciliation ?? 'no conflict'}</span></>; };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+  fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+  const observation = getTask(id, '20000000-0000-4000-8000-000000000001', new AbortController().signal, { userId, onPrincipalMismatch: scope.principalMismatch });
+  const denied = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('/tasks/'))).toBe(true)); const foreground = pauseAuthRequests();
+  try {
+    if (outcome === 'confirmed') { await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n)))); await act(async () => completion); }
+    else if (outcome === 'conflict') { await act(async () => saving.resolve(fail(409, 'version_conflict'))); await act(async () => completion); }
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '110' } });
+    await act(async () => { mismatch.resolve(wireResponse({}, { headers: { 'Daynight-User-ID': other } })); await denied; await completion; });
+    expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('110');
+    expect(screen.getByText('60')).toBeInTheDocument(); expect(screen.getByText('no notice')).toBeInTheDocument();
+    expect(screen.getByText(outcome === 'unknown' ? 'unknown' : 'known')).toBeInTheDocument();
+    expect(screen.getByText(outcome === 'conflict' ? 'conflict' : 'no conflict')).toBeInTheDocument();
+    const calls = fetcher.mock.calls.length; foreground(); resume(); await act(async () => { await Promise.resolve(); });
+    expect(fetcher.mock.calls.length).toBe(calls); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { foreground(); resume(); view.unmount(); scope.dispose(); }
+});
+
+
+it.each(['confirmed', 'conflict', 'unknown'] as const)('retains a %s settings outcome at the decoded-response mismatch boundary', async outcome => {
+  let resume = () => {}; const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const mismatch = wireResponse({}, { headers: { 'Daynight-User-ID': other } });
+  const trigger = () => { try { assertResponsePrincipal(mismatch, userId, scope.principalMismatch); } catch { /* The other principal is rejected. */ } };
+  const save = settingsApi.saveProjectSettings; const spy = vi.spyOn(settingsApi, 'saveProjectSettings').mockImplementation((projectId, input, signal, onDispatch, admission) => save(projectId, input, signal, onDispatch, admission === undefined ? undefined : {
+    ...admission, onConfirmed: value => { admission.onConfirmed?.(value); trigger(); }, onRejected: error => { admission.onRejected?.(error); trigger(); },
+  }));
+  const fetcher = install((url, init) => init.method === 'PATCH' ? outcome === 'confirmed' ? json(project(90, 9_007_199_254_740_994n)) : fail(outcome === 'conflict' ? 409 : 500, outcome === 'conflict' ? 'version_conflict' : 'internal_error') : url.endsWith('/members') ? json(members()) : json(project()));
+  let completion: Promise<void> | undefined;
+  const Probe = () => { const state = useProjectSettings(id, userId, true, true); return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.reconciliation ?? 'no conflict'}</span><span>{state.project?.settings.executionWarningMinutes}</span></>; };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60')); fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } });
+    fireEvent.click(screen.getByRole('button', { name: 'submit' })); await act(async () => completion);
+    expect(scope.hasIdentityMismatch).toBe(true); expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    expect(screen.getByText('60')).toBeInTheDocument(); expect(screen.getByText(outcome === 'unknown' ? 'unknown' : 'known')).toBeInTheDocument();
+    expect(screen.getByText(outcome === 'conflict' ? 'conflict' : 'no conflict')).toBeInTheDocument(); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { spy.mockRestore(); resume(); view.unmount(); scope.dispose(); }
+});
+
+it.each([
+  [403, null], [404, null], [403, 'malformed'], [404, 'malformed'],
+] as const)('retains displayed settings and draft after a %i read with principal %s', async (status, principal) => {
+  let reads = 0;
+  const fetcher = install((url, init) => {
+    if (init.method === 'PATCH') return fail(500);
+    if (url.endsWith('/members')) return json(members());
+    if (++reads === 1) return json(project());
+    return wireResponse({ error: { code: 'not_found', message: 'Denied', requestId: 'read-error' } }, {
+      status, headers: principal === null ? {} : { 'Daynight-User-ID': principal },
+    });
+  });
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => void state.save()}>submit</button><span>{state.project?.name}</span><span>{state.unavailable ? 'unavailable' : 'retained'}</span><span>{state.error instanceof ApiError ? state.error.kind : 'no error'}</span></>;
+  };
+  render(<ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary>);
+  await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+  fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+  await screen.findByText('protocol');
+  expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(screen.getByText('retained')).toBeInTheDocument();
+  expect(screen.getByLabelText('draft')).toHaveValue('90');
+  expect(reads).toBe(2); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+});
+
+it('ends an in-flight settings read after principal mismatch without issuing another read', async () => {
+  const held = deferred<Response>(); let reads = 0;
+  const mismatch = vi.fn(); const scope = createTaskCacheScope({ userId, onIdentityMismatch: mismatch });
+  const fetcher = install((url, init) => {
+    if (url.includes('/tasks/')) return wireResponse({}, { headers: { 'Daynight-User-ID': other } });
+    if (init.method === 'PATCH') return fail(500);
+    if (url.endsWith('/members')) return json(members());
+    return ++reads === 1 ? json(project()) : held.promise;
+  });
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => void state.save()}>submit</button><span>{state.project?.name}</span><span>{state.loading ? 'loading' : 'idle'}</span></>;
+  };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(reads).toBe(2)); expect(screen.getByText('loading')).toBeInTheDocument();
+    await act(async () => { await expect(getTask(id, '20000000-0000-4000-8000-000000000001', new AbortController().signal, { userId, onPrincipalMismatch: scope.principalMismatch })).rejects.toMatchObject({ kind: 'protocol', code: 'principal_mismatch' }); });
+    await screen.findByText('idle');
+    expect(mismatch).toHaveBeenCalledOnce(); expect(scope.signal.aborted).toBe(false); expect(scope.isInvalidated).toBe(false);
+    expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    await act(async () => held.resolve(json(project(120, 9_007_199_254_740_994n))));
+    expect(reads).toBe(2); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+    expect(screen.getByLabelText('draft')).toHaveValue('90'); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument();
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+it.each([400, 404] as const)('retains a decoded %i settings rejection and draft across navigation after principal mismatch', async status => {
+  let resume = () => {};
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { resume = pauseAuthRequests(); } });
+  const mismatch = wireResponse({}, { headers: { 'Daynight-User-ID': other } });
+  const save = settingsApi.saveProjectSettings;
+  const spy = vi.spyOn(settingsApi, 'saveProjectSettings').mockImplementation((projectId, input, signal, onDispatch, admission) => save(projectId, input, signal, onDispatch, admission === undefined ? undefined : {
+    ...admission, onRejected: error => {
+      admission.onRejected?.(error);
+      try { assertResponsePrincipal(mismatch, userId, scope.principalMismatch); } catch { /* The other principal is rejected. */ }
+    },
+  }));
+  const fetcher = install((url, init) => init.method === 'PATCH' ? fail(status, status === 404 ? 'not_found' : 'invalid_input') : url.endsWith('/members') ? json(members()) : json(project()));
+  const retention = vi.fn(); let completion: Promise<void> | undefined;
+  const Probe = ({ onRoute }: { onRoute: boolean }) => {
+    const state = useProjectSettings(id, userId, onRoute, true, retention);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.project?.name}</span><span>{state.writeError instanceof ApiError ? `rejected ${state.writeError.status}` : 'no rejection'}</span></>;
+  };
+  const tree = (onRoute: boolean) => <TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe onRoute={onRoute} /></ProjectAccessBoundary></TestTaskCacheBoundary>;
+  const view = render(tree(true));
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await act(async () => completion);
+    expect(scope.hasIdentityMismatch).toBe(true); expect(scope.signal.aborted).toBe(false);
+    expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByText('known')).toBeInTheDocument();
+    expect(screen.getByText(`rejected ${status}`)).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(retention).toHaveBeenLastCalledWith(true);
+    const count = fetcher.mock.calls.length;
+    act(() => resume()); view.rerender(tree(false)); view.rerender(tree(true));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(`rejected ${status}`)).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(retention).toHaveBeenLastCalledWith(true);
+    expect(fetcher.mock.calls.length).toBe(count); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { spy.mockRestore(); resume(); view.unmount(); scope.dispose(); }
+});
+
+it.each([400, 404] as const)('retains a decoded %i rejection when mismatch interrupts its paused publication', async status => {
+  const saving = deferred<Response>(), observed = deferred<Response>();
+  const mismatch = vi.fn(); const scope = createTaskCacheScope({ userId, onIdentityMismatch: mismatch });
+  const fetcher = install((url, init) => {
+    if (url.includes('/tasks/')) return observed.promise;
+    if (init.method === 'PATCH') return saving.promise;
+    return url.endsWith('/members') ? json(members()) : json(project());
+  });
+  const retention = vi.fn(); let completion: Promise<void> | undefined;
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true, retention);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><button type="button" onClick={state.retry}>retry</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.project?.name}</span><span>{state.writeError instanceof ApiError ? `rejected ${state.writeError.status}` : 'no rejection'}</span></>;
+  };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  let resume = () => {};
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+    const observation = getTask(id, '20000000-0000-4000-8000-000000000001', new AbortController().signal, { userId, onPrincipalMismatch: scope.principalMismatch });
+    const denied = expect(observation).rejects.toMatchObject({ kind: 'protocol', code: 'principal_mismatch' });
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('/tasks/'))).toBe(true));
+    act(() => { resume = pauseAuthRequests(); });
+    await act(async () => { saving.resolve(fail(status, status === 404 ? 'not_found' : 'invalid_input')); await completion; });
+    expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByText('no rejection')).toBeInTheDocument();
+    expect(screen.getByLabelText('draft')).toHaveValue('90'); expect(retention).toHaveBeenLastCalledWith(true);
+    await act(async () => { observed.resolve(wireResponse({}, { headers: { 'Daynight-User-ID': other } })); await denied; });
+    await screen.findByText(`rejected ${status}`); expect(mismatch).toHaveBeenCalledOnce();
+    expect(screen.getByText('known')).toBeInTheDocument(); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument();
+    expect(screen.getByLabelText('draft')).toHaveValue('90'); expect(retention).toHaveBeenLastCalledWith(true);
+    const calls = fetcher.mock.calls.length; act(() => resume()); fireEvent.click(screen.getByRole('button', { name: 'retry' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(`rejected ${status}`)).toBeInTheDocument(); expect(fetcher.mock.calls).toHaveLength(calls);
+  } finally { resume(); view.unmount(); scope.dispose(); }
+});
+
+it('applies a trusted 404 after an ordinary pause resumes', async () => {
+  const saving = deferred<Response>(); const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const fetcher = install((url, init) => init.method === 'PATCH' ? saving.promise : url.endsWith('/members') ? json(members()) : json(project()));
+  let completion: Promise<void> | undefined;
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.project?.name}</span><span>{state.unavailable ? 'unavailable' : 'available'}</span></>;
+  };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  let resume = () => {};
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+    act(() => { resume = pauseAuthRequests(); });
+    await act(async () => { saving.resolve(fail(404, 'not_found')); await completion; });
+    expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    act(() => resume()); await screen.findByText('unavailable');
+    expect(screen.queryByText('私有项目 Alpha')).toBeNull(); expect(screen.getByLabelText('draft')).toHaveValue('');
+    expect(scope.hasIdentityMismatch).toBe(false); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { resume(); view.unmount(); scope.dispose(); }
+});
+
+it('does not publish an old paused rejection into a replacement settings owner', async () => {
+  const saving = deferred<Response>(), observed = deferred<Response>();
+  const oldScope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const newScope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const fetcher = install((url, init) => {
+    if (url.includes('/tasks/')) return observed.promise;
+    if (init.method === 'PATCH') return saving.promise;
+    return url.endsWith('/members') ? json(members()) : json(project());
+  });
+  const oldRetention = vi.fn(); let completion: Promise<void> | undefined;
+  const Probe = ({ retention }: { retention?: ((value: boolean) => void) | undefined }) => {
+    const state = useProjectSettings(id, userId, true, true, retention);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.writeError instanceof ApiError ? `rejected ${state.writeError.status}` : 'no rejection'}</span><span>{state.project?.name}</span></>;
+  };
+  const tree = (scope: TaskCacheScope, key: string, retention?: (value: boolean) => void) => <TestTaskCacheBoundary scope={scope} key={key}><ProjectAccessBoundary projectId={id} initialRead active><Probe retention={retention} /></ProjectAccessBoundary></TestTaskCacheBoundary>;
+  const view = render(tree(oldScope, 'old', oldRetention)); let resume = () => {};
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+    const observation = getTask(id, '20000000-0000-4000-8000-000000000001', new AbortController().signal, { userId, onPrincipalMismatch: oldScope.principalMismatch });
+    const denied = expect(observation).rejects.toMatchObject({ code: 'principal_mismatch' });
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes('/tasks/'))).toBe(true));
+    act(() => { resume = pauseAuthRequests(); });
+    await act(async () => { saving.resolve(fail(404, 'not_found')); await completion; });
+    view.rerender(tree(newScope, 'new')); const retentionCalls = oldRetention.mock.calls.length;
+    await act(async () => { observed.resolve(wireResponse({}, { headers: { 'Daynight-User-ID': other } })); await denied; });
+    act(() => resume()); await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    expect(screen.getByText('no rejection')).toBeInTheDocument(); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument();
+    expect(oldRetention.mock.calls).toHaveLength(retentionCalls); expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { resume(); view.unmount(); oldScope.dispose(); newScope.dispose(); }
+});
+
+it('treats a cancelled dispatched settings write as unknown even if a late 404 arrives', async () => {
+  const saving = deferred<Response>();
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const fetcher = install((url, init) => init.method === 'PATCH' ? saving.promise : url.endsWith('/members') ? json(members()) : json(project()));
+  let completion: Promise<void> | undefined;
+  const Probe = () => {
+    const state = useProjectSettings(id, userId, true, true);
+    return <><input aria-label="draft" value={state.draft} onChange={event => state.change(event.target.value)} /><button type="button" onClick={() => { completion = state.save(); }}>submit</button><span>{state.pending ? 'pending' : 'idle'}</span><span>{state.uncertain ? 'unknown' : 'known'}</span><span>{state.unavailable ? 'unavailable' : 'available'}</span><span>{state.project?.name}</span></>;
+  };
+  const view = render(<TestTaskCacheBoundary scope={scope}><ProjectAccessBoundary projectId={id} initialRead active><Probe /></ProjectAccessBoundary></TestTaskCacheBoundary>);
+  let resume = () => {};
+  try {
+    await waitFor(() => expect(screen.getByLabelText('draft')).toHaveValue('60'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: '90' } }); fireEvent.click(screen.getByRole('button', { name: 'submit' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1));
+    const network = fetcher.mock.calls.find(([, init]) => init.method === 'PATCH')![1].signal as AbortSignal;
+    act(() => { resume = pauseAuthRequests(); cancelAuthNetworkRequests(); }); expect(network.aborted).toBe(true);
+    await act(async () => { saving.resolve(fail(404, 'not_found')); await completion; });
+    expect(screen.getByText('idle')).toBeInTheDocument(); expect(screen.getByText('unknown')).toBeInTheDocument();
+    expect(screen.getByText('available')).toBeInTheDocument(); expect(screen.getByText('私有项目 Alpha')).toBeInTheDocument(); expect(screen.getByLabelText('draft')).toHaveValue('90');
+    act(() => resume()); await act(async () => { await Promise.resolve(); });
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
+  } finally { resume(); view.unmount(); scope.dispose(); }
 });

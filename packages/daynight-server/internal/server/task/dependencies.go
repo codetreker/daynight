@@ -27,7 +27,6 @@ type TaskService interface {
 	UpdateWorker(context.Context, model.Principal, string, string, taskcore.UpdateWorker) (model.Task, error)
 	ReleaseWorker(context.Context, model.Principal, string, string, taskcore.ReleaseWorker) (model.Task, error)
 	WithdrawWorker(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error)
-	ResumeWorker(context.Context, model.Principal, string, string, taskcore.ResumeWorker) (model.Task, error)
 }
 
 type StepService interface {

@@ -9,7 +9,7 @@ import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessionProvider } from '../src/features/task-detail/TaskDetailSession';
 import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
-import { FixedSessionRecording, TaskSessionHost, suspendStaticSessionMediaForAccountRefresh } from '../src/features/task-agent-session/TaskSessionHost';
+import { FixedSessionRecording, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { pageImageStore } from '../src/features/task-agent-session/images/image-store';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
@@ -146,12 +146,13 @@ it('stops direct recorded media immediately while keeping the displayed image an
   const scopes = vi.spyOn(pageImageStore, 'createScope');
   const content = (current: boolean) => <TaskCacheProvider scope={scope}><FixedSessionRecording projectId={projectId} api={api as never} item={record} active current={current} /></TaskCacheProvider>;
   const view = render(content(true));
+  let resume = () => {};
   try {
     const image = await screen.findByRole('img', { name: first.name });
     await waitFor(() => expect(reader.readResource).toHaveBeenCalledTimes(2));
     const images = scopes.mock.results[0]!.value;
     const pending = reader.readResource.mock.calls.find(([value]) => value.resourceId === second.resourceId)!;
-    act(() => { suspendStaticSessionMediaForAccountRefresh(scope); suspendStaticSessionMediaForAccountRefresh(scope); });
+    act(() => { resume = pauseAuthRequests(); });
     expect(pending[1].aborted).toBe(true);
     expect(reader.close).toHaveBeenCalledOnce();
     expect(images.valid).toBe(true); expect(images.canRead()).toBe(false); expect(images.canDownload()).toBe(false);
@@ -163,6 +164,7 @@ it('stops direct recorded media immediately while keeping the displayed image an
     expect(reader.readResource).toHaveBeenCalledTimes(2);
     view.unmount(); expect(images.valid).toBe(false);
     expect(reader.close).toHaveBeenCalledOnce();
+    resume();
     const later = render(content(true));
     try {
       expect(await screen.findByText('Retained recording.')).toBeVisible();
@@ -170,5 +172,5 @@ it('stops direct recorded media immediately while keeping the displayed image an
       expect(api.resources).toHaveBeenCalledOnce();
       expect(scopes.mock.results[1]!.value.canRead()).toBe(false);
     } finally { later.unmount(); }
-  } finally { view.unmount(); scope.dispose(); scopes.mockRestore(); }
+  } finally { resume(); view.unmount(); scope.dispose(); scopes.mockRestore(); }
 });

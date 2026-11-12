@@ -74,6 +74,58 @@ it('keeps an unknown send draft and never replays it during refresh', async () =
   expect(screen.getByRole('textbox')).toHaveValue(raw);
 });
 
+it('settles a confirmed post while admission is blocked and preserves later editing', async () => {
+  const original = message(1, 'Original'), receipt = message(2, 'Submitted', { replyTo: original.id });
+  let resolvePost!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolvePost = resolve; });
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? pending : page([original]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(); await screen.findByText('Original');
+  fireEvent.click(screen.getByRole('button', { name: '回复 Alice' }));
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'Submitted' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1));
+  view.rerender(<Harness admissionBlocked />);
+  await act(async () => { resolvePost(resource(receipt, 201)); });
+  expect(input).toHaveValue('Submitted'); expect(view.container.querySelector('.thread-reply-preview')).not.toBeNull();
+  expect(view.container.querySelector('.thread-timeline')).not.toHaveTextContent('Submitted');
+  fireEvent.change(input, { target: { value: 'New draft' } });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  view.rerender(<Harness />); await waitFor(() => expect(view.container.querySelector('.thread-timeline')).toHaveTextContent('Submitted'));
+  expect(input).toHaveValue('New draft'); expect(view.container.querySelector('.thread-reply-preview')).not.toBeNull();
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+});
+
+it('shows an unknown result after a dispatched post fails during admission pause', async () => {
+  let rejectPost!: (error: Error) => void;
+  const pending = new Promise<Response>((_resolve, reject) => { rejectPost = reject; });
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? pending : page([message(1, 'Original')]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(); await screen.findByText('Original');
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'Keep me' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1));
+  view.rerender(<Harness admissionBlocked />);
+  await act(async () => { rejectPost(new TypeError('Connection closed')); });
+  expect(await screen.findByText('发送结果未知。')).toBeVisible(); expect(input).toHaveValue('Keep me');
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('preserves the submitted draft if the user leaves the discussion before confirmation', async () => {
+  let resolvePost!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolvePost = resolve; });
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? pending : page([message(1, 'Original')]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(); await screen.findByText('Original');
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'Submitted' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1));
+  view.rerender(<Harness active={false} />);
+  await act(async () => { resolvePost(resource(message(2, 'Submitted'), 201)); });
+  view.rerender(<Harness active />);
+  expect(input).toHaveValue('Submitted'); expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+});
+
 it('shows a real refusal separately from an unknown send', async () => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? resource({ error: { code: 'payload_too_large', message: 'private upstream detail', requestId: 'refused-request' } }, 413) : page([])));
   render(); await screen.findByText('还没有讨论');

@@ -49,7 +49,7 @@
 只登记 repo 地址，不触发 clone、GitHub 请求、review 启动或 CLI 配置修改。
 客户端的[需求](daynight.md)与 review 的[需求](daynight-review.md)分别由其自身文档定义。
 
-受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
+受保护 worker 属性、原子认领/更新/释放/强制撤回由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
 
 ## HTTP 输入边界
 
@@ -139,7 +139,7 @@ Task 包含以下持久化字段：
 
 Task 响应还包含 `dependsOn`、`externalDependsOn`、`blockedBy` 和 `ready`：
 
-- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 15 项，external 不另占额度。
+- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 30 项，external 不另占额度。
 - `externalDependsOn` 是其中标记为外部的 ID 子集，必填、无重复且按 ID 升序；空子集为 `[]`。
 - `blockedBy` 是其中尚未处于done或cancelled的task ID，按 ID 升序返回。
 - `ready` 当且仅当本 task 为 `todo` 且 `blockedBy` 为空时为 `true`。
@@ -174,7 +174,7 @@ status 仅接受 proposed/todo，省略为 proposed；禁止提交 allowAgents �
 执行时间由锁后的数据库 statement 时间产生：进入 in_progress 替换起点并清空终点；
 退回 proposed/todo 清空两端；in_progress→done 保留可空起点并写终点；proposed/todo→done 的起点为 null，
 仅写真实终点。取消写入cancelledAt并保留执行起止；done→cancelled保留原completedAt。普通编辑和同状态保留时间，未知历史起点不从其他时间戳推算。
-状态写入保留标题、正文、PR、allowAgents、requiredPlatform、assignedTo、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。active取消须先解除归属；released可以取消，取消后不能认领、resume或withdraw恢复。普通状态写入不能替代active释放或released接续，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
+状态写入保留标题、正文、PR、allowAgents、requiredPlatform、assignedTo、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。active取消须先解除归属；released可以取消，取消后不能认领或withdraw恢复。普通状态写入不能替代active释放或released重新认领，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
 
 历史迁移014将proposed改为todo，只对转换行增加一次 version 并更新 updatedAt，
 保留其他字段及历史起止时间。归类迁移不调用运行时 todo 清空规则；其他状态行保持不变。

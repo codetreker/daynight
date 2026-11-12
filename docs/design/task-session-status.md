@@ -4,7 +4,7 @@
 
 ## 状态与入口
 
-列表仅消费现有项目 `task-sync` 返回的完整 `sessions` 集合，按 15 秒周期观察。每项为 Task ID 与 `working | notice | warning | pending` 之一，不读取完整 `/sessions/current`，不另建逐任务 HTTP 调度。服务端的可靠关联、live 状态和期限判断由[同步架构](daynight-task-sync.md#服务端-session-状态投影)拥有。
+列表仅消费现有项目 `task-sync` 返回的完整 `sessions` 集合，在页面可见时按 15 秒周期观察；隐藏时仍拒绝 Session 观察。每项为 Task ID 与 `working | notice | warning | pending` 之一，不读取完整 `/sessions/current`，不另建逐任务 HTTP 调度。服务端的可靠关联、live 状态和期限判断由[同步架构](daynight-task-sync.md#服务端-session-状态投影)拥有。
 
 | `sessions[taskId]` | 角标 | 含义与入口 |
 |---|---|---|
@@ -40,7 +40,7 @@ Session entry 只含四态、执行绑定与本次 receipt，并只驻留当前�
 
 观察在 `performance.now() - receivedMonotonic <= 30_000` 时有效，超过 30 秒撤销角标及该贡献入口。发布前检查期限；body 后解码、历史及 IDB 等待超过期限的响应不能短暂显示或续期。store 安排最早到期点的本地 timer，并在恢复展示或文档可见时立即复核，不依赖后台 timer 准时执行。渲染、缓存通知及其它标签页更新均不能续期。
 
-正常 15 秒同步等待保留尚有效的贡献。当前读取失败、auth pause、scope/项目准入失效、账户切换、任务完成或执行绑定变化撤销相应贡献；过期或已被取代的请求不能撤销较新观察。身份恢复继续沿用现有项目同步，没有本地 auth 轮询或 Session retry scheduler。
+正常可见页面的 15 秒同步等待保留尚有效的贡献。当前读取失败、auth pause、scope/项目准入失效、账户切换、任务完成或执行绑定变化撤销相应贡献；过期或已被取代的请求不能撤销较新观察。身份恢复继续沿用现有项目同步，没有本地 auth 轮询或 Session retry scheduler。
 
 每个可见链通过 IntersectionObserver 注册完整 `component.memberIds`，包含根任务，排除仅由外部前置边引用的其它链。折叠和负责人筛选不缩小聚合范围。取 warning > notice > working；pending 只贡献入口可访问性，不产生聚合角标。Provider 的活动和链可见性控制展示范围，不驱动网络；外层 Overview 和任务列表继续使用同一个项目同步所有者及完整索引，重开保留仍有效的页面状态。导航、项目/身份变化与页面释放清理所属内存、timer 和订阅。
 

@@ -28,33 +28,6 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 	})
 }
 
-func (s *Tasks) ResumeWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.ResumeWorker) (model.Task, error) {
-	descriptor, err := taskcore.CanonicalWorkerDescriptor(input.WorkerDescriptor)
-	if err != nil {
-		return model.Task{}, err
-	}
-	if err := taskcore.RequireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
-		return model.Task{}, err
-	}
-	previousID, err := model.CanonicalID(input.PreviousClaimID)
-	if err != nil {
-		return model.Task{}, err
-	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
-		worker, err := taskcore.ReleasedWorker(current, previousID)
-		if err != nil {
-			return taskcore.Mutation{}, err
-		}
-		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
-			return taskcore.Mutation{}, err
-		}
-		if err := taskcore.FreshWorkerExecution(worker, descriptor); err != nil {
-			return taskcore.Mutation{}, err
-		}
-		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
-	})
-}
-
 func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateWorker) (model.Task, error) {
 	claimID, err := taskcore.ValidateWorkerUpdate(input)
 	if err != nil {

@@ -740,14 +740,20 @@ must be canonical decimal in `0..65535`, and the two configured nonzero ports
 must differ. Port zero requests an ephemeral port; the lifecycle log reports the
 actual bound address. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
+`/mcp`, `/login`, `/auth/complete`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace and `/api/v1/webhook-event-types`. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
-starting the server. Login return loops, including `/login`, are rejected before a
+starting the server. Login return loops, including `/login` and `/auth/complete`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
 known callback failure redirects to the explicit login error page and retains the
-validated target, including when local session creation fails. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
-mode. The two HTTP exceptions control different origins and do not imply each
+validated target, including when local session creation fails. A successful callback
+sets the session Cookie and redirects to `/auth/complete` with the complete encoded
+return target, including its query and fragment, and the escaped path of the
+callback request.
+The completion page validates that local path and uses it to preserve the original
+redirect destination for accepted relative references. The existing Web shell serves
+that page over GET/HEAD; other methods are rejected. Only the configured callback
+path is routed; there is no fixed-path alias or authentication-disable mode. The two HTTP exceptions control different origins and do not imply each
 other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
 no-store policy, 405/Allow response and request logging. Its public static guide mounts
 outside the browser authentication flow and makes no API requests.
@@ -2738,9 +2744,9 @@ dependent IDs. No dependent is changed. Status preserves requiredPlatform, assig
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
 returns to todo only through release. Released tasks may become cancelled without
-new execution; cancelled tasks cannot resume or withdraw to todo. Released todo tasks begin a new execution through eligible automatic acquisition or
-explicit owner/admin resume, with fresh claim and worktree IDs. The
-old four lifecycle routes are removed.
+new execution; cancelled tasks cannot be claimed or withdrawn to todo. Released
+todo tasks begin a new execution through eligible automatic acquisition, with
+fresh claim and worktree IDs. The old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to proposed or todo
@@ -2783,7 +2789,7 @@ automatic discovery requires true and assignedTo matching the authenticated
 local user ID. Unassigned or other-user tasks fail automatic claim with
 409 invalid_transition, preserving fields, version and timestamps. Worker
 candidates use assignedTo=me before pagination; complete claim inventory omits
-assignment filtering, and explicit manual resume retains its owner/admin rules.
+assignment filtering so established executions retain their ownership rules.
 The [claim foundation](../../docs/design/daynight-worker-claims.md)
 rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
@@ -3195,7 +3201,6 @@ user/worker active-claim inventory; no claim table is introduced.
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/withdraw` | `200`, owner/admin clears active/released ownership, returns todo and disables automatic execution |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform`, `assignedTo` and `properties`; omitted

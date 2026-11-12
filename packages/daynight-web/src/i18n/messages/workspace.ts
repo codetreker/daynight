@@ -7,6 +7,8 @@ export type WorkspaceMessages = {
     readonly projectHome: string;
     readonly mainNavigation: string;
     readonly workspace: string;
+    readonly my: string;
+    readonly tools: string;
     readonly projects: string;
     readonly projectTasks: string;
     readonly localWorkspace: string;

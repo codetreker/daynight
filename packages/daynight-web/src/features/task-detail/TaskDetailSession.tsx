@@ -6,7 +6,7 @@ import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
-import { TaskCacheLifecycleChanged, type SyncTicket, type TaskCacheScope, type TaskReadFence } from "../task-cache/project-cache";
+import { TaskCacheLifecycleChanged, isRetryableTaskCacheLifecycleChange, type SyncTicket, type TaskCacheScope, type TaskReadFence } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 import type { CommittedTaskProjection } from '../projects/committed-task-projection';
 
@@ -287,8 +287,8 @@ export class TaskDetailSessions {
     return this.summaryVersion(entry.steps.projectId, entry.steps.taskId);
   }
   private ticketCurrent(entry: Entry, ticket: ReadTicket, allowAuthPaused = false): boolean {
-    return "historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
-      : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration;
+    return !this.scope.hasIdentityMismatch && ("historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
+      : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration);
   }
   historyGeneration(projectId: string): number { return this.scope.getHistoryGeneration(projectId); }
   directRequiresFreshRead(projectId: string, taskId: string, allowAuthPaused = false): boolean {
@@ -532,7 +532,7 @@ export class TaskDetailSessions {
       : await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
-      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
+      catch (error) { if (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged && !error.retryable || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
     const floor = this.stepsFloor(entry);
@@ -585,7 +585,7 @@ export class TaskDetailSessions {
           const detail = await this.getParent(entry, ticket, signal);
           await this.accept(steps.projectId, steps.taskId, detail, ticket, entry.state.revision, false, signal);
         } catch (parentError) {
-          if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(parentError)) return;
+          if (signal.aborted || this.disposed || this.scope.isInvalidated || this.scope.hasIdentityMismatch || generation !== steps.generation || isAbortError(parentError)) return;
           if (parentError instanceof ApiError && parentError.kind === "server" && parentError.status === 410 && parentError.code === "task_deleted") {
             this.markDeleted(steps.projectId, steps.taskId, ticket.cacheGeneration, parentError);
             return;
@@ -807,7 +807,7 @@ export class TaskDetailSessions {
     this.loadSteps(entry.steps.projectId, entry.steps.taskId, true);
   }
   private markDeleted(projectId: string, taskId: string, cacheGeneration: string, error: ApiError | null, phase: "confirmed" | "reconciled" = "confirmed"): void {
-    if (this.scope.isInvalidated) return;
+    if (this.scope.isInvalidated || this.scope.hasIdentityMismatch) return;
     const entry = this.entry(projectId, taskId);
     if (this.entryGeneration(entry) !== cacheGeneration) { this.refreshProject(projectId); return; }
     this.cancelRead(projectId, taskId);
@@ -825,6 +825,7 @@ export class TaskDetailSessions {
     this.refreshProject(projectId);
   }
   private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
+    if (this.scope.hasIdentityMismatch) return;
     if (entry.steps.pending !== null) this.failSteps(entry.steps, error);
     const stepReconciliation = isStepOperation(entry.state.mutation.operation) && entry.state.mutation.reconciling;
     if (stepReconciliation) entry.queuedRead = null;
@@ -839,7 +840,7 @@ export class TaskDetailSessions {
   }
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
-    const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
+    const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && !this.scope.hasIdentityMismatch && entry.state.status !== "deleted" &&
       entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
@@ -863,7 +864,7 @@ export class TaskDetailSessions {
     }
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
-      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
+      catch (error) { if (!isAbortError(error) || error instanceof TaskCacheLifecycleChanged && !error.retryable || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
     const requested = entry.steps.parentRequested;
@@ -959,7 +960,7 @@ export class TaskDetailSessions {
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
-      if (signal.aborted || generation !== entry.generation || this.disposed || !retain && !reconciliation && isAbortError(error)) return;
+      if (signal.aborted || generation !== entry.generation || this.disposed || this.scope.hasIdentityMismatch || !retain && !reconciliation && isAbortError(error)) return;
       if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
         this.markDeleted(projectId, taskId, ticket.cacheGeneration, error, reconciliation ? "reconciled" : "confirmed");
         if (knownGoal && ticket.epoch !== null) this.scope.fenceGoalHistory(projectId, ticket.epoch);
@@ -1030,7 +1031,7 @@ export class TaskDetailSessions {
       }
     } catch (error) {
       if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
-      if (error instanceof TaskCacheLifecycleChanged && fence !== null && this.scope.isTaskReadCurrent(fence, true)) {
+      if (isRetryableTaskCacheLifecycleChange(error) && fence !== null && this.scope.isTaskReadCurrent(fence, true)) {
         if (!entry.historyRetry) {
           entry.historyRetry = true;
           queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
@@ -1189,6 +1190,7 @@ export class TaskDetailSessions {
       ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
     retired.error = error;
     if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
+    if (this.scope.hasIdentityMismatch) return;
     if (error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted" &&
       retired.goalEpoch !== null && retired.fence !== null && this.scope.isTaskReadCurrent(retired.fence, true)) {
       this.scope.fenceGoalHistory(retired.projectId, retired.goalEpoch);
@@ -1330,7 +1332,7 @@ export class TaskDetailSessions {
       catch (error) {
         if (this.scope.isInvalidated) return null;
         signal.throwIfAborted();
-        if (authRequestsPaused()) continue;
+        if (authRequestsPaused() && !(error instanceof TaskCacheLifecycleChanged && !error.retryable)) continue;
         throw error;
       }
       signal.throwIfAborted();
@@ -1343,7 +1345,7 @@ export class TaskDetailSessions {
         // A pause during asynchronous admission is not a rejection of the review.
         // Once dispatch starts, however, an operation must never be replayed.
         if (retryPreparation?.() && authRequestsPaused() && !this.scope.isInvalidated &&
-          (isAbortError(error) || error instanceof TaskMutationReviewExpired)) continue;
+          (isAbortError(error) && (!(error instanceof TaskCacheLifecycleChanged) || error.retryable) || error instanceof TaskMutationReviewExpired)) continue;
         throw error;
       }
     }
@@ -1500,7 +1502,7 @@ export class TaskDetailSessions {
     this.mutationControllers.get(key)?.controller.abort();
     const controller = new AbortController();
     this.mutationControllers.set(key, { operation, controller });
-    const signal = AbortSignal.any([controller.signal, this.scope.signal]);
+    const signal = AbortSignal.any([controller.signal, this.scope.signal, this.scope.mismatchSignal]);
     this.publish(entry, { ...entry.state, refreshing: false, error: null, mutation: { operation, phase: "pending", error: null, reconciling: false, reconciliationError: null } });
     // Submitted writes outlive their dialog, while identity retirement still fences their result.
     void (async () => {
@@ -1576,7 +1578,7 @@ export class TaskDetailSessions {
             signal.throwIfAborted();
             if (!authRequestsPaused() && settleRetired(error)) return;
             // A pause can also end before the rejected transaction is observed.
-            if (failure instanceof TaskCacheLifecycleChanged && admissionPauseRevision !== authRequestsPauseRevision() &&
+            if (!admitted && isRetryableTaskCacheLifecycleChange(failure) && admissionPauseRevision !== authRequestsPauseRevision() &&
               (outcomeTicket === null || !("historyGeneration" in outcomeTicket) || this.scope.isTaskReadCurrent(outcomeTicket, true))) {
               continue;
             }
@@ -1609,7 +1611,7 @@ export class TaskDetailSessions {
         };
         let goalReceiptPublished = false;
         const publishGoalReceipt = () => {
-          if (goalReceiptPublished || operation.action !== "delete" || previous.type !== "goal") return;
+          if (this.scope.hasIdentityMismatch || goalReceiptPublished || operation.action !== "delete" || previous.type !== "goal") return;
           goalReceiptPublished = true;
           const generation = this.entryGeneration(entry);
           if (generation !== null && entry.state.mutation.operation === operation) this.markDeleted(projectId, taskId, generation, null);
@@ -1618,11 +1620,12 @@ export class TaskDetailSessions {
         };
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
           onDispatch: () => { dispatched = true; },
+          onWriteRejected: (error: ApiError) => { outcomeKnown = true; outcomeError = error; },
           onWriteConfirmed: () => {
             confirmed = true;
             this.receiptReadGenerations.set(operation, entry.generation);
-            if (!authRequestsPaused() && !signal.aborted) publishGoalReceipt();
-            if (authRequestsPaused()) this.settlePausedMutation(projectId, taskId, operation, { dispatched, confirmed, committedVersion: actualVersion, error: null, publicationPending: true });
+            if (!this.scope.hasIdentityMismatch && !authRequestsPaused() && !signal.aborted) publishGoalReceipt();
+            if (this.scope.hasIdentityMismatch || authRequestsPaused()) this.settlePausedMutation(projectId, taskId, operation, { dispatched, confirmed, committedVersion: actualVersion, error: null, publicationPending: true });
           } };
         if (isStepOperation(operation)) {
           const response = await this.runMutationStage(projectId, taskId, operation, signal, async () => {
@@ -1792,6 +1795,10 @@ export class TaskDetailSessions {
           }
           if (signal.aborted || this.scope.isInvalidated || entry.state.mutation.operation !== operation && !this.retiredMutations.has(operation)) return;
         }
+        if (this.scope.hasIdentityMismatch || error instanceof TaskCacheLifecycleChanged && !error.retryable) {
+          this.settlePausedMutation(projectId, taskId, operation, { dispatched, confirmed, committedVersion: actualVersion, error: outcomeError, publicationPending: true });
+          return;
+        }
         if (settleRetired(error)) return;
         if (!isStepOperation(operation) && ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
           this.scope.isTaskReadCurrent(ticket, true) && entry.openingGeneration === ticket.openingSequence) {
@@ -1821,7 +1828,8 @@ export class TaskDetailSessions {
               return;
             }
             if (settleRetired(error)) return;
-            if (ticket !== null && "historyGeneration" in ticket && (failure instanceof TaskCacheLifecycleChanged && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
+            if (failure instanceof TaskCacheLifecycleChanged && !failure.retryable) { this.settlePausedMutation(projectId, taskId, operation, { dispatched, confirmed, committedVersion: actualVersion, error, publicationPending: true }); return; }
+            if (ticket !== null && "historyGeneration" in ticket && (isRetryableTaskCacheLifecycleChange(failure) && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
               this.failDirectFence(entry, operation, failure, submitted, confirmed, actualVersion);
           }
         };

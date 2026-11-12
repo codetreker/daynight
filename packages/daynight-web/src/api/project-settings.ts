@@ -27,6 +27,7 @@ export const saveProjectSettings = async (
   input: { readonly version: bigint; readonly executionWarningMinutes: number },
   signal: AbortSignal,
   onDispatch?: () => void,
+  admission?: TaskResponseAdmission & { readonly onConfirmed?: (project: Project) => void; readonly onRejected?: (error: ApiError) => void },
 ): Promise<Project> => {
   const id = requestId(projectId);
   if (!isTaskVersion(input.version) || !isExecutionWarningMinutes(input.executionWarningMinutes)) throw new ApiError("protocol");
@@ -34,10 +35,12 @@ export const saveProjectSettings = async (
     method: "PATCH", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson(input),
   }, onDispatch);
+  if (admission !== undefined) assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => {
     const saved = boundProject(data, id);
     if (response.status !== 200 || saved.settings.executionWarningMinutes !== input.executionWarningMinutes
       || (saved.settings.version !== input.version && saved.settings.version !== input.version + 1n)) throw new ApiError("protocol", response.status);
+    admission?.onConfirmed?.(saved);
     return saved;
-  }, decodeProjectJson);
+  }, decodeProjectJson, false, admission?.onRejected);
 };

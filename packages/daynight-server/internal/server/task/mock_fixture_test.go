@@ -108,7 +108,6 @@ type taskServiceMock struct {
 	UpdateWorkerFunc   func(context.Context, model.Principal, string, string, taskcore.UpdateWorker) (model.Task, error)
 	ReleaseWorkerFunc  func(context.Context, model.Principal, string, string, taskcore.ReleaseWorker) (model.Task, error)
 	WithdrawWorkerFunc func(context.Context, model.Principal, string, string, taskcore.WithdrawWorker) (model.Task, error)
-	ResumeWorkerFunc   func(context.Context, model.Principal, string, string, taskcore.ResumeWorker) (model.Task, error)
 }
 
 func (mock *taskServiceMock) Create(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 taskcore.CreateTask) (model.Task, error) {
@@ -228,14 +227,6 @@ func (mock *taskServiceMock) WithdrawWorker(arg0 context.Context, arg1 model.Pri
 		return result, err
 	}
 	return mock.WithdrawWorkerFunc(arg0, arg1, arg2, arg3, arg4)
-}
-
-func (mock *taskServiceMock) ResumeWorker(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.ResumeWorker) (model.Task, error) {
-	if err := mock.check("ResumeWorker", mock.ResumeWorkerFunc != nil); err != nil {
-		var result model.Task
-		return result, err
-	}
-	return mock.ResumeWorkerFunc(arg0, arg1, arg2, arg3, arg4)
 }
 
 var _ taskhttp.StepService = (*stepsServiceMock)(nil)
@@ -380,9 +371,6 @@ func newTaskServiceMock(t *testing.T) *taskServiceMock {
 		}
 		if mock.WithdrawWorkerFunc != nil {
 			methods = append(methods, "WithdrawWorker")
-		}
-		if mock.ResumeWorkerFunc != nil {
-			methods = append(methods, "ResumeWorker")
 		}
 		return methods
 	}

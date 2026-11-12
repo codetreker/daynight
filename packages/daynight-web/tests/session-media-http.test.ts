@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createTestSessionApi } from '../src/api/sessions';
-import { invalidateAuthRequests } from '../src/api/client';
+import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import type { SessionArchiveManifest } from '../../daynight/src/session/archive';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -112,4 +112,133 @@ it('rejects an archive whose authorization generation changes while reading its 
     return new Response(saved.timeline, { headers: { 'Daynight-User-ID': userId } });
   }));
   await expect(createTestSessionApi(fence.sessionId, userId, vi.fn()).archiveContent(fence.sessionId, new AbortController().signal)).rejects.toThrow();
+});
+
+
+it('cancels a Session media response while its body is being read', async () => {
+  let started!: () => void;
+  const reading = new Promise<void>(resolve => { started = resolve; });
+  const cancelled = vi.fn();
+  let dispatched!: AbortSignal;
+  const stream = new ReadableStream<Uint8Array>({ pull() { started(); }, cancel: cancelled }, { highWaterMark: 0 });
+  let cancelReader!: ReturnType<typeof vi.spyOn>;
+  const getReader = stream.getReader.bind(stream);
+  vi.spyOn(stream, 'getReader').mockImplementation(() => { const reader = getReader(); cancelReader = vi.spyOn(reader, 'cancel'); return reader; });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    dispatched = init.signal as AbortSignal;
+    return new Response(stream, { headers: { 'Daynight-User-ID': userId } });
+  }));
+  const client = createTestSessionApi(fence.sessionId, userId, vi.fn()).resources(fence, () => true);
+  try {
+    const pending = client.capabilities(new AbortController().signal);
+    await reading;
+    cancelAuthNetworkRequests();
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(cancelled).toHaveBeenCalledWith(dispatched.reason);
+  expect(cancelReader).toHaveBeenCalledOnce();
+  } finally { await client.close(); }
+});
+
+
+it('rejects a Session resource cancelled during digest verification', async () => {
+  const saved = savedBundle();
+  let digestStarted!: () => void, finishDigest!: (value: ArrayBuffer) => void;
+  const digesting = new Promise<void>(resolve => { digestStarted = resolve; });
+  const digest = vi.spyOn(crypto.subtle, 'digest').mockImplementation(() => {
+    digestStarted();
+    return new Promise<ArrayBuffer>(resolve => { finishDigest = resolve; });
+  });
+  let dispatched!: AbortSignal;
+  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+    dispatched = init.signal as AbortSignal;
+    return response({ resourceId: saved.resource.resourceId, byteLength: saved.resource.byteLength, sha256: saved.resource.sha256, offset: '0', data: saved.original.toString('base64'), eof: true });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const client = createTestSessionApi(fence.sessionId, userId, vi.fn()).resources(fence, () => true);
+  try {
+    const pending = client.readResource(saved.resource, new AbortController().signal);
+    await digesting;
+    cancelAuthNetworkRequests();
+    finishDigest(Uint8Array.from(Buffer.from(saved.resource.sha256, 'hex')).buffer);
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(fetch).toHaveBeenCalledOnce();
+  } finally { digest.mockRestore(); await client.close(); }
+});
+
+
+it('does not dispatch another resource chunk when its prior lifetime is cancelled in the gate', async () => {
+  const original = Buffer.alloc(524_289, 7);
+  const resource = { resourceId: id(4), status: 'available' as const, name: 'large.bin', mediaType: 'application/octet-stream', byteLength: String(original.length), sha256: hash(original), error: null };
+  let waiting!: () => void, paused = false, resume!: () => void;
+  const gate = new Promise<void>(resolve => { waiting = resolve; });
+  const addEventListener = AbortSignal.prototype.addEventListener;
+  const spy = vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(function (this: AbortSignal, ...args: Parameters<AbortSignal['addEventListener']>) {
+    if (paused && args[0] === 'abort') { paused = false; waiting(); }
+    return addEventListener.apply(this, args);
+  });
+  let dispatched!: AbortSignal;
+  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+    dispatched = init.signal as AbortSignal;
+    return response({ resourceId: resource.resourceId, byteLength: resource.byteLength, sha256: resource.sha256, offset: '0', data: original.subarray(0, 524_288).toString('base64'), eof: false });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const client = createTestSessionApi(fence.sessionId, userId, vi.fn()).resources(fence, () => true);
+  try {
+    const pending = client.readResource(resource, new AbortController().signal, () => { resume = pauseAuthRequests(); paused = true; });
+    await gate;
+    cancelAuthNetworkRequests();
+    await expect(pending).rejects.toBe(dispatched.reason);
+    expect(fetch).toHaveBeenCalledOnce();
+  } finally { resume?.(); spy.mockRestore(); await client.close(); }
+});
+
+
+it('preserves network cancellation if archive verification rejects after cancellation', async () => {
+  const saved = savedBundle();
+  let started!: () => void, fail!: (cause: Error) => void;
+  const digesting = new Promise<void>(resolve => { started = resolve; });
+  const digest = vi.spyOn(crypto.subtle, 'digest').mockImplementation(() => {
+    started();
+    return new Promise<ArrayBuffer>((_resolve, reject) => { fail = reject; });
+  });
+  let dispatched!: AbortSignal;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => { dispatched = init.signal as AbortSignal; return response(saved.manifest); }));
+  try {
+    const pending = createTestSessionApi(fence.sessionId, userId, vi.fn()).archiveContent(fence.sessionId, new AbortController().signal, { ...saved.status, state: 'ready', schemaVersion: 3, completeness: 'complete' });
+    await digesting;
+    cancelAuthNetworkRequests();
+    fail(new Error('digest failed'));
+    await expect(pending).rejects.toBe(dispatched.reason);
+  } finally { digest.mockRestore(); }
+});
+
+
+it('settles the resource read and close when reader cancellation never finishes', async () => {
+  let started!: () => void, failCleanup!: (cause: Error) => void;
+  const reading = new Promise<void>(resolve => { started = resolve; });
+  let dispatched!: AbortSignal, cancelReader!: ReturnType<typeof vi.spyOn>;
+  const stream = new ReadableStream<Uint8Array>({ pull() { started(); } }, { highWaterMark: 0 });
+  const getReader = stream.getReader.bind(stream);
+  vi.spyOn(stream, 'getReader').mockImplementation(() => {
+    const reader = getReader(), actualCancel = reader.cancel.bind(reader);
+    cancelReader = vi.spyOn(reader, 'cancel').mockImplementation(reason => {
+      void actualCancel(reason).catch(() => undefined);
+      return new Promise<void>((_resolve, reject) => { failCleanup = reject; });
+    });
+    return reader;
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    dispatched = init.signal as AbortSignal;
+    return new Response(stream, { headers: { 'Daynight-User-ID': userId } });
+  }));
+  const client = createTestSessionApi(fence.sessionId, userId, vi.fn()).resources(fence, () => true);
+  const pending = client.capabilities(new AbortController().signal);
+  await reading;
+  cancelAuthNetworkRequests();
+  await expect(pending).rejects.toBe(dispatched.reason);
+  await client.close();
+  expect(cancelReader).toHaveBeenCalledOnce();
+  expect(stream.locked).toBe(false);
+  failCleanup(new Error('late cleanup failure'));
+  await Promise.resolve();
 });

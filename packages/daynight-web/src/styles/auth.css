@@ -13,6 +13,9 @@
 
 .auth-shell .content { padding-bottom: 88px; }
 .auth-shell h1 { overflow-wrap: anywhere; }
+.auth-shell .project-list-heading .eyebrow { overflow-wrap: anywhere; }
+.auth-shell .crumb { max-width: 100%; }
+.auth-shell .crumb-team { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .auth-shell .crumb button { border: 0; background: none; padding: 0; color: #727d90; }
 .auth-shell .crumb button:hover { color: var(--indigo); }
 .auth-shell .project-card { min-height: 255px; }
@@ -300,45 +303,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .auth-dialog .dialog-body .notice + p { margin-top: 15px; }
 .auth-dialog .dialog-body .notice .button { margin-left: 0; }
 
-body.auth-session-checking :is(.auth-shell, .invite-page, .auth-modal-backdrop, .task-detail-backdrop, dialog.auth-dialog),
-body.auth-session-checking :is(.auth-shell, .invite-page, .auth-modal-backdrop, .task-detail-backdrop, dialog.auth-dialog) * {
-  visibility: hidden !important;
-}
-
-body.auth-session-checking dialog.auth-dialog::backdrop {
-  visibility: hidden;
-  background: transparent;
-  backdrop-filter: none;
-}
-
-.auth-revalidation-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  width: 100vw;
-  height: 100vh;
-  height: 100dvh;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  background: var(--bg);
-  color: #637087;
-  padding: 32px;
-  font-size: 13px;
-  text-align: center;
-}
-
-dialog.auth-revalidation-overlay:not([open]) { display: none; }
-dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
-.auth-revalidation-overlay > :is([role="status"], [role="alert"]) { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 640px; }
-.auth-revalidation-overlay h1 { margin: 0; }
 :where(.auth-main, .invite-page, .auth-dialog) .locale-control { flex-wrap: wrap; white-space: normal; }
 
 :where(.auth-shell, .auth-page, .invite-page, .auth-dialog) :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }

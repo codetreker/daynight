@@ -36,5 +36,4 @@ destroys the timeline, local draft and image leases needed for retained display.
 
 The retained content does not authorize further reads, downloads or commands.
 Already dispatched writes can have an unknown outcome; local cancellation does
-not roll them back. The separate terminal and root account integration remain
-owned by their respective lifecycles.
+not roll them back. Terminal and root account integration apply the same stop through their respective lifecycles.

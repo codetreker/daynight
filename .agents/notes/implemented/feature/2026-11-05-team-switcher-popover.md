@@ -21,6 +21,9 @@ native modified-click behavior; creation passes focus to the existing dialog.
 The directory and preference owners retain their existing loading, recovery,
 identity and navigation responsibilities.
 
+The [sidebar scopes decision](../architecture/2026-11-12-sidebar-navigation-scopes.md)
+organizes this behavior within the current scope group.
+
 ## Alternatives
 
 **Expand the list in the sidebar.** This keeps the list in the normal flow but

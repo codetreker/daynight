@@ -333,7 +333,7 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 完整 current 的三个调用点共用 Task-only flight：`start` 在 disconnect 前和发 HTTP 前检查；`observeCurrent` 在 timer 和 HTTP 前检查；归档 ready 后的最终绑定由 `bindReadyArchive` 检查。每个 flight 持有读取用途、连接代次和专属 AbortController；所有等待结束后复验请求所有者、取消、可见性及既有账号和执行身份。隐藏取消 current 及 auth-queued current，停止或延后对应 timer，flight 保留到 Promise settle。快速重开只登记恢复意图，不越过取消中请求的名额。
 
-尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。AuthenticatedApp 的隐藏/离焦身份暂停及 native 60 秒 suspension 保持，Task 读取门禁不扩展到独立 Test/Bot authority observation。
+尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。账户变化暂停立即停止远端传输，Task 读取可见性门禁不扩展到独立 Test/Bot authority observation。
 
 归档状态读取沿用原流程；ready 但 tab 已隐藏时，最终 current 绑定保留原 snapshot 与代次，延后到可见。恢复仍验证当前 fence 和归档正文身份，不以 ready receipt 替代已校验的内容。completed automatic hook 同时订阅文档可见性，等待 `scope.ready` 后在发 current 前复验，并在响应和后续准入等待后再次检查。取消中 flight 未 settle 时重开不启动第二次读取；旧 owner 的完成不能发布到新 claim，settle 后可恢复新 owner 的发现。详细取舍见[Task Current 可见性决策](../../.agents/notes/implemented/architecture/2026-11-08-task-current-read-visibility.md)。
 
@@ -344,9 +344,9 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 `SessionInteractionCard` 在交互为 `resolved` / `expired` 或本地回答成功后，保留标题与状态，并使用默认关闭的原生 `details` / `summary` 展示原请求。只读区域只从 `SessionInteraction` 读取审批 `detail`、问题与选项、表单字段名，不读取回答表单的局部 `values`，因此不会泄漏敏感自定义输入或把请求状态解释成批准/拒绝结果。该区域限高、允许长字符串换行，并以具名可聚焦区域支持键盘阅读。展开不调用响应接口、不修改条目或滚动意图；布局变化由既有时间线观察器处理。在线与归档复用同一组件，权限门控继续独立约束回答。取舍见[历史请求展示决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-interaction-request-history.md)。
 
-浏览器将 scope/current 失效与 auth 暂停分开。身份待复核时最多保留 WebSocket 60 秒；新帧保存在最多 1000 条、合计 4 MiB 的内存缓冲中，不推进已消费 cursor 或发布新内容。HTTP 在途结果也等待复核，负面授权结果仍立即失效。确认同一身份后按原序消费缓冲，并继续原连接与历史；到期、缓存超限或真实断线则关闭连接，使用最后已消费 cursor 恢复。scope 撤销、principal 不符和执行失效不享受此宽限。Chatbox 与审批暂时禁用操作，但保留输入、阅读位置和连接呈现；只有实际失去同步才显示同步或连接提示。该策略继承[前台身份核验](daynight-auth.md)的账号隔离规则，不停止或重新创建原生 Agent。
+浏览器将 scope/current 失效与账户变化暂停分开。观察到变化时立即关闭 WebSocket、取消读取和发送，不等待轮询或 60 秒；时间线、草稿、阅读位置及已解码图片保持，本地输入继续，远程控制暂停。旧帧和迟到响应不发布，真实刷新前不恢复连接。真正 scope 撤销或执行失效仍沿用自身生命周期，不停止或重新创建原生 Agent。
 
-`TaskSessionClient.suspendForAccountRefresh()` 提供独立的同步、幂等停止：立即撤销此 client 的远程准入，取消在途读取和操作等待，关闭 channel 与媒体 reader，清理轮询、重连及暂停队列，并保持 `authPaused=true`。它保留当前 timeline、草稿、图片 scope 和已解码 lease，不推进认证 generation；迟到结果及后续 start、可见性变化不能恢复连接。本地草稿仍可编辑。可信 snapshot 的 userId 与当前账户不同时，client 先执行该停止，再通知根 owner，并拒绝安装该帧；缺失或畸形身份仍是协议错误。根 owner 决定是否继续原有破坏性清理。该停止不订阅临时前台暂停，也不替代真正撤权或离开时的失效与关闭。取舍见[Session 账户停止决策](../../.agents/notes/implemented/feature/2026-11-12-session-account-refresh-stop.md)。
+`TaskSessionClient.suspendForAccountRefresh()` 提供独立的同步、幂等停止：立即撤销此 client 的远程准入，取消在途读取和操作等待，关闭 channel 与媒体 reader，清理轮询、重连及暂停队列，并保持 `authPaused=true`。它保留当前 timeline、草稿、图片 scope 和已解码 lease，不推进认证 generation；迟到结果及后续 start、可见性变化不能恢复连接。本地草稿仍可编辑。可信 snapshot 的 userId 与当前账户不同时，client 先执行该停止，再通知根 owner，并拒绝安装该帧；缺失或畸形身份仍是协议错误。根 owner 进入同一等待刷新状态。客户端创建时订阅账户暂停并在释放时注销；真正撤权或离开仍执行自身失效与关闭。取舍见[Session 账户停止决策](../../.agents/notes/implemented/feature/2026-11-12-session-account-refresh-stop.md)。
 
 Claude SDK 不保证实时回显提交的 user message。Controller 在本地派发时按 `operationId:0` 投影用户文本，与以后原生 echo/history 的稳定 ID 相同，避免重复行。这条本地展示不调用 `onInputObserved`、不验证原生身份、不确认回执；原生受理及恢复对账仍必须有真实输入或响应证据。unknown 状态下可查看提交原文，不能因该行存在重发或消除 unknown。
 
@@ -480,8 +480,8 @@ Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。�
 
 普通列表和详情不因项目混用执行方式而失败。带 `workerId` 的旧 worker 清单一旦含有不支持的 claim，整页明确拒绝，不能通过过滤或省略 worker 摘要把正在运行的执行伪装成缺失。无 `workerId`、同时指定 `ready=true`、`allowAgents=true` 和 `compatiblePlatform` 的旧 worker 候选查询过滤不可执行的历史 claim；保留原有排序和游标，连续全过滤页继续扫描到可见结果或末尾，每页不超过请求 limit，也不返回带后续游标的空页。其他普通列表不应用候选过滤。
 
-未协商扩展协议的写请求携带旧 worker 限制。服务层保留原有输入校验顺序，在项目写锁内核对版本及实际 claim，然后决定是否允许更新、状态改变、删除或 worker 操作；claim/resume 还检查新 descriptor。旧客户端看不到的执行不能被当作无主任务重新认领或操作。兼容投影不作为写入依据，也不代替项目权限。
+未协商扩展协议的写请求携带旧 worker 限制。服务层保留原有输入校验顺序，在项目写锁内核对版本及实际 claim，然后决定是否允许更新、状态改变、删除或 worker 操作；claim 还检查新 descriptor。旧客户端看不到的执行不能被当作无主任务重新认领或操作。兼容投影不作为写入依据，也不代替项目权限。
 
-服务端可在保留既有 CLI/Herdr worker 的情况下升级；只有使用 Web 或新增 Provider 的调用方需要支持对应能力的客户端。新客户端仍将旧服务端响应中缺失的 mode 规范化为 Herdr，Herdr claim/resume 不添加旧服务端无法识别的 mode 字段。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。选择及其成本见[Worker 协议协商决策](../../.agents/notes/archived/architecture/2026-10-28-worker-protocol-negotiation.md)。
+服务端可在保留既有 CLI/Herdr worker 的情况下升级；只有使用 Web 或新增 Provider 的调用方需要支持对应能力的客户端。新客户端仍将旧服务端响应中缺失的 mode 规范化为 Herdr，Herdr claim 不添加旧服务端无法识别的 mode 字段。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。选择及其成本见[Worker 协议协商决策](../../.agents/notes/archived/architecture/2026-10-28-worker-protocol-negotiation.md)。
 
 协议解析不授予项目权限，也不能证明原生进程停止。鉴权、持久操作去重、连接代次校验、初始化输入门控和停止证明仍必须在实际调用边界实施。故障不得通过换 ID、重建会话或提升连接代次绕过。

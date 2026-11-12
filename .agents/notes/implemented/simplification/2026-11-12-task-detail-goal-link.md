@@ -20,8 +20,9 @@ modified-click behavior. Other tabs do not mount the section. The
 own the display and navigation contract.
 
 The earlier [Web Goal operations decision](../feature/2026-11-11-web-goal-operations.md)
-retains the shared versioned membership operation for Goal creation and adding
-existing Tasks; this decision replaces only the Task detail editor.
+retains the shared versioned membership operation; this decision replaced only
+the Task detail editor. The [Goal Task entrance decision](2026-11-12-goal-task-entrances.md)
+later removed the Goal detail creation and add-existing entrances.
 
 ## Alternatives
 
@@ -31,7 +32,6 @@ reader needs a compact relationship link.
 
 ## Consequences
 
-Task details no longer provide a membership change action. Goal detail can still
-add existing Tasks using their exact versions and existing reconciliation. The
-link remains usable when graph data is unavailable, but may show a UUID until a
-matching Goal summary is available; it adds no parent fetch or cache owner.
+Task details no longer provide a membership change action. The link remains
+usable when graph data is unavailable, but may show a UUID until a matching Goal
+summary is available; it adds no parent fetch or cache owner.

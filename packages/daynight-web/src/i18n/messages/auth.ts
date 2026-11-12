@@ -3,6 +3,7 @@ import type { ProjectRole } from "../../api/auth-types";
 export type AuthMessages = {
   readonly completion: { readonly title: string; readonly loading: string; readonly syncError: string; readonly retrySync: string; readonly refreshRequired: string };
   readonly accountChange: { readonly message: string; readonly reload: string };
+  readonly accountSync: { readonly error: string; readonly retry: string };
   readonly roles: Readonly<Record<ProjectRole, string>>;
   readonly shell: {
     readonly sidebar: {
@@ -14,13 +15,11 @@ export type AuthMessages = {
       readonly writeError: string;
       readonly retrySave: string;
     };
-    readonly myProjects: string;
     readonly workers: string;
     readonly worker: string;
     readonly accountSettings: string;
     readonly members: string;
     readonly projectSettings: string;
-    readonly teamWorkspace: string;
     readonly accountMenu: (args: { readonly name: string }) => string;
     readonly currentAccount: string;
     readonly genericProject: string;
@@ -39,11 +38,6 @@ export type AuthMessages = {
     readonly startFreshLogin: string;
     readonly invitationStorageError: string;
     readonly invitationCleanupError: string;
-    readonly revalidationLabel: string;
-    readonly revalidationLoading: string;
-    readonly revalidationError: string;
-    readonly revalidationRetained: string;
-    readonly revalidationRetry: string;
     readonly notice: Readonly<Record<"expired" | "signedOut" | "logoutFailed" | "loginFailed", string>>;
     readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "setup" | "device" | "invitations" | "teamInvitations" | "projects" | "project" | "workers" | "worker" | "members" | "settings" | "account" | "notFound", string>>;
   };

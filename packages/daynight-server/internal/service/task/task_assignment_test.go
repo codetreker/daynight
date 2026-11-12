@@ -697,14 +697,11 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	})
 	next := workerDescriptor()
 	next.AgentControlMode = model.AgentControlModeHerdr
-	t.Run("assignee cannot resume another owner", func(t *testing.T) {
-		actor := owner
-		actor.UserID = bob
-		f := workerMockWrite(t, reassigned, actor)
-		f.ExpectedAccessCalls = 2
-		_, err := f.Tasks.ResumeWorker(f.Context, actor, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		requireFault(t, err, "forbidden")
-	})
+	for _, caller := range []model.Principal{owner, {UserID: bob, CredentialID: owner.CredentialID, Kind: owner.Kind}} {
+		f := workerMockWrite(t, reassigned, caller)
+		_, err := f.Tasks.ClaimWorker(f.Context, caller, reassigned.ProjectID, reassigned.ID, taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next})
+		requireFault(t, err, "invalid_transition")
+	}
 	resumed := reassigned
 	resumed.Status = model.TaskInProgress
 	resumed.Ready = false
@@ -712,28 +709,6 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	clock := reassigned.UpdatedAt.Add(time.Second)
 	resumedWorker.ClaimedAt = clock
 	resumed.Properties = testWithWorker(t, reassigned.Properties, &resumedWorker)
-	t.Run("original owner resumes", func(t *testing.T) {
-		f := workerMockWrite(t, reassigned, owner)
-		v := taskcore.CurrentWrite(reassigned)
-		v.Status = model.TaskInProgress
-		v.Properties = resumed.Properties
-		after := assignmentResult(reassigned, v)
-		after.UpdatedAt = clock
-		after.StartedAt = &clock
-		f.Task.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-			if ctx != f.Context {
-				t.Fatal("resume clock scope")
-			}
-			return clock, nil
-		}
-		f.ExpectUpdate(v, after)
-		workerProtocolCapture(f, reassigned, after)
-		got, err := f.Tasks.ResumeWorker(f.Context, owner, reassigned.ProjectID, reassigned.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-		assertReturned(t, got, after, err)
-		if got.AllowAgents {
-			t.Fatal("manual resume changed automatic permission")
-		}
-	})
 	completed := resumed
 	completed.Status = model.TaskDone
 	completed.Ready = false

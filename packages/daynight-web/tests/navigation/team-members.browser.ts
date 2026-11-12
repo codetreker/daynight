@@ -16,20 +16,20 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdProjectsRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; meReads: number; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdProjectsRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const task = detailFixture(projectId, taskId, { title: 'Retained Task', version: 9_223_372_036_854_775_807n });
 const graph = graphFixture([task]);
 const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdProjectsRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, meReads: 0, holdTeamRead: null, holdRosterRead: null, holdProjectsRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': alice } });
-    if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
+    if (path === '/api/v1/me') { state.meReads++; return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') { const gate = state.holdProjectsRead; state.holdProjectsRead = null; if (gate) { gate.started(); await gate.wait; } return send({ items: [], nextCursor: null }); }
     const sendWire = (body: unknown, extra: Record<string, string> = {}) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice, ...extra } });
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
@@ -134,7 +134,7 @@ test('keeps both settings sections readable in both languages and narrow widths'
       for (const label of [generalLabel, membersLabel]) {
         await page.getByRole('link', { name: label, exact: true }).click();
         await expect(page.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
-        await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team settings' : 'Team 设置', exact: true })).toBeVisible();
+        await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team settings' : '团队设置', exact: true })).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       }
     }
@@ -144,15 +144,14 @@ test('keeps both settings sections readable in both languages and narrow widths'
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
 const traverse = (page: Page, path: string) => page.evaluate((url) => { history.pushState({}, '', url); dispatchEvent(new PopStateEvent('popstate')); }, path);
 const foreground = async (page: Page, api: State) => {
-  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); api.holdMe = { started: started.resolve, wait: finish.promise };
+  const meReads = api.meReads;
   await page.evaluate(() => {
     const original = document.hasFocus.bind(document);
     document.hasFocus = () => false; dispatchEvent(new Event('blur'));
     document.hasFocus = () => true; dispatchEvent(new Event('focus'));
     document.hasFocus = original;
   });
-  await started.promise;
-  return { finish: finish.resolve };
+  expect(api.meReads).toBe(meReads);
 };
 
 test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
@@ -277,10 +276,10 @@ test('a retained invitation result survives returning while the Team read is in 
   await expect.poll(() => invitationStarted, { message: 'Invitation request must reach its response gate' }).toBe(true);
   try {
     await traverse(page, `/teams/${teamId}`);
-    await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha', exact: true })).toBeVisible();
+    await expect(page.locator('.project-list-information').filter({ has: page.getByText('Alpha', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
     const before = await page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
     api.holdTeamRead = { started: () => { teamReadStarted = true; }, wait: finishTeamRead.promise };
-    const identity = await foreground(page, api); identity.finish();
+    await foreground(page, api);
     await expect.poll(() => teamReadStarted, { message: 'Preference GET must reach its response gate' }).toBe(true);
     await expect.poll(() => page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length)).toBe(before + 1);
     const readState = () => page.evaluate((index) => {
@@ -309,7 +308,7 @@ test('a demoted member can leave after an invitation result is lost during navig
   await expect(page.getByText('The invitation change is still unconfirmed; you no longer have permission to read this Team’s invitations.')).toBeVisible();
   const leave = page.getByRole('button', { name: 'Leave Team' }); await expect(leave).toBeEnabled(); await leave.click();
   await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   expect(api.invitationWrites).toBe(1); expect(api.writes).toHaveLength(1);
 });
 
@@ -380,7 +379,7 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await expect(dialog).toContainText('Project grants remain');
   await dialog.getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect(page.getByText('You left the Team; direct Project grants remain.')).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.writes).toHaveLength(1); expect(api.grant).toEqual({ userId: alice, role: 'admin', version: 7 });
@@ -404,7 +403,7 @@ test('an admin can leave with another admin, but a concurrent last-admin change 
   await page.reload(); await expect(page.getByRole('button', { name: 'Leave Team' })).toBeEnabled();
   await page.getByRole('button', { name: 'Leave Team' }).click();
   await dialog.getByRole('button', { name: 'Leave Team' }).click();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   await expect.poll(() => selected(page)).toBe(personalId);
   expect(api.members.has(alice)).toBe(false); expect(api.writes).toHaveLength(2);
 });
@@ -560,10 +559,10 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
     teamStarted.resolve(); await teamFinish.promise; await route.fallback();
   });
   api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
-  const revalidation = await foreground(page, api);
+  await foreground(page, api);
   try {
     await expect(dialog).toBeVisible(); await expect(page.locator('.auth-modal-backdrop')).not.toHaveAttribute('hidden', '');
-    revalidation.finish(); await Promise.all([teamStarted.promise, rosterStarted.promise]); await expect(dialog).toBeVisible();
+    await Promise.all([teamStarted.promise, rosterStarted.promise]); await expect(dialog).toBeVisible();
     await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
     teamFinish.resolve(); rosterFinish.resolve();
     await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
@@ -573,7 +572,7 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
     await page.getByRole('button', { name: 'Check current state' }).click();
     await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
     expect(api.writes).toHaveLength(1);
-  } finally { revalidation.finish(); teamFinish.resolve(); rosterFinish.resolve(); finish.resolve(); }
+  } finally { teamFinish.resolve(); rosterFinish.resolve(); finish.resolve(); }
 });
 
 for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`retains members and invitation confirmation through background reads at ${width}px`, async ({ page }, testInfo) => {
@@ -589,7 +588,7 @@ for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`ret
   const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
   api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
   api.holdInvitationRead = { started: inviteStarted.resolve, wait: inviteFinish.promise };
-  const check = await foreground(page, api);
+  await foreground(page, api);
   const verify = async () => {
     expect(await panel.evaluate((element, original) => element === original, originalPanel)).toBe(true);
     expect(await dialog.evaluate((element, original) => element === original, originalDialog)).toBe(true);
@@ -598,10 +597,11 @@ for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`ret
     expect(api.writes).toHaveLength(0); expect(api.invitationWrites).toBe(0);
   };
   try {
-    await verify(); check.finish(); await Promise.all([rosterStarted.promise, inviteStarted.promise]); await verify();
-    rosterFinish.resolve(); await verify(); inviteFinish.resolve(); await expect(invite).toBeEnabled(); await verify();
+    await verify(); await rosterStarted.promise; await verify();
+    rosterFinish.resolve(); await inviteStarted.promise; await verify();
+    inviteFinish.resolve(); await expect(invite).toBeEnabled(); await verify();
     await page.screenshot({ path: testInfo.outputPath(`background-${width}-${locale}.png`) });
-  } finally { check.finish(); rosterFinish.resolve(); inviteFinish.resolve(); }
+  } finally { rosterFinish.resolve(); inviteFinish.resolve(); }
 });
 
 test('narrow viewport and Chinese dialog retain usable controls', async ({ page }) => {

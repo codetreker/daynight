@@ -629,7 +629,7 @@ func TestMCPTaskWriteAdmission(t *testing.T) {
 	expectTaskGet(t, f, current, nil)
 	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Description: taskResourceString(strings.Repeat("d", 65537))}, nil, nil, current, taskResourceFault("invalid_input"))
 	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "description": strings.Repeat("d", 65537)}, "invalid_input")
-	dependencies := make([]string, 16)
+	dependencies := make([]string, 31)
 	for i := range dependencies {
 		dependencies[i] = uuid.NewString()
 	}

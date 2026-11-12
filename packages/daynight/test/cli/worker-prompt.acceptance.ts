@@ -29,6 +29,7 @@ const task = {
 const platform = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
 for (const sessionId of [null, uuid(6)]) {
   const prompt = buildWorkerPrompt({ ...task, sessionId }, platform);
+  assert.ok(prompt.includes("This is a background task. Make decisions autonomously within this assignment and its existing authorization.\n\nYou already have sufficient authorization to complete this task; do not ask the user again for authorization on procedural matters, such as whether merging the PR is authorized.\n\nPreserve the supplied service, Project, Task, original claim"));
   const assignment = JSON.parse(prompt.split("Assignment:\n\n")[1]);
   assert.deepEqual(assignment, { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform, nativeSessionId: sessionId, configuration: task.configuration });
   assert.ok(prompt.includes(sessionId === null ? "new native conversation" : "original native conversation"));

@@ -42,7 +42,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   tasks across selected, prepared Projects, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
-- **Observe and configure your Workers.** Open My Workers alongside My projects
+- **Observe and configure your Workers.** Open My Workers alongside Projects
   to see the current account's recent Workers, online/offline state, resource and
   software observations, authorized task snapshots, and current monitoring summaries.
   Detail shows scheduling, capacity, activities and failure recovery. It keeps the last
@@ -70,7 +70,7 @@ Worker browsing, Worker configuration editing, status and execution-setting
 controls, task deletion, attachment management and persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
-retry/release/resume controls. Complete platform acceptance remains
+retry/release controls. Complete platform acceptance remains
 separate from command availability; the
 [requirements](docs/spec/daynight-worker.md) and
 [design](docs/design/daynight-worker.md) define those boundaries.
@@ -293,7 +293,7 @@ proof. See the [worker guide](packages/daynight/README.md#worker-configuration-a
 and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
 recovery and retention boundaries.
 
-Stop the runner before `worker retry/release/resume`; the commands use
+Stop the runner before `worker retry/release`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
 explains version checks, remote-result handling and resource cleanup.
 

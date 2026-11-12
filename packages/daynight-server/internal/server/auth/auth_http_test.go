@@ -4,13 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
 
@@ -228,7 +234,7 @@ func TestIdentityHTTPDefaultLoginDestination(t *testing.T) {
 	h := authTestHarness(t)
 	state, binding := h.Start(t, "")
 	result := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"default-destination"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/projects" {
+	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
 		t.Fatal("login without a destination did not enter the project workspace")
 	}
 }
@@ -311,7 +317,7 @@ func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
 	destination := "/test-sessions/10000000-0000-0000-0000-000000000001"
 	state, binding := h.Start(t, destination)
 	response := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"test-session-owner"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != destination {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/complete?"+(url.Values{"returnPath": {destination}, "callbackPath": {"/api/v1/auth/callback"}}).Encode() {
 		t.Fatalf("login lost Test Session destination: %d %s", response.Code, response.Header().Get("Location"))
 	}
 	found := false
@@ -359,6 +365,78 @@ func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
 	for _, secret := range []string{cookie.Value, expired.Token, active.Token} {
 		if strings.Contains(h.Logs.String(), secret) {
 			t.Fatal("credential entered diagnostics")
+		}
+	}
+}
+
+// completionIdentity isolates the HTTP adapter while keeping the real request parser and router.
+type completionIdentity struct {
+	*strictIdentity
+	complete func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+}
+
+func (i *completionIdentity) CompleteLogin(ctx context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
+	return i.complete(ctx, values, binding)
+}
+
+func TestCallbackNavigatesThroughCompletion(t *testing.T) {
+	for _, destination := range []string{"/", "/setup?lang=zh#guide", "/projects/p?tab=tasks#item", "/assets/app.js?x=%252F#part", "%2Fprojects?view=1#part"} {
+		t.Run(destination, func(t *testing.T) {
+			calls := 0
+			identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
+			identity.complete = func(_ context.Context, values url.Values, binding string) (identitycore.LoginCompletion, error) {
+				calls++
+				if values.Get("state") != "state" || values.Get("code") != "private-code" || binding != "browser-binding" {
+					t.Fatalf("callback arguments: %v %q", values, binding)
+				}
+				return identitycore.LoginCompletion{LoginID: "login", User: model.User{ID: "private-user"}, Session: model.Session{ID: "private-session", ExpiresAt: time.Now().Add(time.Hour)}, Secret: "private-secret", ReturnPath: destination}, nil
+			}
+			h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux := http.NewServeMux()
+			h.RegisterRoutes(mux)
+			request := httptest.NewRequest(http.MethodGet, "/auth/callback?state=state&code=private-code", nil)
+			request.AddCookie(&http.Cookie{Name: h.bindingCookieName("state"), Value: "browser-binding"})
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			location, err := url.Parse(response.Header().Get("Location"))
+			if err != nil || response.Code != http.StatusSeeOther || location.Path != "/auth/complete" || location.Fragment != "" || len(location.Query()) != 2 || len(location.Query()["callbackPath"]) != 1 || location.Query().Get("callbackPath") != "/auth/callback" || len(location.Query()["returnPath"]) != 1 || location.Query().Get("returnPath") != destination || calls != 1 {
+				t.Fatalf("completion navigation: %d %q calls=%d err=%v", response.Code, response.Header().Get("Location"), calls, err)
+			}
+			for _, private := range []string{"private-code", "private-user", "private-session", "private-secret"} {
+				if strings.Contains(response.Header().Get("Location"), private) {
+					t.Fatalf("Location exposed %s", private)
+				}
+			}
+			cookies := response.Result().Cookies()
+			if len(cookies) != 2 || cookies[0].Name != h.bindingCookieName("state") || cookies[0].MaxAge != -1 || cookies[1].Name != h.SessionCookieName() || cookies[1].Value != "private-secret" || !cookies[1].Secure || !cookies[1].HttpOnly || cookies[1].SameSite != http.SameSiteLaxMode || cookies[1].Path != "/" {
+				t.Fatalf("callback cookies: %+v", cookies)
+			}
+		})
+	}
+}
+
+func TestCallbackPreservesActualEscapedBase(t *testing.T) {
+	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/custom/callback" }}}
+	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "%2Fprojects?view=1#part"}, nil
+	}
+	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	for _, actual := range []string{"/custom/callback", "/cu%73tom/callback"} {
+		request := httptest.NewRequest(http.MethodGet, actual+"?state=state&code=code", nil)
+		request.AddCookie(&http.Cookie{Name: h.bindingCookieName("state"), Value: "binding"})
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		location, err := url.Parse(response.Header().Get("Location"))
+		if err != nil || response.Code != http.StatusSeeOther || location.Path != "/auth/complete" || location.Query().Get("callbackPath") != actual || location.Query().Get("returnPath") != "%2Fprojects?view=1#part" {
+			t.Fatalf("callback base: %s %d %q %v", actual, response.Code, response.Header().Get("Location"), err)
 		}
 	}
 }

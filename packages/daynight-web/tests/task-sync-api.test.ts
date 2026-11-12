@@ -1,6 +1,6 @@
 import { directAccessFixture } from "./helpers/taskSync";
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, assertResponsePrincipal, getTaskSync, invalidateAuthRequests, pauseAuthRequests, subscribeUnauthorized } from "../src/api/client";
+import { ApiError, assertResponsePrincipal, cancelAuthNetworkRequests, getTaskSync, invalidateAuthRequests, pauseAuthRequests, subscribeUnauthorized } from "../src/api/client";
 import { parseTaskSummary, parseTaskSync } from "../src/api/task-sync";
 import { wireResponse } from "./helpers/wireJson";
 import * as taskSyncParser from "../src/api/task-sync";
@@ -97,6 +97,24 @@ it("captures the body receipt before JSON decoding, source scanning and validati
   expect(result.receivedMonotonic).toBe(17);
   expect(clock).toBeGreaterThan(30_000);
   expect(result.sync.sessions).toEqual({ [taskId]: "pending" });
+});
+
+it.each(["resolve", "reject"])("does not publish a sync body that %ss after shared cancellation", async (outcome) => {
+  const body = response(sync);
+  const originalText = await body.text();
+  const started = Promise.withResolvers<void>();
+  const held = Promise.withResolvers<string>();
+  vi.spyOn(body, "text").mockImplementation(() => { started.resolve(); return held.promise; });
+  let runningSignal: AbortSignal | undefined;
+  vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => { runningSignal = init.signal as AbortSignal; return Promise.resolve(body); }));
+  const parse = vi.spyOn(taskSyncParser, "parseTaskSync");
+  const pending = getTaskSync(projectId, {}, userId, signal()).catch((error: unknown) => error);
+  await started.promise;
+  cancelAuthNetworkRequests();
+  if (outcome === "resolve") held.resolve(originalText); else held.reject(new Error("body failed"));
+  expect(await pending).toBe(runningSignal?.reason);
+  expect(runningSignal?.reason).toMatchObject({ name: "AbortError" });
+  expect(parse).not.toHaveBeenCalled();
 });
 
 it("keeps error bodies unwrapped and never creates a Session receipt for a failure", async () => {

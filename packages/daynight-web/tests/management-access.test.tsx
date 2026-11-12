@@ -35,7 +35,7 @@ const mount = (kind: 'members' | 'settings', handler: (url: string, init?: Reque
     return kind === "members" && url === root ? json(project) : handler(url, init);
   });
   vi.stubGlobal('fetch', fetcher);
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { void scope.invalidateScope(); } });
   let access!: ProjectAccessSession;
   const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
   const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId}><CaptureAccess />{kind === 'members'
