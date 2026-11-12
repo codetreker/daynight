@@ -99,14 +99,14 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	}
 	var deviceFields map[string]json.RawMessage
 	if json.Unmarshal(tokenReply.Body.Bytes(), &deviceFields) != nil || len(deviceFields) != 2 || deviceFields["access_token"] == nil || deviceFields["token_type"] == nil {
-		t.Fatalf("device token response fields: %v", deviceFields)
+		t.Fatal("device token response does not have exactly access_token and token_type")
 	}
 	listResponse := h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, "")
 	var initial struct {
 		Items []map[string]json.RawMessage `json:"items"`
 	}
 	if listResponse.Code != 200 || json.Unmarshal(listResponse.Body.Bytes(), &initial) != nil || len(initial.Items) != 1 || string(initial.Items[0]["lastUsedAt"]) != "null" || string(initial.Items[0]["name"]) != `"Daynight CLI (workstation)"` || strings.Contains(listResponse.Body.String(), response.AccessToken) {
-		t.Fatalf("new device PAT metadata: %d %s", listResponse.Code, listResponse.Body)
+		t.Fatalf("new device PAT metadata is invalid: HTTP %d", listResponse.Code)
 	}
 	auth := []string{"Bearer " + response.AccessToken}
 	me := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", nil, auth, ""), 200)
