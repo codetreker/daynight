@@ -12,6 +12,7 @@ import * as telemetryModule from "../../../src/commands/worker/telemetry.js";
 import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn() }));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
@@ -162,6 +163,23 @@ describe("worker synchronous management runtime ownership", () => {
     await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
     expect(mocks.remote.mock.results[0]!.value.configuration).not.toHaveBeenCalled();
     expect(observed).toEqual(configuration); expect(f.store.getTask(f.task)).toEqual(f.task);
+  });
+
+  it("retries an original Herdr claim with both frozen launches while current settings are unavailable", async () => {
+    const f = await fixture(), launches = recordedHerdrTools();
+    const configuration = { agent: "codex" as const, model: "original-model", args: ["--original"],
+      toolLaunch: launches.agent, toolObservation: launches.agentObservation,
+      herdrLaunch: launches.herdr, herdrObservation: launches.herdrObservation };
+    f.store.freezeNativeConfiguration(f.task, configuration);
+    await writeFile(f.paths.configFile, staleManagedSource());
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockRejectedValue(new Error("Current target unavailable."));
+    mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
+    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(remote.configuration).not.toHaveBeenCalled();
+    expect(mocks.probe).not.toHaveBeenCalled();
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).globalConfiguration).toMatchObject(configuration);
+    expect(f.store.getNativeConfiguration(f.task)).toEqual(configuration);
   });
 
   it.each(["retry", "resume"] as const)("uses applied cloud settings for Herdr %s even when its project is excluded from automatic selection", async kind => {

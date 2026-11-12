@@ -162,7 +162,7 @@ export const createNativePrerequisiteChecks = (options: {
   if (launch && (launch.tool !== agent || launch.context !== "herdr")) throw new Error("Native prerequisite tool differs from its Herdr request.");
   const invoke = async (args: readonly string[], directory: string, operation: Operation) => {
     if (launch) await verifyToolLaunch(launch, operation);
-    const command = launch ? toolCommand(launch, args) : { file: agent, args };
+    const command = launch ? toolCommand(launch, agent === "copilot" ? ["--no-auto-update", ...args] : args) : { file: agent, args };
     return runCommand({ ...command, environment, cwd: directory }, operation);
   };
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new Error("The native agent must be codex, claude or copilot.");

@@ -17,6 +17,9 @@ import { nativeInputBlocker } from "./input-blockers.js";
 import type { NativeInputBlocker } from "./input-blockers.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch.js";
+import type { HerdrToolLaunchMapping, HerdrToolLaunchReceipt } from "./tool-launch.js";
 
 export type { HerdrAgentConfiguration } from "./arguments.js";
 export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
@@ -48,7 +51,7 @@ export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
 };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
-export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string; PATH?: string; DN_CONFIG_DIR?: string }>;
+export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string; PATH?: string; DN_CONFIG_DIR?: string; DAYNIGHT_HERDR_TOOL_MANIFEST?: string }>;
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown, name: string): RecordValue => {
@@ -95,7 +98,7 @@ export class HerdrAgentActionError extends Error {
   }
 }
 export class HerdrInputWaitingError extends HerdrAgentActionError {
-  constructor(readonly reason: "task_paused" | "control_suspended" | "native_blocked", message: string, options?: ErrorOptions) {
+  constructor(readonly reason: "task_paused" | "control_suspended" | "native_blocked" | "native_session_pending", message: string, options?: ErrorOptions) {
     super(message, "agent.prompt", "not-submitted", { ...options, promptSubmission: "not-submitted" });
     this.name = "HerdrInputWaitingError";
   }
@@ -122,21 +125,31 @@ const processExecuting = async (processId: number): Promise<boolean> => {
   catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false; throw cause; }
 };
 
-export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; readCodexConfig?: (args: readonly string[], cwd: string, operation: Operation) => Promise<unknown>; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
+export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; nativeEnvironment?: NodeJS.ProcessEnv; toolMapping?: (context: HerdrExecutionContext, operation: Operation, existingOnly?: boolean) => Promise<HerdrToolLaunchMapping | null>; readCodexConfig?: (args: readonly string[], cwd: string, operation: Operation, toolLaunch?: ResolvedToolLaunch) => Promise<unknown>; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
   const session = text(options.session, "Herdr session");
   const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
-  const allowedFields = new Set<string>([...xdgFields, "PATH", "DN_CONFIG_DIR"]);
+  const allowedFields = new Set<string>([...xdgFields, "PATH", "DN_CONFIG_DIR", "DAYNIGHT_HERDR_TOOL_MANIFEST"]);
+  if (Object.hasOwn(suppliedEnvironment, "DAYNIGHT_HERDR_TOOL_MANIFEST")) throw new TypeError("Herdr tool manifests may only come from the registered execution mapping.");
   if (xdgFields.some(field => !Object.hasOwn(suppliedEnvironment, field)) || Object.entries(suppliedEnvironment).some(([field, value]) => !allowedFields.has(field) || typeof value !== "string" || value.includes("\0"))) throw new TypeError("Task workspace environment requires XDG_CONFIG_HOME and XDG_STATE_HOME and permits optional PATH and DN_CONFIG_DIR string values without NUL.");
   const workspaceEnvironment = { ...suppliedEnvironment } as HerdrWorkspaceEnvironment;
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
   const inputTails = new Map<string, Promise<void>>();
-  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number>; originalBindingObserved: boolean }>();
+  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number>; originalBindingObserved: boolean; mapping?: HerdrToolLaunchMapping }>();
   const workerRun = randomUUID();
   const stoppedRuns = new Map<string, HerdrTaskBinding>();
   const activeBindings = new Map<string, { binding: HerdrTaskBinding; agent: WorkerAgent }>();
+  const mappings = new Map<string, HerdrToolLaunchMapping | null>();
+  const mappingFor = async (context: HerdrExecutionContext, operation: Operation, existingOnly = true): Promise<HerdrToolLaunchMapping | null> => {
+    const key = resourceOwnerKey(context);
+    if (mappings.has(key)) return mappings.get(key)!;
+    const mapping = await options.toolMapping?.(context, operation, existingOnly) ?? null;
+    if (mapping !== null && (!path.isAbsolute(mapping.manifestPath) || mapping.environment.DAYNIGHT_HERDR_TOOL_MANIFEST !== mapping.manifestPath || canonicalId(mapping.nonce) !== mapping.nonce || !/^[a-f0-9]{64}$/.test(mapping.selectionKey))) throw new Error("The registered Herdr tool mapping has invalid execution identity.");
+    mappings.set(key, mapping);
+    return mapping;
+  };
   const runKey = (binding: HerdrTaskBinding): string => JSON.stringify([workerRun, binding.session, binding.workspaceId, binding.paneId, binding.terminalId]);
   const serialized = async <T>(key: string, operation: Operation, action: () => Promise<T>): Promise<T> => {
     operation.check();
@@ -168,10 +181,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const finishStop = async (key: string, operation: Operation): Promise<void> => {
     const pending = stoppingProcesses.get(key);
     if (pending === undefined) return;
+    if (pending.mapping !== undefined) await pending.mapping.stopProcesses(operation);
     while (true) {
       let running = false;
-      for (const processId of pending.processIds) { operation.check(); if (await isExecuting(processId)) running = true; }
-      if (!running) { stoppingProcesses.delete(key); return; }
+      if (pending.mapping === undefined) for (const processId of pending.processIds) { operation.check(); if (await isExecuting(processId)) running = true; }
+      if (!running && (pending.mapping === undefined || await pending.mapping.confirmStopped(operation))) { if (pending.mapping === undefined) stoppingProcesses.delete(key); return; }
       await wait(operation);
     }
   };
@@ -191,6 +205,40 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     const pane = panes[0]!;
     if (pane.workspace_id !== binding.workspaceId || pane.terminal_id !== binding.terminalId) throw new Error("The task pane or terminal identity has changed.");
     return { data, workspace: matching[0]!, pane };
+  };
+  const prepareWindowsRoot = async (context: HerdrExecutionContext, initial: HerdrTaskBinding, mapping: HerdrToolLaunchMapping, operation: Operation, newlyCreated: boolean): Promise<HerdrTaskBinding> => {
+    if (mapping.windowsCommand === undefined) return initial;
+    const file = mappingFiles(mapping.manifestPath).layout;
+    let intent = await optionalOwnedJson(file) as RecordValue | null;
+    if (intent === null) {
+      if (!newlyCreated) throw new HerdrAgentActionError("The original PowerShell layout preparation intent is missing; the pane was retained.", "layout.apply", "unknown");
+      const { data, pane } = await readOwned(context, initial, operation);
+      if (data.panes.filter(value => value.workspace_id === initial.workspaceId).length !== 1 || data.agents.some(value => value.workspace_id === initial.workspaceId)) throw new Error("Only a newly created, empty owned workspace can prepare a PowerShell root.");
+      const tabId = text(pane!.tab_id, "Initial owned tab ID");
+      const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: initial.paneId }, operation), "pane_process_info"), info = object(result.process_info, "Initial owned pane process");
+      if (info.pane_id !== initial.paneId) throw new Error("The initial process observation belongs to another pane.");
+      const shellPid = pid(info.shell_pid), processes = [shellPid, ...array(info.foreground_processes ?? [], "Initial pane processes").map(value => pid(object(value, "Initial process").pid))];
+      if (processes.some(value => value !== shellPid)) throw new Error("The initial owned shell has active descendants; layout replacement is prohibited.");
+      intent = { nonce: mapping.nonce, initial, tabId, shellPid, cwd: context.cwd, command: [...mapping.windowsCommand] };
+      await publishOwnedJson(file, intent);
+      try { await mutation("layout.apply", { tab_id: tabId, focus: false, root: { type: "pane", cwd: context.cwd, command: [...mapping.windowsCommand], env: { ...workspaceEnvironment, ...mapping.environment, ...nativeAgentPermissionEnvironment(context.agent) } } }, "layout_apply", operation); }
+      catch (cause) { if (!(cause instanceof HerdrAgentActionError) || cause.submission !== "unknown") throw cause; }
+    }
+    if (intent.nonce !== mapping.nonce || intent.cwd !== context.cwd || JSON.stringify(intent.command) !== JSON.stringify(mapping.windowsCommand)) throw new HerdrAgentActionError("The original PowerShell layout intent differs from the frozen mapping.", "layout.apply", "unknown");
+    const original = object(intent.initial, "Original PowerShell layout binding");
+    if (original.session !== session || original.workspaceId !== initial.workspaceId) throw new Error("The original layout intent belongs to another execution.");
+    const data = await snapshot(operation), owned = data.workspaces.filter(value => matchesWorkspaceOwner(value, context));
+    const panes = data.panes.filter(value => value.workspace_id === initial.workspaceId), tabs = data.tabs.filter(value => value.workspace_id === initial.workspaceId);
+    if (owned.length !== 1 || owned[0]!.workspace_id !== initial.workspaceId || panes.length !== 1 || tabs.length !== 1 || panes[0]!.pane_id === original.paneId || tabs[0]!.tab_id === intent.tabId) throw new HerdrAgentActionError("The original PowerShell layout replacement remains unknown; both pane responsibilities were retained.", "layout.apply", "unknown");
+    const pane = panes[0]!, binding = { session, workspaceId: initial.workspaceId, paneId: text(pane.pane_id, "Prepared PowerShell pane"), terminalId: text(pane.terminal_id, "Prepared PowerShell terminal") };
+    const exported = expectedResult(await options.rpc.request("layout.export", { tab_id: text(tabs[0]!.tab_id, "Prepared PowerShell tab") }, operation), "layout_export"), layout = object(exported.layout, "Prepared PowerShell layout"), root = object(layout.root, "Prepared PowerShell root");
+    if (layout.workspace_id !== initial.workspaceId || layout.tab_id !== tabs[0]!.tab_id || root.type !== "pane" || root.pane_id !== binding.paneId || root.cwd !== context.cwd || JSON.stringify(root.command) !== JSON.stringify(mapping.windowsCommand)) throw new HerdrAgentActionError("The observed PowerShell root does not match the original layout intent.", "layout.apply", "unknown");
+    while (await isExecuting(pid(intent.shellPid))) await wait(operation);
+    const processes = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(processes.process_info, "PowerShell root process");
+    if (info.pane_id !== binding.paneId) throw new Error("The prepared PowerShell process belongs to another pane.");
+    await mapping.verifyReady(pid(info.shell_pid), operation);
+    await readOwned(context, binding, operation);
+    return binding;
   };
   const readNameOwnership = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, submission: "not-submitted" | "unknown") => {
     try { return await readOwned(context, binding, operation); }
@@ -260,6 +308,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const actualCwd = text(pane!.cwd, "Native launch shell cwd");
         if (!path.isAbsolute(actualCwd)) throw new Error("The original task shell cwd must be absolute before native launch.");
         if (path.normalize(await realpath(actualCwd)) !== cwd) throw new Error(`The original task shell cwd is ${actualCwd}; expected ${cwd}. Restore its working directory before starting the native agent.`);
+        const mapping = await mappingFor(context, operation);
+        if (mapping !== null) await verifyMappingProcesses(context, binding, mapping, operation);
         operation.check();
       } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original task shell cwd could not be confirmed before native launch.", "agent.start", "not-submitted", { cause }); }
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
@@ -277,6 +327,14 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         if (performance.now() >= readiness.deadline || !await shellInitializing(context, binding, operation)) throw error;
       }
     }
+  };
+  const verifyMappingProcesses = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, mapping: HerdrToolLaunchMapping, operation: Operation, receipt?: HerdrToolLaunchReceipt): Promise<void> => {
+    await readOwned(context, binding, operation);
+    const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(result.process_info, "Original launch process ownership");
+    if (info.pane_id !== binding.paneId) throw new Error("The original launch process proof belongs to another pane.");
+    const foregroundPids = array(info.foreground_processes, "Original foreground processes").map(value => pid(object(value, "Original foreground process").pid));
+    await mapping.verifyProcesses({ shellPid: pid(info.shell_pid), foregroundPids, ...(receipt === undefined ? {} : { receipt }) }, operation);
+    await readOwned(context, binding, operation);
   };
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
@@ -300,10 +358,25 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         if (blocker !== null) throw new HerdrInputBlockedError(blocker);
       }
       if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
+      const mapping = await mappingFor(context, operation);
+      if (mapping !== null) {
+        if (before.kind !== context.agent || !before.interactiveReady || !initialPrompt && before.nativeSession === null) throw new Error("The original mapped native agent has no confirmed official Session and readiness for this input.");
+        const receipt = await mapping.readReceipt(operation);
+        if (receipt === null) throw new Error("The original mapped native launch receipt is missing; input remains closed.");
+        await verifyMappingProcesses(context, binding, mapping, operation, receipt);
+        before = await observation(context, binding, operation);
+        verifyInputAgent(before);
+        if (before.kind !== context.agent || !initialPrompt && before.nativeSession === null) throw new Error("The original official native identity changed before input.");
+      }
       operation.check();
     } catch (cause) {
       if (cause instanceof HerdrInputBlockedError) throw cause;
       throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native agent input readiness could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
+    }
+    const mapping = await mappingFor(context, operation);
+    if (initialPrompt && mapping !== null) {
+      try { await publishOwnedJson(mappingFiles(mapping.manifestPath).initialInput, { nonce: mapping.nonce, selectionKey: mapping.selectionKey, binding }); }
+      catch (cause) { throw new HerdrAgentActionError("The original mapped initial input has already been reserved or its durable outcome is unknown; it cannot be repeated.", "agent.prompt", "unknown", { cause, promptSubmission: "unknown" }); }
     }
     const result = await mutation("agent.prompt", { target: binding.paneId, text: prompt }, "agent_prompted", operation);
     try {
@@ -318,12 +391,15 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     const args = buildHerdrAgentArguments(input.configuration, cwd, input.resumeSessionId);
     const before = await observation(context, binding, operation);
     if (before.kind !== null || before.launchPending || before.interactiveReady) return { observation: before, started: false };
+    const mapping = await mappingFor(context, operation);
+    if (input.configuration.toolLaunch !== undefined && (mapping === null || mapping.selectionKey !== input.configuration.toolLaunch.selectionKey) || options.toolMapping !== undefined && context.agent !== "claude" && mapping === null) throw new HerdrAgentActionError("The prepared Herdr mapping does not identify the original selected native tool.", "agent.start", "not-submitted");
     await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
-    if (context.agent === "codex" && workspaceEnvironment.PATH !== undefined) {
+    const nativeEnvironment = options.nativeEnvironment ?? workspaceEnvironment;
+    if (context.agent === "codex" && nativeEnvironment.PATH !== undefined) {
       const effective = options.readCodexConfig
-        ? await options.readCodexConfig(args, cwd, operation)
-        : await readCodexConfiguration({ args, cwd, environment: { ...process.env, ...workspaceEnvironment } }, operation);
-      const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
+        ? await options.readCodexConfig(args, cwd, operation, input.configuration.toolLaunch)
+        : await readCodexConfiguration({ args, cwd, environment: { ...process.env, ...nativeEnvironment }, ...(input.configuration.toolLaunch === undefined ? {} : { toolLaunch: input.configuration.toolLaunch }) }, operation);
+      const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: nativeEnvironment.PATH }, effective);
       for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
     }
     const started = await startNative(context, binding, cwd, args, operation, input.beforeStart);
@@ -335,12 +411,53 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       while (true) {
         const current = await observation(context, binding, operation);
         if (input.resumeSessionId !== undefined && current.nativeSession !== null && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new HerdrAgentActionError("The resumed agent reported a different native session.", "agent.start", "unknown");
-        if (current.status === "blocked" || (!current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context)))) return { observation: current, started: true };
+        if (current.status === "blocked" || (!current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context)))) {
+          const mapping = await mappingFor(context, operation);
+          if (mapping !== null) {
+            try {
+              const receipt = await mapping.verifyReceipt(args, operation);
+              if (current.kind !== context.agent || current.launchPending || !current.interactiveReady) throw new Error("The original selected native tool has no official kind readiness.");
+              await verifyMappingProcesses(context, binding, mapping, operation, receipt);
+            }
+            catch (cause) { throw new HerdrAgentActionError("The selected native tool launch could not be confirmed by its original receipt.", "agent.start", "unknown", { cause }); }
+          }
+          return { observation: current, started: true };
+        }
         await wait(operation);
       }
     } catch (cause) {
       if (cause instanceof HerdrAgentActionError) throw cause;
       throw new HerdrAgentActionError("The native process could not become ready before its first input.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
+    }
+  };
+  const confirmInitialSession = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, expectedSession?: string): Promise<HerdrAgentObservation> => {
+    // SessionStart may be emitted on the first input rather than process launch.
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
+    const mapping = await mappingFor(context, operation);
+    try {
+      while (true) {
+        const current = await observation(context, binding, operation);
+        if (current.nativeSession !== null) {
+          if (expectedSession !== undefined && current.nativeSession.sessionId !== canonicalId(expectedSession)) throw new Error("The original native identity differs from the requested session.");
+          if (mapping !== null) {
+            const originalReceipt = await mapping.readReceipt(operation);
+            if (originalReceipt === null) throw new Error("The original native launch receipt disappeared before Session confirmation.");
+            await verifyMappingProcesses(context, binding, mapping, operation, originalReceipt);
+            const confirmed = await observation(context, binding, operation);
+            if (confirmed.nativeSession?.sessionId !== current.nativeSession.sessionId) throw new Error("The original official Session identity changed during native process confirmation.");
+            return confirmed;
+          }
+          return current;
+        }
+        if (current.status === "blocked") {
+          if (mapping !== null) throw new Error("The original official hook did not confirm the native Session before blocking.");
+          return current;
+        }
+        await wait(operation);
+      }
+    } catch (cause) {
+      if (mapping === null) throw cause;
+      throw new HerdrAgentActionError("The initial input was submitted but its original official native Session could not be confirmed; input cannot be repeated.", "agent.prompt", "unknown", { cause, promptSubmission: "submitted" });
     }
   };
   return {
@@ -428,6 +545,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return result;
     },
     prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation, startup?: { shellNonce: string }): Promise<HerdrTaskBinding> => {
+      if ([...stoppingProcesses.values()].some(pending => sameResourceOwner(pending.context, context))) throw new Error("The original Herdr stop remains unconfirmed; a replacement workspace cannot start.");
       stoppedRuns.delete(resourceOwnerKey(context));
       activeBindings.delete(resourceOwnerKey(context));
       if (startup !== undefined && canonicalId(startup.shellNonce) !== startup.shellNonce) throw new TypeError("The managed shell startup nonce must be a canonical UUID.");
@@ -442,17 +560,33 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const panes = data.panes.filter((pane) => pane.workspace_id === workspaceId);
           if (panes.length !== 1) throw new Error("The existing task workspace has ambiguous panes; it was retained.");
           const pane = panes[0]!;
-          const binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
+          let binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
+          const mapping = await mappingFor(context, operation);
+          if (mapping?.windowsCommand !== undefined) binding = await prepareWindowsRoot(context, binding, mapping, operation, false);
           await readOwned(context, binding, operation);
           activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
           return binding;
         }
+        const mapping = await mappingFor(context, operation, false);
         createPossible = true;
-        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent), ...(startup === undefined ? {} : { DAYNIGHT_HERDR_SHELL_NONCE: startup.shellNonce }) } }, "workspace_created", operation);
+        const shellNonce = startup?.shellNonce ?? (mapping?.windowsCommand === undefined ? mapping?.nonce : undefined);
+        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...mapping?.environment, ...nativeAgentPermissionEnvironment(context.agent), ...(shellNonce === undefined ? {} : { DAYNIGHT_HERDR_SHELL_NONCE: shellNonce }) } }, "workspace_created", operation);
         const workspace = object(result.workspace, "Created workspace");
         const pane = object(result.root_pane, "Created task pane");
-        const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
+        let binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
+        if (mapping?.windowsCommand !== undefined) binding = await prepareWindowsRoot(context, binding, mapping, operation, true);
+        else if (mapping !== null) {
+          const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(result.process_info, "Mapped Bash process");
+          if (info.pane_id !== binding.paneId) throw new Error("The mapped Bash process belongs to another pane.");
+          if (startup === undefined) await mapping.verifyReady(pid(info.shell_pid), operation);
+          else await mapping.verifyReady(pid(info.shell_pid), operation, startup.shellNonce);
+        }
         await readOwned(context, binding, operation);
+        if (mapping !== null) {
+          const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(result.process_info, "Prepared original shell process");
+          if (info.pane_id !== binding.paneId) throw new Error("The prepared shell process belongs to another pane.");
+          await mapping.captureProcesses([pid(info.shell_pid)], operation);
+        }
         activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
         return binding;
       } catch (cause) {
@@ -478,6 +612,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     observe: (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, _onAttached?: () => void) => observation(context, binding, operation),
     /** Launches only; the caller must persist original process identity before submitting input. */
     launch: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentLaunchInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => (await launch(context, binding, input, operation)).observation),
+    launchReceipt: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<HerdrToolLaunchReceipt | null> => {
+      await readOwned(context, binding, operation);
+      return await (await mappingFor(context, operation))?.readReceipt(operation) ?? null;
+    },
     processInfo: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<{ shellPid: number; foregroundPids: number[] }> => {
       await readOwned(context, binding, operation);
       const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
@@ -488,11 +626,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       await readOwned(context, binding, operation);
       return { shellPid, foregroundPids };
     },
-    submitInitialPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard, onTransportCompleted?: () => void): Promise<HerdrPromptResult> => serialized(binding.workspaceId, operation, async () => { const result = await submit(context, binding, prompt, operation, true, beforeSubmit); if (result.submission === "submitted") try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ } return result; }),
+    submitInitialPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard, onTransportCompleted?: () => void): Promise<HerdrPromptResult> => serialized(binding.workspaceId, operation, async () => {
+      const result = await submit(context, binding, prompt, operation, true, beforeSubmit);
+      if (result.submission === "submitted") {
+        try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ }
+        if (await mappingFor(context, operation) !== null) await confirmInitialSession(context, binding, operation, result.observation.nativeSession?.sessionId);
+      }
+      return result;
+    }),
     start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
       const launched = await launch(context, binding, input, operation);
-      if (!launched.started) { try { input.onExistingAgentObserved?.(); } catch { /* Optional observation cannot alter launch. */ } return launched.observation; }
+      if (!launched.started) {
+        if (await mappingFor(context, operation) !== null && launched.observation.nativeSession === null) throw new HerdrAgentActionError("The original mapped native launch has no official Session confirmation; input cannot be repeated.", "agent.start", "unknown");
+        try { input.onExistingAgentObserved?.(); } catch { /* Optional observation cannot alter launch. */ } return launched.observation;
+      }
       try { input.onAgentStarted?.(); } catch { /* Optional observation cannot alter launch. */ }
       if (launched.observation.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before its first input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
       try { input.onPromptSubmitting?.(); } catch { /* Optional observation cannot alter input. */ }
@@ -501,17 +649,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         try { input.onPromptTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ }
         input.onPromptSubmitted?.(receipt);
       }
-      // SessionStart may be emitted on the first input rather than process launch.
-      // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
-      while (true) {
-        const current = await observation(context, binding, operation);
-        if (current.nativeSession !== null) {
-          if (input.resumeSessionId !== undefined && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new Error("The resumed native identity differs from the requested session.");
-          return current;
-        }
-        if (current.status === "blocked") return current;
-        await wait(operation);
-      }
+      return await confirmInitialSession(context, binding, operation, input.resumeSessionId ?? receipt.observation.nativeSession?.sessionId);
     }),
     submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard, onTransportCompleted?: () => void) => serialized(binding.workspaceId, operation, async () => { const result = await submit(context, binding, prompt, operation, false, beforeSubmit); if (result.submission === "submitted") try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ } return result; }),
     stopAndClose: (context: HerdrExecutionOwner & { cwd: string }, binding: HerdrTaskBinding, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
@@ -526,7 +664,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         if ([...before.panes, ...before.agents].some((resource) => resource.workspace_id === binding.workspaceId || resource.pane_id === binding.paneId || resource.terminal_id === binding.terminalId)) throw new Error("The missing task workspace still has associated resources.");
         const original = stoppingProcesses.get(key);
         await finishStop(key, operation);
-        if (original?.originalBindingObserved) { activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
+        if (original?.originalBindingObserved) { await original.mapping?.retire(operation); stoppingProcesses.delete(key); mappings.delete(identity); activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
         return;
       }
       if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || !matchesWorkspaceOwner(matching[0]!, context)) throw new Error("The task workspace identity changed before stopping.");
@@ -551,11 +689,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         for (const entry of foreground) pending.processIds.add(pid(object(entry, "Current foreground process").pid));
       }
       pending.originalBindingObserved ||= originalBindingObserved;
-      await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
-      const after = await snapshot(operation);
-      if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context)) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
-      await finishStop(key, operation);
-      if (pending.originalBindingObserved) { activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
+      const observedAgent = activeBindings.get(identity)?.agent ?? [...currentPanes, ...before.agents.filter(value => value.pane_id === binding.paneId), context].map(value => (value as RecordValue).agent).find(value => value === "codex" || value === "copilot" || value === "claude");
+      const mapping = mappings.get(identity) ?? (observedAgent === undefined ? null : await mappingFor({ ...context, agent: observedAgent as WorkerAgent }, operation));
+      if (mapping !== null) {
+        pending.mapping = mapping;
+        const receipt = await mapping.readReceipt(operation);
+        if (receipt !== null) { pending.processIds.add(receipt.helperPid); pending.processIds.add(receipt.childPid); }
+        for (const id of await mapping.captureProcesses([...pending.processIds], operation, true)) pending.processIds.add(id);
+      }
+      try {
+        await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
+        const after = await snapshot(operation);
+        if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context)) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
+        await finishStop(key, operation);
+        if (pending.originalBindingObserved) { await mapping?.retire(operation); stoppingProcesses.delete(key); mappings.delete(identity); activeBindings.delete(identity); stoppedRuns.set(identity, { ...binding }); }
+      } catch (cause) { await mapping?.releaseFrozen(); throw cause; }
     }),
   };
 };

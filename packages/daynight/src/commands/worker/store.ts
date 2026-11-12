@@ -10,18 +10,21 @@ import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
 import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { parseFrozenToolObservation } from "./tool-observation.js";
 import type { FrozenToolObservation } from "./types.js";
-type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation };
+type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation; herdrLaunch?: ResolvedToolLaunch; herdrObservation?: FrozenToolObservation };
 const parseFrozenNative = (value: unknown): FrozenNativeConfiguration => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid frozen native configuration.");
   const data = value as Record<string, unknown>, selection = Object.hasOwn(data, "validateNativeSelection");
   if (selection && data.validateNativeSelection !== true) throw new Error("Invalid frozen native validation policy.");
-  const { validateNativeSelection: _selection, toolLaunch, toolObservation, ...native } = data;
+  const { validateNativeSelection: _selection, toolLaunch, toolObservation, herdrLaunch, herdrObservation, ...native } = data;
   const configuration = parseWorkerCloudNative(native);
   if (Object.hasOwn(data, "toolLaunch") && configuration.agent === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
   if (Object.hasOwn(data, "toolObservation") && !Object.hasOwn(data, "toolLaunch")) throw new Error("Frozen tool observation requires its original recipe.");
+  if (Object.hasOwn(data, "herdrObservation") && !Object.hasOwn(data, "herdrLaunch")) throw new Error("Frozen Herdr observation requires its original recipe.");
   return { ...configuration, ...(selection ? { validateNativeSelection: true as const } : {}),
     ...(Object.hasOwn(data, "toolLaunch") ? { toolLaunch: parseResolvedToolLaunch(toolLaunch, { tool: configuration.agent as "codex" | "copilot" }) } : {}),
-    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}) };
+    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}),
+    ...(Object.hasOwn(data, "herdrLaunch") ? { herdrLaunch: parseResolvedToolLaunch(herdrLaunch, { tool: "herdr", context: "herdr" }) } : {}),
+    ...(Object.hasOwn(data, "herdrObservation") ? { herdrObservation: parseFrozenToolObservation(herdrObservation) } : {}) };
 };
 
 const text = (value: unknown, name: string): string => {
@@ -132,12 +135,14 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     if (row === undefined) return null;
     const configuration = parseFrozenNative(JSON.parse(row.configuration)), task = needTask(identity);
     if (configuration.agent !== task.agent || configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen native configuration differs from its original claim.");
+    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     return configuration;
   });
   const freezeNativeConfiguration = (identity: ClaimIdentity, input: FrozenNativeConfiguration): FrozenNativeConfiguration => atomic(() => {
-    const task = needTask(identity), configuration = parseFrozenNative({ agent: input.agent, model: input.model, args: input.args, ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }), ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }) }), previous = getNativeConfiguration(identity);
+    const task = needTask(identity), configuration = parseFrozenNative({ agent: input.agent, model: input.model, args: input.args, ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }), ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }), ...(input.herdrLaunch === undefined ? {} : { herdrLaunch: input.herdrLaunch }), ...(input.herdrObservation === undefined ? {} : { herdrObservation: input.herdrObservation }) }), previous = getNativeConfiguration(identity);
     if (task.agent !== configuration.agent) throw new Error("Frozen configuration does not match the claimed agent.");
     if (configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen tool launch does not match the claimed control mode.");
+    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     if (previous !== null) {
       if (JSON.stringify(previous) !== JSON.stringify(configuration)) throw new Error("The claim's native configuration is already frozen.");
       return previous;

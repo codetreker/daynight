@@ -10,11 +10,11 @@ const op = () => { const result = createOperation({ limits: { totalMs: 5000 } })
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 const targets = (label: string, revision = "1") => ({ source: "cloud" as const, revision, choices: { codex: { kind: "path" as const, path: path.resolve(`/tools/${label}`) }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } } });
 const launch = (label: string): ResolvedToolLaunch => ({ schemaVersion: 1, tool: "codex", context: "web", source: "explicit", entryPath: path.resolve(`/tools/${label}`), canonicalEntryPath: path.resolve(`/tools/${label}`), executablePath: path.resolve(`/tools/${label}`), interpreterPath: null, command: { file: path.resolve(`/tools/${label}`), prefixArgs: [] }, artifacts: [], selectionKey: label.charCodeAt(0).toString(16).padStart(64, "0") });
-const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelections?: () => readonly ActiveToolSelection[]; verify?: (value: ResolvedToolLaunch) => Promise<void> } = {}) => {
+const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelections?: () => readonly ActiveToolSelection[]; verify?: (value: ResolvedToolLaunch) => Promise<void>; admitHerdr?: (value: ResolvedToolLaunch, operation: Operation) => Promise<{ state: "applied"; version: string; checkedAt: string } | { state: "pending"; reason: "active_instance" | "cleanup_unconfirmed" }> } = {}) => {
   const checked: string[] = [];
   const manager = new ToolSelectionManager({ environment: {}, cwd: path.resolve("/work"), now: () => now, readActiveSelections: options.readActiveSelections ?? (() => []),
     resolve: async input => ({ ...launch(input.choice.kind === "path" ? path.basename(input.choice.path) : "A"), tool: input.tool, context: input.context, source: input.choice.kind === "path" ? "explicit" : "path" }),
-    verify: options.verify ?? (async () => {}), probe: { check: async value => { checked.push(value.entryPath); return { version: "1.2.3", checkedAt: now }; }, close: async () => {}, ...options.probe } });
+    ...(options.admitHerdr ? { admitHerdr: options.admitHerdr } : {}), verify: options.verify ?? (async () => {}), probe: { check: async value => { checked.push(value.entryPath); return { version: "1.2.3", checkedAt: now }; }, close: async () => {}, ...options.probe } });
   return { manager, checked };
 };
 const entry = (manager: ToolSelectionManager) => manager.snapshot().entries.find(value => value.tool === "codex" && value.context === "web")!;
@@ -127,4 +127,19 @@ test("an incomplete cloud target revokes new launches while preserving frozen ve
   await expect(manager.selectForNewExecution("codex", "web", op())).rejects.toThrow("configuration is unavailable");
   await manager.verifyFrozen(frozen, op()); manager.setTargets(targets("A", "2"));
   expect((await manager.selectForNewExecution("codex", "web", op())).selectionKey).toBe(frozen.selectionKey);
+});
+
+
+test("Herdr candidates wait for the original shared instance and publish its handshake version", async () => {
+  let busy = true;
+  const { manager } = create({ admitHerdr: async () => busy ? { state: "pending", reason: "active_instance" } : { state: "applied", version: "0.9.5", checkedAt: now } });
+  await manager.prepare("herdr", "herdr", op());
+  const observed = () => manager.snapshot().entries.find(value => value.tool === "herdr")!;
+  expect(observed()).toMatchObject({ state: "pending", reason: "active_instance", actual: null, candidate: { version: "1.2.3" } });
+  await expect(manager.selectForNewExecution("herdr", "herdr", op())).rejects.toThrow("active_instance");
+  busy = false;
+  const chosen = await manager.selectForNewExecution("herdr", "herdr", op());
+  expect(observed()).toMatchObject({ state: "applied", reason: null, candidate: null, actual: { version: "0.9.5" } });
+  expect(manager.observationFor(chosen)).toEqual({ version: "0.9.5", checkedAt: now });
+  expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
 });

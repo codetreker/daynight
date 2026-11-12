@@ -365,7 +365,30 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const isStopped = (owner: ResourceOwner): boolean => lifecycle()?.isStopped(owner) === true;
   const pendingStops = () => needsHerdr() || hasHerdrCleanup() ? options.herdr.tasks.pendingStops() : [];
 
-  const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
+  const mayRestoreHerdr = async (local: LocalTask, owner: ResourceOwner, signal: AbortSignal): Promise<boolean> => {
+    const fresh = await options.remote.readTask(local.projectId, local.taskId, signal), claim = readWorkerClaim(fresh.properties);
+    return fresh.id === local.taskId && fresh.projectId === local.projectId && fresh.status === "in_progress" && fresh.allowAgents && !readTaskPaused(fresh.properties)
+      && claim?.state === "active" && claim.claimId === local.claimId && claim.workerId === options.workerId && claim.worktreeId === owner.worktreeId && claim.agent === local.agent && claim.agentControlMode === "herdr";
+  };
+  const ensureHerdr = async (signal?: AbortSignal, sources: readonly Task[] = []): Promise<void> => {
+    if (!needsHerdr()) return;
+    try { await workerOperation(operation => options.herdr.ensureInstance(operation), signal); }
+    catch (error) {
+      if (options.herdr.ensureExecution === undefined || signal?.aborted) throw error;
+      const failures: unknown[] = [error];
+      for (const source of sources) {
+        const owner = remoteOwner(source), local = options.store.getTask(owner);
+        if (local === null || local.status !== "active" || local.agentControlMode === "web" || !canAdvance(local) || options.store.getNativeConfiguration(local)?.herdrLaunch === undefined) continue;
+        if (!await mayRestoreHerdr(local, owner, signal ?? normalSignal)) continue;
+        try {
+          await workerOperation(operation => options.herdr.ensureExecution!(executionContext({ task: local, owner, project: projectFor(local) }), operation), signal);
+          return;
+        } catch (failure) { if (signal?.aborted) throw failure; failures.push(failure); }
+      }
+      if (failures.length === 1) throw error;
+      throw new AggregateError(failures, "The original Herdr instance could not be restored; frozen execution identities are retained.");
+    }
+  };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
   const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set()): Promise<Snapshot> => {
     const observed = await listHerdr(signal);
@@ -945,6 +968,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       return waitingInput;
     }
+    if (execute && options.herdr.ensureExecution !== undefined && options.store.getNativeConfiguration(task)?.herdrLaunch !== undefined) {
+      if (!await mayRestoreHerdr(task, owner, signal)) return;
+      await workerOperation(operation => options.herdr.ensureExecution!(executionContext({ task, owner, project: projectFor(task) }), operation), signal);
+    }
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     nameFailureThisJob.delete(key(task));
     if (!execute) return;
@@ -1379,7 +1406,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     reconciliationPhase = "resource-observation";
     observe(m => m.setPhase("resource-observation"));
-    await ensureHerdr(normalSignal);
+    await ensureHerdr(normalSignal, [...inventory.values()]);
     const observed = await listHerdr(normalSignal);
     const knownOwners = [...responsibilities(), ...observed.map((workspace) => workspace.owner), ...pendingStops().map((stop) => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? [])];
     for (const owner of knownOwners) {
@@ -1690,7 +1717,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
       executionCapacity.invalidate(remoteOwner(remoteTask));
-      await ensureHerdr(normalSignal);
+      await ensureHerdr(normalSignal, [remoteTask]);
       return serialize(identity, async () => {
         if (task.agentControlMode === "web" && options.webStore) {
           let record = options.webStore.getTask(task);

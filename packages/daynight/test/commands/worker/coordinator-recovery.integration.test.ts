@@ -14,6 +14,7 @@ import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js"
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 
 const polling = vi.hoisted(() => ({ requested: [] as number[], onSchedule: undefined as ((milliseconds: number) => void) | undefined }));
 vi.mock("node:timers/promises", async importOriginal => {
@@ -118,6 +119,33 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   };
   return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
+
+it.each([{ paused: false, allowed: true }, { paused: true, allowed: true }, { paused: false, allowed: false }])("rechecks the original claim before restoring a closed shared instance (%j)", async ({ paused, allowed }) => {
+  const f = await fixture(), candidate = f.candidates[0]!;
+  const owner = { projectId: candidate.projectId, taskId: candidate.id, claimId: uuid(950), worktreeId: uuid(951) };
+  const remoteTask = f.grant(candidate, { claimId: owner.claimId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: owner.worktreeId });
+  const local = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" })), tools = recordedHerdrTools();
+  f.store.freezeNativeConfiguration(local, { ...configuration, toolLaunch: tools.agent, herdrLaunch: tools.herdr });
+  f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) }); f.candidates.splice(0);
+  let running = false;
+  const unavailable = new Error("Original shared daemon has exited.");
+  vi.mocked(f.herdr.ensureInstance).mockImplementation(async () => { if (!running) throw unavailable; return { reconnected: true, version: "0.9.5", protocol: 22, snapshot: {} }; });
+  const restore = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation) => { running = true; return { reconnected: false, version: "0.9.5", protocol: 22 as const, snapshot: {} }; });
+  f.herdr.ensureExecution = restore;
+  vi.mocked(f.remote.readTask).mockResolvedValue({ ...remoteTask, allowAgents: allowed, properties: { ...remoteTask.properties, paused } });
+  try {
+    if (paused || !allowed) {
+      await expect(f.coordinator.tick()).rejects.toBe(unavailable);
+      expect(restore).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } else {
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+      expect(restore).toHaveBeenCalledWith({ ...owner, agent: "codex", cwd: f.bind(owner).worktreePath }, expect.anything());
+      expect(f.store.getNativeConfiguration(local)?.herdrLaunch).toEqual(tools.herdr);
+    }
+    expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.store.getTask(local)?.claimId).toBe(owner.claimId);
+  } finally { running = true; await f.coordinator.shutdown(); }
+});
 
 
 it("rebuilds an active server claim from empty SQLite with both projects inventoried and no new claim", async () => {

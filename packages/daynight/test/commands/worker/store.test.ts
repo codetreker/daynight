@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openWorkerStore, type WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ClaimIdentity, WorkerProject } from "../../../src/commands/worker/types.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 
 const stores = new Set<WorkerStore>();
 const connections = new Set<Database.Database>();
@@ -85,6 +86,15 @@ describe("worker project mappings", () => {
 });
 
 describe("worker claim and native session index", () => {
+  it("keeps both Herdr and native recipes across reopening without adopting a replacement", () => {
+    const { store, database, register } = fixture(); register();
+    const tools = recordedHerdrTools();
+    const configuration = { agent: "codex" as const, model: null, args: [], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation };
+    store.freezeNativeConfiguration(claim, configuration);
+    const reopened = open(database);
+    expect(reopened.getNativeConfiguration(claim)).toEqual(configuration);
+    expect(() => reopened.freezeNativeConfiguration(claim, { ...configuration, herdrLaunch: { ...tools.herdr, source: "path" } })).toThrow("frozen");
+  });
   it("persists the original native tuple and rejects a replacement after reopening", () => {
     const { store, database, register } = fixture();
     register();

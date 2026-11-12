@@ -12,10 +12,13 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
+import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
+const mappingLifecycle = { captureProcesses: async (pids: readonly number[]) => [...pids], verifyProcesses: async () => {}, confirmStopped: async () => true, stopProcesses: async () => {}, releaseFrozen: async () => {}, retire: async () => {} };
 const operations: Operation[] = [];
 const operation = (totalMs = 10_000): Operation => { const value = createOperation({ limits: { totalMs } }); operations.push(value); return value; };
 afterEach(async () => { operations.splice(0).forEach((value) => value.dispose()); await Promise.all(directories.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
@@ -94,7 +97,7 @@ const keymapNarrowMenu = `
   left/right group ·
   enter edit · esc close`;
 
-const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} })) => {
+const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} }), extra: Partial<Parameters<typeof createHerdrAgentManager>[0]> = {}) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -162,7 +165,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     }
     throw new Error(`Unexpected fixture method ${method}`);
   } };
-  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, readCodexConfig, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
+  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, readCodexConfig, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1, ...extra });
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, screen, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -171,7 +174,147 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
   expect(result.nativeSession?.sessionId).toBe(nativeId); return binding;
 };
 
+const mappedFixture = async () => {
+  let mapping: HerdrToolLaunchMapping;
+  const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
+  const receipt = { schemaVersion: 1 as const, owner: f.context, nonce: nativeId, selectionKey: "a".repeat(64), logicalArgvDigest: "b".repeat(64), file: "/selected/copilot", prefixArgs: [], helperPid: 300, childPid: 301 };
+  mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: receipt.selectionKey, environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, verifyReady: async () => {}, verifyReceipt: async () => receipt, readReceipt: async () => receipt };
+  const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+  return { ...f, mapping, binding, receipt, config: { agent: "copilot" as const, model: null, args: [] } };
+};
+
 describe("native argument ownership", () => {
+  it("waits for the caller's final shell readiness before registering its process proof", async () => {
+    let mapping: HerdrToolLaunchMapping, ready = false;
+    const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
+    mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, verifyReady: async (_pid, _operation, nonce) => { expect(nonce).toBe(claimId); ready = true; }, captureProcesses: async pids => { if (!ready) throw new Error("shell wrapper has not execed"); return [...pids]; }, readReceipt: async () => null, verifyReceipt: async () => { throw new Error("not launched"); } };
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce: claimId })).resolves.toMatchObject({ paneId: "pane-1" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not report startup success from a late Session after the original native child changed", async () => {
+    const f = await mappedFixture();
+    f.mapping.verifyProcesses = async input => { if (input.receipt !== undefined && f.prompts.length > 0) throw new Error("original native child exited"); };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ submission: "unknown", promptSubmission: "submitted" });
+    expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("keeps input closed when the receipt processes do not belong to the original shell", async () => {
+    const f = await mappedFixture();
+    f.mapping.verifyProcesses = async input => { if (input.receipt !== undefined) throw new Error("foreign helper parent"); };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never submit" }, operation())).rejects.toMatchObject({ submission: "unknown" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("rechecks the original native process chain immediately before initial input", async () => {
+    const f = await mappedFixture(); let checks = 0;
+    f.mapping.verifyProcesses = async input => { if (input.receipt !== undefined && ++checks > 1) throw new Error("native child replaced"); };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never submit" }, operation())).rejects.toMatchObject({ promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not send continuation input before the original official hook reports a Session", async () => {
+    const f = await mappedFixture();
+    f.hook(async (method, params) => { if (method === "agent.start") { const agent = f.launch(params); delete agent.agent_session; return { type: "agent_started", agent, argv: ["copilot", ...params.args as string[]] }; } return undefined; });
+    await f.manager.launch(f.context, f.binding, { configuration: f.config }, operation());
+    await expect(f.manager.submitPrompt(f.context, f.binding, "must not ping", operation())).rejects.toMatchObject({ promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("fences an initial input across manager reconstruction using the original mapping", async () => {
+    const f = await mappedFixture();
+    await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation());
+    const other = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: async () => f.mapping });
+    await expect(other.submitInitialPrompt(f.context, f.binding, "never repeat", operation())).rejects.toMatchObject({ promptSubmission: "unknown" });
+    expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("retains submitted input as unknown when blocked before the official Session confirmation", async () => {
+    const f = await mappedFixture();
+    f.hook(async (method, params) => {
+      if (method === "agent.start") { const agent = f.launch(params); delete agent.agent_session; return { type: "agent_started", agent, argv: ["copilot", ...params.args as string[]] }; }
+      if (method === "agent.prompt") { f.prompts.push(String(params.text)); f.agents[0]!.agent_status = "blocked"; return { type: "agent_prompted", agent: f.agents[0] }; }
+      return undefined;
+    });
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ promptSubmission: "submitted" });
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never repeat" }, operation())).rejects.toMatchObject({ submission: "unknown" });
+    expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("keeps logical argv validation and refuses input when the selected launch has no receipt", async () => {
+    const verifyReceipt = vi.fn(async () => { throw new Error("missing original launch receipt"); });
+    const mapping = { ...mappingLifecycle, manifestPath: "/owned/manifest.json", nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: "/owned/manifest.json" }, verifyReady: async () => {}, verifyReceipt, readReceipt: async () => null } satisfies HerdrToolLaunchMapping;
+    const callback = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation, _existingOnly?: boolean) => mapping);
+    const f = await fixture("codex", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: callback });
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(f.calls.find(call => call.method === "workspace.create")!.params.env).toMatchObject(mapping.environment);
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "never submit" }, operation())).rejects.toMatchObject({ submission: "unknown" });
+    expect(verifyReceipt).toHaveBeenCalledOnce(); expect(f.prompts).toEqual([]);
+    expect(f.calls.find(call => call.method === "agent.start")!.params).not.toHaveProperty("executable");
+  });
+
+  it("does not create mappings or replace a pane when reconnecting an existing workspace", async () => {
+    const f = await fixture(), binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const callback = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation, existingOnly?: boolean) => { expect(existingOnly).toBe(true); return null; });
+    const other = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: callback });
+    expect(await other.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    expect(callback).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "workspace.create")).toHaveLength(1);
+    expect(f.calls.some(call => call.method === "layout.apply")).toBe(false);
+  });
+  it.each([false, true])("prepares one root PowerShell layout and reconciles an unknown response without replay (%s)", async (unknownResponse) => {
+    let mapping: HerdrToolLaunchMapping;
+    const ready = vi.fn(async (_pid: number) => {});
+    const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
+    const command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-NoLogo", "-NoExit", "-File", "C:\\owned\\bootstrap.ps1"];
+    mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, windowsCommand: command, verifyReady: ready, readReceipt: async () => null, verifyReceipt: async () => { throw new Error("not launched"); } };
+    f.executing.add(100);
+    f.hook(async (method, params) => {
+      if (method === "layout.apply") {
+        expect(params).not.toHaveProperty("workspace_id");
+        expect(params).toMatchObject({ focus: false, root: { type: "pane", command, cwd: f.context.cwd, env: mapping.environment } });
+        const workspaceId = f.workspaces[0]!.workspace_id;
+        f.panes.splice(0, f.panes.length, { pane_id: "prepared-pane", terminal_id: "prepared-terminal", workspace_id: workspaceId, tab_id: "prepared-tab", cwd: f.context.cwd, agent_status: "unknown" });
+        f.tabs.splice(0, f.tabs.length, { tab_id: "prepared-tab", workspace_id: workspaceId });
+        f.processes.set("prepared-pane", [101]); f.executing.delete(100);
+        if (unknownResponse) throw new HerdrRpcError("layout response lost", { method, requestId: "layout", submission: "unknown" });
+        return { type: "layout_apply", layout: {} };
+      }
+      if (method === "layout.export") return { type: "layout_export", layout: { workspace_id: f.workspaces[0]!.workspace_id, tab_id: "prepared-tab", root: { type: "pane", pane_id: "prepared-pane", cwd: f.context.cwd, command } } };
+      if (method === "pane.process_info" && params.pane_id === "prepared-pane") return { type: "pane_process_info", process_info: { pane_id: "prepared-pane", shell_pid: 101, foreground_process_group_id: 101, foreground_processes: [{ pid: 101 }] } };
+      return undefined;
+    });
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(binding).toMatchObject({ paneId: "prepared-pane", terminalId: "prepared-terminal" });
+    expect(ready).toHaveBeenCalledWith(101, expect.anything());
+    expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    expect(f.calls.filter(call => call.method === "layout.apply")).toHaveLength(1);
+  });
+  it("disables automatic updates for a frozen Copilot launch while retaining logical native arguments", () => {
+    const toolLaunch = frozenToolLaunch("copilot", "herdr");
+    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: [], toolLaunch }, "/task")).toEqual(["--no-auto-update", "--allow-all", "--no-ask-user", "--no-sandbox"]);
+  });
+  it("retains hidden helper/native descendants and retires a mapping only after their confirmed stop", async () => {
+    let mapping: HerdrToolLaunchMapping;
+    const stopped = vi.fn(async () => {}), retired = vi.fn(async () => {}), callback = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation, _existingOnly?: boolean) => mapping);
+    const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: callback });
+    const receipt = { schemaVersion: 1 as const, owner: f.context, nonce: nativeId, selectionKey: "a".repeat(64), logicalArgvDigest: "b".repeat(64), file: "/selected/copilot", prefixArgs: [], helperPid: 300, childPid: 301 };
+    mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: receipt.selectionKey, environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, verifyReady: async () => {}, verifyReceipt: async () => receipt, readReceipt: async () => receipt, captureProcesses: async pids => [...pids, 302], stopProcesses: stopped, confirmStopped: async () => ![300, 301, 302].some(id => f.executing.has(id)), retire: retired };
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    await f.manager.launch(f.context, binding, { configuration: { agent: "copilot", model: null, args: [] } }, operation());
+    [300, 301, 302].forEach(id => f.executing.add(id));
+    await expect(f.manager.stopAndClose(f.context, binding, operation(30))).rejects.toMatchObject({ kind: "deadline" });
+    expect(retired).not.toHaveBeenCalled();
+    expect(stopped).toHaveBeenCalledOnce();
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toThrow("stop");
+    f.executing.delete(300); f.executing.delete(301);
+    await expect(f.manager.stopAndClose(f.context, binding, operation(30))).rejects.toMatchObject({ kind: "deadline" });
+    f.executing.delete(302); await f.manager.stopAndClose(f.context, binding, operation());
+    expect(stopped).toHaveBeenCalledTimes(3);
+    expect(retired).toHaveBeenCalledOnce();
+    await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(callback.mock.calls.at(-1)?.[2]).toBe(false);
+  });
   it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
     expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? ["--model", "model-a"] : ["resume", resume]), ...(resume === undefined ? configuration.args : ["--no-alt-screen"]), "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
     expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", ...(resume === undefined ? ["--reasoning-effort", "low"] : []), "--allow-all", "--no-ask-user", "--no-sandbox"]);

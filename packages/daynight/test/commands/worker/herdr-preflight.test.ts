@@ -3,7 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { createHerdrPreflight } from "../../../src/commands/worker/herdr/preflight.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
+import { createHerdrPreflight, createNativePrerequisiteChecks } from "../../../src/commands/worker/herdr/preflight.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
@@ -54,6 +55,20 @@ afterEach(async () => {
 });
 
 describe("Herdr native prerequisites", () => {
+  it.each(["help", "hooks"] as const)("keeps frozen Copilot %s inspection on its selected installation", async probe => {
+    const f = await fixture(), entry = path.join(f.root, "selected-copilot.cjs");
+    await writeFile(entry, "// Isolated Node tool selected by the real resolver.\n");
+    const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: f.cwd, workerNode: process.execPath, environment: process.env }, operation());
+    const runCommand = vi.fn(async (_command: HerdrCommand) => ({ stdout: probe === "help" ? copilotPermissionFlags.join("\n") : JSON.stringify(f.hooks), stderr: "" }));
+    const input = { ...f.input("copilot"), configuration: { ...f.input("copilot").configuration, toolLaunch: launch } };
+    const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment: {}, platform: "linux", runCommand }, input);
+    await checks.find(check => check.label === (probe === "help" ? "copilot unattended full access" : "copilot effective SessionStart hook"))!.verify(operation());
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    const [command] = runCommand.mock.calls[0]!;
+    expect(command.file).toBe(launch.command.file);
+    expect(command.args).toEqual([...launch.command.prefixArgs, "--no-auto-update", ...(probe === "help" ? [...copilotPermissionFlags, "--help"] : ["config", "hooks"])]);
+  });
+
   it("checks actual Codex capability and hook configuration without requiring history for a new session", async () => {
     const f = await fixture();
     const result = await f.preflight.verifyStart(f.input("codex"), operation());

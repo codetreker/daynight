@@ -24,8 +24,10 @@ The manager consumes the resolver from the [resolution decision](2026-11-11-work
 and the independently negotiated targets from the [configuration decision](2026-11-11-worker-tool-path-configuration.md).
 The [Worker design](../../../../docs/design/daynight-worker.md#本地工具路径选择)
 owns storage, admission, telemetry, bounded operations and compatibility details.
-Herdr keeps its existing automatic behavior until instance mapping consumes the
-new recipes; unsupported explicit targets fail visibly.
+The initial runtime delivery kept Herdr automatic until its distinct shell and
+instance ownership could consume these recipes; unsupported explicit targets
+failed visibly. The [Herdr launch decision](2026-11-12-herdr-frozen-tool-launch.md)
+extends admission to controlled mappings and frozen instance recovery.
 
 Copilot authority has an explicit versioned runtime profile. The original source,
 Worker Node and preload closure determine a private materialization key. A complete

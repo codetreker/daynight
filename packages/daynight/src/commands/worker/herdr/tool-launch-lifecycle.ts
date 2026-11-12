@@ -1,0 +1,183 @@
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import type { Operation } from "../../../api/operation.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
+import { replaceFileAtomically } from "../../../platform/files.js";
+import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
+import { inspectControllerJob } from "../../controller/windows-job.js";
+import { runHerdrCommand } from "./command.js";
+import { optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
+import { parseToolReceipt } from "./tool-launch-protocol.js";
+import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
+
+type Inventory = { pid: number; parentPid: number; group: number | null };
+type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
+const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
+  if (process.platform === "win32") {
+    const root = environment.SystemRoot ?? environment.SYSTEMROOT;
+    if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required to inspect the original Herdr process tree.");
+    const result = await runHerdrCommand({ file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId) | ConvertTo-Json -Compress"], environment }, operation);
+    const rows = JSON.parse(result.stdout) as unknown;
+    if (!Array.isArray(rows) || rows.some(row => !Number.isSafeInteger(row?.ProcessId) || !Number.isSafeInteger(row?.ParentProcessId))) throw new Error("The Windows process inventory could not be established.");
+    return rows.filter(row => row.ProcessId > 0).map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, group: null }));
+  }
+  const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
+  return result.stdout.split("\n").filter(row => row.trim() !== "").flatMap(row => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(row);
+    if (match === null) throw new Error("The original Herdr process inventory could not be interpreted.");
+    return match[4]!.startsWith("Z") ? [] : [{ pid: Number(match[1]), parentPid: Number(match[2]), group: Number(match[3]) }];
+  });
+};
+const parse = (value: unknown, nonce: string): ProcessRecord => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The original Herdr process responsibility journal is missing.");
+  const row = value as Record<string, unknown>;
+  if (row.nonce !== nonce || Object.keys(row).sort().join() !== "nonce,proofs" || !Array.isArray(row.proofs) || row.proofs.length === 0 || row.proofs.length > 1000) throw new Error("The original Herdr process responsibility journal is invalid.");
+  const ids = new Set<number>();
+  for (const value of row.proofs) {
+    if (!value || typeof value !== "object") throw new Error("The original Herdr process identity is invalid.");
+    const item = value as ProcessProof;
+    if (!Number.isSafeInteger(item.pid) || item.pid <= 0 || ids.has(item.pid) || !Number.isSafeInteger(item.parentPid) || item.parentPid < 0 || item.processGroupId !== null && (!Number.isSafeInteger(item.processGroupId) || item.processGroupId < 1) || typeof item.startedAt !== "string" || item.startedAt === "" || !/^[a-f0-9]{64}$/.test(item.commandHash)) throw new Error("The original Herdr process identity is invalid.");
+    if (process.platform === "linux" && !validLinuxBirthToken(item.birthToken)) throw new Error("The original Linux Herdr process has no precise birth identity.");
+    ids.add(item.pid);
+  }
+  return row as unknown as ProcessRecord;
+};
+
+/** Process identities survive workspace removal. Retirement additionally fences native groups/jobs. */
+export const createMappingProcessLifecycle = (manifestPath: string, manifest: HerdrToolLaunchManifest, environment: NodeJS.ProcessEnv) => {
+  const directory = path.dirname(manifestPath), file = path.join(directory, "processes.json"), retired = path.join(directory, "retired.json");
+  const frozen = new Map<number, ProcessProof>();
+  const read = async (): Promise<ProcessRecord | null> => { const value = await optionalOwnedJson(file); return value === null ? null : parse(value, manifest.nonce); };
+  const save = async (proofs: ProcessProof[]): Promise<void> => { const row = parse({ nonce: manifest.nonce, proofs }, manifest.nonce); await replaceFileAtomically(file, JSON.stringify(row), 0o600); syncDurableDirectory(directory); };
+  const captureProcesses = async (pids: readonly number[], operation: Operation, freeze = false): Promise<number[]> => {
+    operation.check();
+    const previous = await read(), proofs = new Map((previous?.proofs ?? []).map(proof => [proof.pid, proof]));
+    const freezeOriginal = async (proof: ProcessProof): Promise<void> => {
+      if (!freeze || process.platform === "win32" || frozen.has(proof.pid)) return;
+      const state = await inspectProcessProof(proof);
+      if (state === "replaced") throw new Error("An original Herdr process identity changed before freezing.");
+      if (state === "running") { process.kill(proof.pid, "SIGSTOP"); frozen.set(proof.pid, proof); }
+    };
+    try {
+      for (const id of pids) {
+        operation.check();
+        if (proofs.has(id)) continue;
+        // An unknown vanished helper cannot establish that its descendants exited.
+        const proof = await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+        proofs.set(id, proof); await save([...proofs.values()]);
+      }
+      for (const proof of proofs.values()) {
+        operation.check(); const state = await inspectProcessProof(proof);
+        if (state === "replaced") throw new Error("An original Herdr process identity changed before closure.");
+        if (state === "running") await freezeOriginal(proof);
+      }
+      for (let round = 0; round < 1000; round++) {
+        operation.check();
+        const rows = await inventory(environment, operation), ids = new Set(proofs.keys()), groups = new Set([...proofs.values()].map(proof => proof.processGroupId).filter(group => group !== null));
+        let changed = true;
+        while (changed) { changed = false; for (const row of rows) if (!ids.has(row.pid) && (ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) { ids.add(row.pid); changed = true; } }
+        const unseen = rows.filter(row => ids.has(row.pid) && !proofs.has(row.pid));
+        if (unseen.length === 0) return [...proofs.keys()];
+        for (const row of unseen) {
+          if (proofs.size >= 1000) throw new Error("The original Herdr process tree exceeds its supported ownership bound.");
+          const proof = await captureProcessProof(row.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+          if (proof.parentPid !== row.parentPid || proof.processGroupId !== row.group) throw new Error("The original Herdr descendant changed during identity registration.");
+          proofs.set(proof.pid, proof); await save([...proofs.values()]); await freezeOriginal(proof);
+        }
+      }
+      throw new Error("The original Herdr process tree did not stabilize before closure.");
+    } catch (cause) { await releaseFrozen(); throw cause; }
+  };
+  const releaseFrozen = async (): Promise<void> => {
+    const failures: unknown[] = [];
+    for (const proof of [...frozen.values()].reverse()) {
+      try {
+        const state = await inspectProcessProof(proof);
+        if (state === "replaced") throw new Error("An original frozen Herdr process has conflicting birth evidence; rollback remains unknown.");
+        if (state === "running") process.kill(proof.pid, "SIGCONT");
+        frozen.delete(proof.pid);
+      } catch (cause) { failures.push(cause); }
+    }
+    if (failures.length > 0) throw new AggregateError(failures, "The original Herdr process freeze rollback remains unknown.");
+  };
+  const confirmStopped = async (operation: Operation): Promise<boolean> => {
+    const record = await read();
+    if (record === null) throw new Error("The original Herdr process tree has no stopped identity proof.");
+    operation.check();
+    // Zombies have exited and cannot execute or spawn, even before an adopter reaps them.
+    const rows = await inventory(environment, operation), ids = new Set(record.proofs.map(proof => proof.pid)), groups = new Set(record.proofs.map(proof => proof.processGroupId).filter(group => group !== null));
+    if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) return false;
+    if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null && (await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`)).length !== 0) return false;
+    return true;
+  };
+  const stopProcesses = async (operation: Operation): Promise<void> => {
+    operation.check();
+    const record = await read();
+    if (record === null) throw new Error("The original Herdr process tree has no termination identity proof.");
+    if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null) await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`, true);
+    const current = new Set((await inventory(environment, operation)).map(row => row.pid));
+    for (const proof of [...record.proofs].reverse()) {
+      operation.check();
+      if (!current.has(proof.pid)) continue;
+      const state = await inspectProcessProof(proof);
+      if (state === "replaced") throw new Error("An original Herdr process has conflicting birth evidence; termination remains unknown.");
+      if (state === "running") {
+        try { process.kill(proof.pid, "SIGKILL"); }
+        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ESRCH") throw cause; }
+      }
+    }
+    while (!await confirmStopped(operation)) {
+      operation.check();
+      await delay(Math.max(1, Math.min(25, operation.remainingMs())), undefined, { signal: operation.signal });
+    }
+    frozen.clear();
+  };
+  const verifyProcesses = async (input: { shellPid: number; receipt?: HerdrToolLaunchReceipt; foregroundPids?: readonly number[] }, operation: Operation): Promise<void> => {
+    operation.check();
+    const record = await read(), proofs = new Map((record?.proofs ?? []).map(proof => [proof.pid, proof]));
+    const shell = record?.proofs[0];
+    if (shell === undefined || shell.pid !== input.shellPid) throw new Error("The original shell has no process proof from workspace preparation.");
+    const observe = async (proof: ProcessProof, role: string): Promise<ProcessProof> => {
+      operation.check();
+      const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+      if (current.parentPid !== proof.parentPid || current.startedAt !== proof.startedAt || current.commandHash !== proof.commandHash || current.processGroupId !== proof.processGroupId || current.birthToken !== proof.birthToken) throw new Error(`The original ${role} process identity changed; input remains closed.`);
+      return current;
+    };
+    await observe(shell, "shell");
+    if (input.receipt === undefined) return;
+    const receipt = parseToolReceipt(input.receipt, manifest);
+    const capture = async (id: number, role: string, parent: ProcessProof): Promise<ProcessProof> => {
+      const previous = proofs.get(id), proof = previous === undefined ? await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs())))) : await observe(previous, role);
+      if (proof.parentPid !== parent.pid) throw new Error(`The original ${role} has no continuous original helper and shell parent chain.`);
+      await observe(parent, "parent");
+      if (previous === undefined) { proofs.set(id, proof); await save([...proofs.values()]); }
+      return proof;
+    };
+    const helper = await capture(receipt.helperPid, "helper", shell), child = await capture(receipt.childPid, "native child", helper);
+    if (process.platform !== "win32" && child.processGroupId !== helper.processGroupId) throw new Error("The original native child left its helper process group.");
+    const rows = await inventory(environment, operation), descendants = new Set([shell.pid]);
+    let changed = true;
+    while (changed) { changed = false; for (const row of rows) if (!descendants.has(row.pid) && descendants.has(row.parentPid)) { descendants.add(row.pid); changed = true; } }
+    if (!descendants.has(helper.pid) || !descendants.has(child.pid) || input.foregroundPids?.some(id => !descendants.has(id))) throw new Error("The original foreground process inventory has no continuous owned native chain.");
+    const pending = rows.filter(row => descendants.has(row.pid) && !proofs.has(row.pid));
+    while (pending.length > 0) {
+      operation.check();
+      if (proofs.size >= 1000) throw new Error("The original native process chain exceeds its supported ownership bound.");
+      const index = pending.findIndex(row => proofs.has(row.parentPid));
+      if (index < 0) throw new Error("The original native descendant parent chain is incomplete.");
+      const row = pending.splice(index, 1)[0]!;
+      await capture(row.pid, "native descendant", proofs.get(row.parentPid)!);
+    }
+    for (const proof of proofs.values()) if (descendants.has(proof.pid)) await observe(proof, "native chain");
+  };
+  return {
+    captureProcesses, confirmStopped, stopProcesses, releaseFrozen, verifyProcesses,
+    retire: async (operation: Operation): Promise<void> => {
+      if (!await confirmStopped(operation)) throw new Error("The original Herdr process tree is not confirmed stopped; its mapping cannot rotate.");
+      const value = { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner };
+      try { await publishOwnedJson(retired, value); }
+      catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "EEXIST" || JSON.stringify(await optionalOwnedJson(retired)) !== JSON.stringify(value)) throw cause; }
+      frozen.clear();
+    },
+  };
+};
