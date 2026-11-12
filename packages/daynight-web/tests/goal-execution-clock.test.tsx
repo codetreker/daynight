@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { TaskDetail } from '../src/api/types';
@@ -36,7 +36,7 @@ const surface = (items: TaskDetail[], presentation: 'dialog' | 'page', observed 
   const snapshot = snapshotFixture(items);
   const sample = { ...snapshot, observedAt: at(observed), receivedMonotonic: 0, receivedAt: Date.parse(at(observed)) };
   return <TaskExecutionClockProvider projectId={projectId} snapshot={sample}><GoalDetailSurface projectId={projectId} taskId={goalId} detail={goal} resourceState={resourceState}
-    snapshot={sample} presentation={presentation}
+    snapshot={sample} presentation={presentation} goalChildren={{ graphRootId: id(1), task: null }}
     fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} /></TaskExecutionClockProvider>;
 };
 const duration = (n: number) => document.querySelector(`[data-id="${id(n)}"] .task-duration`)!;
@@ -50,10 +50,9 @@ beforeEach(() => {
 });
 afterEach(() => { root.remove(); });
 
-it.each(['dialog', 'page'] as const)('opens a Goal graph with timed members and external prerequisites in %s presentation', async (presentation) => {
+it.each(['dialog', 'page'] as const)('restores a Goal graph with timed members and external prerequisites in %s presentation', async (presentation) => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const view = renderWithLocale(surface(tasks, presentation), { locale: 'en', taskCache: true, container: root });
-  fireEvent.click(screen.getByRole('button', { name: 'View dependencies' }));
   const graph = document.querySelector('.task-chain-dialog')!;
   await waitFor(() => expect(graph.querySelectorAll('.task-node')).toHaveLength(3));
   expect(duration(1)).toHaveAttribute('datetime', 'PT30.000S');

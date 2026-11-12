@@ -48,12 +48,13 @@ it('keeps Goal facts independent of children and aggregates only scoped members 
   const surface = document.querySelector<HTMLElement>('.goal-detail-surface')!;
   expect(card.querySelector(`time[datetime="${goalAt}"]`)).not.toBeNull();
   expect(surface.querySelector(`.goal-detail-meta time[datetime="${goalAt}"]`)).not.toBeNull();
-  expect(within(surface).getByRole('button', { name: /Unfinished/ })).toHaveTextContent('To do');
-  const chain = surface.querySelector<HTMLElement>('.goal-detail-chain')!;
+  fireEvent.click(card.querySelector('.goal-list-toggle')!);
+  expect(within(card).getByRole('button', { name: /Unfinished/ })).toHaveTextContent('To do');
+  const chain = card.querySelector<HTMLElement>('.goal-row')!;
   expect(chain.querySelector(`.chain-completion-time time[datetime="${lastAt}"]`)).not.toBeNull();
-  const disclosure = chain.querySelector<HTMLButtonElement>('.goal-detail-disclosure')!;
+  const disclosure = chain.querySelector<HTMLButtonElement>('.goal-toggle')!;
   fireEvent.click(disclosure);
-  const first = chain.querySelector<HTMLButtonElement>(`[data-goal-task-id="${id(2)}"]`)!;
+  const first = chain.querySelector<HTMLButtonElement>(`#chain-task-goal-${goalId}-chain-${id(1)}-${id(2)}`)!;
   expect(first.querySelector(`time[datetime="${firstAt}"]`)).not.toBeNull();
   first.focus();
   const changed = items.map(item => item.id === id(3) ? { ...item, completedAt: null } : item);

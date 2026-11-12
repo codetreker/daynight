@@ -15,11 +15,14 @@ The Web classifies the complete ordinary graph before selecting a Parent scope.
 Lists count and render each scoped Task once while retaining the complete chain
 representative and witness for graph navigation. A typed detail loader selects
 the Goal or ordinary Task surface before mounting execution controllers. The
-Goal retains its Tasks, attachment and discussion controllers for the lifetime
-of that view; shared overlay ownership isolates nested graph and Task portals.
+Goal retains its description, attachment and discussion controllers and any
+admitted nested reading owner for the lifetime of that view; shared overlay ownership isolates nested graph and Task portals.
 The [standalone reading-history decision](2026-11-11-standalone-resource-reading-history.md)
 places standalone Goal child selections in the page history while preserving
-those owners. Cross-scope navigation uses the target's actual Parent and locates its Task in the destination. Shared scoped chain,
+those owners. Cross-scope navigation uses the target's actual Parent and action:
+Details opens its Task under that Goal, while Expand opens the complete chain
+for a multi-member target or Task details for a single member. The Goal and
+corresponding child or graph are selected together. Shared scoped chain,
 member and standalone rows accept explicit presentation identities; their list
 owners retain navigation, pagination and expansion control. A scoped chain uses
 only its explicit members for progress, while the full component supplies worker
@@ -34,8 +37,11 @@ its Goal disclosure and retained chain disclosures, while the active category
 hosts one graph. The original source Goal and trigger remain separate from the
 current graph witness across navigation; visible fallbacks do not alter filters
 or pagination.
-The [Goal description tab decision](2026-11-12-goal-description-tab.md) separates
-description reading from Task browsing while retaining these owners. The
+The [Goal description tab decision](2026-11-12-goal-description-tab.md) originally
+separated description reading from Task browsing. The
+[Goal detail information decision](2026-11-12-goal-detail-information.md) keeps
+task rows in the project Goal list and presents description and statistics in
+detail while retaining the nested reading owners. The
 [Web design](../../../../docs/design/daynight-web.md) describes the current
 presentation and lifecycle.
 The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)

@@ -12,10 +12,13 @@ existing row interaction and accessibility.
 
 ## Decision
 
-Task and Goal rows display a non-interactive completion label and attach the exact time
-to the existing entry description; their details expose the exact value. Chain
-summaries use their complete scoped members and provide a separate time button
-alongside existing actions. Its tooltip remains in the owning DOM subtree and
+Task and Goal rows display a non-interactive completion label and attach the
+exact time to the existing entry description; their details expose the exact
+value. Project Goal disclosures reuse Task rows and scoped chain summaries. Goal
+detail displays its own exact completion time in the common metadata row,
+independently of child progress; task browsing remains in the project Goal list.
+Chain summaries use their complete scoped members and provide a separate time
+button alongside existing actions. Its tooltip remains in the owning DOM subtree and
 uses a manual popover to escape clipping without becoming a modal. The
 [completion time design](../../../../docs/design/daynight-completion-time.md)
 owns interaction, positioning and lifecycle details. The
@@ -36,5 +39,8 @@ clipping.
 
 Task navigation and chain expansion remain distinct from completion-time
 reading. Tooltip positioning, owner-aware Escape handling and cleanup add local
-interaction state. Task, chain and Goal consumers share this mechanism. Goal facts remain independent
-of child progress, and Goal chain summaries use only the displayed scope.
+interaction state. Task, chain and Goal consumers share this mechanism. Goal
+facts remain independent of child progress, and project Goal chain summaries use
+only their complete owned scope. The [Goal detail information decision](../feature/2026-11-12-goal-detail-information.md)
+keeps those rows and summaries in the outer list while retaining the Goal
+resource completion field.

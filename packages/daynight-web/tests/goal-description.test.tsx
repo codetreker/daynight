@@ -27,14 +27,13 @@ const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog'
     fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} />;
 };
 
-it.each(['dialog', 'page'] as const)('separates description and tasks, with keyboard tabs and attachment navigation in %s', (presentation) => {
+it.each(['dialog', 'page'] as const)('keeps description and information with keyboard tabs and attachment navigation in %s', (presentation) => {
   renderWithLocale(surface('# Goal text\n\n[Guide](docs/guide.md)\n\n![Diagram](images/diagram.png)', presentation), { locale: 'en', taskCache: true, container: root });
   const tabs = screen.getAllByRole('tab');
-  expect(tabs.map(tab => tab.textContent)).toEqual(['Description', 'Tasks', 'Attachments', 'Discussion']);
-  expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
-  const taskPanel = screen.getByRole('tabpanel', { name: 'Tasks' });
-  expect(within(taskPanel).getByRole('status')).toBeVisible();
-  expect(within(taskPanel).queryByRole('button', { name: /New Task|Add existing Task/ })).not.toBeInTheDocument();
+  expect(tabs.map(tab => tab.textContent)).toEqual(['Description', 'Attachments', 'Discussion']);
+  expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+  expect(screen.queryByRole('tab', { name: 'Tasks' })).toBeNull();
+  expect(screen.getByRole('complementary', { name: 'Goal information' })).toBeVisible();
   fireEvent.keyDown(tabs[1]!, { key: 'Home' });
   expect(tabs[0]).toHaveFocus();
   expect(tabs[0]).toHaveAttribute('tabindex', '0');
@@ -42,14 +41,13 @@ it.each(['dialog', 'page'] as const)('separates description and tasks, with keyb
   expect(panel.id).toBe(tabs[0]!.getAttribute('aria-controls'));
   expect(within(panel).getByRole('heading', { name: 'Goal text' })).toBeVisible();
   expect(within(panel).getByRole('img', { name: 'Diagram' })).toHaveAttribute('src', expect.stringContaining('/images/diagram.png'));
-  expect(taskPanel).not.toBeVisible();
   fireEvent.click(within(panel).getByRole('link', { name: 'Guide' }));
-  expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+  expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
   expect(select).toHaveBeenCalledWith('docs/guide.md');
   expect(screen.getByText('Attachment: docs/guide.md')).toBeVisible();
-  fireEvent.keyDown(tabs[2]!, { key: 'End' });
-  expect(tabs[3]).toHaveFocus();
-  fireEvent.keyDown(tabs[3]!, { key: 'ArrowRight' });
+  fireEvent.keyDown(tabs[1]!, { key: 'End' });
+  expect(tabs[2]).toHaveFocus();
+  fireEvent.keyDown(tabs[2]!, { key: 'ArrowRight' });
   expect(tabs[0]).toHaveFocus();
 });
 
