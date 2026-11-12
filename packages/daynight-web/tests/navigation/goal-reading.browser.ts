@@ -41,6 +41,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   let failedGoalReads = 0;
   let rejectGoalWrites = false;
   let releaseEdit: (() => void) | null = null;
+  let failNextSync = false;
+  let holdNextSync = false;
+  let releaseSync: (() => void) | null = null;
+  let heldSyncFinished = false;
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
@@ -53,7 +57,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path === `/api/v1/projects/${projectId}/task-assignees` && failPeople) return send({ error: { code: 'unavailable', message: 'Assignee service unavailable', requestId: 'people-error' } }, 503);
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) {
+      if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
+      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties });
+      if (holdNextSync) {
+        holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
+        try { await send(response); } finally { heldSyncFinished = true; }
+        return;
+      }
+      return send(response);
+    }
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status` && route.request().method() === 'PUT') {
       if (rejectGoalWrites) return send({ error: { code: 'forbidden', message: 'secret SQL detail', requestId: 'goal-write-2' } }, 403);
       const request = route.request().postDataJSON() as { status: 'todo' | 'in_progress' | 'done' | 'cancelled'; version: number };
@@ -98,7 +111,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+  return { emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
+    details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
+    currentGraph = graphFixture(details);
+  }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
     details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
     currentGraph = graphFixture(details);
   }, addActiveChain: () => {
@@ -1513,4 +1529,66 @@ test('Goal list graph navigation and history retain the source and scroll', asyn
   await page.keyboard.press('Escape');
   await expect(goalToggle).toHaveAttribute('aria-expanded', 'true');
   await expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('Goal list graph restores visible focus when its source Goal is filtered out', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.getByRole('combobox', { name: 'Status' }).selectOption('todo');
+  const source = page.locator(`[data-goal-id="${goalId}"]`);
+  await source.locator('.goal-list-toggle').click();
+  await source.locator('.goal-graph-button').click();
+  const dialog = page.locator('.task-chain-dialog'); await expect(dialog).toBeVisible();
+  fixture.finishGoal();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(source).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('#project-goal-list')).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'Status' })).toHaveValue('todo');
+  await expect(page.locator(`[data-goal-id="${otherGoalId}"]`)).toBeVisible();
+});
+
+test('Goal list distinguishes loading failure from empty and retains expanded rows through failed refresh and retry', async ({ page }) => {
+  const fixture = await install(page); fixture.failNextSync();
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByRole('heading', { name: 'Project could not be loaded' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = goalRow.locator('.goal-list-toggle'); await toggle.click();
+  const chain = goalRow.locator('.goal-toggle'); await chain.click();
+  fixture.failNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Refresh failed' })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(chain).toHaveAttribute('aria-expanded', 'true');
+  await expect(goalRow.getByText('Second task', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry refresh' }).click();
+  await expect(page.getByRole('heading', { name: 'Refresh failed' })).toHaveCount(0);
+  await expect(chain).toHaveAttribute('aria-expanded', 'true');
+  await expect(goalRow.getByText('Second task', { exact: true })).toBeVisible();
+});
+
+test('Goal list retires an old epoch and rejects its late background result', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const row = page.locator(`[data-goal-id="${goalId}"]`);
+  await row.locator('.goal-list-toggle').click();
+  fixture.holdNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect.poll(fixture.syncHeld).toBe(true);
+  fixture.advanceEpoch(); fixture.setGoalTitle('Replacement Goal');
+  await row.locator(`#project-goal-${goalId}`).click();
+  await expect.poll(fixture.goalReads).toBeGreaterThan(0);
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
+  fixture.releaseSync();
+  await expect.poll(fixture.heldSyncFinished).toBe(true);
+  await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
+  await expect(page.getByText('Goal reading', { exact: true })).toHaveCount(0);
 });
