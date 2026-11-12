@@ -24,6 +24,8 @@ const deferred = <T = void>() => {
 };
 const fixtures: { manager: WorkerConfigurationManager; directory: string; expectedStopError?: unknown }[] = [];
 const item = (snapshot: WorkerConfigurationSnapshot, kind: WorkerCloudItem["key"]["kind"]): WorkerCloudItem | undefined => snapshot.items.find(value => value.key.kind === kind);
+// Count and lifecycle fixtures retain chunk encoding and file readback; atomic replacement has its own mechanism tests.
+const persistLifecycleCache: NonNullable<WorkerConfigurationManagerOptions["persist"]> = (file, chunks) => writeFile(file, chunks(), { mode: 0o600 });
 const legacyCache = async (file: string) => {
   const cache: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
   const records = new Map([...cache.retainedItems, ...cache.currentItems].map(entry => [JSON.stringify(entry.value.key), entry]));
@@ -628,7 +630,7 @@ describe("Worker cloud configuration application", () => {
     expect(await readFile(first.file, "utf8")).toBe(source);
   });
   it.each([false, true])("installs a target above the report item limit while preserving removal ownership (started=%s)", async started => {
-    const first = await fixture(), target = desired("1", "original", false);
+    const first = await fixture({ persist: persistLifecycleCache }), target = desired("1", "original", false);
     await first.manager.receive(target); await first.manager.settle(); await first.manager.stop();
     const saved = await legacyCache(first.file);
     const failure = { code: "unavailable", category: "runtime", phase: "stop", occurredAt: "2026-11-04T00:00:00Z" };
@@ -637,7 +639,7 @@ describe("Worker cloud configuration application", () => {
     for (let n = 0; n < 1019; n++) saved.items.push({ value: { key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "error", error: failure, lastFailure: failure, nextAttemptAt: retryAt }, attempts: 1, failureId: n + 1, started: true });
     saved.nextFailureId = 1020;
     await writeFile(first.file, JSON.stringify(saved));
-    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, persist: persistLifecycleCache });
     fixtures.push({ manager: reopened, directory: first.directory });
     const next = desired("2"), expanded = { ...next, value: { ...next.value, projects: [...next.value.projects, { projectId: "44444444-4444-4444-8444-444444444444", nativeOverrides: {} }] } };
     await reopened.receive(expanded);
@@ -646,7 +648,7 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().synchronized).toBe(true);
     expect(reopened.current().desired).toEqual(expanded);
     expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation!.items.length).toBeLessThanOrEqual(1025);
-    const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
+    const migrated = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
     expect(migrated.retainedItems.filter(entry => entry.failureId !== null)).toHaveLength(1019);
     if (started) {
       expect(remove.mock.calls.map(([id]) => id)).toEqual([projectId, projectId]);
@@ -691,13 +693,13 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.report().observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId }, lastFailure: failure }));
   });
   it("cancels obsolete preparation and installs a newer target above the report item limit", async () => {
-    const first = await fixture();
+    const first = await fixture({ persist: persistLifecycleCache });
     await first.manager.receive(desired()); await first.manager.settle(); await first.manager.stop();
     const saved = await legacyCache(first.file);
     for (let n = 0; n < 1018; n++) saved.items.push({ value: { key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, targetRevision: "1", appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
     await writeFile(first.file, JSON.stringify(saved));
     const entered = deferred(), released = deferred(), cancelled = deferred();
-    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, persist: persistLifecycleCache });
     fixtures.push({ manager: reopened, directory: first.directory });
     await reopened.configureProjectAdapters({ prepare: async (_id, signal) => { signal.addEventListener("abort", () => cancelled.resolve(), { once: true }); entered.resolve(); await released.promise; } });
     await reopened.receive(desired()); await entered.promise;
