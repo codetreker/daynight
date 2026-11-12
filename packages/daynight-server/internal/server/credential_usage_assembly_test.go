@@ -76,11 +76,11 @@ type usageAssemblyFamilyDAO struct {
 	grantID   string
 }
 
-func (d usageAssemblyFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, resource, scope string, at time.Time) (store.OAuthAccessIdentity, error) {
-	if !bytes.Equal(hash, secret.Hash(httpTestToken(model.OAuthCredential))) || resource != "https://daynight.example/mcp" || scope != oauth.Scope || at.IsZero() {
+func (d usageAssemblyFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, at time.Time) (store.OAuthAccessIdentity, error) {
+	if !bytes.Equal(hash, secret.Hash(httpTestToken(model.OAuthCredential))) || len(bindings) != 1 || bindings[0] != (store.OAuthBinding{Resource: "https://daynight.example/mcp", Scope: oauth.Scope}) || at.IsZero() {
 		d.t.Fatal("unexpected OAuth authentication input")
 	}
-	return store.OAuthAccessIdentity{Principal: d.principal, GrantID: d.grantID}, nil
+	return store.OAuthAccessIdentity{Principal: d.principal, GrantID: d.grantID, ExpiresAt: at.Add(time.Hour)}, nil
 }
 
 func TestCredentialUsageThroughServerAssembly(t *testing.T) {

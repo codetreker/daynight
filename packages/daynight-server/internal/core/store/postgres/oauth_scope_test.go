@@ -100,7 +100,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 			defer cancel()
 			mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issue.AccessID, issue.AccessExpiresAt)
 			_, err := db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
-				_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, time.Now())
+				_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, time.Now())
 				return err
 			})
 			if err != nil {
@@ -229,7 +229,7 @@ func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
 	}
 	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 		dao := scope.CredentialFamilyDAO()
-		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), issue.Grant.Resource, issue.Grant.Scope, now); err != nil {
+		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now); err != nil {
 			t.Fatal(err)
 		}
 		changed, err := dao.RevokeFamily(ctx, issue.Grant.ID, now)
@@ -240,7 +240,7 @@ func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
 		if err != nil || changed {
 			t.Fatalf("repeat revoke: %v %v", changed, err)
 		}
-		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), issue.Grant.Resource, issue.Grant.Scope, now); !errors.Is(err, model.ErrNotFound) {
+		if _, err := dao.AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("revoked admitted: %v", err)
 		}
 		active, err := dao.ActiveClientReferences(ctx, "client", now)

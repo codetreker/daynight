@@ -127,6 +127,7 @@ func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 	ctx := t.Context()
 	user := uuid.NewString()
 	future := time.Now().UTC().Add(20 * time.Minute).Truncate(time.Microsecond)
+	helperExec(t, tx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, user, uuid.NewString())
 	for _, tc := range []struct {
 		kind  model.CredentialKind
 		table string
@@ -140,11 +141,15 @@ func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 				columns += ",name"
 				values += ",'Token'"
 			}
+			args := []any{id, user, hash[:], future}
 			if tc.kind == model.OAuthCredential {
+				grant := uuid.NewString()
+				helperExec(t, tx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'client','{}','https://example.test/mcp','daynight:mcp',now(),$3)`, grant, user, future.Add(time.Hour))
 				columns += ",grant_id"
-				values += ",gen_random_uuid()"
+				values += ",$5"
+				args = append(args, grant)
 			}
-			helperExec(t, tx, `INSERT INTO `+tc.table+`(`+columns+`) VALUES(`+values+`)`, id, user, hash[:], future)
+			helperExec(t, tx, `INSERT INTO `+tc.table+`(`+columns+`) VALUES(`+values+`)`, args...)
 			principal := model.Principal{Kind: tc.kind, CredentialID: id, UserID: user}
 			credential, err := pg.ThreadCredential(ctx, tx, principal, " FOR SHARE")
 			if err != nil || credential.ExpiresAt == nil || !credential.ExpiresAt.Equal(future) || credential.ExpiresAt.Location() != time.UTC {

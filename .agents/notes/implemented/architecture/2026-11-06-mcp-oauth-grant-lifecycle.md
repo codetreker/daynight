@@ -12,10 +12,13 @@ Lost token responses cannot reveal whether a rotation committed.
 ## Decision
 
 Refresh consumes the old hash and inserts the next refresh and access hashes in
-one transaction, with the original grant expiry as the absolute limit. Existing
-grant locks precede refresh locks and access changes. Matching replay commits
-family revocation before returning refusal; mismatched client or resource leaves
-the family unchanged. Public revocation accepts either credential kind without
+one transaction, with the original grant expiry as the absolute limit for MCP.
+The internal [fixed API profile](2026-11-12-api-oauth-family.md) uses the same
+transaction and locks with a rolling grant and new-refresh deadline. Existing
+grant locks precede refresh locks and access changes. Matching replay within
+the submitted refresh's original lifetime commits family revocation before
+returning refusal; expired replay and mismatched client or resource leave the
+family unchanged. Public revocation accepts either credential kind without
 disclosing whether it matched. Owner operations list only the requested account's
 grants and revoke one family; the caller authenticates the account.
 

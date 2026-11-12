@@ -53,7 +53,7 @@ func TestLifecyclePersistenceAndBoundedFairCleanup(t *testing.T) {
 	if len(empty) != 0 {
 		t.Fatal("foreign grant exposed")
 	}
-	rotated := store.OAuthRotation{Grant: current.Grant, OldHash: current.RefreshHash, AccessHash: digest("new-access"), RefreshHash: digest("new-refresh"), AccessID: uuid.NewString(), CreatedAt: now.Add(time.Second), AccessExpiresAt: now.Add(time.Hour)}
+	rotated := store.OAuthRotation{Grant: current.Grant, OldHash: current.RefreshHash, AccessHash: digest("new-access"), RefreshHash: digest("new-refresh"), AccessID: uuid.NewString(), CreatedAt: now.Add(time.Second), AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: current.Grant.ExpiresAt}
 	check(t, dao.RotateRefresh(ctx, rotated))
 	old, err := dao.Refresh(ctx, current.RefreshHash, false)
 	check(t, err)

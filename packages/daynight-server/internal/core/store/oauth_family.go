@@ -35,9 +35,17 @@ type OAuthFamilyIssue struct {
 	AccessExpiresAt         time.Time
 }
 
+// OAuthBinding identifies one accepted resource, scope and optional fixed client.
+// An empty ClientID accepts the recorded client for that resource and scope.
+type OAuthBinding struct {
+	Resource, Scope, ClientID string
+}
+
 type OAuthAccessIdentity struct {
 	Principal model.Principal
 	GrantID   string
+	// ExpiresAt is the earlier of the persisted access and grant deadlines.
+	ExpiresAt time.Time
 }
 
 // CredentialFamilyDAO is transaction-bound. IssueFamily never commits. The
@@ -53,7 +61,9 @@ type OAuthAccessIdentity struct {
 type CredentialFamilyDAO interface {
 	IssueFamily(context.Context, OAuthFamilyIssue) error
 	RevokeFamily(context.Context, string, time.Time) (bool, error)
-	AuthenticateAccess(context.Context, []byte, string, string, time.Time) (OAuthAccessIdentity, error)
+	AuthenticateAccess(context.Context, []byte, []OAuthBinding, time.Time) (OAuthAccessIdentity, error)
+	LockAccess(context.Context, model.Principal, []OAuthBinding, time.Time) error
+	ReadAccess(context.Context, model.Principal, []OAuthBinding, time.Time) error
 	InspectGrant(context.Context, string, bool) (OAuthGrant, error)
 	ActiveClientReferences(context.Context, string, time.Time) (bool, error)
 }

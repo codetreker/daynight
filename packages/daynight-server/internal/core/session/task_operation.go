@@ -16,7 +16,7 @@ func (op *Operation) LockPurposeCredential(ctx context.Context, scope store.Sess
 	if p.Kind != model.OAuthCredential || purpose != TaskMessageAccess && purpose != TaskReceiptAccess {
 		return op.LockCredential(ctx, scope, p)
 	}
-	err := scope.SessionDAO().LockOAuthCredential(ctx, p, op.engine.Origin+"/mcp", oauth.Scope, op.engine.now())
+	err := scope.SessionDAO().LockOAuthCredential(ctx, p, []store.OAuthBinding{{Resource: op.engine.Origin + "/mcp", Scope: oauth.Scope}}, op.engine.now())
 	if errors.Is(err, model.ErrNotFound) {
 		return fault("unauthenticated", "Credential expired or was revoked.")
 	}

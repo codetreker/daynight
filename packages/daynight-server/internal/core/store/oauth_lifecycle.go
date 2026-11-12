@@ -24,6 +24,7 @@ type OAuthRotation struct {
 	OldHash, AccessHash, RefreshHash []byte
 	AccessID                         string
 	CreatedAt, AccessExpiresAt       time.Time
+	GrantExpiresAt                   time.Time
 }
 
 type GrantLifecycleDAO interface {

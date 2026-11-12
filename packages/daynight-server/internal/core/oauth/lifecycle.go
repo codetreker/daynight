@@ -21,6 +21,9 @@ type GrantLifecycle struct {
 type RotatedTokens struct {
 	AccessToken, RefreshToken string
 	ExpiresIn                 int64
+	Grant                     *store.OAuthGrant
+	AccessID                  string
+	AccessExpiresAt           time.Time
 }
 
 // RotationObservation describes a real rotation candidate and its transaction
@@ -59,7 +62,8 @@ func lifecycleCompletion(c store.Completion, err error) error {
 // and resource match, before any mutation, including replay revocation. A
 // successful response is emitted only after the enclosing transaction commits.
 func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource string, admit func(context.Context, string) error) (RotatedTokens, error) {
-	if !secret.Valid(token, RefreshPrefix) || clientID == "" || !validResource(resource) || admit == nil {
+	profile, valid := profileForResource(resource)
+	if !valid || !secret.Valid(token, profile.refreshPrefix) || clientID == "" || (profile.clientID != "" && clientID != profile.clientID) || admit == nil {
 		return RotatedTokens{}, ErrInvalidGrant
 	}
 	hash := secret.Hash(token)
@@ -75,7 +79,7 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 		if e != nil {
 			return e
 		}
-		if r.GrantID != g.ID || r.ClientID != clientID || g.ClientID != clientID || g.Resource != resource || g.Scope != Scope {
+		if r.GrantID != g.ID || r.ClientID != clientID || g.ClientID != clientID || g.Resource != resource || g.Scope != profile.scope {
 			return ErrInvalidGrant
 		}
 		return nil
@@ -105,7 +109,7 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 		if e != nil {
 			return e
 		}
-		if r.GrantID != grant.ID || r.ClientID != clientID || grant.ClientID != clientID || grant.Resource != resource || grant.Scope != Scope {
+		if r.GrantID != grant.ID || r.ClientID != clientID || grant.ClientID != clientID || grant.Resource != resource || grant.Scope != profile.scope {
 			return ErrInvalidGrant
 		}
 		now, e := d.FreshTime(ctx, s.clock())
@@ -122,14 +126,20 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 			replay = true
 			return nil
 		}
-		accessExpiry := minTime(now.Add(AccessLifetime), grant.ExpiresAt)
-		access, refresh := secret.Random(model.OAuthAccessPrefix), secret.Random(RefreshPrefix)
-		e = d.RotateRefresh(ctx, store.OAuthRotation{Grant: grant, OldHash: hash, AccessHash: secret.Hash(access), RefreshHash: secret.Hash(refresh), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: accessExpiry})
+		grantExpiry := grant.ExpiresAt
+		if profile.rolling {
+			grantExpiry = now.Add(GrantLifetime)
+		}
+		accessExpiry := minTime(now.Add(AccessLifetime), grantExpiry)
+		access, refresh := secret.Random(profile.accessPrefix), secret.Random(profile.refreshPrefix)
+		accessID := uuid.NewString()
+		e = d.RotateRefresh(ctx, store.OAuthRotation{Grant: grant, OldHash: hash, AccessHash: secret.Hash(access), RefreshHash: secret.Hash(refresh), AccessID: accessID, CreatedAt: now, AccessExpiresAt: accessExpiry, GrantExpiresAt: grantExpiry})
 		if e != nil {
 			return e
 		}
 		candidate = &model.CredentialUsageEvent{Kind: model.UsageSubjectOAuthGrant, UserID: grant.UserID, SubjectID: grant.ID, At: now.UTC().Truncate(time.Microsecond)}
-		result = RotatedTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(accessExpiry.Sub(now) / time.Second)}
+		grant.ExpiresAt = grantExpiry
+		result = RotatedTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(accessExpiry.Sub(now) / time.Second), Grant: &grant, AccessID: accessID, AccessExpiresAt: accessExpiry}
 		return nil
 	})
 	if candidate != nil && s.observeRotation != nil {
@@ -156,8 +166,8 @@ func minTime(a, b time.Time) time.Time {
 // RevokePublic never discloses whether a token or client matched. Both access
 // and refresh tokens identify a family, but the submitted client must own it.
 func (s *GrantLifecycle) RevokePublic(ctx context.Context, token, clientID string) error {
-	isRefresh := secret.Valid(token, RefreshPrefix)
-	isAccess := secret.Valid(token, model.OAuthAccessPrefix)
+	isRefresh := secret.Valid(token, RefreshPrefix) || secret.Valid(token, APIRefreshPrefix)
+	isAccess := secret.Valid(token, model.OAuthAccessPrefix) || secret.Valid(token, APIAccessPrefix)
 	if (!isRefresh && !isAccess) || clientID == "" {
 		return nil
 	}
@@ -185,7 +195,8 @@ func (s *GrantLifecycle) RevokePublic(ctx context.Context, token, clientID strin
 		if e != nil {
 			return e
 		}
-		if grant.ClientID != clientID {
+		profile, valid := profileForResource(grant.Resource)
+		if !valid || grant.ClientID != clientID || grant.Scope != profile.scope || (profile.clientID != "" && clientID != profile.clientID) || (isRefresh && !secret.Valid(token, profile.refreshPrefix)) || (isAccess && !secret.Valid(token, profile.accessPrefix)) {
 			return nil
 		}
 		if isRefresh {

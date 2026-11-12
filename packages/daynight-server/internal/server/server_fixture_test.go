@@ -1927,9 +1927,14 @@ var _ store.SessionDAO = (*sessionHTTPDAO)(nil)
 
 type sessionHTTPRejectedDAO struct{ t *testing.T }
 
-func (d sessionHTTPRejectedDAO) LockOAuthCredential(context.Context, model.Principal, string, string, time.Time) error {
+func (d sessionHTTPRejectedDAO) LockOAuthCredential(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
 	unexpectedHTTPCall(d.t, "SessionDAO.LockOAuthCredential")
 	panic("unconfigured SessionDAO.LockOAuthCredential")
+}
+
+func (d sessionHTTPRejectedDAO) ReadOAuthCredential(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	unexpectedHTTPCall(d.t, "SessionDAO.ReadOAuthCredential")
+	panic("unconfigured SessionDAO.ReadOAuthCredential")
 }
 
 func (d sessionHTTPRejectedDAO) LockCredential(a0 context.Context, a1 model.Principal, a2 time.Time) error {

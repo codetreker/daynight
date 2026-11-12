@@ -569,13 +569,33 @@ To traverse all ready tasks, use `task_list` with `ready: true`; its full list
 projection omits descriptions. Read current complete Tasks separately through
 `task_show` with `view: full`. These separate reads do not share the list's fence.
 
-OAuth grant families store only hashes of access and refresh secrets. Initial
-issuance and revocation participate in the caller's transaction; access lasts at
-most one hour and the grant and refresh at most 30 days. The principal carries
-the access credential ID, while the stable authority reference carries the grant
-ID. Revocation invalidates access rows in the same transaction, and Thread and
-Bot credential checks recheck expiry after lock waits. OAuth credentials do not
-authenticate ordinary REST or private Worker endpoints.
+OAuth grant families store only 32-byte SHA-256 hashes of canonical secrets with
+32 random bytes. MCP retains its actual client, `/mcp` resource, `daynight:mcp`
+scope and `dnmcp_` / `dnmcr_` prefixes. Its grant and refresh have an absolute
+30-day limit; access lasts at most one hour and never exceeds that grant deadline.
+The internal API profile fixes `societas-bot` / `Societas Bot`, `/api/v1`,
+`daynight:api` and `dnapi_` / `dnapr_`. Its issuer returns secrets only after a
+confirmed family commit. Public REST authentication still uses PATs or browser
+Cookies. The S2S issuance route is not exposed; existing public OAuth
+refresh/revoke adapters admit only the MCP profile.
+
+API rotation locks the grant and refresh before reading a fresh database time.
+A valid rotation atomically consumes the old refresh, sets the grant and new
+refresh deadline to that time plus 30 days, and inserts a one-hour access token.
+The grant creation time and older token deadlines remain unchanged. Correctly
+bound replay within the old refresh's original lifetime revokes the family;
+replay after that deadline only fails. Ordinary access, failures and usage
+metadata do not renew a grant. Unknown completion or a lost response does not
+recover or replay secrets.
+
+The principal carries the actual user and access credential IDs, while the stable
+authority reference carries the grant ID. Binding-aware family authentication
+returns the earlier access/grant deadline. Family checks retain grant-share then
+access-share locking; the existing CredentialReader keeps its snapshot behavior,
+access-only shared locks and checks after lock waits while joining the actual
+family and user. Revocation invalidates access rows in the same transaction.
+The [authentication design](../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与内部-api-能力)
+owns fixed profiles, rolling deadlines and reader contracts.
 
 The OAuth public profile supports browser-bound requests, account-checked
 decisions and one-time S256 code exchange. A valid

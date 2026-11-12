@@ -29,6 +29,7 @@ func testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t *tes
 		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
 	} else {
 		table = "oauth_access_tokens"
+		mustQueryExec(t, db, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'observation-test','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, queryID(202), actor.UserID, seen.Add(-10*time.Minute), seen.Add(time.Hour))
 		mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, actor.CredentialID, queryID(202), actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
 	}
 	read := func(wantCredential, wantMember bool) {
