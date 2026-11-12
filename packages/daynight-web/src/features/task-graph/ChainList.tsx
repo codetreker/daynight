@@ -1,20 +1,19 @@
 import { SessionStatus } from "../task-session-summary/SessionStatus";
-import { useTaskSessionSummary, useChainSessionSummary, useSessionChainVisibility } from "../task-session-summary/TaskSessionSummaryProvider";
-import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds, useTaskPaused } from "../task-pause/TaskPause";
+import { useChainSessionSummary, useSessionChainVisibility } from "../task-session-summary/TaskSessionSummaryProvider";
+import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds } from "../task-pause/TaskPause";
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
-import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { GraphTask, TaskSummary, WorkerClaim } from '../../api/types';
-import { compareTaskStatus } from '../projects/task-order';
-import { isTerminalStatus, taskEndedAt, taskProgressStatus } from '../../api/task-status';
-import { timestampNanoseconds } from '../projects/task-visibility';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import type { TaskSummary, WorkerClaim } from '../../api/types';
+import { compareTaskMembers } from '../projects/task-order';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { useTaskExecution } from '../task-execution/TaskExecutionClock';
-import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentation';
 import type { GraphIndex } from './model';
 import { ProjectListGraphHost } from './ProjectListGraphHost';
-import { TaskAgentPermissionBadge } from '../task-detail/TaskAgentPermissionBadge';
+import { ChainMemberRow } from './ChainMemberRow';
+import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
+import { ScopedTaskChainRow } from './ScopedTaskChainRow';
+import { scopedChainProgress } from './scoped-chain-progress';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import '../../styles/graph.css';
 import '../../styles/task-status-rows.css';
@@ -48,54 +47,6 @@ type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'workerMachine
   readonly onRevealed?: (id: string) => void;
 };
 
-type GoalTaskRowProps = {
-  readonly projectId: string;
-  readonly task: GraphTask;
-  readonly rootId: string;
-  readonly workerMachine: Pick<WorkerClaim, "state" | "machine"> | undefined;
-  readonly onOpenTask: ChainListProps['onOpenTask'];
-  readonly onOpenSession?: ChainListProps['onOpenSession'];
-};
-
-const GoalTaskRow = memo(({ projectId, task, rootId, workerMachine, onOpenTask, onOpenSession }: GoalTaskRowProps) => {
-  const { messages: { graph, workspace: { project } } } = useI18n();
-  const execution = useTaskExecution(task);
-  const paused = useTaskPaused(task.id);
-  const labelId = useId();
-  const summary = useTaskSessionSummary(task.id);
-  const session = task.status === 'in_progress' ? summary : null;
-  const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
-  return <li>
-    <div className="goal-task-row task-status-surface" data-task-status={task.status}>
-      <button className="goal-task-main" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} aria-labelledby={`${labelId}-title ${labelId}-assignee ${labelId}-permission ${labelId}-machine${paused ? ` ${labelId}-paused` : ''} ${labelId}-status${task.ready ? ` ${labelId}-ready` : ''}${task.blockedBy.length > 0 ? ` ${labelId}-blocked` : ''}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
-        <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
-        <span className="root-heading"><span className="root-title" id={`${labelId}-title`}>{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}<span className="task-assignee-row-meta"><span id={`${labelId}-assignee`} className="goal-task-assignee"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span><span id={`${labelId}-permission`}><TaskAgentPermissionBadge allowAgents={task.allowAgents} /></span><span id={`${labelId}-machine`} className="goal-task-machine">{workerMachine === undefined ? graph.noMachineRecord : workerMachine.state === "active" ? graph.claimMachine({ name: workerMachine.machine.name }) : graph.recordedMachine({ name: workerMachine.machine.name })}</span></span></span>
-      </button>
-      <span className="goal-task-status">{paused && <span id={`${labelId}-paused`}><TaskPausedBadge /></span>}<SessionStatus statusId={`${labelId}-status`} title={title} status={task.status} indicator={session?.indicator ?? null}
-        {...(session !== null && onOpenSession !== undefined ? { onActivate: (event) => onOpenSession(task.id, event.currentTarget) } : {})} />{task.ready && <span id={`${labelId}-ready`} className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span id={`${labelId}-blocked`} className="graph-blocked-badge">{project.blocked}</span>}</span>
-      <svg className="goal-task-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-    </div>
-  </li>;
-});
-
-const compareMembers = (left: GraphTask, right: GraphTask) => {
-  const status = compareTaskStatus(left.status, right.status);
-  if (status !== 0 || !isTerminalStatus(left.status)) return status;
-  const leftEndedAt = taskEndedAt(left);
-  const rightEndedAt = taskEndedAt(right);
-  if (leftEndedAt === null) return rightEndedAt === null ? 0 : 1;
-  if (rightEndedAt === null) return -1;
-  const leftTime = timestampNanoseconds(leftEndedAt);
-  const rightTime = timestampNanoseconds(rightEndedAt);
-  return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
-};
-
-const ActiveWorkerIndicator = ({ memberIds, workerMachines }: { readonly memberIds: ReadonlySet<string>; readonly workerMachines: ChainListProps['workerMachines'] }) => {
-  const { messages: { graph } } = useI18n();
-  if (![...memberIds].some((id) => workerMachines.get(id)?.state === 'active')) return null;
-  return <span className="chain-worker-active"><span className="chain-worker-active-dot" aria-hidden="true" />{graph.automaticExecutionActive}</span>;
-};
-
 const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
   const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
@@ -109,19 +60,21 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
   const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const revealed = useRef<string | null>(null);
+  const container = useRef<HTMLLIElement>(null);
+  const setContainer = useCallback((element: HTMLLIElement | null) => { container.current = element; observeVisibility(element); }, [observeVisibility]);
   useLayoutEffect(() => {
     if (revealTaskId == null) { revealed.current = null; return; }
     if (revealed.current === revealTaskId || !component.memberIds.has(revealTaskId)) return;
     if (!expanded) { setExpanded(true); return; }
-    const row = document.getElementById(`chain-task-${rootId}-${revealTaskId}`);
-    if (row !== null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
+    const row = container.current?.querySelector<HTMLElement>(`[id="chain-task-${rootId}-${revealTaskId}"]`);
+    if (row != null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
   }, [expanded, component, revealTaskId, rootId, onRevealed]);
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
-      .toSorted(compareMembers);
+      .toSorted(compareTaskMembers);
   }, [index, rootId]);
-  return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
+  return <li ref={setContainer} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
@@ -144,44 +97,24 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
       </div>
-      <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} projectId={projectId} task={member} rootId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <ChainMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });
 
 const ScopedChainRow = memo(({ projectId, index, workerMachines, rootId, members, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps & { readonly members: readonly string[] }) => {
-  const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  const label = index.nodes.get(rootId)!;
-  const title = `${label.titlePreview}${label.titleTruncated ? '…' : ''}`;
-  const tasks = members.map((id) => index.nodes.get(id)!).toSorted(compareMembers);
-  const done = tasks.filter((task) => task.status === 'done').length;
-  const cancelled = tasks.filter((task) => task.status === 'cancelled').length;
-  const inProgress = tasks.filter((task) => task.status === 'in_progress').length;
-  const status = taskProgressStatus(done, cancelled, tasks.length, inProgress > 0, tasks.filter((task) => task.status === 'proposed').length);
-  const memberSet = useMemo(() => new Set(members), [members]);
-  const sessionIndicator = useChainSessionSummary(memberSet);
-  const observeVisibility = useSessionChainVisibility(rootId, memberSet);
+  const container = useRef<HTMLLIElement>(null);
   const revealed = useRef<string | null>(null);
+  const progress = useMemo(() => scopedChainProgress(index, members), [index, members]);
   useLayoutEffect(() => {
     if (revealTaskId == null) { revealed.current = null; return; }
     if (revealed.current === revealTaskId || !members.includes(revealTaskId)) return;
     if (!expanded) { setExpanded(true); return; }
-    const row = document.getElementById(`chain-task-${rootId}-${revealTaskId}`);
-    if (row !== null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
+    const row = container.current?.querySelector<HTMLElement>(`[id="chain-task-${rootId}-${revealTaskId}"]`);
+    if (row != null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
   }, [expanded, members, revealTaskId, rootId, onRevealed]);
-  return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={status}>
-    <div className="goal-header task-status-surface" data-task-status={status}>
-      <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded} aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
-        <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-        <span className="root-heading"><span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgress })}</span></span><span className="task-assignee-row-meta"><span className="root-meta">{m.childTasks({ count: members.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span></span>
-        <span className="root-progress"><span className="root-progress-label">{m.progress({ done, cancelled, total: members.length })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(done + cancelled) / members.length * 100}%` }} /></span></span>
-      </button>
-      <SessionStatus title={title} status={status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`} {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
-      <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined} onClick={(event) => onOpenChain(rootId, event.currentTarget)}>{m.viewDependencies}</button>
-    </div>
-    <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <GoalTaskRow key={task.id} projectId={projectId} task={task} rootId={rootId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
-  </li>;
+  return <ScopedTaskChainRow ref={container} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} memberIds={members} progress={progress} instanceId={rootId} expanded={expanded} onExpandedChange={setExpanded} open={open} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
 });
 
 const noop = () => {};

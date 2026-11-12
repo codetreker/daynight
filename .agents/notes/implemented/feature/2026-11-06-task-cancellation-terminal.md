@@ -29,11 +29,10 @@ rotate the project epoch or close PRs and branches.
 A database-generated cancelledAt records the cancellation independently of
 startedAt and completedAt. The current terminal time is derived by status.
 Protocol producers and first-party readers use the same five-state contract, including the later [proposed-state decision](2026-11-10-proposed-task-state.md),
-including released claim history on cancelled tasks. Persistent Web task caches
+with cancelled tasks retaining their ordinary materials. Persistent Web task caches
 use an explicit schema rebuild rather than missing-field fallback.
 
-Active ownership must be released before cancellation. Released and completed
-history is retained. All todo-producing or execution-restoring operations reject
+Active ownership must be released before cancellation. Completed records and Session/archive history are retained. Release removes current ownership as described by the [release decision](../simplification/2026-11-12-release-clears-ownership.md). All todo-producing or execution-restoring operations reject
 cancelled, including the separate withdrawal path. Existing Session freezing,
 complete-inventory ownership reconciliation and terminal cleanup continue to own
 stopping, archive gates, resource checks and retry state. Worker local lifecycle
@@ -78,7 +77,6 @@ The additional required nullable time field needs coordinated protocol readers
 and explicit persistent-cache migration. Distinct predicates prevent a broad
 replacement of done checks from weakening start, completion or reopen rules.
 
-Irreversibility must cover all restoration paths. In particular, retained released
-history cannot authorize withdrawal back to todo; a database constraint error is
+Irreversibility must cover all restoration paths. In particular, historical execution cannot authorize withdrawal back to todo; a database constraint error is
 not a substitute for an explicit domain refusal. Existing cleanup may remain
 pending independently of the business terminal result.

@@ -33,7 +33,7 @@ Completion uses the selected outputs and acceptance endpoint. No universal PR/re
 
 Worker-managed execution is established by an explicit runtime assignment naming the original Project, Task, claim, Worker, worktree and execution context. A generic MCP connection, worker property, allowAgents or possession of a claim-like UUID does not establish it. The executor follows that original scope and contract, including existing delivery authority and current user restrictions, pauses/revocations and project checks. The claim field itself grants no authority.
 
-Preserve and verify original claim/resources before writes. If original active claim no longer matches, or automatic permission is false under the managed contract, stop affected work; do not enable yourself, acquire another claim or adopt another worktree. Released execution history requires controlled continuation by its management owner, not an ordinary status change or substitute claim.
+Preserve and verify original claim/resources before writes. If original active claim no longer matches, or automatic permission is false under the managed contract, stop affected work; do not enable yourself, acquire another claim or adopt another worktree. Release clears current ownership; the original Session and archive retain history. A later execution uses ordinary claim eligibility and new identities.
 
 ## Complete the original owned claim
 

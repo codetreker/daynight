@@ -41,7 +41,7 @@ const fixture = (local = true) => {
   };
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
-    release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
+    release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = { ...remoteTask(claim, input.version + 1n), status: "todo", startedAt: null, ready: true, properties: { pullRequests: [] } }; return observed; }),
     report: vi.fn(), readMonitoring: vi.fn(), writeMonitoring: vi.fn(), configuration: vi.fn(), reportConfiguration: vi.fn(), project: vi.fn(), resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
   const options = { store, remote, serverOrigin: origin, workerId, signal: new AbortController().signal, coordinator };

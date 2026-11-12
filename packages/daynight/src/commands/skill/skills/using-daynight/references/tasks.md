@@ -177,8 +177,7 @@ completedAt for done, cancelledAt for cancelled; historical completion does not
 establish cancelled delivery.
 
 Status writes neither release, stop, withdraw nor transfer Workers. An active
-claim needs authorized release before cancellation. Released history on cancelled
-Tasks authorizes neither a new claim nor withdrawal to proposed/todo. Cancellation
+claim needs authorized release before cancellation. A cancelled Task cannot be claimed or withdrawn to proposed/todo; Session and archive history remain readable. Cancellation
 preserves readable Task material, properties, Steps, Thread, execution history
 and attachment bytes; it does not mark deletion, rotate Project epoch or close
 PRs/branches. Resource cleanup retains its ownership/retry rules. Ordinary

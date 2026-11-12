@@ -12,8 +12,7 @@ paths make those rules inconsistent and complicate source ownership handling.
 ## Decision
 
 Remove the dedicated Worker resume command and API. New executions use ordinary
-claim eligibility and fresh execution identities. Release retains its current
-released record and checks the original owner, claim, version and stopped
+claim eligibility and fresh execution identities. Release checks the original owner, claim, version and stopped
 source. It submits one request; only a validated response confirms release and
 permits completion of the original source. Unknown outcomes are not replayed or
 inferred from a later Task read. A confirmed release with failed local cleanup
@@ -38,6 +37,6 @@ Retaining the unknown result avoids reporting an unconfirmed operation as succes
 ## Consequences
 
 Released tasks remain readable and enter ordinary candidate order; they wait
-when ordinary eligibility is not met. The existing released wire state and
+when ordinary eligibility is not met. The [release ownership decision](2026-11-12-release-clears-ownership.md) removes the released wire state;
 resource/archive fences remain. A lost response requires reconciliation of the
 original resources without treating the request as confirmed.

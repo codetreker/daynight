@@ -20,11 +20,11 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 
 ## 执行身份与页面入口
 
-服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；released task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
+服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；release 后的 task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
 
 Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻执行记录选择器或记录列表刷新行。已有 claim 时按其身份定位真实 Session：活动 Web 执行使用结构化会话，Herdr 使用终端视图；已认领但尚未注册时保持可辨认、可恢复的等待状态，不能用时间最近的旧记录冒充当前会话。任务完成后，主阅读区自动展示该 claim 对应的只读记录，不提供发送、审批回复、设置修改、执行命令、Interrupt 或终端控制。任务完成、会话 draining 与归档 ready 分别判断；pending、failed、unavailable 和读取失败如实显示，保留既有恢复入口，不伪造完整历史。
 
-没有当前 claim 时，可自动呈现最近实际 Session 的只读历史。只有确认任务不存在任何 Session 时才隐藏 Session 页签；首次读取、权限失败、启动待注册或其他未知结果都不能作为无会话证明。任务退回 todo 不删除已有历史入口；仍保留的 released 或 completed claim 继续展示其原会话的只读记录。原执行记录继续经“附件 → Session 记录”查阅；同一 claim 内恢复保持原 Session 归属，不增加一次可选执行，不同 claim 的记录不合并、不删除。
+没有当前 claim 时，可自动呈现最近实际 Session 的只读历史。只有确认任务不存在任何 Session 时才隐藏 Session 页签；首次读取、权限失败、启动待注册或其他未知结果都不能作为无会话证明。任务退回 todo 不删除已有历史入口；仍保留的 completed claim 继续展示其原会话的只读记录；release 后从历史目录读取原会话。原执行记录继续经“附件 → Session 记录”查阅；同一 claim 内恢复保持原 Session 归属，不增加一次可选执行，不同 claim 的记录不合并、不删除。
 
 打开页面、刷新、恢复焦点和传输重连只读取或重新连接原会话，不创建 native conversation、不重发 assignment、不重放用户输入。旧执行记录下拉选择的浏览器缓存不得覆盖自动定位，只清理本功能拥有的选择键。账号、项目、任务、claim 切换及权限撤销严格隔离内容和迟到响应；普通后台检查保持已显示内容、阅读位置、焦点、草稿、显示模式和全屏状态，不因短暂检查隐藏或重挂阅读区。真实身份或生命周期变化沿用相应切换规则。终端的画面和输入准入要求见 [Session v2](session-v2.md#控制与输入)。
 

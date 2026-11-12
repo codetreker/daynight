@@ -82,7 +82,7 @@ func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 		}
 	}
 	for name, expected := range map[string][]string{
-		"state": {"active", "released", "completed"}, "platform": {"windows", "linux", "macos"}, "agent": {"codex", "copilot", "claude"},
+		"state": {"active", "completed"}, "platform": {"windows", "linux", "macos"}, "agent": {"codex", "copilot", "claude"},
 		"agentControlMode": {"herdr", "web"}, "phase": {"preparing", "executing", "verifying", "completing", "waiting", "paused"},
 	} {
 		var value struct {

@@ -67,14 +67,12 @@ func TestWorkerWebModeSurvivesSummaryReleaseAndReclaim(t *testing.T) {
 			})
 			released := workerTestResult(updated)
 			released.Status, released.Ready, released.StartedAt, released.CompletedAt = model.TaskTodo, true, nil, nil
-			prior := next
-			prior.State = model.WorkerReleased
-			released.Properties = testWithWorker(t, updated.Properties, &prior)
+			released.Properties = testWithWorker(t, updated.Properties, nil)
 			f = workerMockWrite(t, updated, owner)
 			workerExpectUpdate(t, f, workerTestValues(released), released)
 			got, err = f.Tasks.ReleaseWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: updated.Version, ClaimID: worker.ClaimID, StoppedConfirmed: true})
-			if err != nil || !reflect.DeepEqual(got, released) || testWorker(t, got.Properties).AgentControlMode != model.AgentControlModeWeb {
-				t.Fatalf("release changed frozen web history: %#v %v", got, err)
+			if err != nil || !reflect.DeepEqual(got, released) {
+				t.Fatalf("release did not clear execution: %#v %v", got, err)
 			}
 			fresh := workerDescriptor()
 			fresh.Agent, fresh.AgentControlMode = provider, model.AgentControlModeWeb
@@ -88,11 +86,7 @@ func TestWorkerWebModeSurvivesSummaryReleaseAndReclaim(t *testing.T) {
 }
 
 func TestWorkerFreshExecutionsSelectTheirRequestedControlMode(t *testing.T) {
-	current, owner, _ := workerTestCurrent(t, model.WorkerReleased)
-	previous := *testWorker(t, current.Properties)
-	previous.Agent, previous.AgentControlMode = model.AgentClaude, model.AgentControlModeWeb
-	previous.NativeSessionID = pointer("old-native")
-	current.Properties = testWithWorker(t, current.Properties, &previous)
+	current, owner, _ := workerTestCurrent(t, "")
 	fresh := workerDescriptor()
 	resumed := claimWorkerMode(t, current, owner, fresh)
 	worker := *testWorker(t, resumed.Properties)

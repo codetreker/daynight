@@ -390,7 +390,7 @@ Agent、不读取账号、不调用模型、不启动 Daynight 服务或数据�
 | in_progress、false | 报告运行中许可锁，不新启用，也不改状态绕过。 |
 | done | 按handoff策略报告已完成、无需移交，不重开或更新许可；这是模式策略，不是API禁止。 |
 | cancelled | 报告取消终态、无需移交，不恢复或启用许可；取消不证明交付。 |
-| active 或 released worker | 保留所有权和执行历史。Active 保留原资源；released 任务按普通资格以新 claim/worktree/native session 开始执行，启用许可本身不恢复已删除的源资源。 |
+| active worker 或已释放任务 | Active 保留所有权和原资源；release 清除当前归属，历史由原 Session/archive 保存。已释放任务按普通资格以新 claim/worktree/native session 开始执行，启用许可本身不恢复已删除的源资源。 |
 
 flag 更新不包含附件的原子保护。可变引用按实际内容核验，发生实质变化时重新审查
 受影响部分；task version、附件清单与时间戳不能充当内容冻结。执行开始前仍须重新
