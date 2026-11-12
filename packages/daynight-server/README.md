@@ -2744,9 +2744,9 @@ dependent IDs. No dependent is changed. Status preserves requiredPlatform, assig
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
 returns to todo only through release. Released tasks may become cancelled without
-new execution; cancelled tasks cannot resume or withdraw to todo. Released todo tasks begin a new execution through eligible automatic acquisition or
-explicit owner/admin resume, with fresh claim and worktree IDs. The
-old four lifecycle routes are removed.
+new execution; cancelled tasks cannot be claimed or withdrawn to todo. Released
+todo tasks begin a new execution through eligible automatic acquisition, with
+fresh claim and worktree IDs. The old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to proposed or todo
@@ -2789,7 +2789,7 @@ automatic discovery requires true and assignedTo matching the authenticated
 local user ID. Unassigned or other-user tasks fail automatic claim with
 409 invalid_transition, preserving fields, version and timestamps. Worker
 candidates use assignedTo=me before pagination; complete claim inventory omits
-assignment filtering, and explicit manual resume retains its owner/admin rules.
+assignment filtering so established executions retain their ownership rules.
 The [claim foundation](../../docs/design/daynight-worker-claims.md)
 rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
@@ -3201,7 +3201,6 @@ user/worker active-claim inventory; no claim table is introduced.
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/withdraw` | `200`, owner/admin clears active/released ownership, returns todo and disables automatic execution |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform`, `assignedTo` and `properties`; omitted

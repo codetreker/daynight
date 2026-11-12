@@ -20,7 +20,7 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 
 ## 执行身份与页面入口
 
-服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；released task 的人工 resume 创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
+服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；released task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
 
 Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻执行记录选择器或记录列表刷新行。已有 claim 时按其身份定位真实 Session：活动 Web 执行使用结构化会话，Herdr 使用终端视图；已认领但尚未注册时保持可辨认、可恢复的等待状态，不能用时间最近的旧记录冒充当前会话。任务完成后，主阅读区自动展示该 claim 对应的只读记录，不提供发送、审批回复、设置修改、执行命令、Interrupt 或终端控制。任务完成、会话 draining 与归档 ready 分别判断；pending、failed、unavailable 和读取失败如实显示，保留既有恢复入口，不伪造完整历史。
 

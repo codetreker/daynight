@@ -62,11 +62,6 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	released := current
 	released.Status = model.TaskTodo
 	released.Properties = values.Properties
-	if _, err = ReleasedWorker(released, worker.ClaimID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = ReleasedWorker(released, "other")
-	faultCode(t, err, "claim_conflict")
 	withdrawn, err := WithdrawCandidate(released)
 	if err != nil || withdrawn.AllowAgents || withdrawn.Status != model.TaskTodo {
 		t.Fatal(withdrawn, err)
@@ -166,8 +161,6 @@ func TestCancelledReleasedHistoryCannotRestoreExecution(t *testing.T) {
 	_, err = WithdrawableWorker(current, released.ClaimID)
 	faultCode(t, err, "invalid_transition")
 	_, err = WithdrawCandidate(current)
-	faultCode(t, err, "invalid_transition")
-	_, err = ReleasedWorker(current, released.ClaimID)
 	faultCode(t, err, "invalid_transition")
 	faultCode(t, WorkerReady(current), "invalid_transition")
 }

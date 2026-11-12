@@ -1,12 +1,12 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、强制撤回、人工接续及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
+状态：服务端认领、归属更新、释放、强制撤回及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
 
 ## 资源和属性所有权
 
 完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。task-sync 摘要携带同快照的完整属性并按任务版本替换，包含 Worker 生命周期变化；服务端图和浏览器图节点保持不含属性的精简投影。摘要属性不代替执行身份核对所需的实时 Task GET。
 
-顶层 `assignedTo` 是独立的人的责任归属，机制由[负责人设计](daynight-task-assignment.md)拥有。claim、摘要更新、release、withdraw、resume、完成及其 no-op 保留该列；改派不转移旧 worker、Session 或 archive 身份。自动候选和 claim 要求负责人等于当前认证账号 userId，未分配和他人任务不具备资格；已有执行与显式人工 resume 继续按原 claim 权限管理。
+顶层 `assignedTo` 是独立的人的责任归属，机制由[负责人设计](daynight-task-assignment.md)拥有。claim、摘要更新、release、withdraw、完成及其 no-op 保留该列；改派不转移旧 worker、Session 或 archive 身份。自动候选和 claim 要求负责人等于当前认证账号 userId，未分配和他人任务不具备资格；已有执行继续按原 claim 权限管理。
 
 ```json
 {
@@ -28,13 +28,13 @@
 
 `platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
 
-初始认领和人工接续的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
+认领的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
 属性定义注册表将 worker 标记为 readOnly；普通 create/PATCH 以及通用属性设置/删除均拒绝公开写入它，即使值与现值相同。PR 修改保留 worker，worker 操作保留其他完整属性。worker 对象作为 task_properties 的一行 JSON 文本保存，类型读取器在业务使用时校验。历史 016_task_worker.sql 曾插入显式 null；属性行迁移冻结旧格式规范化，把 null 转为无行，保留非 null 记录、版本、时间及 PR 字符语义，不做 PostgreSQL JSON 转换。
 
 ## 执行模式兼容
 
-既有请求协议允许省略 agentControlMode 并按其 Herdr 语义处理；显式 null、空串或未知枚举拒绝。新的存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。人工 resume 的新 claim 可以指定另一模式；强制撤回不创建目标执行，后续认领使用新身份。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+既有请求协议允许省略 agentControlMode 并按其 Herdr 语义处理；显式 null、空串或未知枚举拒绝。新的存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。强制撤回不创建目标执行，后续认领使用新身份和本次执行模式。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
 
 属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
 
@@ -42,7 +42,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动初次认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。请求标识和版本只留当前进程；未知响应不启动资源或重放请求，通过完整自有清单找回实际授予。Resume 的新 claim/worktree ID 在发送前生成并输出，未知结果只 GET 核对；人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。请求标识和版本只留当前进程；未知响应不启动资源或重放请求，通过完整自有清单找回实际授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
@@ -51,7 +51,6 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
 | POST `/worker-claim/withdraw` | version、claimId；原 owner/admin 强制撤回 active 或 released 归属，原子清除 worker、返回 todo、清空起止时间并设置 allowAgents=false。 |
-| POST `/worker-claim/resume` | 自动认领的身份字段，加 previousClaimId；显式人工安排已释放 task 的新执行。 |
 
 强制撤回要求调用者仍为项目成员，并且是记录的原 owner 或项目管理员；claimId 必须匹配当前 active/released 记录。completed历史、缺失worker及cancelled任务不能撤回；保留released历史不使取消任务可恢复。该操作不接受 stoppedConfirmed，不等待原 worker 在线，也不创建目标执行。
 
@@ -61,7 +60,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot/claude，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
 
-人工 resume 只处理 released、todo且全部前置为done或cancelled的任务。调用者必须仍是项目成员，并是原 owner 或管理员；previousClaimId 必须匹配保留记录，claimId/worktreeId 必须为新的执行身份。它创建归属于认证调用者的新 active claim，允许本次明确 agent，保留普通人工安排不受自动负责人/许可/平台过滤限制的语义。自动调度不能失败后退入该入口；普通 daemon 按服务端顺序消费符合普通资格的 released 候选，并在远端领取前检查本机旧资源责任。cancelled不符合todo资格，不能resume。公开resume命令使用本次有效配置，实际取得 claim 后才登记 pending。
+普通 daemon 按服务端顺序消费符合普通资格的 released 候选，并在远端领取前检查本机旧资源责任。旧的专用 resume 入口不再提供，也不绕过普通认领资格。cancelled 不符合 todo 资格，不能认领。
 
 ### 更新、完成和状态保护
 
@@ -72,18 +71,18 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 | 当前归属 | 状态转换规则 |
 |---|---|
 | active | done必须提供匹配claimId且由owner提交，同时标记completed。取消须先完成release或合法解除active归属；回到todo使用release或强制撤回。 |
-| released | 普通todo→in_progress/done被拒绝；todo通过资格认领或人工resume开始新执行，也可进入cancelled并保留released历史。 |
+| released | 普通todo→in_progress/done被拒绝；todo通过普通资格认领开始新执行，也可进入cancelled并保留released历史。 |
 | completed 或缺失 | 原三态转换保持，也可进入cancelled；completed历史不变，cancelled不能恢复。 |
 
 非当前 claim 引用不能完成或更新执行。管理员可以 release/withdraw，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或撤回执行；active 目标任务自身仍禁止删除。
 
 ### 释放、强制撤回和计时
 
-Release 要求当前 active claim、原 owner/admin 权限和停止确认。它将记录置为 released，task 返回 todo并按现有计时规则清空起止时间；许可、平台和最后资源资料作为历史保留。重新认领或 resume 开始新的执行区间。
+Release 要求当前 active claim、原 owner/admin 权限和停止确认。它将记录置为 released，task 返回 todo并按现有计时规则清空起止时间；许可、平台和最后资源资料作为历史保留。普通重新认领开始新的执行区间。
 
 强制撤回在同一项目写事务中清除 worker 记录、将状态设为 todo、清空 startedAt/completedAt 并将 allowAgents 设为 false；标题、说明、依赖、平台、PR 和创建时间保持。一次操作只增加一次 task.version，并更新 updatedAt，不能拆为普通状态设置和 metadata PATCH。Released 已是 todo 时仍须完成归属和许可变更，不作为同状态no-op。WithdrawableWorker/WithdrawCandidate在领域准入明确拒绝cancelled，不能仅依赖cancelledAt约束产生存储错误。旧claim 的摘要更新和完成请求失效，普通手工状态操作恢复可用；重新开启自动执行需要新的明确决定。
 
-stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代表服务端远程停止了进程。Release 命令在 runner 停止后取得同一实例锁，完成原 agent 有界清理、停止和 workspace 关闭，保留 worktree 提交远端变更；确认源归属结束后再删除 worktree。远端拒绝时保留原工作区；未知结果只读取核对，操作者确认结果后再启动 runner。不确定原执行是否已停时不提交 release。
+stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代表服务端远程停止了进程。Release 命令在 runner 停止后取得同一实例锁，完成原 agent 有界清理、停止和 workspace 关闭，保留 worktree 后提交一次远端变更；仅有效 200 确认后完成原资源收尾。远端拒绝时保留原工作区；未知结果不重放，也不以读取当前归属推断该请求成功。不确定原执行是否已停时不提交 release。
 
 强制撤回不以停止证明为前提：服务端先撤回归属，原 worker 下一次成功完整自有清单发现原 claim 缺席后开始既有终止清理。该请求不保证旧 agent 立即停止，也不撤销它的外部凭据；allowAgents=false 阻止自动再次领取。此取舍由[强制撤回决策](../../.agents/notes/archived/architecture/2026-10-27-worker-force-withdrawal.md)拥有。
 
@@ -99,7 +98,7 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 ## 进程内客户端、候选和恢复
 
-Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、withdrawWorkerClaim、resumeWorkerTask 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。公开 CLI 的 task set-status done --claim-id <claim-id> 显式选择 completeWorkerTask，并保留精确 --if-version 和同一结果校验；不从 task/environment 推断 claim，不在失败后回退普通 setter。Worker 自身调用 typed API，不启动 daynight 子进程；原生 agent 可使用这一公开完成入口。
+Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、withdrawWorkerClaim 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。公开 CLI 的 task set-status done --claim-id <claim-id> 显式选择 completeWorkerTask，并保留精确 --if-version 和同一结果校验；不从 task/environment 推断 claim，不在失败后回退普通 setter。Worker 自身调用 typed API，不启动 daynight 子进程；原生 agent 可使用这一公开完成入口。
 
 Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User 的 id、email、emailVerified、name、avatarUrl 五字段；它不增加服务端 API。可选 expectedUserId 在成功响应正文准入前核对既有 Daynight-User-ID，空分页同样受约束。Worker 在读取项目/清单前固定启动凭据的认证 UID，当前进程后续请求保持该身份。本机认领索引不保存旧账号或服务范围；切换前先结束旧执行，再重建本机状态。具体启动和查询覆盖规则由[运行时设计](daynight-worker.md#启动发现与周期对账)拥有。
 
@@ -109,7 +108,7 @@ listTaskPage 保留 nextCursor，供运行时有界推进候选；assignedTo=me�
 
 Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和可选 platformSpecific；最后一项只用于列表，响应必须满足指定的平台类别，不能本地丢弃错类结果。listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者按成功完整覆盖的项目和原 claimId 对账，不读取 task 状态分类缺席原因；不可用项目不能以缺席推断结束归属。
 
-自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对原 claim 及具体操作的目标结果；该读取不用于自动清理的缺席原因分类。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
+自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。Release 未知结果保留原错误和资源责任，不通过 GET 推断本次请求成功。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
 每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露已注册的可写属性，包括 pullRequests 和 paused；worker 归属保持服务端只读。
 
@@ -129,10 +128,10 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和�
 jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.jsonl
 ```
 
-请求日志用于定位操作，不能代替权威归属读取。自动初次认领的未知结果由成功完整的自己 claim 清单找回；显式管理写入按已知 taskId 直接 GET 核对当前 claim、用户、worker 和资源绑定，后续 GET 有自己的 request_id。此能力复用服务端 JSON 日志，没有新增日志子系统；常驻 worker 的本地执行日志与原生恢复遥测由运行时拥有，服务日志不构成其验收证据。
+请求日志用于定位操作，不能代替权威归属读取。自动初次认领的未知结果由成功完整的自己 claim 清单找回；后续读取当前 claim、用户、worker 和资源绑定有独立 request_id，不能证明未知 release 的请求结果。此能力复用服务端 JSON 日志，没有新增日志子系统；常驻 worker 的本地执行日志与原生恢复遥测由运行时拥有，服务日志不构成其验收证据。
 
 ## 验证边界
 
-服务基础验证包括真实 PostgreSQL 同版本竞争、owner/admin/成员边界、本人/他人/未分配的自动领取资格及负责人竞争、许可/平台变化、所有状态旁路、旧 claim、释放/强制撤回/接续、撤回原子性及事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
+服务基础验证包括真实 PostgreSQL 同版本竞争、owner/admin/成员边界、本人/他人/未分配的自动领取资格及负责人竞争、许可/平台变化、所有状态旁路、旧 claim、释放/强制撤回与普通重新认领、撤回原子性及事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
 
 这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证边界)拥有；前台协调与人工管理各有自己的验收，完整三平台交付仍须最终验证。[人工管理决策](../../.agents/notes/archived/architecture/2026-10-27-worker-manual-control.md)保存终止后新执行和唯一控制者的取舍。

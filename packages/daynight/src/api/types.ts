@@ -417,10 +417,6 @@ export type UpdateWorkerClaimInput = {
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };
 export type WithdrawWorkerClaimInput = CompleteWorkerTaskInput;
-export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
-  readonly version: bigint;
-  readonly previousClaimId: string;
-};
 export type TaskFilters = {
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;

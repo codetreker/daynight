@@ -70,7 +70,7 @@ Worker browsing, Worker configuration editing, status and execution-setting
 controls, task deletion, attachment management and persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
-retry/release/resume controls. Complete platform acceptance remains
+retry/release controls. Complete platform acceptance remains
 separate from command availability; the
 [requirements](docs/spec/daynight-worker.md) and
 [design](docs/design/daynight-worker.md) define those boundaries.
@@ -293,7 +293,7 @@ proof. See the [worker guide](packages/daynight/README.md#worker-configuration-a
 and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
 recovery and retention boundaries.
 
-Stop the runner before `worker retry/release/resume`; the commands use
+Stop the runner before `worker retry/release`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
 explains version checks, remote-result handling and resource cleanup.
 

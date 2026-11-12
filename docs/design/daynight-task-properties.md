@@ -86,7 +86,7 @@ valueText 外壳复用正 int64 version、UTF-8 application/json 和严格字段
 
 ## Worker 与 Session fence
 
-没有保留归属时没有 worker 行。Claim/resume 创建 active 对象，摘要更新替换其值，release 与 claim-bound complete 分别保留 released/completed 对象；withdraw 删除 worker 行并原子完成状态、计时及自动许可重置。公开属性入口不能制造、覆盖或移除归属。[认领架构](daynight-worker-claims.md)拥有完整生命周期。
+没有保留归属时没有 worker 行。Claim 创建 active 对象，摘要更新替换其值，release 与 claim-bound complete 分别保留 released/completed 对象；withdraw 删除 worker 行并原子完成状态、计时及自动许可重置。公开属性入口不能制造、覆盖或移除归属。[认领架构](daynight-worker-claims.md)拥有完整生命周期。
 
 Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。所有属性写入必须先取得不兼容的父任务锁，不能仅锁属性行：缺失 worker 没有可锁行。项目行锁自身不能替代这一 fence。锁序保持项目（如有）→ 父任务 → 属性 → Session/freeze，不出现 Session→父任务的反向顺序。该约束覆盖注册、控制、状态、claim/release/withdraw/complete 与属性修改。
 

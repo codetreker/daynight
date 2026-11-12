@@ -2667,7 +2667,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("GET", task+"/properties")
 	add("PUT DELETE", task+"/properties/{name}")
 	add("POST PATCH", task+"/worker-claim")
-	for _, op := range []string{"release", "withdraw", "resume"} {
+	for _, op := range []string{"release", "withdraw"} {
 		add("POST", task+"/worker-claim/"+op)
 	}
 	add("GET POST", task+"/steps")
@@ -2761,7 +2761,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt",
 		p + "/tasks", task, task + "/status", p + "/task-work", p + "/task-assignees", p + "/task-graph", p + "/task-sync",
 		"/api/v1/task-properties/schema", task + "/properties", task + "/properties/{name}",
-		task + "/worker-claim", task + "/worker-claim/release", task + "/worker-claim/withdraw", task + "/worker-claim/resume",
+		task + "/worker-claim", task + "/worker-claim/release", task + "/worker-claim/withdraw",
 		task + "/steps", task + "/steps/{stepId}", task + "/steps/{stepId}/status", task + "/steps/{stepId}/position", task + "/thread/messages",
 		task + "/attachments", task + "/attachments/files/{path...}", task + "/preview/{path...}",
 		"/api/v1/me/bots", "/api/v1/me/bots/defaults", "/api/v1/me/bots/{botId}", worker + "/bots",

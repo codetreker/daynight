@@ -130,7 +130,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 				}
 				assertProjectError(t, protocolRequest(h, http.MethodGet, taskCollection(testProjectID)+"?workerId="+worker.WorkerID, "", ""), http.StatusConflict, "invalid_transition")
 			})
-			for _, operation := range []string{"claim", "update", "release", "withdraw", "resume", "complete", "metadata", "delete"} {
+			for _, operation := range []string{"claim", "update", "release", "withdraw", "complete", "metadata", "delete"} {
 				for _, protocol := range []string{"", "2"} {
 					t.Run(operation+"/"+protocol, func(t *testing.T) {
 						h := newHTTPFixture(t, io.Discard)
@@ -176,15 +176,6 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 							h.Tasks.WithdrawWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.WithdrawWorker) (model.Task, error) {
 								if input.Version != returned.Version || input.ClaimID != worker.ClaimID {
 									t.Fatalf("withdraw input: %+v", input)
-								}
-								return returned, check(ctx, p, projectID, taskID)
-							}
-						case "resume":
-							path += "/resume"
-							body["previousClaimId"] = worker.ClaimID
-							h.Tasks.ResumeWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ResumeWorker) (model.Task, error) {
-								if input.Version != returned.Version || input.PreviousClaimID != worker.ClaimID || !reflect.DeepEqual(input.WorkerDescriptor, workerHTTPDescriptor(body)) {
-									t.Fatalf("resume input: %+v", input)
 								}
 								return returned, check(ctx, p, projectID, taskID)
 							}
