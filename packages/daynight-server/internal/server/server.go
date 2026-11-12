@@ -1,6 +1,7 @@
 package server
 
 import (
+	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
@@ -21,6 +22,7 @@ import (
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -45,11 +47,18 @@ type Handler interface {
 }
 
 func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
-	auth, err := authhttp.NewAuthentication(app.Identity, authconfig.AuthSettings{PublicOrigin: config.Server.PublicOrigin, AllowHTTPTestOrigin: config.Server.AllowHTTPTestOrigin}, logger)
+	if app.CredentialUsage == nil {
+		return nil, errors.New("credential usage recorder is unavailable")
+	}
+	observe := func(ctx context.Context, source usage.Source, event model.CredentialUsageEvent) error {
+		_, err := app.CredentialUsage.Record(credentialusage.WithSource(ctx, source), event)
+		return err
+	}
+	auth, err := authhttp.NewAuthentication(app.Identity, authconfig.AuthSettings{PublicOrigin: config.Server.PublicOrigin, AllowHTTPTestOrigin: config.Server.AllowHTTPTestOrigin}, logger, observe)
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := mcphttp.New(app.Identity, config.Server.PublicOrigin, config.MCP.Origins.AllowedOrigins, logger, app.OAuth)
+	endpoint, err := mcphttp.New(app.Identity, config.Server.PublicOrigin, config.MCP.Origins.AllowedOrigins, logger, app.OAuth, observe)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +76,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
 	web := webhttp.New(app.Web)
 	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
-	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants}
+	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants, Logger: logger}
 	mux.Handle("/oauth/register", oauthhttp.Handler(profile.Clients))
 	mux.HandleFunc("/oauth/authorize", authorization.Start)
 	mux.HandleFunc("/oauth/token", tokens.Token)

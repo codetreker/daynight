@@ -2,31 +2,43 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
+	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type AuthenticateCredential func(context.Context, model.CredentialKind, string) (model.Principal, error)
+type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent) error
 
 type RequestAuthentication struct {
 	authenticate AuthenticateCredential
 	origin       string
 	secure       bool
 	logger       *slog.Logger
+	observeUsage ObserveUsage
 }
 
-func NewRequestAuthentication(authenticate AuthenticateCredential, settings authconfig.AuthSettings, logger *slog.Logger) (*RequestAuthentication, error) {
+func NewRequestAuthentication(authenticate AuthenticateCredential, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*RequestAuthentication, error) {
+	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
+		return nil, errors.New("invalid credential usage observer")
+	}
 	origin, err := authconfig.ValidatePublicOrigin(settings)
 	if err != nil {
 		return nil, err
 	}
-	return &RequestAuthentication{authenticate: authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger}, nil
+	h := &RequestAuthentication{authenticate: authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger}
+	if len(observers) == 1 {
+		h.observeUsage = observers[0]
+	}
+	return h, nil
 }
 
 func (h *RequestAuthentication) Origin() string { return h.origin }
@@ -61,7 +73,16 @@ func (h *RequestAuthentication) AuthenticateRequest(request *http.Request) (mode
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			return model.Principal{}, Failure()
 		}
-		return h.authenticate(request.Context(), model.PATCredential, parts[1])
+		principal, err := h.authenticate(request.Context(), model.PATCredential, parts[1])
+		if err != nil {
+			return principal, err
+		}
+		if h.observeUsage != nil {
+			event := model.CredentialUsageEvent{Kind: model.UsageSubjectPAT, UserID: principal.UserID, SubjectID: principal.CredentialID, At: time.Now().UTC().Truncate(time.Microsecond)}
+			_ = h.observeUsage(request.Context(), usage.SourceHTTPPAT, event)
+			_ = httpx.PublishCredentialUsageFaults(h.logger, request.Context())
+		}
+		return principal, nil
 	}
 	secret, ok := requestCookie(request, h.SessionCookieName())
 	if !ok {

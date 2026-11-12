@@ -2551,6 +2551,7 @@ func rootAssemblyWitness(t *testing.T, withWebhook bool) (*sessionApplication, *
 		t.Fatal(err)
 	}
 	app := service.NewModules(cfg, db, nil, attachmentTestFiles(t), client)
+	app.CredentialUsage = unusedUsageRecorder(testLogger())
 	witness := &rootIdentityWitness{IdentityOperations: app.Identity}
 	app.Identity = witness
 	if withWebhook {
