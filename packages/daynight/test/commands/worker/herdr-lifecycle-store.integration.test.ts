@@ -184,6 +184,9 @@ it("does not infer never-submitted launch from incomplete legacy prepared eviden
     old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
     const reopened = open(f.file);
     expect(reopened.get(identity)!.runs[0]!.nativeLaunch).toBe("unknown");
+    const unknown = reopened.get(identity)!;
+    expect(() => reopened.confirmNativeLaunchRejected(unknown, { method: "agent.start", code: "agent_pane_busy", executionGeneration: "1", binding: unknown.runs[0]!.run.binding })).toThrow();
+    expect(reopened.get(identity)).toEqual(unknown);
   });
 
 it("does not allow requested launch evidence to become never submitted", () => {
@@ -195,6 +198,40 @@ it("does not allow requested launch evidence to become never submitted", () => {
     close(f.store); const restarted = open(f.file);
     expect(restarted.get(identity)!.runs[0]!.nativeLaunch).toBe("requested");
   });
+
+it("commits an exact definite busy rejection without changing its original run or weakening generic rollback", () => {
+  const f = fixture();
+  let record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); });
+  record = f.store.update(record, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; });
+  const evidence = { method: "agent.start" as const, code: "agent_pane_busy" as const, executionGeneration: "1", binding: record.runs[0]!.run.binding };
+  expect(() => f.store.update(record, draft => { draft.runs[0]!.phase = "prepared"; draft.runs[0]!.nativeLaunch = "not_submitted"; })).toThrow();
+  const rejected = f.store.confirmNativeLaunchRejected(record, evidence);
+  expect(rejected).toEqual({ ...record, version: record.version + 1, runs: [{ ...record.runs[0]!, phase: "prepared", nativeLaunch: "not_submitted" }] });
+  close(f.store); const reopened = open(f.file);
+  expect(reopened.get(identity)).toEqual(rejected);
+  const retry = reopened.update(rejected, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; });
+  expect(retry.runs).toHaveLength(1);
+  expect(retry.runs[0]!.run).toEqual(record.runs[0]!.run);
+});
+
+it("rejects stale or mismatched busy-rejection evidence without changing the requested run", () => {
+  const f = fixture();
+  let record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); });
+  record = f.store.update(record, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; });
+  const evidence = { method: "agent.start" as const, code: "agent_pane_busy" as const, executionGeneration: "1", binding: record.runs[0]!.run.binding };
+  expect(() => f.store.confirmNativeLaunchRejected(record, { ...evidence, executionGeneration: "2" })).toThrow();
+  expect(() => f.store.confirmNativeLaunchRejected(record, { ...evidence, binding: { ...evidence.binding, paneId: "foreign-pane" } })).toThrow();
+  expect(() => f.store.confirmNativeLaunchRejected(record, { ...evidence, code: "request_unknown" as never })).toThrow();
+  expect(f.store.get(identity)).toEqual(record);
+  const changed = f.store.update(record, draft => { draft.controlEpoch = "1"; });
+  expect(() => f.store.confirmNativeLaunchRejected(record, evidence)).toThrow(/version|stale/i);
+  const unknown = f.store.update(changed, draft => { draft.runs[0]!.phase = "stop_unknown"; });
+  expect(() => f.store.confirmNativeLaunchRejected(unknown, evidence)).toThrow();
+  expect(f.store.get(identity)).toEqual(unknown);
+  const g = fixture(), observed = active(g);
+  expect(() => g.store.confirmNativeLaunchRejected(observed, { ...evidence, binding: observed.runs[0]!.run.binding })).toThrow();
+  expect(g.store.get(identity)).toEqual(observed);
+});
 
 it("migrates legacy stopped and pending ledger identities without rewriting their wire evidence", () => {
   const f = fixture(); let record = active(f);

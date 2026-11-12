@@ -23,7 +23,7 @@ publishes only successful commits. Completed external effects and trusted receip
 remain owned while their callers cancel or time out; no retry re-executes effects.
 Malformed format, identity and independent non-I/O errors remain failures.
 
-Readiness closes new inputs and execution admission while preserving the last
+Readiness closes new configuration work and execution admission while preserving the last
 committed target, actual values, Project view and original work. Normal receive
 and read callers share a cancellable readiness wait; finite result producers
 retain their owned commits. Task configurationComplete and the separate Bot
@@ -31,6 +31,20 @@ canAdmitNewExecution callback check storage and current qualification after
 awaited preparation and before first intent, registration and dispatch. Original
 submitted/unknown execution and frozen native recovery/input/stop continue under
 their own identity and authorization.
+
+A recognized no-effect `agent_pane_busy` response is synchronously confirmed
+before another admission wait. The specialized Herdr transition requires the
+same latest generation/binding and CAS plus absence of agent, segment, input
+and stop facts in that generation. Earlier assignment/input history remains
+unchanged; the same prepared/not-submitted run stays resumable.
+Ordinary cancellation, waiting or catch handling cannot downgrade requested,
+unknown or observed execution. First Herdr Session registration carries the
+dynamic guard through awaited support/current reads to the actual initial
+register intent and dispatch; reconciling existing or unknown registration
+and reconnect remain available. The
+[lifecycle design](../../../../docs/design/herdr-worker-lifecycle.md#启动与首次输入)
+owns the rejection proof and
+[registration boundary](../../../../docs/design/herdr-worker-lifecycle.md#session-连接与采集段).
 
 Shutdown begins manager drain before joining reporters or other checkpoint
 producers. Five seconds bounds further retry scheduling, not the lifetime of an

@@ -7,7 +7,7 @@ import { assertTerminalBinding, isPreparedSessionV2StopProof, parseSessionV2Mess
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, hash, integer, list, nativeText, nullable, seq, text, timestamp, unique, uuid } from "../../../session/v2/values.js";
 import type { SessionV2Owner, SessionV2Payloads, SessionV2Run } from "../../../session/v2/types.js";
 import type { ClaimIdentity } from "../types.js";
-import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
+import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrNativeLaunchRejection, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
 import { createHerdrLifecycleStoreFormat, herdrLifecycleStoreFormat } from "./lifecycle-store-format.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
@@ -190,6 +190,16 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
 };
 
 type LifecycleRow = { identity: string; version: number; data: string };
+const validateNativeLaunchRejection = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecord, evidence: HerdrNativeLaunchRejection): void => {
+  const run = before.runs.at(-1), generation = seq(evidence.executionGeneration), binding = parseTerminalBinding(evidence.binding);
+  if (evidence.method !== "agent.start" || evidence.code !== "agent_pane_busy" || run === undefined || run.run.executionGeneration !== generation
+    || run.phase !== "launch_requested" || run.nativeLaunch !== "requested" || !same(run.run.binding, binding)
+    || run.processes.some(process => process.role === "agent") || run.run.segmentIds.length !== 0 || run.admission !== null
+    || run.stopOperationId !== null || run.run.stopProof !== null) reject("A busy rejection must identify the exact unstarted native launch.");
+  const expected = structuredClone(before), latest = expected.runs.at(-1)!;
+  expected.version = after.version; latest.phase = "prepared"; latest.nativeLaunch = "not_submitted";
+  if (!same(expected, after)) reject("A definite native rejection cannot change other execution evidence.");
+};
 const parseRow = (row: LifecycleRow): HerdrLifecycleRecord => {
   const record = parseHerdrLifecycleRecord(decodeStrictSessionJson(row.data, 8 * 1024 * 1024));
   if (key(record) !== row.identity || record.version !== row.version) return reject("Persisted Herdr lifecycle ownership or version is inconsistent.");
@@ -242,18 +252,19 @@ export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options:
     return record;
   });
   const atomic = <T>(action: () => T): T => runSqliteImmediate(db, () => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); });
-  const update = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => atomic(() => {
+  const mutate = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void, validate: typeof validateChange): HerdrLifecycleRecord => atomic(() => {
     if (retired({ ...expected.owner, claimId: expected.claimId })) return reject("A retired never-started claim cannot acquire new execution evidence.");
     const original = get({ ...expected.owner, claimId: expected.claimId });
     if (original === null || original.version !== expected.version) return reject("The Herdr lifecycle version changed; reread the original execution before deciding.");
     if (!same(original, expected)) return reject("The expected lifecycle record differs from its stored version.");
     const draft = structuredClone(original); change(draft); draft.version = original.version + 1;
-    const next = parseHerdrLifecycleRecord(draft); validateChange(original, next);
+    const next = parseHerdrLifecycleRecord(draft); validate(original, next);
     const data = canonicalSessionJson(next); if (Buffer.byteLength(data) > 8 * 1024 * 1024) return reject("Herdr lifecycle metadata exceeds its size limit.");
     const result = db.prepare("UPDATE executions SET version = ?, data = ? WHERE identity = ? AND version = ?").run(next.version, data, key(original), original.version);
     if (result.changes !== 1) return reject("The Herdr lifecycle compare-and-swap was not confirmed.");
     return get({ ...next.owner, claimId: next.claimId })!;
   });
+  const update = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => mutate(expected, change, validateChange);
   return {
     close: (): void => { closeSqliteDatabase(db, { file: db.name, format: herdrLifecycleStoreFormat }); },
     get,
@@ -276,6 +287,10 @@ export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options:
       return get({ ...owner, claimId })!;
     }),
     update,
+    confirmNativeLaunchRejected: (expected: HerdrLifecycleRecord, evidence: HerdrNativeLaunchRejection): HerdrLifecycleRecord => mutate(expected, draft => {
+      const run = draft.runs.at(-1)!;
+      run.phase = "prepared"; run.nativeLaunch = "not_submitted";
+    }, (before, after) => validateNativeLaunchRejection(before, after, evidence)),
     recover: (expected: HerdrLifecycleRecord): HerdrLifecycleRecord => update(expected, draft => {
       draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n);
       if (draft.initialAssignment === "dispatching" || draft.runs.some(run => run.admission !== null)) draft.automationBlocked = true;

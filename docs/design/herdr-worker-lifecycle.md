@@ -21,7 +21,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 | `connectionEpoch`、`registrationRequest` | 已确认连接代次与尚待观察的原注册请求 |
 | `controlEpoch`、`admission` | 本地控制失效边界和单次自动输入准入 |
 | `preparation` | 尚未建立完整运行绑定时的实例目录、启动意图与原 daemon 证明 |
-| `runs` | 每代 binding、运行阶段、单调 `nativeLaunch` 事实、原 daemon/shell/agent 身份、停止操作与停止证明 |
+| `runs` | 每代 binding、运行阶段、由提交结果与观察校验的 `nativeLaunch` 事实、原 daemon/shell/agent 身份、停止操作与停止证明 |
 | `segments` | 段序号、所属 generation/binding、起止边界及显式 restart gap |
 | `initialAssignment`、`initialPrompt`、`automationBlocked` | 原首次输入、提交结果及未知结果造成的自动输入阻断 |
 | `ledgerRequest` | 发送前保存的完整 ledger 消息及原 connection epoch；未知结果必须先观察，不重放 |
@@ -29,7 +29,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 进程身份包含 boot identity、PID、微秒出生标识、audit token、父进程、进程组与 session。PID 或命令行相同不能代替出生身份；同一出生进程的 exec 也可能改变 audit identity。原始证明不可被后来观察的 foreground 进程覆盖，只能按已验证的连续父子关系追加证据。
 
-lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；requested、observed 或 unknown 不能返回 not_submitted。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
+lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；普通 patch、取消或准入等待不能将 requested、observed 或 unknown 回退为 not_submitted。唯一的明确拒绝转换来自实际 `agent.start` 返回被识别的 `agent_pane_busy`：发送者先同步调用 `onRejected`，由 `confirmNativeLaunchRejected` 核对同一代、同一 binding、最新版本/CAS，以及该代没有 agent、采集段、输入/admission 或停止事实，才把原未启动运行恢复为 prepared/not_submitted；此前代的首次 assignment 与输入历史保持不变。此确认先于下一次准入等待，存储恢复后仍使用原 run；observed、unknown 或证据不足不能使用该转换。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
 
 只有本次明确成功取得的新 claim 能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 
@@ -37,13 +37,15 @@ lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`re
 
 首次启动先确认原 claim，再保存 preparation，记录 daemon 启动意图并捕获实际 daemon 身份。建立 workspace 后读取原 shell 的真实进程身份，将完整绑定与 `nativeLaunch=not_submitted` 同一事务提交为 `prepared`。Session 注册与运行 ledger 同步失败时，保留已经产生的资源和责任，不以新实例代替。
 
-具有 not_submitted 事实的 `prepared` 运行可以重新接入，但在 `agent.start` 前必须核对原 daemon、shell 和端点。随后将 `launch_requested` 与 `nativeLaunch=requested` 同一事务持久化，再调用 `HerdrAgentManager.launch`；该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功的前提。每次实际 `agent.start`（包括明确 shell busy 后的重试）之前，再核对原 claim、daemon、端点与 shell 出生身份；变化时不发出下一次启动请求。取得原 native agent 的进程身份时，将追加身份、`active` 与 `nativeLaunch=observed` 同一事务保存，建立采集段后才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。manager.launch 内即使前提检查先失败，已经写入的 requested 仍不回退；某次 not-submitted 异常不能证明完整启动历史从未提交。
+具有 not_submitted 事实的 `prepared` 运行可以重新接入。`HerdrAgentManager.launch` 先完成 preflight、调用者 `beforeStart` 的异步前提及 `readOwned`/`realpath` 对原 daemon、端点、shell 出生身份与 cwd 的核对；每次真实 `agent.start`（包括明确 shell busy 后的重试）都重做这些新鲜前提，变化时不发出下一次请求。全部 await 完成后重查动态准入，再由同步 `onSubmitting` 将 `launch_requested` 与 `nativeLaunch=requested` 同一事务持久化，紧接着派发 RPC；准入检查、意图记录与请求调用之间没有新的 await。该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功前提。取得原 native agent 的进程身份时，将追加身份、`active` 与 `nativeLaunch=observed` 同一事务保存，建立采集段后才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。普通前提检查失败、准入关闭或某次 not-submitted 异常都不能证明完整启动历史从未提交，已经写入的 requested 仍保留。只有上述实际明确拒绝经专用同步 CAS 确认后，才能在等待下一次准入时保留原 prepared/not_submitted 运行；再次启动仍核对原身份和新鲜准入，不能泛化为回滚未知请求。
 
 首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、运行身份、服务端控制状态和 admission，并按输入用途检查 paused：自动输入受暂停约束，人工输入仍须通过原有身份、lease 和 fence 校验。明确未发送可回到 pending；任务暂停、合法人工控制或挂起以及已知菜单/禁用输入的零写入等待须保留明确的内部类型。仲裁器已登记时输入 journal 先登记 rejected，生命周期再清除本次 admission 并为首次 assignment 保留 pending，不能因跨层序列化而计作执行失败。成功传输保存为 `transport_completed`；一旦可能已写，任何失败仍保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 
 `nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。输入后的观察与普通轮询负责同步补齐后的完整 ledger，未确认请求继续读回对账；确认后恢复同段缓存画面的投递。快照的 ledger hash 与 fence 校验始终保留，已传输输入不因 ledger 同步失败而重发。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全、身份有效且 `resume` 用途的输入检查通过时才恢复自动 continuation，人工状态继续 suspended。恢复自动执行的真实空字段证明与日常 automatic/cleanup 的已知阻塞排除不同；后者报告 composer unavailable，不能被用于把未知布局或草稿推断为空。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
 
 ## Session 连接与采集段
+
+首次 Herdr Session 注册沿准备/启动的 publish、connect 传递同一动态准入回调。`connectHerdrSession` 在 await `verifySupport` 与 `current` 等最后前置读取完成后，紧邻首次 `mode=register` 意图登记和真实请求派发重查该回调；进入 helper 时的一次检查不能覆盖后续等待。期间失去准入时不产生新的注册意图或请求。已有或结果未知的原注册仍按原 registrationRequest/Session fence 核对，reconciliation 与 reconnect 不被当作新的分配，保持原运行与控制归属。
 
 普通 Worker 重启接入仍存活的原运行时，重新确认 Session 连接并增加 `connectionEpoch`，保持 `sessionId` 与 `executionGeneration`。只有原运行具有普通 shell+agent 停止证明、原 claim 仍有效且原 native ID 与首次输入结果可用于恢复，才创建下一代实际运行。准备资源停止证明不授予下一代运行或自动恢复，即使该代继承了前代非空 nativeSessionId。
 

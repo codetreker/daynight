@@ -27,6 +27,7 @@ import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archiv
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError, HerdrInputWaitingError } from "../../../src/commands/worker/herdr/agents.js";
+import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
 import { herdrLedgerHash, openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
@@ -65,6 +66,8 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
   const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, observeFailure: undefined as Error | undefined, observeAfterInputFailure: undefined as Error | undefined, observeFailureAfterCount: 1, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   const shellSettings = { managed: false, captureFailure: false };
+  const launchOutcomes = { busyRejections: 0, unknown: false };
+  let beforeDefiniteRetry: (() => void) | undefined;
   let beforePromptGuard: (() => void) | undefined;
   let beforeFrame: ((index: number) => void | Promise<void>) | undefined;
   let beforeInspect: ((purpose: string) => void | Promise<void>) | undefined;
@@ -207,6 +210,18 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
           await request.beforeStart?.(active);
           assertConfigurationAdmission(request.canAdmitNewExecution);
           request.onSubmitting?.();
+          while (launchOutcomes.busyRejections > 0) {
+            launchOutcomes.busyRejections--;
+            const rejection = new HerdrAgentActionError("The original shell is still initializing.", "agent.start", "rejected", {
+              cause: new HerdrRpcError("The target pane is busy.", { method: "agent.start", code: "agent_pane_busy", requestId: "busy", submission: "unknown" }),
+            });
+            request.onRejected?.(rejection);
+            beforeDefiniteRetry?.();
+            await request.beforeStart?.(active);
+            assertConfigurationAdmission(request.canAdmitNewExecution);
+            request.onSubmitting?.();
+          }
+          if (launchOutcomes.unknown) throw new HerdrAgentActionError("The original start response was lost.", "agent.start", "unknown");
           if (beforeLaunchRetry) { events.push("native-busy-attempt"); beforeLaunchRetry(); await request.beforeStart?.(active); }
           expect(read().runs.at(-1)?.phase).toBe("launch_requested"); events.push("native-launch"); launches.push(request.resumeSessionId ? { resumeSessionId: request.resumeSessionId } : {}); state.launched = true; state.nativeVisible = request.resumeSessionId !== undefined || settings.nativeAtLaunch; return observation(); },
         start: async () => { throw new Error("Direct start would bypass durable admission"); },
@@ -271,7 +286,8 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, launchOutcomes, observed, nativeId, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
+    beforeDefiniteRetry: (hook: () => void) => { beforeDefiniteRetry = hook; },
     acknowledgeControl: (control: NonNullable<HerdrSessionState["control"]>) => { if (!remote) throw new Error("No remote state"); remote.control = structuredClone(control); },
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
     mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
@@ -279,6 +295,90 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("resumes the same unstarted run after a definite busy rejection and configuration outage", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(), original = f.read();
+    let complete = true;
+    f.launchOutcomes.busyRejections = 1;
+    f.beforeDefiniteRetry(() => { complete = false; });
+    await expect(f.facade.tasks.start(f.context, binding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment", canAdmitNewExecution: () => complete,
+    }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.read().runs[0]).toMatchObject({ phase: "prepared", nativeLaunch: "not_submitted", run: { executionGeneration: "1", binding: original.runs[0]!.run.binding } });
+    expect(f.launches).toEqual([]); expect(f.inputs).toEqual([]);
+    expect(() => f.facade.lifecycle!.assertCanAdvance(f.context)).not.toThrow();
+    complete = true;
+    const resumed = await f.prepare(); expect(resumed).toEqual(binding);
+    await f.facade.tasks.start(f.context, resumed, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment", canAdmitNewExecution: () => complete,
+    }, operation());
+    expect(f.read().runs).toHaveLength(1);
+    expect(f.read().sessionId).toBe(original.sessionId);
+    expect(f.read().registrationId).toBe(original.registrationId);
+    expect(f.launches).toHaveLength(1); expect(f.registrations).toHaveLength(1);
+  });
+
+  it("keeps an unknown native submission blocked when configuration recovers", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    f.launchOutcomes.unknown = true;
+    await expect(f.start(binding)).rejects.toMatchObject({ submission: "unknown" });
+    expect(f.read().runs[0]).toMatchObject({ phase: "launch_requested", nativeLaunch: "requested" });
+    expect(() => f.facade.lifecycle!.assertCanAdvance(f.context)).toThrow();
+    f.reopen(); f.launchOutcomes.unknown = false;
+    expect(() => f.facade.lifecycle!.assertCanAdvance(f.context)).toThrow();
+    expect(f.launches).toEqual([]);
+  });
+
+  it("keeps previous input history while a definite busy rejection retries original native recovery", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const previous = f.read(); f.reopen(); const recoveryBinding = await f.prepare();
+    f.launchOutcomes.busyRejections = 1;
+    await f.facade.tasks.start(f.context, recoveryBinding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Continue the original task", canAdmitNewExecution: () => false,
+    }, operation());
+    expect(f.read().runs[0]).toEqual(previous.runs[0]);
+    expect(f.read().runs[1]).toMatchObject({ phase: "active", nativeLaunch: "observed", run: { executionGeneration: "2", binding: { nativeSessionId: f.nativeId } } });
+    expect(f.read().initialAssignment).toBe("transport_completed");
+    expect(f.inputs.filter(input => input.initial)).toHaveLength(1);
+    expect(f.launches).toEqual([{}, { resumeSessionId: f.nativeId }]);
+  });
+
+  it.each(["support", "current"] as const)("holds first Session registration when admission closes during %s verification", async stage => {
+    const f = fixture(); f.register(); let complete = true;
+    if (stage === "support") {
+      const verify = f.api.verifySupport;
+      f.api.verifySupport = async signal => { await verify(signal); complete = false; };
+    } else {
+      const current = f.api.current;
+      f.api.current = async (...args) => { const result = await current(...args); if (f.read().runs.length > 0) complete = false; return result; };
+    }
+    let failure: unknown;
+    try { await f.facade.tasks.prepareWorkspace(f.context, "Task", operation(), { canAdmitNewExecution: () => complete }); }
+    catch (error) { failure = error; }
+    expect(f.registrations).toEqual([]);
+    expect(f.read()).toMatchObject({ connectionEpoch: null, registrationRequest: null, runs: [{ phase: "prepared", nativeLaunch: "not_submitted" }] });
+    expect(failure).toBeInstanceOf(ConfigurationAdmissionWaiting);
+  });
+
+  it("carries admission through start publication of an already prepared first run", async () => {
+    const f = fixture(); f.register(); const verify = f.api.verifySupport;
+    f.api.verifySupport = async () => { throw new Error("Support temporarily unavailable."); };
+    await expect(f.prepare()).rejects.toThrow("Support temporarily unavailable");
+    expect(f.read().runs).toHaveLength(1); expect(f.registrations).toEqual([]);
+    const binding = await f.prepare(); let complete = true;
+    f.api.verifySupport = async signal => { await verify(signal); complete = false; };
+    await expect(f.facade.tasks.start(f.context, binding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment", canAdmitNewExecution: () => complete,
+    }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.registrations).toEqual([]);
+    expect(f.read()).toMatchObject({ connectionEpoch: null, registrationRequest: null, runs: [{ phase: "prepared", nativeLaunch: "not_submitted" }] });
+    f.api.verifySupport = verify; complete = true;
+    await f.facade.tasks.start(f.context, binding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment", canAdmitNewExecution: () => complete,
+    }, operation());
+    expect(f.read().runs).toHaveLength(1); expect(f.registrations).toHaveLength(1); expect(f.launches).toHaveLength(1);
+  });
+
   it("waits before first native preparation after configuration readiness changes during claim verification", async () => {
     const f = fixture(); f.register();
     let complete = true;

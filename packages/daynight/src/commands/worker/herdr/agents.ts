@@ -30,7 +30,7 @@ export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | 
 export type HerdrPromptReceipt = { submission: "submitted"; observation: HerdrAgentObservation };
 export type HerdrPromptResult = HerdrPromptReceipt | { submission: "skipped"; observation: HerdrAgentObservation };
 export type HerdrPromptGuard = (operation: Operation) => Promise<boolean>;
-export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void>; canAdmitNewExecution?: () => boolean; onSubmitting?: () => void };
+export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void>; canAdmitNewExecution?: () => boolean; onSubmitting?: () => void; onRejected?: (rejection: HerdrAgentActionError) => void };
 export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   prompt: string;
   /** Capture the current input immediately before the durable native launch. */
@@ -274,6 +274,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       try { return await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation); }
       catch (error) {
         if (!(error instanceof HerdrAgentActionError) || error.submission !== "rejected" || !(error.cause instanceof HerdrRpcError) || error.cause.method !== "agent.start" || error.cause.code !== "agent_pane_busy") throw error;
+        try { input.onRejected?.(error); }
+        catch (cause) { throw new AggregateError([error, cause], "The definite native rejection could not be committed.", { cause: error }); }
         // A new shell can still be running its startup scripts. Herdr's CLI retries
         // this definite rejection with the same terminal and shell-process proof.
         // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/cli/agent.rs#L358-L403

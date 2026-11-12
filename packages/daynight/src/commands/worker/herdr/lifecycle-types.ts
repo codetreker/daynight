@@ -36,6 +36,7 @@ export type HerdrLocalSegment = {
 };
 export type HerdrPreparation = { instanceId: string; instanceDirectory: string; phase: "prepared" | "launch_requested"; daemon: MacProcessIdentity | null };
 export type HerdrLedgerRequest = { message: Extract<SessionV2Message, { type: "generation_ledger" }>; connectionEpoch: string };
+export type HerdrNativeLaunchRejection = { method: "agent.start"; code: "agent_pane_busy"; executionGeneration: string; binding: TerminalBinding };
 export type HerdrLifecycleRecord = {
   owner: SessionV2Owner;
   claimId: string;
