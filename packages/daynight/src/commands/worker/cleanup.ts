@@ -76,8 +76,8 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       if (deleteWorktree) {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, false);
         const binding = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
-        await cleanupOperation(operation => deps.git.removeWorktree(input.project, input.owner, operation), signal);
-        if (await cleanupOperation(operation => deps.git.findWorktree(input.project, input.owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+        const outcome = await deps.git.removeWorktree(input.project, input.owner, { ...(signal === undefined ? {} : { signal }) });
+        for (const error of outcome.effectErrors) deps.emit({ kind: "worktree-cleanup-effect-error", identity: input.owner, component: "cleanup", phase: "worktree-removal", ...(input.task === undefined ? {} : { task: input.task }), message: "Worktree cleanup reported an error, but its resources are absent.", error });
         const after = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
         if (binding?.worktreePath !== after?.worktreePath || binding?.repositoryPath !== after?.repositoryPath || binding?.commonDirectory !== after?.commonDirectory || binding?.branch !== after?.branch) throw new Error("The original worktree binding changed during cleanup.");
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, true);

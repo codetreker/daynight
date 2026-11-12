@@ -50,6 +50,22 @@ describe("Herdr retained recording resources", () => {
       expect(result.disposition?.completed).toBe(true); expect(result.worktreeDeleted).toBe(true); expect(existsSync(s.source)).toBe(false); expect(s.archive.inspect(s.record)?.receipt).toBeNull();
     } finally { op.dispose(); }
   });
+  it("uses a fresh source-disposal budget after the worktree callback", async () => {
+    const s = setup(), op = createOperation(), request = { ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action: "delete" as const, confirmed: true as const };
+    try {
+      const result = await s.resource.dispose(request, op, async () => { rmSync(s.cwd, { recursive: true }); op.dispose(); }, {});
+      expect(result.disposition?.completed).toBe(true);
+      expect(existsSync(s.source)).toBe(false);
+    } finally { op.dispose(); }
+  });
+  it("retains source and intent if outer cancellation arrives during worktree cleanup", async () => {
+    const s = setup(), op = createOperation(), controller = new AbortController(), request = { ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action: "delete" as const, confirmed: true as const };
+    try {
+      await expect(s.resource.dispose(request, op, async () => { rmSync(s.cwd, { recursive: true }); controller.abort(); }, { signal: controller.signal })).rejects.toMatchObject({ kind: "cancelled" });
+      expect(existsSync(s.source)).toBe(true);
+      expect(s.archive.inspect(s.record)?.disposition?.phase).toBe("intent");
+    } finally { op.dispose(); }
+  });
   it("distinguishes real task deletion from an unverified 404-like error", async () => {
     const s = setup(), op = createOperation();
     try {

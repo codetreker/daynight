@@ -814,8 +814,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
           if (binding === null) await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, owner, operation), signal);
           else {
-            await cleanupOperation(operation => options.git.removeWorktree(project, owner, operation), signal);
-            if (await cleanupOperation(operation => options.git.findWorktree(project, owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+            const outcome = await options.git.removeWorktree(project, owner, { ...(signal === undefined ? {} : { signal }) });
+            for (const error of outcome.effectErrors) options.emit({ kind: "worktree-cleanup-effect-error", identity: owner, component: "cleanup", phase: "worktree-removal", ...(local === null ? {} : { task: local }), message: "Worktree cleanup reported an error, but its resources are absent.", error });
             const after = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
             if (!isDeepStrictEqual(binding, after)) throw new Error("The original worktree binding changed during cleanup.");
           }
@@ -1329,8 +1329,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       monitoringPhase = "worktree-removal";
       observe(m => { const activity = monitoringActivities.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { phase: "worktree-removal", status: "running", waitReason: null }); });
       try {
-        await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), normalSignal);
-        if (await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), normalSignal) !== null) throw new Error("The original archived worktree still exists after cleanup.");
+        const outcome = await options.git.removeWorktree(projectFor(owner), owner, { ...(normalSignal === undefined ? {} : { signal: normalSignal }) });
+        for (const error of outcome.effectErrors) options.emit({ kind: "worktree-cleanup-effect-error", identity: owner, component: "cleanup", phase: "worktree-removal", message: "Worktree cleanup reported an error, but its resources are absent.", error });
         archive.cleaned(owner);
         const deleted = archive.resources().find(resource => resource.sessionId === selected.sessionId && sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId);
         if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");

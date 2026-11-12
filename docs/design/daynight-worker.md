@@ -389,7 +389,7 @@ Linux/Windows legacy Herdr 的正常终态清理目标为：
 → 本机 done
 ```
 
-清理资源观察、通知、停止/关闭及 worktree 核验与删除使用专属的 5 分钟 operation，totalMs 与 requestMs 同为 300000；内部 Herdr RPC 和 Git 命令继承请求预算。Web 清理 IPC、缺失执行记录时的启动来源 HTTP 核验、Controller 等待清理回执及最终进程停止证明使用同一 5 分钟上限，通知与 Controller 清理回执等待还受原 10 分钟期限的剩余时间限制。进程停止中的信号升级间隔保持独立。正常执行继续使用原有预算。期限选择与代价见[清理操作预算决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-cleanup-operation-budget.md)。
+清理资源观察、通知及停止/关闭使用专属的 5 分钟 operation，totalMs 与 requestMs 同为 300000。worktree 删除与随后确认目录及 Git 登记均不存在的重新观察各有独立的 5 分钟 operation，均继承外层取消信号；内部 Herdr RPC 和 Git 命令继承所属阶段的请求预算。已准入的文件变更和 Git 本地关闭责任须实际结束后才能重新观察，外层取消时不发起新的观察。删除报错但重新观察确认目标不存在时，结果保留原错误并记录诊断，后端和清单继续退休；资源仍在时保留原错误，观察也失败则保留两者。Web 清理 IPC、缺失执行记录时的启动来源 HTTP 核验、Controller 等待清理回执及最终进程停止证明使用同一 5 分钟上限，通知与 Controller 清理回执等待还受原 10 分钟期限的剩余时间限制。进程停止中的信号升级间隔保持独立。正常执行继续使用原有预算。期限选择与代价见[清理操作预算决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-cleanup-operation-budget.md)。
 
 Legacy Herdr 的一次有界清理调用先观察原执行，对仍存活的 agent 发送一次建议性清理消息，随后轮询新的 Herdr snapshot。通知后的新观察为 idle、资源已消失或原期限届满允许进入实际停止和 workspace 关闭；stateChangeSeq/completionSeq 与 interactiveReady 不作为必要条件。通知失败或未知结果保留错误和原期限，仍以当前资源决定等待或停止，同次调用不重发。Herdr 只有 PTY 提交 ACK，没有逐输入 operation ID 或查询回执；Worker 不用 notified/submitted 台账模拟权威状态。调用中断或重启后，下一次尝试可能再次通知仍存活的原 agent，期限仍保持不变。Idle 只选择停止时机；stopAndClose 后重新读取资源并结算 OS 待停止实例，实际消失才满足清理目标。Worker 不据此提交业务 done。
 

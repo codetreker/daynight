@@ -621,8 +621,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         } else {
           if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
           if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
-          await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-          if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+          const outcome = await options.git.removeWorktree(project, task, { ...(signal === undefined ? {} : { signal }) });
+          for (const error of outcome.effectErrors) options.emit({ kind: "worktree-cleanup-effect-error", task, component: "cleanup", phase: "worktree-removal", message: "Worktree cleanup reported an error, but its resources are absent.", error });
         }
         success(task, { kind: "cleanup", phase: "worktree-removal" });
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);

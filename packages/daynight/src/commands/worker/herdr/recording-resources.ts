@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { cleanupOperation } from "../../cleanup-operation.js";
 import { ApiError } from "../../../api/client.js";
 import type { Operation } from "../../../api/operation.js";
 import { readWorkerClaim } from "../../../api/task-properties.js";
@@ -120,7 +121,7 @@ export const createHerdrRecordingResources = (options: {
     advance,
     cleaned: owner => { const record = get(owner); if (!absent(record.cwd)) throw new Error("The original worktree is still present; cleanup cannot be recorded."); options.archive.cleaned(record); },
     retry: async (target, operation) => { const record = await authorize(target, operation); options.archive.retry(record); await advance(target, operation); return inspect(get(target, target.sessionId)); },
-    dispose: async (request, operation, removeWorktree) => {
+    dispose: async (request, operation, removeWorktree, disposalOptions) => {
       const record = await authorize(request, operation), resource = { ...inspect(record), terminal: true };
       assertHerdrDisposalTarget(resource, request);
       const previous = options.archive.inspect(record)?.disposition;
@@ -131,14 +132,18 @@ export const createHerdrRecordingResources = (options: {
       } else assertSourceOwner(directory, record);
       options.archive.disposition(record, { operationId: request.operationId, action: request.action, phase: "intent", sourceIdentity: previous?.sourceIdentity ?? currentIdentity });
       if (request.action === "delete") {
-        operation.check(); await removeWorktree(); operation.check();
-        if (!absent(record.cwd)) throw new Error("The original worktree removal was not confirmed.");
-        if (sourceIdentity(directory) !== currentIdentity) throw new Error("The recording source changed during worktree disposal.");
-        await removeHerdrSourceDirectory(options.directory, directory, operation);
-        if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
-        options.archive.removeSourceData(record, operation);
-      }
-      options.archive.disposition(record, { operationId: request.operationId, action: request.action, phase: "completed" });
+        operation.check(); await removeWorktree();
+        await cleanupOperation(async postcheck => {
+          postcheck.check();
+          if (!absent(record.cwd)) throw new Error("The original worktree removal was not confirmed.");
+          if (sourceIdentity(directory) !== currentIdentity) throw new Error("The recording source changed during worktree disposal.");
+          await removeHerdrSourceDirectory(options.directory, directory, postcheck);
+          if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
+          options.archive.removeSourceData(record, postcheck);
+          postcheck.check();
+          options.archive.disposition(record, { operationId: request.operationId, action: request.action, phase: "completed" });
+        }, disposalOptions === undefined ? operation.signal : disposalOptions.signal);
+      } else options.archive.disposition(record, { operationId: request.operationId, action: request.action, phase: "completed" });
       return inspect(get(request, request.sessionId));
     },
   };

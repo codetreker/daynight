@@ -21,6 +21,7 @@ import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { createReconcileWake } from "./reconcile-wake.js";
 import { createOperation, OperationError } from "../../api/operation.js";
+import { cleanupOperation } from "../cleanup-operation.js";
 import type { Operation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -1217,6 +1218,7 @@ export const runWorkerResources = async (options: {
   const lock = await tryAcquireWorkerInstanceLock(paths);
   if (lock === null) throw new Error("Stop daynight worker run before inspecting or disposing retained resources.");
   let herdr: WorkerHerdrAdapter | undefined, store: ReturnType<typeof openWorkerStore> | undefined, git: ReturnType<typeof createWorkerGitManager> | undefined;
+  let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }), limits: { totalMs: 300_000 } });
   try {
     if (!await hasHerdrJournal(paths, platform)) {
@@ -1249,32 +1251,37 @@ export const runWorkerResources = async (options: {
     await lstat(project.localPath);
     await git.prepareRepository(project, operation);
     const result = await archive.dispose(request, operation, async () => {
-      operation.check();
+      options.signal?.throwIfAborted();
       const fresh = archive.resources().find(value => value.sessionId === request.sessionId);
       if (!fresh) throw new Error("The original resource responsibility disappeared during disposal.");
       // The archive owner first verifies the live claim and persists this exact
       // intent. A local shutdown record alone cannot decide claim finality.
       if (fresh.disposition?.operationId !== request.operationId || fresh.disposition.action !== request.action) throw new Error("The original authorized disposal intent is missing.");
       assertHerdrDisposalTarget(fresh, request);
-      const binding = await git!.resolveWorktreeBinding(project, request, operation);
+      const binding = await cleanupOperation(scoped => git!.resolveWorktreeBinding(project, request, scoped), options.signal);
       if (binding === null || !await sameWorktreeLocation(binding.worktreePath, fresh.worktreePath)) throw new Error("The original worktree path has no matching project binding.");
-      await git!.removeWorktree(project, request, operation);
-      if (await git!.findWorktree(project, request, operation) !== null) throw new Error("The original worktree remains after explicit deletion.");
-    });
-    if (reconcileDeletedHerdrResource(store, result)) {
-      const original = await git.resolveWorktreeBinding(project, request, operation);
-      if (original !== null) {
-        // The durable deletion decision predates any successor at this path.
-        // Reconcile only the recorded directory name; do not inspect that path.
-        if (path.basename(original.worktreePath) !== path.basename(result.worktreePath)) throw new Error("The original retained binding differs from its manifest.");
-        await git.retireWorktreeManifest(project, request, operation);
+      const outcome = await git!.removeWorktree(project, request, { ...(options.signal === undefined ? {} : { signal: options.signal }) });
+      if (outcome.effectErrors.length > 0) {
+        diagnostics ??= await createWorkerDiagnostics({ paths, workerId, platform, secrets: [serverToken], log: options.output });
+        for (const error of outcome.effectErrors) diagnostics.emit({ kind: "worktree-cleanup-effect-error", identity: request, component: "cleanup", phase: "worktree-removal", message: "Worktree cleanup reported an error, but its resources are absent.", error });
       }
+    }, { ...(options.signal === undefined ? {} : { signal: options.signal }) });
+    if (reconcileDeletedHerdrResource(store, result)) {
+      await cleanupOperation(async scoped => {
+        const original = await git!.resolveWorktreeBinding(project, request, scoped);
+        if (original !== null) {
+          // The durable deletion decision predates any successor at this path.
+          // Reconcile only the recorded directory name; do not inspect that path.
+          if (path.basename(original.worktreePath) !== path.basename(result.worktreePath)) throw new Error("The original retained binding differs from its manifest.");
+          await git!.retireWorktreeManifest(project, request, scoped);
+        }
+      }, options.signal);
     }
     options.output(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     operation.dispose();
     try { await git?.dispose(); } finally {
-      try { herdr?.lifecycle?.close(); } finally { try { store?.close(); } finally { await lock.release(); } }
+      try { herdr?.lifecycle?.close(); } finally { try { store?.close(); } finally { try { await diagnostics?.flush(); } finally { await lock.release(); } } }
     }
   }
 };

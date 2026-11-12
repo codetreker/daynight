@@ -89,6 +89,11 @@ const ownedRunner = (runner: typeof runRepositoryGit): typeof startOwnedReposito
 const errorText = (value: unknown): string => value instanceof Error
   ? [value.message, value.cause === undefined ? "" : errorText(value.cause), ...(value instanceof AggregateError ? value.errors.map(errorText) : [])].join(" ")
   : String(value);
+const expectRemovalError = async (result: Promise<unknown>, message: string): Promise<void> => {
+  const error = await result.then(() => null, failure => failure);
+  expect(error).toBeInstanceOf(Error);
+  expect(errorText(error)).toContain(message);
+};
 const remote = "https://example.com/organization/repository.git";
 const ids = { projectId: "11111111-1111-4111-8111-111111111111", taskId: "22222222-2222-4222-8222-222222222222", claimId: "33333333-3333-4333-8333-333333333333", workerId: "44444444-4444-4444-8444-444444444444", worktreeId: "55555555-5555-4555-8555-555555555555" };
 const prepareSeed = async (refFormat: RefFormat): Promise<string> => {
@@ -239,14 +244,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", worktreeId: "99999999-9999-4999-8999-999999999999" };
     const healthy = await adapter.prepareWorktree(f.project, healthyOwner, operation());
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthy }]);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    await expectRemovalError(adapter.removeWorktree(f.project, f.owner, operation()), "manifest is missing");
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep\n");
   });
 
   it("settles published empty reservations without inferring an absent manifest", async () => {
     const f = await fixture(), adapter = manager(f.root);
     const repository = await adapter.prepareRepository(f.project, operation());
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    await expectRemovalError(adapter.removeWorktree(f.project, f.owner, operation()), "manifest is missing");
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await mkdir(target, { recursive: true });
     createWorktreeManifestStore(repository.commonDirectory).publish({ schemaVersion: 1, ...f.owner, directoryName: f.owner.worktreeId });
@@ -837,7 +842,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(); const adapter = manager(f.root);
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await expect(adapter.prepareWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("already checked out");
-    await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
+    await expectRemovalError(adapter.removeWorktree(f.project, changedClaim(f.owner), operation()), "manifest is missing");
     await expect(adapter.verifyWorktree({ ...f.project, projectId: "88888888-8888-4888-8888-888888888888" }, f.owner, operation())).rejects.toThrow("does not belong to this project");
     await adapter.removeWorktree(f.project, f.owner, operation()); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep\n");
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching Git registration");
@@ -892,6 +897,103 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await adapter.removeWorktree(f.project, f.owner, operation());
   });
 
+  it("returns the original Git failure when a fresh observation finds both resources absent", async () => {
+    const f = await fixture(); const failure = new Error("Git reported failure after removal");
+    let failed = false; let effectSignal: AbortSignal | undefined; let observationSignal: AbortSignal | undefined;
+    const adapter = manager(f.root, {
+      startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
+        const result = await runRepositoryGit(cwd, args, op, options);
+        if (args.includes("worktree") && args.includes("remove")) { effectSignal = op.signal; failed = true; throw failure; }
+        return result;
+      }),
+      runGit: async (cwd, args, op, options) => {
+        if (failed && observationSignal === undefined) observationSignal = op.signal;
+        return runRepositoryGit(cwd, args, op, options);
+      },
+    });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    expect(await adapter.removeWorktree(f.project, f.owner, {})).toEqual({ kind: "absent", effectErrors: [failure] });
+    expect(observationSignal).toBeDefined(); expect(observationSignal).not.toBe(effectSignal);
+    expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("uses a fresh budget after the effect deadline while preserving its error", async () => {
+    const f = await fixture(); let elapsed = 0;
+    const actualNow = performance.now.bind(performance);
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => actualNow() + elapsed);
+    const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
+      const result = await runRepositoryGit(cwd, args, op, options);
+      if (args.includes("worktree") && args.includes("remove")) { elapsed = 300_001; op.check(); }
+      return result;
+    }) });
+    try {
+      await adapter.prepareWorktree(f.project, f.owner, operation());
+      const result = await adapter.removeWorktree(f.project, f.owner, {});
+      expect(result.kind).toBe("absent");
+      expect(result.effectErrors).toHaveLength(1);
+      expect(result.effectErrors[0]).toMatchObject({ name: "OperationError", kind: "deadline" });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("preserves both removal and observation failures", async () => {
+    const f = await fixture(); const failure = new Error("controlled removal failure"), observation = new Error("controlled observation failure");
+    let failed = false;
+    const adapter = manager(f.root, {
+      startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
+        if (args.includes("worktree") && args.includes("remove")) { failed = true; throw failure; }
+        return runRepositoryGit(cwd, args, op, options);
+      }),
+      runGit: async (cwd, args, op, options) => {
+        if (failed) throw observation;
+        return runRepositoryGit(cwd, args, op, options);
+      },
+    });
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toMatchObject({ cause: failure, errors: [failure, observation] });
+  });
+
+  it("holds the gate and defers the fresh observation until the Git child is joined", async () => {
+    const f = await fixture(); const failure = new RepositoryGitCleanupPendingError([], new Error("controlled Git failure"));
+    const joined = Promise.withResolvers<GitSettlement>(), reached = Promise.withResolvers<void>(); let observed = false, inCleanup = false;
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("worktree") || !args.includes("remove")) return startOwnedRepositoryGit(cwd, args, op, options);
+        const completed = runRepositoryGit(cwd, args, op, options).then(() => { inCleanup = true; reached.resolve(); return { kind: "cleanup-pending" as const, error: failure }; });
+        return { outcome: completed, joined: joined.promise, requestStop: () => {} };
+      },
+      runGit: async (cwd, args, op, options) => { if (inCleanup) observed = true; return runRepositoryGit(cwd, args, op, options); },
+    });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const second = manager(f.root);
+    await second.prepareRepository(f.project, operation());
+    const pending = adapter.removeWorktree(f.project, f.owner, {});
+    try {
+      await reached.promise;
+      expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+      expect(observed).toBe(false);
+      await expect(second.removeWorktree(f.project, f.owner, {})).rejects.toThrow("already in progress");
+      expect(observed).toBe(false);
+    } finally { joined.resolve({ kind: "local-closed", cleanupErrors: [] }); }
+    expect(await pending).toEqual({ kind: "absent", effectErrors: [failure] });
+    expect(observed).toBe(true);
+  });
+
+  it("does not start a fresh observation after outer cancellation", async () => {
+    const f = await fixture(); const cancellation = new Error("outer shutdown"), failure = new Error("Git failed after deletion");
+    const abort = new AbortController(); let cancelled = false, observed = false;
+    const adapter = manager(f.root, {
+      startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
+        const result = await runRepositoryGit(cwd, args, op, options);
+        if (args.includes("worktree") && args.includes("remove")) { cancelled = true; abort.abort(cancellation); throw failure; }
+        return result;
+      }),
+      runGit: async (cwd, args, op, options) => { if (cancelled) observed = true; return runRepositoryGit(cwd, args, op, options); },
+    });
+    await adapter.prepareWorktree(f.project, f.owner, operation());
+    const result = await adapter.removeWorktree(f.project, f.owner, { signal: abort.signal }).catch(error => error);
+    expect(result).toMatchObject({ cause: failure });
+    expect(errorText(result)).toContain("outer shutdown"); expect(observed).toBe(false);
+  });
+
   it("continues partial content deletion while preserving the original Git pointer", async () => {
     const f = await fixture(); const failure = new Error("controlled partial filesystem removal"); let partial = true;
     const adapter = manager(f.root, { removeDirectory: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
@@ -924,7 +1026,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(settled).toBe(false);
       await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("already in progress");
     } finally { release.resolve(); }
-    expect(await result).toBe(op.signal.reason);
+    expect(errorText(await result)).toContain("Operation cancelled.");
     expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toContain("gitdir: ");
     await second.removeWorktree(f.project, f.owner, operation());
     await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -947,7 +1049,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     try {
       // A real unprivileged filesystem failure distinguishes this regression from a mocked rm error.
       await expect(rm(cache, { recursive: true })).rejects.toMatchObject({ code: "EACCES" });
-      await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
+      await expectRemovalError(adapter.removeWorktree(f.project, changedClaim(f.owner), operation()), "manifest is missing");
       expect((await lstat(nested)).mode & 0o777).toBe(0o555);
       await adapter.removeWorktree(f.project, f.owner, operation());
       await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -967,9 +1069,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await rm(path.join(binding.worktreePath, ".git"));
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    await expectRemovalError(adapter.removeWorktree(f.project, f.owner, operation()), "Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     await rename(binding.worktreePath, `${binding.worktreePath}-original`); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive\n");
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive\n");
+    await expectRemovalError(adapter.removeWorktree(f.project, f.owner, operation()), "Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive\n");
   });
 
   it("retains delete-and-recreate replacements after leaf deletion but before administrative cleanup", async () => {
@@ -978,7 +1080,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(interrupted); await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive inode reuse\n");
-    const second = manager(f.root); await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer is missing");
+    const second = manager(f.root); await expectRemovalError(second.removeWorktree(f.project, f.owner, operation()), "Git pointer is missing");
     expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
     await rm(binding.worktreePath, { recursive: true }); await second.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
@@ -1051,7 +1153,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(), adapter = manager(f.root), binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const pointer = path.join(binding.worktreePath, ".git"), original = await readFile(pointer, "utf8");
     await rm(pointer); await writeFile(pointer, `gitdir: ${path.join(f.repository, ".git")}\n`);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer has changed");
+    await expectRemovalError(adapter.removeWorktree(f.project, f.owner, operation()), "Git pointer has changed");
     await rm(pointer); await writeFile(pointer, original);
     git(binding.worktreePath, ["checkout", "-b", "other-task"]);
     await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch");

@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { CLEANUP_OPERATION_MS } from "../../../src/commands/cleanup-operation.js";
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -1012,7 +1012,7 @@ it("reobserves the endpoint without deleting a successor path after terminal com
   const binding = await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never);
   let worktreePresent = true;
   vi.mocked(f.git.findWorktree).mockImplementation(async () => worktreePresent ? binding : null);
-  vi.mocked(f.git.removeWorktree).mockImplementation(async () => { worktreePresent = false; });
+  vi.mocked(f.git.removeWorktree).mockImplementation(async () => { worktreePresent = false; return { kind: "absent", effectErrors: [] }; });
   const archive = vi.fn().mockResolvedValue(undefined);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request });
   const first = await backend.cleanup(source.task, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } });
@@ -1030,10 +1030,10 @@ it("reobserves the endpoint without deleting a successor path after terminal com
   expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
 });
 
-it("requires observed Git absence after a successful deletion call", async () => {
+it("retains responsibility when the Git manager cannot confirm absence", async () => {
   const f = await fixture();
   const binding = await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never);
-  vi.mocked(f.git.findWorktree).mockResolvedValue(binding);
+  vi.mocked(f.git.removeWorktree).mockRejectedValue(new Error("still has Git worktree resources"));
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
   await expect(backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: expect.objectContaining({ message: expect.stringContaining("still has Git worktree resources") }) });
   expect(f.store.getTask(f.identity)?.status).toBe("active");
@@ -1203,11 +1203,14 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
   let now = 0;
   vi.spyOn(performance, "now").mockImplementation(() => now);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async (_project, _owner, operation) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { operation.signal.removeEventListener("abort", cancel); operation.check(); resolve(); }, duration);
-    const cancel = (): void => { clearTimeout(timer); reject(operation.signal.reason); };
-    operation.signal.addEventListener("abort", cancel, { once: true });
-  }));
+  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async (_project, _owner, options) => {
+    await cleanupOperation(operation => new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { operation.signal.removeEventListener("abort", cancel); operation.check(); resolve(); }, duration);
+      const cancel = (): void => { clearTimeout(timer); reject(operation.signal.reason); };
+      operation.signal.addEventListener("abort", cancel, { once: true });
+    }), options.signal);
+    return { kind: "absent", effectErrors: [] };
+  });
   const outcome = backend.cleanup(f.store.getTask(f.identity)!, { kind: "terminal", deadline: 600_005, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: f.store.getTask(f.identity)! }, onExecutionStopped: () => {} } }).catch(error => error);
   await vi.advanceTimersByTimeAsync(0);
   now = Math.min(duration, 300_000);
@@ -1312,7 +1315,7 @@ it("records a discovered original manifest binding before settling an unlaunched
   const binding = await f.git.resolveWorktreeBinding(f.identity, f.identity, {} as never);
   expect(binding).not.toBeNull();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
-  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async () => { expect(f.store.getTask(task)?.resources.worktree).toEqual(binding); });
+  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async () => { expect(f.store.getTask(task)?.resources.worktree).toEqual(binding); return { kind: "absent", effectErrors: [] }; });
   const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(result.complete).toBe(true);
   expect(f.store.getTask(task)?.resources.worktree).toEqual(binding);
@@ -1347,7 +1350,7 @@ it("retains the original binding across a failed Web worktree deletion and retry
   const binding = await f.git.resolveWorktreeBinding(f.identity, f.identity, {} as never);
   const failure = new Error("worktree deletion failed");
   const persist = vi.spyOn(f.store, "bindWorktree");
-  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(failure).mockResolvedValueOnce({ kind: "absent", effectErrors: [] });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
   const request = { kind: "terminal" as const, deadline: 30, immediateStop: true, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } };
   await expect(backend.cleanup(task, request)).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
