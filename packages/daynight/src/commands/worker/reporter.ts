@@ -54,7 +54,7 @@ const copyInventory = (inventory: WorkerTaskInventory): WorkerTaskInventory => O
 
 export type WorkerConfigurationExchange = {
   prepare?(operation: Operation): Promise<void>;
-  capture(): WorkerCloudReport;
+  capture(report: WorkerReport): WorkerCloudReport;
   send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
   prompts?: WorkerPromptSource;
@@ -67,11 +67,12 @@ export const syncWorkerConfigurationOnce = async (options: {
   try {
     await configuration.prepare?.(operation);
     operation.check();
-    const captured = configuration.capture();
+    const report = options.report();
+    const captured = configuration.capture(report);
     const sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") }));
     const source = configuration.prompts;
     const promptCapture = source?.captureBatch() ?? null;
-    const receipt = await configuration.send(options.report(), sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);
+    const receipt = await configuration.send(report, sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);
     await configuration.accept(captured, receipt.configuration);
     if (source === undefined) return { more: false, promptError: false, stopCatchup: false };
     if (receipt.prompts === undefined || !receipt.prompts.ok) {

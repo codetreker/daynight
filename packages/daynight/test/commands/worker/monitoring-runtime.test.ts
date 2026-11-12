@@ -281,12 +281,14 @@ describe("worker runtime monitoring isolation", () => {
   });
 
   it("keeps scheduler coverage partial while a selected project is still being prepared", async () => {
-    const f = await fixture(), started = deferred<void>(), release = deferred<void>();
+    const f = await fixture(), started = deferred<void>(), release = deferred<void>(), scan = deferred<void>(), scanned = deferred<void>();
     prepare.mockImplementationOnce(async () => { started.resolve(); await release.promise; });
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => {
+      await scan.promise;
       const monitor = options.monitoring!;
       monitor.startCycle("claim-search"); monitor.markCycleSuccessful(); monitor.endCycle("completed", "complete");
       monitor.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
+      scanned.resolve();
       if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true }));
     }), archiveYield: () => false, updateConfiguration: update, shutdown }));
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -297,11 +299,17 @@ describe("worker runtime monitoring isolation", () => {
       await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
       const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
       await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").activities).toContainEqual(expect.objectContaining({ kind: "maintenance", phase: "project-preparation" })));
+      // A later native maintenance operation would invalidate the completed admission proof.
+      await eventuallyWithoutAdvancingTime(() => {
+        expect(mocks.probe).toHaveBeenCalledTimes(2);
+        expect(monitor.capture("1").activities.some(activity => activity.phase === "configuration")).toBe(false);
+      });
+      scan.resolve(); await scanned.promise;
       expect(monitor.capture("1")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: null }, admission: { coverage: "partial", reasons: [] } });
       release.resolve();
       await eventuallyWithoutAdvancingTime(() => expect(update.mock.calls.some(([value]) => value.readyProjectIds?.includes(uuid(1)))).toBe(true));
       expect(monitor.capture("2")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: null }, admission: { coverage: "partial", reasons: [] } });
-    } finally { release.resolve(); f.signal.abort(); await running; }
+    } finally { scan.resolve(); release.resolve(); f.signal.abort(); await running; }
   });
 
   it("reports the real project preparation failure and its retry until the same preparation succeeds", async () => {
@@ -359,8 +367,8 @@ describe("worker runtime monitoring isolation", () => {
     const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
     let held = false;
     mocks.persist.mockImplementation(async (file: string, chunks: () => Iterable<string>) => {
-      const state = JSON.parse([...chunks()].join("")) as { items: { value: { key: { kind: string; projectId?: string }; state: string } }[] };
-      const projectState = (id: string): string | undefined => state.items.find(item => item.value.key.kind === "projectPreparation" && item.value.key.projectId === id)?.value.state;
+      const state = JSON.parse([...chunks()].join("")) as { currentItems: { value: { key: { kind: string; projectId?: string }; state: string } }[] };
+      const projectState = (id: string): string | undefined => state.currentItems.find(item => item.value.key.kind === "projectPreparation" && item.value.key.projectId === id)?.value.state;
       if (!held && projectState(uuid(1)) === "applying" && projectState(uuid(2)) === "applied") { held = true; secondPersisting.resolve(); await persistRelease.promise; }
       await files.replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
     });

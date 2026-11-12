@@ -20,10 +20,17 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
+import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
+import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+const reportSample = { ...workerTelemetry, taskInventory: null };
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
+vi.mock("node:crypto", async original => {
+  const actual = await original<typeof import("node:crypto")>();
+  return { ...actual, randomUUID: (options?: Parameters<typeof actual.randomUUID>[0]) => mocks.nextUUID === null ? actual.randomUUID(options) : mocks.nextUUID() };
+});
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
@@ -95,6 +102,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.nextUUID = null;
   mocks.emit.mockReset();
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
@@ -119,7 +127,7 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it("continues retained-project reconciliation after a full observation is acknowledged and after restart", async () => {
+  it("continues retained-project reconciliation with bounded observations and after restart", async () => {
     const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
     const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
@@ -135,28 +143,39 @@ describe("worker cloud-first startup", () => {
     for (let pass = 0; pass < 2; pass++) {
       reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
       const { cancellation, running } = start(f);
-      await vi.waitFor(() => {
+      await vi.waitFor(async () => {
         expect(reporterOptions).toBeDefined();
-        expect(stopProject).toHaveBeenCalledTimes(pass === 0 ? 1 : 2);
-        expect(reporterOptions!.configuration!.capture().observation!.items.filter(item => item.key.kind === "projectRemoval" && item.state === "applied")).toHaveLength(pass === 0 ? 1020 : 2);
-        if (pass === 0) expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("capacity") }) }));
+        expect(stopProject).toHaveBeenCalledTimes(2);
+        const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+        expect(saved.schemaVersion).toBe(5);
+        expect(saved.authority.desired).toEqual(target);
+        if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
+        for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
+        expect(reporterOptions!.configuration!.capture(reportSample).observation!.items.length).toBeLessThanOrEqual(1025);
       }, { timeout: 10_000, interval: 50 });
-      const firstBatch = reporterOptions!.configuration!.capture();
-      await reporterOptions!.configuration!.accept(firstBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
-      if (pass === 0) {
-        await vi.waitFor(() => {
-          expect(stopProject).toHaveBeenCalledTimes(2);
-          expect(reporterOptions!.configuration!.capture().observation!.items).toEqual(expect.arrayContaining([expect.objectContaining({ key: { kind: "projectRemoval", projectId: ids[1] }, state: "applied" })]));
-        }, { timeout: 10_000, interval: 50 });
-        const lastBatch = reporterOptions!.configuration!.capture();
-        await reporterOptions!.configuration!.accept(lastBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+      const acknowledged = new Set<string>();
+      let remaining = 0;
+      for (let batch = 0; batch < 3; batch++) {
+        const sent = reporterOptions!.configuration!.capture(reportSample);
+        expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
+        for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
+        await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+        const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+        remaining = [...saved.currentItems, ...saved.retainedItems].filter(item => item.value.key.kind === "projectRemoval").length;
+        if (remaining === 0) break;
       }
+      expect(remaining).toBe(0);
+      expect(acknowledged.size).toBe(pass === 0 ? 1021 : 2);
+      expect(new Set(ids.filter(id => acknowledged.has(id)))).toEqual(new Set(ids));
       expect(new Set(stopProject.mock.calls.map(([id]) => id))).toEqual(new Set(ids));
       await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 10_000, interval: 100 });
       cancellation.abort(); await running;
     }
   }, 30_000);
-  it("starts reporting a full cache and adopts a deferred target after acknowledged removal", async () => {
+  it("installs a valid target over a full cache before reporting and acknowledges its current removal", async () => {
+    // Stable IDs put the selected stop at a known point in the bounded job order.
+    let nextId = 0;
+    mocks.nextUUID = () => `11111111-1111-4111-8111-${String(++nextId).padStart(12, "0")}`;
     const f = await fixture(true, false), cancellation = new AbortController(); cancellations.add(cancellation);
     const old = desired([]), next: WorkerCloudDesired = { ...desired([uuid(10)]), revision: "2" };
     const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
@@ -169,13 +188,34 @@ describe("worker cloud-first startup", () => {
     mocks.reporter.mockImplementation((options: ReporterOptions) => {
       queueMicrotask(() => { void (async () => {
         try {
-          const sent = options.configuration!.capture();
-          expect(sent.observation?.items).toHaveLength(1025);
-          expect(sent.observation?.desiredRevision).toBe("1");
-          await options.configuration!.accept(sent, { desired: next, observationRevision: "1", observationAccepted: true });
-          const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
-          expect(saved.desired.revision).toBe("2");
-          expect(saved.items.some((entry: { value: { key: { kind: string; projectId?: string } } }) => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10))).toBe(false);
+          const installed = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+          expect(installed.schemaVersion).toBe(5);
+          expect(installed.authority.desired).toEqual(next);
+          expect(installed.currentItems.length).toBeGreaterThan(1025);
+          expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
+            value: { key: { kind: "projectRemoval", projectId: uuid(10) }, targetRevision: "1" } });
+          await vi.waitFor(async () => {
+            const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+            const removal = saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10));
+            const blocker = saved.retainedItems.find(item => item.recordId === removal?.blockedByRemovalId);
+            expect(removal?.value.state, JSON.stringify({ state: removal?.value.state, started: removal?.started, blocker: removal?.blockedByRemovalId, blockerState: blocker?.value.state,
+              completedRemovals: saved.currentItems.filter(item => item.value.key.kind === "projectRemoval" && item.value.state === "applied").length,
+              applyingRemovals: saved.currentItems.filter(item => item.value.key.kind === "projectRemoval" && item.value.state === "applying").length,
+              failedRemovals: saved.currentItems.filter(item => item.value.key.kind === "projectRemoval" && item.value.state === "error").length })).toBe("applied");
+          }, { timeout: 10_000, interval: 50 });
+          let removed = false;
+          for (let batch = 0; batch < 3; batch++) {
+            const sent = options.configuration!.capture(reportSample);
+            expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
+            expect(sent.observation?.desiredRevision).toBe("2");
+            expect(sent.observation!.items.every(item => BigInt(item.targetRevision) <= 2n)).toBe(true);
+            await options.configuration!.accept(sent, { desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true });
+            const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+            expect(saved.authority.desired).toEqual(next);
+            removed = ![...saved.currentItems, ...saved.retainedItems].some(entry => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10));
+            if (removed) break;
+          }
+          expect(removed).toBe(true);
         } catch (error) { assertionFailure = error; }
         finally { cancellation.abort(); }
       })(); });
@@ -194,7 +234,7 @@ describe("worker cloud-first startup", () => {
     finishAtTick(cancellation, current => {
       expect(current.globalConfiguration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
       expect(current.repositories[0]!.configuration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
-      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture();
+      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture(reportSample);
       expect(report.bootstrap).toBeNull();
       expect(report.observation!.items.find(item => item.key.kind === "native")!.appliedValue).toEqual(target.value.native);
     });
@@ -231,7 +271,7 @@ describe("worker cloud-first startup", () => {
             expect(current.store.listProjects().map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
             expect(current.targetProjectIds).toEqual([uuid(1), uuid(2)]);
             expect(current.readyProjectIds).toEqual([uuid(2)]);
-            expect(reporterOptions!.configuration!.capture().bootstrap).toBeNull();
+            expect(reporterOptions!.configuration!.capture(reportSample).bootstrap).toBeNull();
             const operation = createOperation();
             try {
               const sample = await reporterOptions!.collect(operation);
@@ -242,7 +282,7 @@ describe("worker cloud-first startup", () => {
             available = true;
           } else {
             expect(current.readyProjectIds).toEqual([uuid(1), uuid(2)]);
-            expect(reporterOptions!.configuration!.capture().bootstrap?.projects.map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
+            expect(reporterOptions!.configuration!.capture(reportSample).bootstrap?.projects.map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
             cancellation.abort();
           }
           } catch (error) { assertionFailure = error; cancellation.abort(error); }
@@ -304,18 +344,21 @@ describe("worker cloud-first startup", () => {
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, second] } }));
     const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
-    let rejectFirst!: (error: unknown) => void, entered = false;
+    let rejectFirst!: (error: unknown) => void, entered = false, preparationEntered = false;
     const first = new Promise<never>((_resolve, reject) => { rejectFirst = reject; });
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(desired([uuid(1), uuid(2)])));
-    remote.project.mockImplementation(async (id: string) => id === uuid(1) ? first : { id, repoUrl: second.remote });
+    remote.project.mockImplementation(async (id: string) => {
+      if (id === uuid(1)) { preparationEntered = true; return first; }
+      return { id, repoUrl: second.remote };
+    });
     remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => ({ id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote }));
     const reported = reporter(), invalidateProject = vi.fn();
     mocks.reporter.mockReturnValue(reported);
     mocks.coordinator.mockImplementation(() => ({ archiveYield: () => false, updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => { entered = true; }) }));
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
-      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
+      await vi.waitFor(() => { expect(entered).toBe(true); expect(preparationEntered).toBe(true); }, { timeout: 5000, interval: 10 });
       reported.publishInventory({ observedAt: "2026-11-04T00:00:00Z", claims: [] });
       rejectFirst(unavailable);
       await vi.waitFor(() => expect(invalidateProject).toHaveBeenCalledWith(uuid(1)), { timeout: 5000, interval: 10 });
@@ -374,7 +417,7 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => { expect(entered).toBe(true); expect(options).toBeDefined(); }, { timeout: 5000, interval: 10 });
       expect(options!.configurationComplete!()).toBe(false);
       if (initiallySelected) {
-        await channel!.accept(channel!.capture(), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
         expect(options!.configurationComplete!()).toBe(false);
       }
       release();
@@ -453,7 +496,7 @@ describe("worker cloud-first startup", () => {
     mocks.remote.mockClear();
     mocks.reporter.mockImplementation((options: ReporterOptions) => {
       expect(remote.configuration).toHaveBeenCalledExactlyOnceWith(workerId, expect.any(AbortSignal));
-      expect(options.configuration!.capture().bootstrap).toBeNull();
+      expect(options.configuration!.capture(reportSample).bootstrap).toBeNull();
       cancellation.abort(); return reporter();
     });
     await runWorker({ ...f, signal: cancellation.signal });
@@ -476,15 +519,15 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => expect(channel).toBeDefined());
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledOnce();
-      await channel!.accept(channel!.capture(), { desired: initial, observationRevision: "0", observationAccepted: false });
+      await channel!.accept(channel!.capture(reportSample), { desired: initial, observationRevision: "0", observationAccepted: false });
 
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
-      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).desired).toEqual(upgraded);
-      expect(channel!.capture().toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desired).toEqual(upgraded);
+      expect(channel!.capture(reportSample).toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
 
-      await channel!.accept(channel!.capture(), { desired: upgraded, observationRevision: "0", observationAccepted: false });
+      await channel!.accept(channel!.capture(reportSample), { desired: upgraded, observationRevision: "0", observationAccepted: false });
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.reportConfiguration).not.toHaveBeenCalled();
@@ -497,7 +540,7 @@ describe("worker cloud-first startup", () => {
     await writeFile(f.paths.configFile, source);
     mocks.remote().configuration.mockResolvedValue(resource(desired([], 4)));
     mocks.remote.mockClear();
-    mocks.reporter.mockImplementation((options: ReporterOptions) => { expect(options.configuration!.capture().bootstrap).toBeNull(); cancellation.abort(); return reporter(); });
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { expect(options.configuration!.capture(reportSample).bootstrap).toBeNull(); cancellation.abort(); return reporter(); });
     await runWorker({ ...f, signal: cancellation.signal });
     expect(mocks.reporter).toHaveBeenCalledOnce();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
@@ -521,7 +564,7 @@ describe("worker cloud-first startup", () => {
     const cancellation = new AbortController(); cancellations.add(cancellation);
     let accepted: Promise<void> | undefined;
     mocks.reporter.mockImplementation((options: ReporterOptions) => {
-      const sent = options.configuration!.capture();
+      const sent = options.configuration!.capture(reportSample);
       expect(sent.bootstrap).toMatchObject({ maxConcurrent: 7, projects: [{ projectId: uuid(1), nativeOverrides: {} }] });
       expect(sent.observation).toBeNull();
       accepted = options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false });
@@ -577,7 +620,7 @@ describe("worker cloud-first startup", () => {
         expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
-        const captured = channel!.capture();
+        const captured = channel!.capture(reportSample);
         expect(captured.observation).not.toBeNull();
         remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
         await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false });
@@ -607,13 +650,13 @@ describe("worker cloud-first startup", () => {
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
       try {
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
-        const captured = channel!.capture();
+        const captured = channel!.capture(reportSample);
         await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
         await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
         secondAvailable = true;
-        await channel!.accept(channel!.capture(), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false });
+        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false });
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
@@ -680,7 +723,7 @@ describe("worker cloud-first startup", () => {
     finishAtTick(cancellation, options => {
       expect(options.globalConfiguration).toBeNull();
       expect(options.repositories).toEqual([{ project: { projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path }, configuration: { agent: "codex", agentControlMode: "web", model: "cloud-model", args: [], recoveryLimit: 3 } }]);
-      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture();
+      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture(reportSample);
       expect(report.observation!.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ key: { kind: "native" }, state: "error", appliedValue: null }),
         expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, state: "applied", appliedValue: { agent: "codex", model: "cloud-model", args: [] } }),
@@ -698,11 +741,18 @@ describe("worker cloud-first startup", () => {
     mocks.hostCollector.mockImplementation((options: Parameters<typeof actual.createAssistantHostCollector>[0]) => actual.createAssistantHostCollector({ ...options,
       resolveExecutable: () => { throw Object.assign(new Error("Fixture has no native assistant executable."), { code: "ENOENT" }); },
     }));
+    let latest: WorkerCoordinatorOptions | undefined;
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+      let current = options;
+      latest = current;
+      return { ...coordinator(async () => {}), updateConfiguration: vi.fn((configuration: Partial<WorkerCoordinatorOptions>) => { current = { ...current, ...configuration }; latest = current; }) };
+    });
     const { cancellation, running } = start(f);
     try {
-      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
-      const coordinator = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
-      expect(coordinator.globalConfiguration).toMatchObject({ agentControlMode: "herdr", args: ["--search"] });
+      await vi.waitFor(() => {
+        expect(mocks.coordinator).toHaveBeenCalledOnce();
+        expect(latest?.globalConfiguration).toMatchObject({ agentControlMode: "herdr", args: ["--search"] });
+      });
       const operation = createOperation();
       try {
         const sample = await (mocks.reporter.mock.calls[0]![0] as ReporterOptions).collect(operation);
@@ -823,7 +873,7 @@ describe("worker cloud-first startup", () => {
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({
       ...coordinator(async () => {
         await vi.waitFor(() => expect(stopped).toHaveBeenCalledOnce(), { timeout: 5000, interval: 10 });
-        expect(channel!.capture().observation!.items).toEqual(expect.arrayContaining([
+        expect(channel!.capture(reportSample).observation!.items).toEqual(expect.arrayContaining([
           expect.objectContaining({ key: { kind: "projectRemoval", projectId: uuid(1) }, targetRevision: "1" }),
         ]));
         expect(options.readyProjectIds).toEqual([]);

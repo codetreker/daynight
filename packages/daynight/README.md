@@ -2290,45 +2290,68 @@ model/args, and args replaces the list. Worker owns cwd/session/model/mode
 arguments and the fixed full-access policy; conflicting arguments are rejected
 before application.
 
-The Worker stores its target, successful per-item values, errors and observation
-acknowledgments in `worker/configuration.json`, scoped to the service origin,
-authenticated user and Worker ID. One serialized commit owner merges receives,
-application results and acknowledgments, atomically persists the latest state,
-then publishes an immutable effective view. The cache uses schema version 4;
-versions 1, 2 and 3 are explicitly migrated while preserving removals, retries,
-failures, unadopted mode and observation identity. Version 1 also retains its
-platform-preference migration. Native history records its validation mode and
-must be revalidated in a new process. The negotiated observation limit is 1026,
-including at most 1025 non-mode items; old projections retain the 1025 limit. Current-format missing fields, invalid scope, corrupt data
-and storage errors remain failures. Cached native success history is retained for
-observation. For both global and Project native settings, a new runtime validates
-the current cloud target first and publishes that tuple on success, including
-explicit null model and empty arguments. Only a failed target validation permits
-revalidation of historical successful settings under their recorded control
-mode. Migrated version 1/2 history has no recorded mode and must instead be
-validated under the local compatibility mode; that mode is not historical proof.
-Unvalidated history remains unavailable while the target is being checked;
-values already validated in this runtime remain usable during later updates.
-Cache reads and atomic writes process JSON in chunks using the pinned
-`@discoveryjs/json-ext` dependency, with a cache-specific strict syntax guard.
-Total file size is not limited by one JSON string, although individual tokens
-and the retained domain objects still consume memory. Historical structurally
-valid values are read without applying newer per-item limits.
-Atomic file replacement alone does not permit an older application result to
-overwrite a newer target.
+The Worker stores configuration facts in one schema 5
+`worker/configuration.json`, scoped to the service origin, authenticated user and
+Worker ID. Its authority contains the target, observation revision and a local
+generation UUID. Current records describe the target's application and verification;
+retained records preserve original work, stops, unknown outcomes, unacknowledged
+failures and necessary actual values. Each record has a stable `recordId` and
+immutable `origin`. Reused actual values keep their observed source; schema 4
+history with a lost successful revision remains explicitly unknown.
 
-Heartbeats exchange targets and actual results; native and Project operations
-run outside the report attempt and cache commit queue. Independent successful
-items stay applied when another item fails. An item without a successful value
-remains unavailable. Failed items retry after 5, 10, 20, 40 and then 60 seconds;
-new targets replace old application retries. Already-started Project removal
-work retains its original revision until its adapter completes. A recovered
-failure remains reportable until
-accepted, and an acknowledgment cannot clear failures that arose during the
-request. The [Worker requirements](../../docs/spec/daynight-worker.md) define
-the state and failure guarantees; the
-[configuration decision](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
-records their original rationale.
+Versions 1–4 upgrade through the strict migration owner, preserving original
+values, mode, backoff, failure identity, started removals and observation facts.
+Version 1 retains its platform-preference migration. Current-format missing
+fields, invalid scope, corrupt data and storage errors remain failures. Cache
+reads and atomic writes process JSON in chunks using the pinned
+`@discoveryjs/json-ext` dependency and a cache-specific syntax guard. Total file
+size is not limited by one JSON string; individual tokens and retained domain
+objects still consume their corresponding memory. Historical structurally valid
+values are read without applying newer per-item limits.
+
+One serialized commit owner merges target receives, application outcomes and
+acknowledgments from the last durable state. It freezes the next state and
+recreates its chunk iterator for atomic persistence before publishing the
+immutable effective view. Native qualification belongs to this process and its
+record identity, mode and relevant tool selections. A new runtime checks the
+current target first; only a failed target permits validation of compatible
+historical settings. Migrated version 1/2 history has no recorded mode and is
+revalidated under the local compatibility mode; that mode is not historical proof.
+Cached `applied` text grants no execution qualification. Result publication checks
+the original record binding, intended content and current proof.
+Unvalidated history remains unavailable during target validation; values already
+validated in this runtime remain usable during later updates. Original stops keep
+their identity and revision. Current stop verification waits for the original job
+to end, checks the resources again through the same adapter, and blocks new Project
+preparation and readiness until that verification completes.
+
+Heartbeats exchange targets and a bounded batch of complete current observations;
+native and Project operations run outside the report and commit queues. At most
+16 asynchronous configuration jobs run, rotating by record identity; scalar state
+transitions use no asynchronous job slot. Independent successful items stay applied
+when another item fails. Failed application attempts use 5, 10, 20, 40 and then
+60-second backoff. Storage failures retain the original error and do not publish
+uncommitted results.
+
+Each observation batch fits at most 1025 non-mode items and 1026 total items when
+mode is negotiated, the 4 MiB Go-encoded storage budget with 512 bytes reserved
+for its wrapper, and the 9 MiB configuration request budget. One real unfinished
+or failed removal verification has a fixed slot; the other eligible records form
+a continuous prefix after the durable `projectionCursor`. The first item that
+cannot fit starts the next batch, so large valid items are not skipped to fill
+later small ones. Capture sizes the actual report sample used by send, including
+optional telemetry preparation. Only an accepted matching capture advances the
+current generation's cursor and acknowledges its exact
+`sourceRecordId`/`failureId` pairs. New or unsent failures remain owned locally; a failure without a current
+carrier is not invented as a new Project target.
+
+The server replaces the most recently accepted observation batch without merging
+older batches. Missing target items mean unobserved/pending, while the complete
+local facts remain durable. Application history is not deleted to make a report
+fit, and a task inventory remains complete. The [Worker requirements](../../docs/spec/daynight-worker.md)
+and [configuration contract](../../docs/spec/daynight-worker-configuration.md)
+own these guarantees; the [fact separation decision](../../.agents/notes/implemented/architecture/2026-11-12-worker-configuration-fact-separation.md)
+records their representation and reporting trade-offs.
 
 The coordinator reads current successful concurrency, polling, recovery, platform
 preference and native values. Lowering concurrency does not stop existing tasks;

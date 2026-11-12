@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, open, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import { readConfigurationCache } from "../../../src/commands/worker/configuration-cache.js";
 
 if (process.env.CI) throw new Error("CLI stress tests run only on local machines.");
 
@@ -46,11 +47,16 @@ it("migrates and rereads a multi-generation cache larger than MAX_STRING_LENGTH"
       try {
         const snapshot = manager.current();
         expect(snapshot.observationRevision).toBe("99");
-        expect(snapshot.items).toHaveLength(count + required.length);
-        const history = snapshot.items.filter(item => item.key.kind === "projectNative");
+        expect(snapshot.items).toHaveLength(required.length);
+        const persisted = (await readConfigurationCache(file, identity, new AbortController().signal)).cache;
+        expect(persisted.currentItems.length + persisted.retainedItems.length).toBe(count + required.length);
+        const history = persisted.retainedItems.filter(item => item.value.key.kind === "projectNative");
         expect(history).toHaveLength(count);
         for (let index = 0; index < count; index++) {
-          const item = history[index]!;
+          const record = history[index]!, item = record.value;
+          expect(record.origin).toMatchObject({ source: "schema4", targetRevision: String(index % 99 + 1) });
+          expect(record.actualSource).toEqual({ kind: "schema4", successRevision: null });
+          expect(record.failureId).toBe(index + 1);
           expect(item.key).toEqual({ kind: "projectNative", projectId: id(index) });
           expect(item.targetRevision).toBe(String(index % 99 + 1));
           expect(item.lastFailure).toEqual(lastFailure);
@@ -71,7 +77,7 @@ it("migrates and rereads a multi-generation cache larger than MAX_STRING_LENGTH"
     try {
       const prefix = Buffer.alloc(18);
       await migrated.read(prefix, 0, prefix.length, 0);
-      expect(prefix.toString("utf8")).toBe('{"schemaVersion":4');
+      expect(prefix.toString("utf8")).toBe('{"schemaVersion":5');
     } finally { await migrated.close(); }
     await inspect();
     console.info(`Configuration stress: original ${originalSize} bytes; migrated ${(await stat(file)).size} bytes; MAX_STRING_LENGTH ${constants.MAX_STRING_LENGTH}.`);

@@ -532,7 +532,6 @@ export const runWorker = async (options: {
         }
       },
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
-      onCapacity: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} is waiting for observation capacity; retained results remain available for acknowledgement.` }),
       onInvalidDesired: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
     await configuration.receive(resource.desired, resource.observationRevision);
@@ -804,8 +803,8 @@ export const runWorker = async (options: {
           if (actual.desired !== null) bootstrap = null;
           reconcileReport = false;
         },
-        capture: () => {
-          const captured = manager.report(manager.current().desired === null ? bootstrap : null);
+        capture: report => {
+          const captured = manager.report(manager.current().desired === null ? bootstrap : null, report);
           try { parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") }); }
           catch (error) { reconcileReport = true; throw error; }
           return captured;
@@ -1148,7 +1147,7 @@ export const runWorkerControl = async (options: {
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }
           },
-          capture: () => configurationManager!.report(bootstrap),
+          capture: report => configurationManager!.report(bootstrap, report),
           send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
           accept: async (captured, receipt) => { await configurationManager!.acknowledge(captured, receipt); },
         } });

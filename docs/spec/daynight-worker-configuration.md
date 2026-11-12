@@ -74,13 +74,13 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记选择配置交换格式和 9 MiB 报告正文上限，不改变任务或 inventory 协议。协议 1 同样使用 9 MiB，未携带配置协议的报告保持 1 MiB。重复或未知协议头在业务调用前拒绝。未携带标记的报告和协议 1 保留各自的既有字段与回执合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
-扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；工具能力确认后必填 toolPathsBootstrap，为完整三项 choice 或 null。即使已有云端 desired，仍可提交独立采纳候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
+扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；工具能力确认后必填 toolPathsBootstrap，为完整三项 choice 或 null。即使已有云端 desired，仍可提交独立采纳候选。observation 包含 baseRevision、desiredRevision 和本次有界的 items 集合；尚无结果时为 null。每个发送项保持完整结构，本机全部应用与保留事实不必同时进入一次报告。
 
 扩展回执保留原时间字段，并含 configuration:{desired,observationRevision,observationAccepted}。观测 CAS 不匹配时返回 false 与当前版本，保留已有应用观测；合法机器报告仍按原规则保存。响应未知不能被当作未写入，后续使用最新实际状态收敛，不重放旧报告。
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。未协商托管模式的完整 items 最多 1025 个不同 key；协商后最多 1026 项，其中非 mode 项仍最多 1025 个，应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。未协商托管模式的本批 items 最多 1025 个不同 key；协商后最多 1026 项，其中非 mode 项仍最多 1025 个，应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
@@ -95,7 +95,15 @@ null 表示没有可确认的实际值，不是生效默认值；preferPlatformS
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 
-目标配置值以及实际存储的应用观测（包含服务端生成的 reportedAt）分别受 4 MiB 规范化 JSON 编码预算约束。超限返回 400 invalid_input，整个事务回滚。确认过的失败和已完成且不再需要的项目记录可以收敛；未完成的移除、未知结果及恢复所需信息不能为腾空间而丢弃。达到容量时不能新增会增长集合的配置工作，不增长的合法报告与恢复仍可完成。
+目标配置值以及实际存储的应用观测（包含服务端生成的 reportedAt）分别受 4 MiB 规范化 JSON 编码预算约束。超限返回 400 invalid_input，整个事务回滚。客户端以 Go JSON 的 HTML、U+2028/U+2029 转义字节计量观测，并预留 512 字节覆盖 reportedAt 与私有 mode 存储槽；本批还须同时满足条数上限和完整配置报告的 9 MiB 请求预算。
+
+本机完整事实与网络报告分别管理。当前目标变更或本机项目移除责任登记不以一次报告的条数或字节名额为前置；已确认且不再需要的记录可以收敛，未完成停止、未知结果、仍有归属的工作和未确认失败继续保留。结构合法但当前网络表示无法容纳的历史值保留本机，不能截断实际值、改成 null 或伪报确认。
+
+有未完成或失败移除时，每批固定包含一项真实当前停止核验，优先反映其原停止责任的最高严重程度。其余合格项按持久化的 recordId 游标连续轮转；遇到第一个因条数或字节预算不能进入的项即结束本批，该项成为下批起点，不跳过大项填入后续小项。合法最大 native 单项可在带固定移除项的下一批实际发送。匹配且 observationAccepted=true 的回执才确认所发送的失败来源；游标仅在捕获属于当前本机 generation 时推进。拒绝、未知回执和重启不能丢弃未报告的本机事实。
+
+同 key 的当前与保留记录分别拥有失败，wire lastFailure 选取最近的一条待确认失败。确认必须匹配本次实际发送的 sourceRecordId/failureId，不清除同 key 的较新或未发送失败。没有合法当前载体的旧失败留在本机，不制造新项目目标以获得上传名额。来源标识、原操作和实际值出处属于本机检查点，不增加公开 DTO 字段。
+
+服务端整体替换最近一次接纳的 observation，不把多批结果合成为不存在的完整历史。遗漏表示本次未观察，不能推断为已应用、已停止或已确认；正常可全部容纳时仍发送完整当前投影。
 
 baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 int64 十进制字符串，不得引用未来目标。资源 observation 的 reportedAt 由数据库生成，仅在观测被接纳时更新，输入不能提供它。GET 中保留该次输入的 baseRevision，而下一次报告必须使用外层当前 observationRevision。普通或 CAS 被拒绝的机器报告不能更新这个应用确认时间。
 
@@ -127,7 +135,7 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 “我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告，不改变草稿的保存版本。页面的运行观测和配置分别读取：近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立的运行观测。响应正文没有 supported 标志；客户端从独立能力响应头记录模式支持情况，不能从默认值或已有目标推断支持。desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。
 
-表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
+表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳本批应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。配置反馈使用最近接纳的整批观测，缺少当前目标项时保持 pending，不跨批拼接旧项来宣称完整成功。
 
 保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。保存准备或结果发布期间准入暂停时，本地 pending 与保存 promise 在结果已知或取消分类后结束，保留已有配置和草稿；暂停期间不自动读取或重放。未派发的取消不代表写入，已派发而未确认的结果仍需核对，可信保存确认不因后续发布失败变为未知。取消网络不证明服务端回滚。
 
