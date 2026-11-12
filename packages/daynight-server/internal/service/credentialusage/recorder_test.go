@@ -475,3 +475,53 @@ func TestDiagnosticPassVisitsOtherDirtyKey(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type captureHandler struct{ records chan slog.Record }
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool      { return true }
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler            { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler                 { return h }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error { h.records <- r; return nil }
+
+func TestDiagnosticSQLStateAndDrainError(t *testing.T) {
+	for _, tc := range []struct{ name, state, want string }{
+		{"valid", "55P03", "55P03"},
+		{"invalid characters", "55p03", ""},
+		{"invalid length", "secret database details", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := errors.New("sensitive driver detail")
+			w := writerFunc(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
+				return store.Completion{Outcome: store.TransactionCommitted}, &store.Error{DatabaseFailure: true, SQLState: tc.state, Cause: cause}
+			})
+			h := &captureHandler{records: make(chan slog.Record, 1)}
+			r, err := New(w, slog.New(h), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := bounded(t)
+			defer cancel()
+			err = r.Drain(ctx)
+			if err == nil || !errors.Is(err, cause) || err.Error() != "credential usage drain completed with 0 unconfirmed samples" {
+				t.Fatalf("drain error: %v", err)
+			}
+			rec := wait(t, h.records)
+			var state string
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "sqlstate" {
+					state = a.Value.String()
+				}
+				return true
+			})
+			if state != tc.want {
+				t.Fatalf("logged SQLSTATE %q, want %q", state, tc.want)
+			}
+		})
+	}
+}
