@@ -14,7 +14,7 @@ import (
 var _ store.GrantLifecycleDAO = (*DAO)(nil)
 
 func (d *DAO) LockOwnerSession(ctx context.Context, principal model.Principal, now time.Time) error {
-	return identity.NewScope(d.tx).IdentityDAO().LockSession(ctx, principal, now)
+	return identity.NewScope(d.tx, d).IdentityDAO().LockSession(ctx, principal, now)
 }
 
 func (d *DAO) Refresh(ctx context.Context, hash []byte, lock bool) (store.OAuthRefresh, error) {

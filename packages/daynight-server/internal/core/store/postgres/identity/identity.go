@@ -11,11 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type scope struct{ tx pgx.Tx }
+type scope struct {
+	tx     pgx.Tx
+	family store.CredentialFamilyDAO
+}
 
-func NewScope(tx pgx.Tx) store.IdentityScope            { return &scope{tx: tx} }
-func (s *scope) IdentityDAO() store.IdentityDAO         { return s }
-func (s *scope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
+func NewScope(tx pgx.Tx, family store.CredentialFamilyDAO) store.IdentityScope {
+	return &scope{tx: tx, family: family}
+}
+func (s *scope) CredentialFamilyDAO() store.CredentialFamilyDAO { return s.family }
+func (s *scope) IdentityDAO() store.IdentityDAO                 { return s }
+func (s *scope) PersonalTeamDAO() store.PersonalTeamDAO         { return s }
 
 var _ store.IdentityScope = (*scope)(nil)
 var _ store.IdentityDAO = (*scope)(nil)

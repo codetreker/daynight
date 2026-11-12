@@ -35,3 +35,14 @@ type UpdatePersonalAccessTokenRequest struct {
 	ExpectedExpiresAt *time.Time `json:"expectedExpiresAt"`
 	ExpectedUserID    string     `json:"expectedUserId"`
 }
+
+// ExternalUserInput identifies one upstream account and its optional initial profile.
+type ExternalUserInput struct {
+	ExternalUserID string               `json:"externalUserId"`
+	Profile        *ExternalUserProfile `json:"profile,omitempty"`
+}
+
+type ExternalUserProfile struct {
+	Name      *string `json:"name,omitempty"`
+	AvatarURL *string `json:"avatarUrl,omitempty"`
+}

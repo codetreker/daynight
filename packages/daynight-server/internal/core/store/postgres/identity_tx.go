@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/identity"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -16,7 +17,7 @@ func (s *Store) WriteIdentity(ctx context.Context, operation func(store.Identity
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.AuthQueryError("begin identity operation", err)
 	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(identity.NewScope(tx)) })
+	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(identity.NewScope(tx, oauth.NewDAO(tx))) })
 	if err == nil {
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}

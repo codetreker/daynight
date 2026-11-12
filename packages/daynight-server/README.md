@@ -131,6 +131,28 @@ a bodyless 304, while a changed profile/account receives 200. HEAD omits the bod
 Authentication and user-read failures retain no-store errors and cannot return
 304. The Web overrides its usual no-store fetch policy only for `/me`, allowing
 browser-managed revalidation across reloads without a custom identity store.
+`PATCH /api/v1/me` accepts a nonempty subset of nullable `name` and `avatarUrl`.
+Omission preserves a field, null clears it, and strings retain their exact text.
+Session and PAT callers update only their own profile; Cookie writes retain the
+main-site Origin check. Unknown or repeated fields, query parameters, invalid
+Unicode and NUL fail. Name is bounded at 1024 UTF-8 bytes and avatarUrl at 512 KiB;
+the request retains the 1 MiB/15-second read limit, followed by a separate
+15-second operation deadline that inherits parent cancellation.
+The strict identity transaction checks its credential, updates only submitted
+columns, validates the complete profile, response and Personal Team, then checks
+fresh credential time after user-row waits. Success returns the existing complete
+`api.User` with no-store and `Daynight-User-ID` only after confirmed commit.
+Email, verification, identity and Personal Team are preserved. Native UniAuth
+login continues to replace the upstream name and avatar. Public OAuth admission
+retains its existing scope.
+
+The internal `Identity.EnsureUser` operation canonicalizes an exact external key,
+then inserts or reads its actual user without replacing existing profile fields.
+Read-committed `INSERT ... ON CONFLICT DO NOTHING RETURNING` is followed, on
+conflict, by a new exact-key SELECT. New users, Personal Teams and owner admins
+share one strict transaction; failure rolls them back and unknown completion
+stops the caller. The [authentication design](../../docs/design/daynight-auth.md#完整用户初始化与本人资料更新)
+owns DTO admission, same-transaction credential injection and capacity checks.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
 computed `ProjectAccess`. The authenticated
 `GET /api/v1/projects/{projectId}/access` returns required projectId, ownerTeam,
@@ -1248,6 +1270,11 @@ Tests verify raw input and principal propagation, context and transaction-bound
 capability identity, login consumption before upstream retrieval, shared
 user/Personal Team/session scope, partial login results, secret suppression,
 completion precedence, device rate scopes and known-rollback collision retries.
+EnsureUser and PatchUser tests retain strict rollback on domain refusals, account
+initialization ordering, complete profile admission and fresh post-wait credential
+checks. The normal credential API integration flow updates through both Cookie
+and PAT, reads the committed profile independently and verifies a subsequent
+native login restores upstream fields on the same account and Personal Team.
 Actual SDK parsing, response errors, cancellation, provider discovery and profile
 encoding remain with the service adapter. Microsoft identities in either
 `microsoft:<tid>:<oid>` or `msft:<oid>@<tid>` form reach user persistence as

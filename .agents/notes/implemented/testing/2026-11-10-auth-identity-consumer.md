@@ -11,7 +11,7 @@ with direct operation outcomes without running unrelated identity workflows.
 
 ## Decision
 
-Authentication consumes a private interface containing its 17 direct Identity
+Authentication consumes a private interface containing its 18 direct Identity
 operations. The production Identity service satisfies it structurally. Its
 constructor validates the supplied object's callback against the full settings,
 retains that object for routes and binds its Authenticate method to the real

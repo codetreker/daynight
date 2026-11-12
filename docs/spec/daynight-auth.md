@@ -177,6 +177,27 @@ GET/HEAD `/api/v1/me` 每次先按当前凭据认证，并成功读取当前用�
 
 Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP 缓存保存资料与验证器。每个新文档初始化和显式重试进行实际认证，但未变化的姓名、头像等响应正文可以跨刷新复用；缓存缺失或被浏览器清理后重新读取完整资料。该表示不写入自定义 IndexedDB，也不替代身份确认或项目授权。其他认证及业务端点沿用自身缓存策略，一次性凭据不进入人员内容缓存。
 
+## 本人资料更新
+
+`PATCH /api/v1/me` 接受仅含 name/avatarUrl 的非空字段集合，每项为 string 或 null。
+缺省保持原值、null 清除、字符串原样保存；姓名最多 1024 UTF-8 bytes，头像最多 524288 UTF-8 bytes，
+均禁止 NUL。未知、重复字段、错误类型、非法 Unicode、query、version、目标身份、email 及
+emailVerified 均拒绝。解码字段或完整候选资料超过容量时返回 400 invalid_input，写入整体回滚；
+正文超过 1 MiB 时返回 413。读取期限为 15 秒；解析完成后的写操作另有继承父取消的
+15 秒期限。Session 和 PAT 只修改实际凭据的本人，Cookie 写请求沿用精确主站 Origin 校验。
+
+并发更新不同字段时，保留各自未提交字段的最新值。完整 profile 不超过 1 MiB，完整本人表示不超过
+2 MiB；完整 Personal Team 必须有效。写入、容量与完整性校验、等待后的新鲜凭据有效性检查和提交
+整体成功后返回 `200` 原完整 `api.User`，包含 id 及 nullable email/emailVerified/name/avatarUrl 的原表示和
+personalTeam，并保留 `Daynight-User-ID`、no-store。失败不能提交部分资料；未知提交结果不得自动重放。
+身份 ID、email、验证状态及 Personal Team 不可由此接口修改；普通认证读取不覆盖资料，后续原生
+UniAuth 登录仍可按上游值覆盖姓名和头像。GET/HEAD 继续遵循既有条件读取合同。
+
+后端完整用户初始化按规范化后的完整外部身份键复用账号，已有资料不覆盖，不按邮箱或姓名合并。
+新账号的省略或 null 姓名、头像及 email/emailVerified 为 null；用户、Personal Team 和唯一 owner admin
+必须原子建立，并在确认提交后才供后继使用。并发原生登录与初始化同一身份只能产生一个完整账号与
+Personal Team。初始化失败整体回滚，提交结果未知停止后继操作。
+
 ## Team 生命周期
 
 Team 的身份是规范小写 UUID，名称只用于展示。Team 元数据与当前主体真实成员关系分开版本化；

@@ -80,6 +80,9 @@ func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (ide
 func (m *strictIdentity) User(context.Context, model.Principal) (model.User, error) {
 	return model.User{}, m.unexpected("User")
 }
+func (m *strictIdentity) PatchUser(context.Context, model.Principal, model.UserProfilePatch) (model.User, error) {
+	return model.User{}, m.unexpected("PatchUser")
+}
 func (m *strictIdentity) Logout(context.Context, model.Principal) error {
 	return m.unexpected("Logout")
 }

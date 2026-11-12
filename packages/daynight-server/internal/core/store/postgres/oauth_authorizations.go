@@ -26,7 +26,8 @@ func (s *Store) WriteAuthorizations(ctx context.Context, operation func(store.Au
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.AuthQueryError("begin OAuth authorization", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
-		return operation(authorizationScope{dao: oauth.NewDAO(tx), identity: identity.NewScope(tx).IdentityDAO()})
+		dao := oauth.NewDAO(tx)
+		return operation(authorizationScope{dao: dao, identity: identity.NewScope(tx, dao).IdentityDAO()})
 	})
 	if err == nil {
 		return store.Completion{Outcome: store.TransactionCommitted}, nil

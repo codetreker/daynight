@@ -30,10 +30,14 @@ func TestMain(m *testing.M) {
 
 type identityCapability struct{ store.IdentityDAO }
 type personalCapability struct{ store.PersonalTeamDAO }
+type familyCapability struct{ store.CredentialFamilyDAO }
 type identityScope struct {
 	identity *identityCapability
 	personal *personalCapability
+	family   *familyCapability
 }
+
+func (s *identityScope) CredentialFamilyDAO() store.CredentialFamilyDAO { return s.family }
 
 func (s *identityScope) IdentityDAO() store.IdentityDAO         { return s.identity }
 func (s *identityScope) PersonalTeamDAO() store.PersonalTeamDAO { return s.personal }
@@ -100,7 +104,7 @@ func (f *identityFixture) WriteIdentity(ctx context.Context, operation func(stor
 	return result.completion, result.err
 }
 func (f *identityFixture) transaction() {
-	f.transactions = append(f.transactions, scopeResult{scope: &identityScope{identity: &identityCapability{}, personal: &personalCapability{}}, completion: store.Completion{Outcome: store.TransactionCommitted}})
+	f.transactions = append(f.transactions, scopeResult{scope: &identityScope{identity: &identityCapability{}, personal: &personalCapability{}, family: &familyCapability{}}, completion: store.Completion{Outcome: store.TransactionCommitted}})
 }
 func newIdentityFixture(t *testing.T) *identityFixture {
 	t.Helper()

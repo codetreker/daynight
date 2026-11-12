@@ -64,6 +64,10 @@ type httpAuthenticationScope struct {
 }
 
 func (s httpAuthenticationScope) IdentityDAO() store.IdentityDAO { return s.dao }
+func (s httpAuthenticationScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	panic("unreachable")
+}
 func (s httpAuthenticationScope) PersonalTeamDAO() store.PersonalTeamDAO {
 	unexpectedHTTPCall(s.t, "PersonalTeamDAO")
 	return nil
@@ -123,6 +127,18 @@ func (d httpRejectedIdentityDAO) ConsumeLogin(context.Context, []byte, []byte, t
 }
 func (d httpRejectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.UpsertUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
 	panic("unreachable")
 }
 func (d httpRejectedIdentityDAO) InsertSession(context.Context, model.Session) error {

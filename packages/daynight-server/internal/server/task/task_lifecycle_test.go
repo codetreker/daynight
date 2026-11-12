@@ -64,6 +64,10 @@ type taskHTTPIdentityScope struct{ w *taskHTTPIdentityWriter }
 func (s taskHTTPIdentityScope) IdentityDAO() store.IdentityDAO {
 	return taskHTTPIdentityDAO{lifecycleRejectedIdentityDAO: lifecycleRejectedIdentityDAO{t: s.w.t}, w: s.w}
 }
+func (s taskHTTPIdentityScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.w.t, "CredentialFamilyDAO")
+	panic("unreachable")
+}
 func (s taskHTTPIdentityScope) PersonalTeamDAO() store.PersonalTeamDAO {
 	unexpectedHTTPCall(s.w.t, "PersonalTeamDAO")
 	return nil
@@ -281,6 +285,18 @@ func (d lifecycleRejectedIdentityDAO) ConsumeLogin(context.Context, []byte, []by
 }
 func (d lifecycleRejectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.UpsertUser")
+	panic("unreachable")
+}
+func (d lifecycleRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
+func (d lifecycleRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	panic("unreachable")
+}
+func (d lifecycleRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
 	panic("unreachable")
 }
 func (d lifecycleRejectedIdentityDAO) InsertSession(context.Context, model.Session) error {
