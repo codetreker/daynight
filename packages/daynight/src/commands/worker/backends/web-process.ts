@@ -18,7 +18,10 @@ import { PromptInputLimitError } from "../prompt-input-limit.js";
 import { matchesLaunchConfiguration, readLaunchToolSelection, writeLaunchToolSelection } from "../../controller/launch-tool-selection.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { FrozenToolObservation } from "../types.js";
+import type { ControllerJobLeases } from "./controller-job-leases.js";
+import { preservesControllerProcessProof } from "./orchestration.js";
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number;
+  jobLeases?: ControllerJobLeases;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
 }) => {
@@ -77,7 +80,9 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     if (observation.kind === "unknown") throw new Error("Controller credential renewal cannot determine cleanup process status.", { cause: observation.cause });
     if (observation.kind === "running-unobserved" || observation.kind === "pre-writer-exited") return false;
     const saved = observation.snapshot;
-    return saved.controllerProcess !== null && await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
+    return saved.controllerProcess !== null && (process.platform === "win32"
+      ? await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses, undefined, await options.jobLeases?.get(ticket.launchId))
+      : await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses));
   };
   const methods = {
     prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
@@ -141,7 +146,16 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
           env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
           onSubmitting: () => { submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
           onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
-          onObserved: snapshot => { options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: snapshot.nativeProcesses }, options.now()); acknowledged = true; },
+          onObserved: async snapshot => {
+            if (process.platform === "win32") {
+              const proof = current(task).webExecution!.controllerProcess;
+              if (snapshot.controllerProcess !== null) {
+                if (proof === null || !preservesControllerProcessProof(proof, snapshot.controllerProcess, ticket.launchId)) throw new Error("The observed Web controller conflicts with its spawn proof.");
+                await options.jobLeases?.retain(ticket.launchId, proof, Date.now() + 10_000);
+              }
+            }
+            options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: snapshot.nativeProcesses }, options.now()); acknowledged = true;
+          },
         });
       } catch (error) {
         if (error instanceof ControllerStartupError) options.store.observeStartup(task, error.observation, options.now());

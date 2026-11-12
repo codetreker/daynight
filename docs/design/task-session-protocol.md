@@ -486,7 +486,7 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 Controller 用 `cleanupInteractionIds` 标识清理阶段实际产生的交互。服务端冻结时保存 Timeline 序号边界，拒绝将冻结前的 pending 交互重新标为 cleanup；只有边界后且属于当前白名单的交互响应可以提交。浏览器按相同白名单启用控件，服务端在接受、Poll 投递和 operation_begin 时分别重验，避免排队期间权限变化绕过限制。
 
-Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 的创建、成员查询与终止通过已有 Koffi 依赖调用 Win32 API。终止前在同一 Job 句柄内核验至少一个原进程的身份及成员关系，并保持该 Job 句柄直到终止后的成员清单为空；不能归属的非空 Job 不终止。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。只有打开 Job 时的 `ERROR_FILE_NOT_FOUND` 表示名称不存在，权限、查询、终止和释放失败均保留错误；空 Job 清单仍不能代替原进程实例的停止证明。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。缺失名称或无法取得可信句柄保持未知，不能推断空 Job。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞。摘要保护一致性，不认证本机恶意写入者。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。权限、查询、终止和释放失败均保留错误；空 Job 清单仍不能代替原进程实例的停止证明。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
 
 ## 升级与安全失败
 

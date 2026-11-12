@@ -1,6 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
@@ -11,10 +12,50 @@ import * as launchTickets from "../../../src/commands/controller/launch-ticket.j
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebBackendFixtures("file");
+
+it.each(["valid", "missing", "generation", "process"] as const)("Web orderly recovery after Worker restart requires committed Windows Job proof (%s)", async kind => {
+  const f = await fixture("codex", 0);
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
+  const source = await cleanupSource(f, task);
+  const spawnProof = { pid: 987, parentPid: 12, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
+  const controller = { ...spawnProof, jobObjectName: `Local\\Daynight-${source.ticket.launchId}` };
+  task = f.store.updateWebExecution(source.task, { controllerProcess: spawnProof }, 6);
+  f.store.beginCleanup(task, { kind: "shutdown", deadline: 10 }, 7); task = f.store.clearShutdown(task, 8);
+  source.saved.mockRestore(); vi.mocked(lifecycle.recordStoppedControllerGeneration).mockRestore();
+  const file = path.join(controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  await mkdir(path.dirname(file), { recursive: true });
+  const journal = lifecycle.openControllerLifecycleStore(file, source.ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: controller, nativeSessionId: task.resources.nativeSession!.sessionId, lifecycle: "ready", error: null }); journal.close();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    await lifecycle.recordStoppedControllerGeneration(file, source.ticket, Date.now() + 5000, {} as never);
+    f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+    const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+    if (kind !== "valid") {
+      const db = new Database(file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }, value = JSON.parse(row.snapshot);
+      if (kind === "missing") delete value.windowsJobStopProof;
+      if (kind === "generation") value.executionGeneration = "2";
+      if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
+    }
+    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const launcher = { prepare: vi.fn(async (record: LocalTask) => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId })), launch: vi.fn(async (_record: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal) => {}), refreshGrant: vi.fn(async () => {}) };
+    source.request.mockImplementation(async ticket => { if (ticket.executionGeneration === "1") throw new ControllerIpcOutcomeUnknownError("Original controller exited"); return { requestId: randomUUID(), ok: true, snapshot: { ...source.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeStopped: false, stoppedAt: null, error: null } }; });
+    source.stopped.mockClear();
+    const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, jobLeases: leases, launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 20, request: source.request });
+    const result = await backend.advance(reopened.getTask(task)!, new AbortController().signal).catch(error => error);
+    if (kind === "valid") { expect(result.webExecution.executionGeneration).toBe("2"); expect(launcher.launch).toHaveBeenCalledTimes(2); expect(launcher.launch.mock.calls[1]![0].webExecution!.executionGeneration).toBe("2"); }
+    else { expect(reopened.getTask(task)!.webExecution!.executionGeneration).toBe("1"); expect(launcher.launch).not.toHaveBeenCalled(); }
+    expect(source.stopped).not.toHaveBeenCalled();
+  } finally { Object.defineProperty(process, "platform", platform); }
+});
 
 it("retains a single retry across starting, store reopen, and later native failure below the ordinary budget", async () => {
   const f = await recoveryFixture(5);
@@ -171,7 +212,8 @@ it.each((["live", "stopped"] as const).flatMap(state => (["none", "pid", "birth"
   expect(reopened.getTask(task)?.resources.nativeSession?.sessionId).toBe(nativeSessionId);
   expect(reopened.getTask(task)?.webExecution?.executionGeneration).toBe("1");
   expect(reopened.getTask(task)?.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
-  expect(source.stopped).toHaveBeenCalledWith(controller, [native]);
+  expect(source.stopped).toHaveBeenCalledWith(controller, [native], expect.any(Number));
+  if (state === "live") expect(source.stopped.mock.calls[0]![2]).toBe(source.stopped.mock.calls[1]![2]);
   if (state === "live") expect(stop).toHaveBeenCalledWith(controller, [native], expect.any(Number));
   else expect(stop).not.toHaveBeenCalled();
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(state === "live" ? ["observe", "stop"] : ["observe"]);

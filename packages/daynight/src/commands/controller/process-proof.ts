@@ -1,4 +1,4 @@
-import { createControllerJob, inspectControllerJob } from "./windows-job.js";
+import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { captureWindowsProcessProof } from "./windows-process-proof.js";
@@ -24,7 +24,7 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
 };
 export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {
   const proof = await captureProcessProof(process.pid);
-  return process.platform === "win32" ? { ...proof, jobObjectName: await createControllerJob(launchId, process.pid) } : proof;
+  return process.platform === "win32" ? { ...proof, jobObjectName: await createOwnedControllerJob(launchId, process.pid) } : proof;
 };
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
 const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
@@ -89,23 +89,25 @@ const confirmRetainedProcessesStopped = async (controller: ProcessProof, native:
   }
   return true;
 };
-export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number): Promise<boolean> => {
+export const confirmControllerProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], deadline?: number, lease?: ControllerJobLease): Promise<boolean> => {
   if (!await confirmRetainedProcessesStopped(controller, native, deadline)) return false;
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; its descendants cannot be inferred stopped.");
+    if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
     remaining(deadline);
-    const members = await bounded(deadline, () => inspectControllerJob(controller.jobObjectName!, false, deadline));
+    const members = await bounded(deadline, () => inspectControllerJobLease(lease, controller, false, deadline));
     remaining(deadline);
     return members.length === 0;
   }
   if (controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
   return (await groupMembers(controller.pid, deadline)).length === 0;
 };
-export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number): Promise<void> => {
+export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease): Promise<void> => {
   remaining(deadline);
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
-    await bounded(deadline, () => inspectControllerJob(controller.jobObjectName!, true, deadline, [controller, ...native]));
+    if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
+    await bounded(deadline, () => inspectControllerJobLease(lease, controller, true, deadline));
     remaining(deadline);
     // Job termination is asynchronous. An empty inventory is insufficient until
     // every retained original process identity also confirms it has stopped.

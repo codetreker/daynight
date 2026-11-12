@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { expect, test, vi } from "vitest";
-import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
-import { createControllerJob, inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
+import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { acquireControllerJobLease, createControllerJob, inspectControllerJob, inspectControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 
 test.skipIf(process.platform !== "win32")("queries and terminates a real named Job containing a leader and its descendant", async () => {
   const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
@@ -108,6 +108,69 @@ process.send({ ready: true });
   if (failed) throw failure;
 }, 90_000);
 
+test.skipIf(process.platform !== "win32").each([true, false])("handles an unrecorded descendant after Controller exit (lease retained: %s)", async retain => {
+  const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
+  const create = library.func("void * __stdcall CreateJobObjectW(void *attributes, str16 name)");
+  const openProcess = library.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
+  const assign = library.func("int __stdcall AssignProcessToJobObject(void *job, void *process)");
+  const close = library.func("int __stdcall CloseHandle(void *handle)");
+  const lastError = library.func("uint32_t __stdcall GetLastError()");
+  const launchId = randomUUID(), name = `Local\\Daynight-${launchId}`;
+  let job: unknown = create(null, name), lease: ControllerJobLease | undefined;
+  if (job === null) throw new Error(`Fixture Job creation failed (Win32 ${lastError()}).`);
+  const script = `
+const { spawn } = require('node:child_process');
+process.on('message', () => {
+  const child = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(()=>{},1000)'], { stdio: ['ignore','ignore','ignore','ipc'], windowsHide: true });
+  child.once('message', () => process.send({ pid: child.pid }));
+});
+process.send('ready'); setInterval(()=>{},1000);
+`;
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true });
+  const closed = once(child, "close", { signal: AbortSignal.timeout(30_000) }); void closed.catch(() => {});
+  let descendant: ProcessProof | undefined, failure: unknown, failed = false;
+  const cleanupFailures: unknown[] = [];
+  try {
+    await once(child, "message", { signal: AbortSignal.timeout(10_000) });
+    const original = await captureProcessProof(child.pid!);
+    const processHandle: unknown = openProcess(0x101, 0, child.pid!);
+    if (processHandle === null) throw new Error(`Fixture process opening failed (Win32 ${lastError()}).`);
+    try { if (assign(job, processHandle) === 0) throw new Error(`Fixture Job assignment failed (Win32 ${lastError()}).`); }
+    finally { if (close(processHandle) === 0) throw new Error(`Fixture process handle close failed (Win32 ${lastError()}).`); }
+    if (retain) lease = await acquireControllerJobLease(launchId, original, Date.now() + 15_000);
+    const next = once(child, "message", { signal: AbortSignal.timeout(10_000) }); child.send("spawn");
+    const [receipt] = await next as [{ pid: number }]; descendant = await captureProcessProof(receipt.pid);
+    if (close(job) === 0) throw new Error(`Fixture Job close failed (Win32 ${lastError()}).`);
+    job = null;
+    if (!child.kill()) throw new Error("Fixture Controller termination failed.");
+    await closed;
+    expect(await inspectProcessProof(descendant)).toBe("running");
+    const complete = { ...original, jobObjectName: name };
+    if (lease !== undefined) {
+      expect(await inspectControllerJobLease(lease, complete, false, Date.now() + 15_000)).toContain(descendant.pid);
+      await stopControllerProcesses(complete, [], Date.now() + 15_000, lease);
+      await vi.waitFor(async () => expect(await inspectProcessProof(descendant!)).toBe("stopped"), { timeout: 10_000, interval: 25 });
+      expect(await confirmControllerProcessesStopped(complete, [], Date.now() + 15_000, lease)).toBe(true);
+    } else {
+      await expect(inspectControllerJob(name)).rejects.toMatchObject({ stage: "open", win32Code: 2 });
+      await expect(confirmControllerProcessesStopped(complete, [], Date.now() + 15_000)).rejects.toThrow(/lease is unavailable/);
+      await expect(stopControllerProcesses(complete, [], Date.now() + 15_000)).rejects.toThrow(/lease is unavailable/);
+      expect(await inspectProcessProof(descendant)).toBe("running");
+    }
+  } catch (error) { failed = true; failure = error; }
+  finally {
+    if (descendant !== undefined) try {
+      if (await inspectProcessProof(descendant) === "running") process.kill(descendant.pid);
+      await vi.waitFor(async () => expect(await inspectProcessProof(descendant!)).toBe("stopped"), { timeout: 10_000, interval: 25 });
+    } catch (error) { cleanupFailures.push(error); }
+    try { if (child.exitCode === null && child.signalCode === null) child.kill(); await closed; } catch (error) { cleanupFailures.push(error); }
+    if (lease !== undefined) try { releaseControllerJobLease(lease); } catch (error) { cleanupFailures.push(error); }
+    if (job !== null) try { if (close(job) === 0) throw new Error(`Fixture Job close failed (Win32 ${lastError()}).`); } catch (error) { cleanupFailures.push(error); }
+  }
+  if (cleanupFailures.length > 0) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "Retained Job fixture cleanup failed.", failed ? { cause: failure } : undefined);
+  if (failed) throw failure;
+}, 60_000);
+
 test.skipIf(process.platform !== "win32")("observes whether a live member retains a Job name after the last handle closes", async () => {
   const koffi = await import("koffi"), library = koffi.load("kernel32.dll");
   const open = library.func("void * __stdcall OpenJobObjectW(uint32_t access, int inherit, str16 name)");
@@ -127,7 +190,7 @@ test.skipIf(process.platform !== "win32")("observes whether a live member retain
       const code = lastError();
       console.info(`Live-member Job name after last handle close: unavailable (Win32 ${code}).`);
       expect(code).toBe(2);
-      expect(await inspectControllerJob(name)).toEqual([]);
+      await expect(inspectControllerJob(name)).rejects.toMatchObject({ stage: "open", win32Code: 2 });
     } else {
       console.info("Live-member Job name after last handle close: available.");
       expect(await inspectControllerJob(name)).toContain(child.pid);

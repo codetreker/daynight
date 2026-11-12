@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -14,13 +15,14 @@ vi.mock("node:timers/promises", async importOriginal => {
   } };
 });
 const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
 vi.mock("../../../src/commands/controller/process-proof.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/process-proof.js")>(), captureProcessProof: f.capture, confirmControllerProcessesStopped: f.confirm, stopControllerProcesses: f.stop }));
 vi.mock("../../../src/commands/controller/launch-observation.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/launch-observation.js")>(), ControllerBootstrapReplacedError: errors.ControllerBootstrapReplacedError, isControllerJournalIoFailure: f.journalIo, stopControllerBootstrap: f.bootstrap, reconcileSubmittedControllerLaunch: f.reconcile }));
+vi.mock("../../../src/commands/controller/windows-job.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/windows-job.js")>(), acquireControllerJobLease: f.acquireJob, releaseControllerJobLease: f.releaseJob }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -102,6 +104,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.stop.mockResolvedValue(undefined);
   f.confirm.mockResolvedValue(true);
   f.bootstrap.mockResolvedValue(undefined);
+  f.acquireJob.mockReset().mockResolvedValue({}); f.releaseJob.mockReset();
   f.journalIo.mockReturnValue(false);
   f.archive.mockResolvedValue({ state: "ready" });
   f.request.mockImplementation(async (_ticket, action) => {
@@ -526,6 +529,7 @@ test("archive-only retry reuses saved stop proof without starting a process or r
   const v = await setup(null);
   f.archive.mockRejectedValueOnce(new Error("offline"));
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
   const oldProof = v.requests.find(request => request.url.endsWith("/stop"))!.body;
   const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
   v.context.workingDirectory = () => { throw new Error("Old worktree no longer exists"); };
@@ -575,6 +579,7 @@ test("never-started sessions do not announce a pending history archive", async (
 test("archive-only retry marks pending before stop and tolerates metadata publication failure", async () => {
   const v = await setup(null);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
   const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
   const fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!, order: string[] = [];
   fetch.mockImplementation(async (...args) => {
@@ -928,8 +933,15 @@ setTimeout(() => process.exit(9), 10000).unref();
     const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
     expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("fixture journal snapshot unavailable");
     expect(error.errors[1].errors[0].message).toContain("fixture journal snapshot unavailable");
-    expect(spawned).toBeDefined(); expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true);
-    expect(spawned!.exitCode).not.toBe(9); expect(f.bootstrap).toHaveBeenCalledOnce();
+    expect(f.bootstrap).toHaveBeenCalledOnce(); await expect(f.bootstrap.mock.results[0]!.value).resolves.toBeUndefined();
+    expect(error.errors[1].errors[1].message).toContain("exited before committing its generation (missing)");
+    expect(spawned).toBeDefined(); expect(spawnedClose).toBeDefined();
+    // The Windows native stop waits synchronously on the process handle; Node's
+    // exit event may not be dispatched until the event loop runs again.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([spawnedClose!, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Stopped Controller child did not close.")), 5000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+    expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true); expect(spawned!.exitCode).not.toBe(9);
     expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
     expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
   } finally {
@@ -1142,6 +1154,150 @@ const retainedSnapshot = (ticket: import("../../../src/commands/controller/launc
   nativeProcesses: [{ pid: 988, parentPid: spawn.pid, processGroupId: spawn.processGroupId, startedAt: "native", commandHash: "b".repeat(64) }],
   nativeStopped: false, stoppedAt: null, error: null,
 });
+
+const withWindowsPlatform = async (action: () => Promise<void>): Promise<void> => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: "win32" });
+  try { await action(); } finally { Object.defineProperty(process, "platform", original); }
+};
+
+test("Windows keeps an authenticated Job lease through stop and journal recording", async () => {
+  const v = await setup(null), lease = {}; f.acquireJob.mockResolvedValue(lease);
+  await withWindowsPlatform(async () => {
+    let saved: ReturnType<typeof retainedSnapshot>;
+    f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+      if (!deadline) { saved = retainedSnapshot(ticket, spawnProof); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved }; }
+      if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+      return { kind: "controller-exited", process: spawnProof, snapshot: saved };
+    });
+    await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+    expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(f.acquireJob.mock.invocationCallOrder[0]).toBeLessThan(f.bootstrap.mock.invocationCallOrder[0]!);
+    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.record.mock.calls[0]![3]).toBe(lease);
+    expect(f.stop.mock.calls[0]![2]).toBe(f.record.mock.calls[0]![2]);
+    expect(f.record.mock.invocationCallOrder[0]).toBeLessThan(f.releaseJob.mock.invocationCallOrder[0]!);
+  });
+});
+
+test("Windows initial IPC failure retains the original error while using the pinned Job for cleanup", async () => {
+  const v = await setup(null), lease = {}, failure = new Error("IPC refused observation"); f.acquireJob.mockResolvedValue(lease);
+  await withWindowsPlatform(async () => {
+    let calls = 0;
+    f.reconcile.mockImplementation(async ({ spawnProof }) => { if (calls++ === 0) throw failure; return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }; });
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error.errors[0]).toBe(failure); expect(error.errors[1].errors[0]).toBe(failure);
+    expect(f.acquireJob.mock.invocationCallOrder[0]).toBeLessThan(f.bootstrap.mock.invocationCallOrder[0]!);
+    expect(f.stop.mock.calls[0]![3]).toBe(lease); expect(f.confirm.mock.calls[0]![3]).toBe(lease);
+    expect(f.stop.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]); expect(f.confirm.mock.calls[0]![2]).toBe(f.bootstrap.mock.calls[0]![1]);
+    expect(f.record).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+  });
+});
+
+test("Windows missing original Job preserves the failure and only stops bootstrap", async () => {
+  const v = await setup(null), missing = new Error("original Job name is unavailable"); f.acquireJob.mockRejectedValue(missing);
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error.errors).toContain(missing); expect(f.bootstrap).toHaveBeenCalledOnce();
+    expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled(); expect(f.releaseJob).not.toHaveBeenCalled(); expect(f.archive).not.toHaveBeenCalled();
+  });
+});
+
+test("Windows Job handle close failure preserves the error and blocks archival and resume release", async () => {
+  const v = await setup(null), lease = {}, failure = new Error("Job handle close failed"); f.acquireJob.mockResolvedValue(lease); f.releaseJob.mockImplementation(() => { throw failure; });
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context).catch(error => error);
+    expect(error).toMatchObject({ outcome: "committed", cause: failure }); expect(error.message).toContain("stopped journal was committed");
+    expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(f.archive).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  });
+});
+
+test("deadline after stopped journal commit preserves the committed outcome and releases the Job", async () => {
+  const v = await setup(null), lease = {}; let clock = Date.now();
+  f.acquireJob.mockResolvedValue(lease); vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.record.mockImplementation(async (_file, _ticket, deadline) => { clock = deadline; return { stoppedAt: new Date().toISOString() }; });
+  await withWindowsPlatform(async () => {
+    const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+    expect(error).toMatchObject({ outcome: "committed" }); expect(error.cause.message).toContain("cleanup exceeded its deadline");
+    expect(f.releaseJob).toHaveBeenCalledExactlyOnceWith(lease); expect(f.archive).not.toHaveBeenCalled(); expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+  });
+});
+
+test.skipIf(process.platform !== "win32")("real Windows Job stop is committed and verified in a new Node process", async () => {
+  const v = await setup(null), childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  vi.stubEnv("DN_CONFIG_DIR", path.join(v.home, ".daynight"));
+  const job = await vi.importActual<typeof import("../../../src/commands/controller/windows-job.js")>("../../../src/commands/controller/windows-job.js");
+  const proofApi = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
+  const launch = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
+  const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const dist = path.join(v.home, "dist"), ready = path.join(v.home, "job-ready.json"); await mkdir(dist);
+  const jobModule = path.resolve(import.meta.dirname, "../../../dist/commands/controller/windows-job.js");
+  await writeFile(path.join(dist, "main.js"), `
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+(async () => {
+  const job = await import(${JSON.stringify(pathToFileURL(jobModule).href)});
+  await job.createOwnedControllerJob(process.argv[5], process.pid);
+  const native = spawn(process.execPath, ['-e', 'const parent=process.ppid; const poll=setInterval(() => { try { process.kill(parent, 0); } catch { clearInterval(poll); setTimeout(() => process.exit(0), 5000); } }, 100); setTimeout(() => process.exit(9), 30000);'], { stdio: 'ignore' });
+  fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ native: native.pid }));
+  setTimeout(() => process.exit(9), 60000);
+})().catch(error => { console.error(error); process.exit(1); });
+`);
+  let spawned: import("node:child_process").ChildProcess | undefined, close: Promise<void> | undefined;
+  let nativeProof: import("../../../src/commands/controller/process-proof.js").ProcessProof | undefined;
+  f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); close = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
+  f.capture.mockImplementationOnce(async pid => {
+    let data: { native: number } | undefined;
+    await vi.waitFor(async () => { data = JSON.parse(await readFile(ready, "utf8")); expect(data!.native).toBeGreaterThan(0); }, { timeout: 15_000, interval: 25 });
+    nativeProof = await proofApi.captureProcessProof(data!.native); return proofApi.captureProcessProof(pid);
+  });
+  f.acquireJob.mockImplementation((...args: Parameters<typeof job.acquireControllerJobLease>) => job.acquireControllerJobLease(...args));
+  f.releaseJob.mockImplementation((...args: Parameters<typeof job.releaseControllerJobLease>) => job.releaseControllerJobLease(...args));
+  f.bootstrap.mockImplementation((...args: Parameters<typeof launch.stopControllerBootstrap>) => launch.stopControllerBootstrap(...args));
+  f.stop.mockImplementation(async (...args: Parameters<typeof proofApi.stopControllerProcesses>) => {
+    expect(await proofApi.inspectProcessProof(nativeProof!)).toBe("running");
+    await proofApi.stopControllerProcesses(...args);
+  });
+  f.confirm.mockImplementation((...args: Parameters<typeof proofApi.confirmControllerProcessesStopped>) => proofApi.confirmControllerProcessesStopped(...args));
+  f.record.mockImplementation((...args: Parameters<typeof lifecycle.recordStoppedControllerGeneration>) => lifecycle.recordStoppedControllerGeneration(...args));
+  let saved: ReturnType<typeof retainedSnapshot>;
+  let actualTicket: import("../../../src/commands/controller/launch-ticket.js").ControllerLaunchTicket | undefined;
+  let journalFile = "";
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, deadline }) => {
+    if (!deadline) {
+      actualTicket = ticket; journalFile = path.join(v.home, ".daynight", "controller", "executions", ticket.executionId, "journal.sqlite");
+      const store = lifecycle.openControllerLifecycleStore(journalFile, ticket);
+      try {
+        const controllerProcess = { ...spawnProof, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
+        saved = store.patchSnapshot({ lifecycle: "ready", nativeSessionId: id, controllerProcess, nativeProcesses: [nativeProof!] });
+      } finally { store.close(); }
+      f.snapshot.mockReturnValue(saved); process.emit("SIGINT", "SIGINT"); return { kind: "observed", snapshot: saved };
+    }
+    if (!f.bootstrap.mock.calls.length) return { kind: "observed", snapshot: saved };
+    return { kind: "controller-exited", process: spawnProof, snapshot: saved };
+  });
+  try {
+    await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home });
+    expect(f.acquireJob).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce(); expect(f.releaseJob).toHaveBeenCalledOnce();
+    expect(f.stop.mock.calls[0]![3]).toBe(f.record.mock.calls[0]![3]);
+    const stored = lifecycle.readProvenWindowsStoppedControllerGeneration(journalFile, actualTicket!);
+    expect(stored).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: { pid: spawned!.pid }, nativeProcesses: [{ pid: nativeProof!.pid }], windowsJobStopProof: { version: 1 } });
+    const readerUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/lifecycle-store.js")).href;
+    const ticketUrl = pathToFileURL(path.resolve(import.meta.dirname, "../../../dist/commands/controller/launch-ticket.js")).href;
+    const script = `const { readProvenWindowsStoppedControllerGeneration } = await import(${JSON.stringify(readerUrl)}); const { readLaunchTicket } = await import(${JSON.stringify(ticketUrl)}); const ticket = await readLaunchTicket(${JSON.stringify(v.home)}, ${JSON.stringify(actualTicket!.launchId)}); const snapshot = readProvenWindowsStoppedControllerGeneration(${JSON.stringify(journalFile)}, ticket); console.log(JSON.stringify({ lifecycle: snapshot.lifecycle, nativeStopped: snapshot.nativeStopped, controllerPid: snapshot.controllerProcess.pid, nativePid: snapshot.nativeProcesses[0].pid, proofVersion: snapshot.windowsJobStopProof.version }));`;
+    const output = await new Promise<string>((resolve, reject) => childProcess.execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: 15_000 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+    expect(JSON.parse(output.trim())).toEqual({ lifecycle: "stopped", nativeStopped: true, controllerPid: spawned!.pid, nativePid: nativeProof!.pid, proofVersion: 1 });
+  } finally {
+    const failures: unknown[] = [];
+    try {
+      if (spawned && spawned.exitCode === null && spawned.signalCode === null) spawned.kill();
+      if (close) { let timer: ReturnType<typeof setTimeout> | undefined; try { await Promise.race([close, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Windows Controller fixture did not close.")), 5000); })]); } finally { if (timer) clearTimeout(timer); } }
+    } catch (error) { failures.push(error); }
+    try { if (nativeProof) await launch.stopControllerBootstrap(nativeProof, Date.now() + 10_000); else if (spawned) await new Promise(resolve => setTimeout(resolve, 31_000)); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Windows Job fixture cleanup failed.");
+  }
+}, 90_000);
 
 test.skipIf(process.platform === "win32")("journal I/O failure uses only the authenticated original POSIX snapshot for bounded cleanup", async () => {
   const v = await setup(null), journal = new Error("controlled journal I/O failure");

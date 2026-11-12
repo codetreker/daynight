@@ -2921,6 +2921,10 @@ bootstrap process within the cleanup deadline, then checks the journal. If the
 current generation was committed, complete Controller and native stop evidence
 is still required. A pre-writer exit retains the launch and its resources as
 blocked, without inventing a stopped generation or replaying input.
+Windows full-stop confirmation retains an authenticated Job handle; a missing
+Job name does not prove that its members exited. A versioned proof in the v8
+journal preserves a confirmed stop for later resume and archive. Older Windows
+records without that proof remain blocked when the original Job cannot be verified.
 
 Web recovery counts and diagnostic pause reasons persist across worker restarts.
 Exhausted automatic recovery or the execution failure threshold pauses the

@@ -16,6 +16,7 @@ import { recordStoppedControllerGeneration, type ControllerSnapshot } from "./li
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "./launch-observation.js";
 import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
+import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { prepareControllerIpcEndpoint } from "./paths.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
@@ -25,6 +26,11 @@ class TestSessionRequestError extends Error {
 }
 
 class ControllerSnapshotEvidenceConflictError extends Error {}
+
+class TestControllerCommittedCleanupError extends Error {
+  readonly outcome = "committed";
+  constructor(cause: unknown) { super("Test controller stopped journal was committed, but cleanup could not be completed; archival remains unconfirmed.", { cause }); }
+}
 
 const waitForExit = async (exited: Promise<void> | undefined, milliseconds: number): Promise<void> => {
   if (!exited) return;
@@ -84,6 +90,8 @@ export const runIndependentController = async (input: IndependentControllerInput
   let processProof: ProcessProof | undefined;
   let initialObservationFailure: { cause: unknown } | undefined;
   let previousAuthenticatedSnapshot: ControllerSnapshot | undefined;
+  let jobLease: ControllerJobLease | undefined;
+  const jobLeaseFailures: unknown[] = [];
   let childExit: Promise<void> | undefined;
   let childExited = false;
   const childFailures: unknown[] = [];
@@ -166,6 +174,10 @@ export const runIndependentController = async (input: IndependentControllerInput
       if (observation.kind === "observed") {
         try { previousAuthenticatedSnapshot = savedCleanupSnapshot(observation.snapshot, ticket, processProof, previousAuthenticatedSnapshot); }
         catch (error) { initialObservationFailure = { cause: error }; throw error; }
+        if (process.platform === "win32" && previousAuthenticatedSnapshot && !jobLease) {
+          try { jobLease = await acquireControllerJobLease(ticket.launchId, processProof, Date.now() + 15_000); }
+          catch (error) { jobLeaseFailures.push(error); initialObservationFailure = { cause: error }; throw error; }
+        }
       }
       if (observation.kind === "unknown") {
         const error = new Error("Test controller process status is unknown; the original execution is retained.", { cause: observation.cause });
@@ -230,6 +242,13 @@ export const runIndependentController = async (input: IndependentControllerInput
       try {
         const deadline = Date.now() + 15_000;
         const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Test controller cleanup exceeded its deadline; execution evidence is retained."); return time; };
+        if (process.platform === "win32" && processProof && !jobLease) {
+          try { remaining(); jobLease = await acquireControllerJobLease(ticket.launchId, processProof, deadline); remaining(); }
+          catch (error) { jobLeaseFailures.push(error); }
+        }
+        const requireJobLease = () => {
+          if (process.platform === "win32" && !jobLease) throw new Error("Original Test controller Job identity is unavailable; complete stopping is unconfirmed.", { cause: jobLeaseFailures.at(-1) });
+        };
         const stopKnownSnapshot = async (journalFailure: unknown, prerequisite?: unknown): Promise<unknown[]> => {
           const saved = previousAuthenticatedSnapshot;
           if (process.platform === "win32" || saved?.controllerProcess == null || !isControllerJournalIoFailure(journalFailure)
@@ -319,9 +338,10 @@ export const runIndependentController = async (input: IndependentControllerInput
               if (after.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${after.journal}); the original launch is blocked.`);
               if (after.kind !== "controller-exited") throw new Error("Test controller exit is not confirmed; the original launch is retained.");
               if (!after.snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.");
-              await stopControllerProcesses(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline);
+              requireJobLease();
+              await stopControllerProcesses(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
               remaining();
-              if (!await confirmControllerProcessesStopped(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline)) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
+              if (!await confirmControllerProcessesStopped(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []))) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
               remaining();
             } catch (stopFailure) {
               failures.push(stopFailure);
@@ -355,16 +375,22 @@ export const runIndependentController = async (input: IndependentControllerInput
         if (!snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.", { cause: replacement });
         let stopped: Awaited<ReturnType<typeof recordStoppedControllerGeneration>>;
         try {
-          await stopControllerProcesses(snapshot.controllerProcess, snapshot.nativeProcesses, deadline);
+          requireJobLease();
+          await stopControllerProcesses(snapshot.controllerProcess, snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
           remaining();
           if (ipcStopFailure !== undefined) {
-            if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses, deadline)) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
+            if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []))) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
             remaining();
             throw new Error("Test controller IPC stop failed; the original execution evidence is retained.");
           }
-          stopped = await recordStoppedControllerGeneration(journal, ticket, deadline);
-          remaining();
+          stopped = await recordStoppedControllerGeneration(journal, ticket, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
+          try { remaining(); } catch (error) { throw new TestControllerCommittedCleanupError(error); }
         } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Test controller bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
+        if (jobLeaseFailures.length) throw new AggregateError(jobLeaseFailures, "Test controller Job lease acquisition failed; execution evidence is retained.");
+        if (jobLease) {
+          const owned = jobLease; jobLease = undefined;
+          try { releaseControllerJobLease(owned); } catch (error) { throw new TestControllerCommittedCleanupError(error); }
+        }
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };
@@ -388,7 +414,8 @@ export const runIndependentController = async (input: IndependentControllerInput
           }
         } else context.stderr(`Retry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
       } catch (error) {
-        const failures: unknown[] = ipcStopFailure === undefined ? [error] : [ipcStopFailure.cause, error];
+        const failures: unknown[] = [...jobLeaseFailures, ...(ipcStopFailure === undefined ? [] : [ipcStopFailure.cause]), error];
+        if (jobLease) { const owned = jobLease; jobLease = undefined; try { releaseControllerJobLease(owned); } catch (releaseFailure) { failures.push(releaseFailure); } }
         if (processProof) {
           failures.push(...childFailures);
           if (spawnConfirmed && !childExited) { try { child.unref(); } catch (unrefFailure) { failures.push(unrefFailure); } }

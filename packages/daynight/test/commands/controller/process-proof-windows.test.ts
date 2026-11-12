@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 const f = vi.hoisted(() => ({ native: vi.fn(), job: vi.fn() }));
 vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: f.native }));
-vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: vi.fn(), inspectControllerJob: f.job }));
+vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createOwnedControllerJob: vi.fn(), inspectControllerJobLease: f.job }));
 import * as localClient from "../../../src/commands/controller/local-client.js";
 import { reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import path from "node:path";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+const lease = {} as ControllerJobLease;
 import { confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -21,7 +23,14 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.definePropert
 const missing = () => { throw Object.assign(new Error("Gone"), { code: "ESRCH" }); };
 
 test("an expired cleanup deadline never opens or terminates the Job", async () => {
-  await expect(stopControllerProcesses(controller, [], Date.now() - 1)).rejects.toThrow(/deadline/);
+  await expect(stopControllerProcesses(controller, [], Date.now() - 1, lease)).rejects.toThrow(/deadline/);
+  expect(f.job).not.toHaveBeenCalled();
+});
+
+test("does not infer complete stopping or terminate without an authenticated Job lease", async () => {
+  vi.spyOn(process, "kill").mockImplementation(missing);
+  await expect(confirmControllerProcessesStopped(controller, [])).rejects.toThrow(/lease is unavailable/);
+  await expect(stopControllerProcesses(controller, [], Date.now() + 100)).rejects.toThrow(/lease is unavailable/);
   expect(f.job).not.toHaveBeenCalled();
 });
 
@@ -50,17 +59,17 @@ test("retains a live original birth with different command evidence even when th
 test("waits for the original process after the Windows Job inventory becomes empty", async () => {
   let probes = 0;
   vi.spyOn(process, "kill").mockImplementation(() => ++probes < 3 ? true : missing());
-  const completion = stopControllerProcesses(controller, [], Date.now() + 100).then(() => "stopped", error => error);
+  const completion = stopControllerProcesses(controller, [], Date.now() + 100, lease).then(() => "stopped", error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(probes).toBe(3);
-  expect(f.job).toHaveBeenCalledExactlyOnceWith(controller.jobObjectName, true, expect.any(Number), [controller]);
+  expect(f.job).toHaveBeenCalledExactlyOnceWith(lease, controller, true, expect.any(Number));
 });
 
 test("retains resources when an original process stays live through the existing deadline", async () => {
   vi.spyOn(process, "kill").mockReturnValue(true);
   const started = Date.now();
-  const completion = stopControllerProcesses(controller, [], started + 100).catch(error => error);
+  const completion = stopControllerProcesses(controller, [], started + 100, lease).catch(error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toMatchObject({ message: "The original Windows Job Object did not stop completely." });
   expect(Date.now() - started).toBe(100);
@@ -69,7 +78,7 @@ test("retains resources when an original process stays live through the existing
 test("does not start another identity probe when a polling delay reaches the deadline", async () => {
   const started = Date.now(), probes: number[] = [];
   vi.spyOn(process, "kill").mockImplementation(() => { probes.push(Date.now() - started); return true; });
-  const completion = stopControllerProcesses(controller, [], started + 35).catch(error => error);
+  const completion = stopControllerProcesses(controller, [], started + 35, lease).catch(error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toMatchObject({ message: "The original Windows Job Object did not stop completely." });
   expect(probes).toEqual([0, 25]);
@@ -79,7 +88,7 @@ test("does not start identity polling when the Job termination operation exhaust
   const started = Date.now();
   f.job.mockImplementationOnce(async () => { vi.setSystemTime(started + 100); return []; });
   const probe = vi.spyOn(process, "kill").mockReturnValue(true);
-  await expect(stopControllerProcesses(controller, [], started + 100)).rejects.toThrow(/deadline/);
+  await expect(stopControllerProcesses(controller, [], started + 100, lease)).rejects.toThrow(/deadline/);
   expect(probe).not.toHaveBeenCalled();
 });
 
@@ -87,7 +96,7 @@ test("waits for a retained native process after the controller and Job stop", as
   const native = { ...controller, pid: 4102 };
   let nativeProbes = 0;
   vi.spyOn(process, "kill").mockImplementation(pid => pid === native.pid && ++nativeProbes < 3 ? true : missing());
-  const completion = stopControllerProcesses(controller, [native], Date.now() + 100).then(() => "stopped", error => error);
+  const completion = stopControllerProcesses(controller, [native], Date.now() + 100, lease).then(() => "stopped", error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(nativeProbes).toBe(3);
@@ -95,14 +104,14 @@ test("waits for a retained native process after the controller and Job stop", as
 
 test("does not turn process permission failures into successful stop evidence", async () => {
   vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Denied"), { code: "EPERM" }); });
-  await expect(stopControllerProcesses(controller, [], Date.now() + 100)).rejects.toThrow("Process liveness could not be established");
+  await expect(stopControllerProcesses(controller, [], Date.now() + 100, lease)).rejects.toThrow("Process liveness could not be established");
   expect(vi.getTimerCount()).toBe(0);
 });
 
 test("propagates a Job inspection failure without treating it as an empty boundary", async () => {
   vi.spyOn(process, "kill").mockImplementation(missing);
   f.job.mockRejectedValueOnce(new Error("Job access denied"));
-  await expect(stopControllerProcesses(controller, [], Date.now() + 100)).rejects.toThrow("Job access denied");
+  await expect(stopControllerProcesses(controller, [], Date.now() + 100, lease)).rejects.toThrow("Job access denied");
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -110,7 +119,7 @@ test("waits for the original Job boundary before confirming original process ide
   vi.spyOn(process, "kill").mockImplementation(missing);
   f.job.mockImplementationOnce(async () => { await new Promise(resolve => setTimeout(resolve, 50)); return []; });
   const started = Date.now();
-  const completion = stopControllerProcesses(controller, [], started + 100).then(() => "stopped", error => error);
+  const completion = stopControllerProcesses(controller, [], started + 100, lease).then(() => "stopped", error => error);
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(Date.now()).toBeGreaterThan(started);

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import Database from "better-sqlite3";
 import { once } from "node:events";
 import { captureProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
@@ -11,6 +12,8 @@ import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-p
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
 
@@ -720,4 +723,67 @@ test("Bot blocks tree cleanup if an exited journal loses retained native proof",
   f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: original }));
   await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/conflicts/);
   expect(f.deps.stopBootstrap).not.toHaveBeenCalled(); expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+test("Bot keeps the same Job lease after a failed stop response and releases it after a confirmed retry", async () => {
+  const f = await recoveryFixture(), lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
+  const leases = { enabled: true, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const manager = f.createProcess(f.deps, 3, leases), failure = new Error("stop response failed");
+  f.deps.request.mockRejectedValueOnce(failure);
+  await expect(manager.shutdown(f.current(), f.signal)).rejects.toBe(failure);
+  expect(leases.retain).toHaveBeenCalledBefore(f.deps.request); expect(leases.retain).toHaveBeenCalledBefore(f.deps.stopBootstrap);
+  const deadline = (f.deps.stopBootstrap.mock.calls[0]! as unknown as [unknown, number])[1];
+  expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
+  expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled();
+  await manager.shutdown(f.current(), f.signal);
+  expect(f.deps.recordStopped).toHaveBeenCalledWith(f.current().intent!.journalPath, expect.anything(), expect.any(Number), lease);
+  expect(leases.release).toHaveBeenCalledOnce();
+});
+
+test("Bot still stops its bootstrap if original Job acquisition fails", async () => {
+  const f = await recoveryFixture(), failure = new Error("Job identity unavailable"), incomplete = new Error("Job lease required");
+  const leases = { enabled: true, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  f.deps.stopProcesses.mockRejectedValue(incomplete);
+  const error = await f.createProcess(f.deps, 3, leases).shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.errors).toEqual([failure, incomplete]); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+});
+
+test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery after Worker restart requires its committed Windows Job proof (%s)", async kind => {
+  const f = fixture("codex", {}, true), signal = new AbortController().signal;
+  const spawnProof = { pid: 123, parentPid: 12, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned(spawnProof);
+    const snapshot = { ...await f.observe(options.ticket), controllerProcess: { ...spawnProof, jobObjectName: `Local\\Daynight-${options.ticket.launchId}` } };
+    await options.onObserved(snapshot); return snapshot;
+  });
+  await f.process.advance(f.current(), signal);
+  const ticket = await f.process.readTicket(f.current()), original = f.executions.get(f.current())!.snapshot!;
+  const controller = { ...spawnProof, jobObjectName: `Local\\Daynight-${ticket.launchId}` };
+  f.executions.markShutdown(f.current(), true);
+  const file = f.current().intent!.journalPath; mkdirSync(path.dirname(file), { recursive: true });
+  const journal = lifecycle.openControllerLifecycleStore(file, ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: controller, nativeSessionId: original.nativeSessionId, lifecycle: "ready", ...(original.startup === undefined ? {} : { startup: original.startup }), error: null }); journal.close();
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const stopped = await lifecycle.recordStoppedControllerGeneration(file, ticket, Date.now() + 5000, {} as never);
+    f.executions.update(f.current(), { snapshot: stopped }); f.reopen();
+    if (kind !== "valid") {
+      const db = new Database(file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }, value = JSON.parse(row.snapshot);
+      if (kind === "missing") delete value.windowsJobStopProof;
+      if (kind === "generation") value.executionGeneration = "2";
+      if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
+      db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
+    }
+    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const reconcile = vi.fn<typeof reconcileSubmittedControllerLaunch>(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: lifecycle.readControllerSnapshot(file)! }));
+    const manager = f.createProcess({ reconcileLaunch: reconcile, recordStopped: lifecycle.recordStoppedControllerGeneration }, 3, leases);
+    f.launch.mockClear(); confirm.mockClear();
+    if (kind === "valid") { await manager.advance(f.current(), signal); expect(f.current().intent!.executionGeneration).toBe("2"); expect(f.launch).toHaveBeenCalledOnce(); }
+    else { await expect(manager.advance(f.current(), signal)).rejects.toThrow(); expect(f.current().intent!.executionGeneration).toBe("1"); expect(f.launch).not.toHaveBeenCalled(); }
+    expect(confirm).not.toHaveBeenCalled();
+  } finally { Object.defineProperty(process, "platform", platform); vi.restoreAllMocks(); }
 });

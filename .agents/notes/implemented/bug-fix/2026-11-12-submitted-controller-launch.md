@@ -44,12 +44,17 @@ failure can use previously authenticated POSIX evidence only to attempt stopping
 an attributable original group; it cannot establish complete native stop.
 
 A Windows Job name can be reused after the original name or object disappears.
-Termination therefore holds the opened Job handle while verifying an original
-member's identity and membership through the same process handle, and waits for
-that Job to empty before closing it. An empty Job is not terminated; a nonempty
-Job without an attributable original member remains unknown. This strengthens the
-[native Job API decision](../testing/2026-11-05-native-controller-job-api.md)
-without changing Job lifetime policy.
+The Controller retains its Job handle for its lifetime. An observer acquires a
+lease while an original member is verifiable and keeps that same handle through
+termination and complete stop confirmation. A missing name or unavailable lease
+remains unknown. A versioned marker in the v8 snapshot binds the committed stop
+to the ticket and snapshot only after that confirmation; it permits later recovery
+without reopening a vanished name. Older records without the marker remain blocked.
+Older binaries do not enforce the marker, so their existing stop behavior does
+not acquire this guarantee. The marker protects consistency, not against a
+malicious local writer. This
+strengthens the [native Job API decision](../testing/2026-11-05-native-controller-job-api.md)
+while retaining its no-breakaway and kill-on-close choices.
 
 A reparented POSIX zombie can establish the original Controller's exit when its
 birth and process group match; its parent and displayed command can change during

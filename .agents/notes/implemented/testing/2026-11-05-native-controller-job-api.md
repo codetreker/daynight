@@ -22,17 +22,20 @@ using exit code 1; the [submitted launch identity decision](../bug-fix/2026-11-1
 supersedes that ordering with same-handle ownership verification and bounded
 waiting. No breakaway or kill-on-close policy is added.
 
-Only an open failure with `ERROR_FILE_NOT_FOUND` yields an empty inventory.
-Access denial, duplicate creation, native failures and malformed process IDs
-remain errors. Membership decoding checks the bounded buffer against the native
+The original implementation treated `ERROR_FILE_NOT_FOUND` as an empty inventory;
+the [submitted launch identity decision](../bug-fix/2026-11-12-submitted-controller-launch.md)
+supersedes that assumption because a live Job can lose its name. Access denial,
+duplicate creation, native failures and malformed process IDs remain errors.
+Membership decoding checks the bounded buffer against the native
 pointer width and reported counts. Owned handles are released on success and
 failure; simultaneous operation and release failures retain both errors and the
 original cause. The fifteen-second operation budget includes lazy loading and
 native work. Checks between calls and after handle release reject late results;
 a synchronous kernel call already in progress must finish before release.
 
-The existing create/assign/close and open/query/close lifetimes remain in place.
-A Job object's body and its namespace name have different lifetimes: the
+The original design kept create/assign/close and open/query/close lifetimes;
+the replacement retains the Controller and observer handles through the
+corresponding execution. A Job object's body and its namespace name have different lifetimes: the
 [CreateJobObjectW contract](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw)
 keeps its body until handles and member processes are gone, while a
 [temporary object's name](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject)
