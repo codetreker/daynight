@@ -76,12 +76,17 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       if (deleteWorktree) {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, false);
         const binding = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
-        await cleanupOperation(operation => deps.git.removeWorktree(input.project, input.owner, operation), signal);
-        if (await cleanupOperation(operation => deps.git.findWorktree(input.project, input.owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+        const outcome = await deps.git.removeWorktree(input.project, input.owner, signal === undefined ? {} : { signal });
+        if (outcome.effectErrors.length > 0) {
+          try { deps.emit({ kind: "cleanup-effect-error", identity: input.owner, ...(input.task === undefined ? {} : { task: input.task }), component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
+        }
         const after = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
         if (binding?.worktreePath !== after?.worktreePath || binding?.repositoryPath !== after?.repositoryPath || binding?.commonDirectory !== after?.commonDirectory || binding?.branch !== after?.branch) throw new Error("The original worktree binding changed during cleanup.");
+        signal?.throwIfAborted();
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, true);
+        signal?.throwIfAborted();
         deps.emit({ kind: "cleaned", ...(input.task === undefined ? {} : { task: input.task }), message: "Confirmed task resources absent; the branch remains." });
+        signal?.throwIfAborted();
         if (binding !== null) input.onWorktreeSettled?.(binding);
         return;
       }

@@ -142,7 +142,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     removeUnpublishedReservation: vi.fn(async () => {}),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
     scanWorktrees: scanFromList, listWorktrees: vi.fn(async (source: WorkerProject, _operation: Operation, _allowMissing = false, includeOtherProjects = false) => [...worktrees.values()].filter(({ owner, binding }) => binding.repositoryPath === source.localPath && (includeOtherProjects || owner.projectId === source.projectId))),
-    removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
+    removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); return { kind: "absent" as const, effectErrors: [] }; }),
   } as unknown as WorkerGitManager;
   const tasks = {
     observeExecutionStop: vi.fn(async (target: CleanupTarget): Promise<StopObservation> => {
@@ -1846,8 +1846,8 @@ describe("minimal worker resource reconciliation", () => {
     const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
     vi.mocked(f.git.removeWorktree).mockImplementation(async (project, owner, operation) => {
       await waiting;
-      operation.check();
-      await remove(project, owner, operation);
+      operation.signal?.throwIfAborted();
+      return remove(project, owner, operation);
     });
     await f.coordinator.tick(); await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
     await f.coordinator.tick(); await f.coordinator.tick(); await f.coordinator.tick();
@@ -2590,7 +2590,7 @@ describe("terminal cleanup retry scheduling", () => {
       await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
       const owner = [...f.worktrees.values()][0]!.owner;
       f.grants.clear(); f.resources.clear(); f.stoppedRuns.add(owner.claimId); f.candidates.splice(0);
-      vi.mocked(f.git.removeWorktree).mockImplementation(async () => { await removal; f.worktrees.delete(owner.claimId); });
+      vi.mocked(f.git.removeWorktree).mockImplementation(async () => { await removal; f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
       await f.coordinator.tick();
       await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
       expect(f.coordinator.archiveYield()).toBe(true);
@@ -2645,7 +2645,7 @@ describe("terminal cleanup retry scheduling", () => {
       f.clock(999 + wait); await coordinator.tick();
       expect(archive).toHaveBeenCalledOnce();
       archive.mockResolvedValue(undefined);
-      if (stage === "worktree-removal") vi.mocked(f.git.removeWorktree).mockImplementation(async () => { f.worktrees.delete(owner.claimId); });
+      if (stage === "worktree-removal") vi.mocked(f.git.removeWorktree).mockImplementation(async () => { f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
       f.clock(1000 + wait); await coordinator.tick();
       await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
       expect(archive).toHaveBeenCalledTimes(2);
@@ -2715,7 +2715,7 @@ describe("terminal cleanup retry scheduling", () => {
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(f.events.filter(e => e.kind === "cleanup-error").at(-1)?.message).toContain("worktree-removal");
     expect(f.events.filter(e => e.kind === "cleanup-capacity-blocked")).toHaveLength(0);
-    vi.mocked(f.git.removeWorktree).mockImplementation(async () => { f.worktrees.delete(owner.claimId); });
+    vi.mocked(f.git.removeWorktree).mockImplementation(async () => { f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
     f.clock(clock + 60000); await f.coordinator.tick();
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     expect(f.worktrees.size).toBe(0);
@@ -2731,6 +2731,7 @@ describe("terminal cleanup retry scheduling", () => {
     vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, owner) => {
       if (owner.claimId === broken.claimId) throw new Error("EACCES fixture");
       f.worktrees.delete(owner.claimId);
+      return { kind: "absent", effectErrors: [] };
     });
     await f.coordinator.tick();
     await eventually(() => expect(f.store.getTask(healthy)?.status).toBe("done"));
@@ -2936,7 +2937,7 @@ describe("cloud project removal", () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     const candidates = f.candidates.splice(0);
-    vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await pending; f.worktrees.delete(current.claimId); });
+    vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await pending; f.worktrees.delete(current.claimId); return { kind: "absent", effectErrors: [] }; });
     const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
     try {
       await f.coordinator.tick();
@@ -3552,7 +3553,7 @@ describe("worker monitoring of coordinator jobs", () => {
       await eventually(() => expect(f.store.listTasks().filter(row => row.sessionId !== null)).toHaveLength(2));
       const [ending, active] = [...f.worktrees.values()].map(item => item.owner);
       f.grants.delete(ending!.claimId); f.resources.delete(ending!.claimId); f.stoppedRuns.add(ending!.claimId); f.candidates.splice(0);
-      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, owner) => { await gate; f.worktrees.delete(owner.claimId); });
+      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, owner) => { await gate; f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
       await coordinator.tick();
       await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
       const activities = monitor.capture("1").activities;
@@ -3581,7 +3582,7 @@ describe("worker monitoring of coordinator jobs", () => {
       expect(JSON.stringify(failed)).not.toContain("secret prompt");
       expect(failed.activities).toContainEqual(expect.objectContaining({ kind: "cleanup", phase: "worktree-removal", scope: error.scope, status: "waiting", waitReason: "retry-backoff", nextAttemptAt: new Date(2000).toISOString() }));
       f.clock(1999); await coordinator.tick(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
-      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, identity) => { await gate; f.worktrees.delete(identity.claimId); });
+      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, identity) => { await gate; f.worktrees.delete(identity.claimId); return { kind: "absent", effectErrors: [] }; });
       f.clock(2000); await coordinator.tick(); await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledTimes(2));
       expect(monitor.capture("2").currentFailures[0]).toEqual({ ...error, retryState: "running", nextAttemptAt: null });
       release(); await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
@@ -3881,7 +3882,7 @@ describe("worker monitoring of coordinator jobs", () => {
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, occurrencesInRun: 1 }));
       const stopOriginal = f.tasks.stopAndClose.getMockImplementation()!;
       f.tasks.stopAndClose.mockImplementationOnce(async (...args) => { await stopGate; return stopOriginal(...args); });
-      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await gate; f.worktrees.delete(current.claimId); });
+      vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await gate; f.worktrees.delete(current.claimId); return { kind: "absent", effectErrors: [] }; });
       f.clock(4000); await coordinator.tick();
       await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(3));
       expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: stop.operationId, retryState: "running" }));

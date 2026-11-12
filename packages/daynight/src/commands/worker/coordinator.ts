@@ -814,11 +814,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
           if (binding === null) await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, owner, operation), signal);
           else {
-            await cleanupOperation(operation => options.git.removeWorktree(project, owner, operation), signal);
-            if (await cleanupOperation(operation => options.git.findWorktree(project, owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+            const outcome = await options.git.removeWorktree(project, owner, signal === undefined ? {} : { signal });
+            if (outcome.effectErrors.length > 0) {
+              try { options.emit({ kind: "cleanup-effect-error", identity: owner, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
+            }
             const after = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
             if (!isDeepStrictEqual(binding, after)) throw new Error("The original worktree binding changed during cleanup.");
           }
+          signal?.throwIfAborted();
           if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner);
           return binding ?? undefined;
         }
@@ -826,6 +829,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       while (true) {
         const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+        signal?.throwIfAborted();
         if (result.complete) {
           if (deleteWorktree) { if (result.task.status !== "done") options.webStore.completeTask(owner, now()); if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner); }
           return deleteWorktree ? result.task.resources.worktree ?? undefined : undefined;
@@ -835,6 +839,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     if (lifecycle() !== undefined) {
       await cleanup.advance({ owner, project: projectFor(owner), ...(local === null ? {} : { task: local }) }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+      signal?.throwIfAborted();
       if (deleteWorktree && local !== null && local.status !== "done" && executionCapacity.stopped(owner)) options.store.completeTask(owner);
       return;
     }
@@ -843,6 +848,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const task = recordMissingClaim(owner, actualTaskPane(owner, resources));
     let binding: WorktreeBinding | undefined;
     await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }), onLegacyResourcesAbsent: () => markLegacyEmpty(owner), onWorktreeSettled: result => { binding = result; } }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+    signal?.throwIfAborted();
     if (deleteWorktree && task !== null && task.status !== "done" && executionStoppedOrEmpty(owner)) options.store.completeTask(owner);
     return binding;
   };
@@ -897,6 +903,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           archiveProbes.delete(identityKey);
         }
         const completedBinding = await runCleanup(owner, true, signal);
+        signal.throwIfAborted();
         const actual = ending.get(identityKey);
         if (actual && hasWorktreeIdentity(actual) && !executionStoppedOrEmpty(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
         const local = options.store.getTask(owner), web = options.webStore?.getTask(owner);
@@ -1329,8 +1336,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       monitoringPhase = "worktree-removal";
       observe(m => { const activity = monitoringActivities.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { phase: "worktree-removal", status: "running", waitReason: null }); });
       try {
-        await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), normalSignal);
-        if (await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), normalSignal) !== null) throw new Error("The original archived worktree still exists after cleanup.");
+        const outcome = await options.git.removeWorktree(projectFor(owner), owner, normalSignal === undefined ? {} : { signal: normalSignal });
+        if (outcome.effectErrors.length > 0) {
+          try { options.emit({ kind: "cleanup-effect-error", identity: owner, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
+        }
+        normalSignal?.throwIfAborted();
         archive.cleaned(owner);
         const deleted = archive.resources().find(resource => resource.sessionId === selected.sessionId && sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId);
         if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");
@@ -2019,6 +2029,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await ensureHerdr(normalSignal);
       await serialize(identity, async () => {
         const binding = await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
+        normalSignal.throwIfAborted();
         if (settings.deleteWorktree === true) {
           if (!executionStoppedOrEmpty(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
           options.store.deleteCleanupSchedule(owner);
@@ -2031,6 +2042,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await ensureHerdr(normalSignal);
       await serialize(owner, async () => {
         const binding = await runCleanup(owner, true, normalSignal, undefined, true);
+        normalSignal.throwIfAborted();
         if (!executionStoppedOrEmpty(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
         options.store.deleteCleanupSchedule(owner);
         if (binding !== undefined) { settledMetadata.set(key(owner), { worktreeId: owner.worktreeId, cwd: binding.worktreePath, sequence: ++settlementSequence }); await retireKnownMetadata(owner); }

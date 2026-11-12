@@ -84,7 +84,7 @@ it("retains unknown content and never treats a missing manifest as proof of abse
   const f = await fixture(), operation = createOperation();
   try {
     await f.adapter.prepareRepository(f.project, operation);
-    await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).rejects.toThrow(/manifest is missing/);
+    await expect(f.adapter.removeWorktree(f.project, f.owner, operation)).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/manifest is missing/) }) });
     await expect(f.adapter.findWorktree(f.project, f.owner, operation)).rejects.toThrow(/manifest is missing/);
     const leaf = path.join(f.repository, ".worktrees", "daynight", f.owner.worktreeId);
     await mkdir(leaf, { recursive: true }); await writeFile(path.join(leaf, "important"), "keep");

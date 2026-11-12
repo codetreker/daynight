@@ -725,29 +725,39 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         signal.throwIfAborted();
         if (!launched) { await notifyStopped(); success(task, { kind: "cleanup", phase: "agent-stop" }); }
         if (kind === "shutdown" || task.status === "done") return { task, complete: true };
+        const fileSignal = cleanupRequest.signal ?? new AbortController().signal;
+        fileSignal.throwIfAborted();
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         if (launched) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
+          fileSignal.throwIfAborted();
           if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
-          await options.archive(task, journal(task), signal);
+          await options.archive(task, journal(task), fileSignal);
+          fileSignal.throwIfAborted();
           success(task, { kind: "cleanup", phase: "archive" });
           phase(task, { kind: "cleanup", phase: "archive" }, true);
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation), signal);
+        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation), fileSignal);
         if (binding === null) {
           if (launched || task.resources.worktree !== null) throw new Error("The original Web execution has no worktree manifest.");
-          await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, task, operation), signal);
+          await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, task, operation), fileSignal);
         } else {
           if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
+          fileSignal.throwIfAborted();
           if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
-          await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-          if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+          const outcome = await options.git.removeWorktree(project, task, { signal: fileSignal });
+          if (outcome.effectErrors.length > 0) {
+            try { options.emit({ kind: "cleanup-effect-error", task, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
+          }
         }
+        fileSignal.throwIfAborted();
         success(task, { kind: "cleanup", phase: "worktree-removal" });
+        fileSignal.throwIfAborted();
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
+        fileSignal.throwIfAborted();
         waiting.delete(task.claimId); rejected.delete(task.claimId);
         return { task, complete: true };
       } catch (error) {
