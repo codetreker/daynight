@@ -412,12 +412,15 @@ func (d *oauthHTTPFamilyDAO) RevokeFamily(_ context.Context, id string, now time
 	}
 	return d.revoke(id, now)
 }
-func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, id, resource string, now time.Time) (store.OAuthAccessIdentity, error) {
+func (d *oauthHTTPFamilyDAO) AuthenticateAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	d.plan.Called("authenticate")
 	if d.authenticate == nil {
 		unexpectedHTTPCall(d.t, "Family.Authenticate")
 	}
-	return d.authenticate(hash, id, resource, now)
+	if len(bindings) != 1 || bindings[0].ClientID != "" {
+		d.t.Fatalf("unexpected OAuth bindings: %+v", bindings)
+	}
+	return d.authenticate(hash, bindings[0].Resource, bindings[0].Scope, now)
 }
 
 type oauthHTTPAuthorizationScope struct {
@@ -539,7 +542,7 @@ func oauthHTTPExpectAccess(t *testing.T, f *oauthHTTPFixture, token, resource st
 		if !bytes.Equal(hash, secret.Hash(token)) || actualResource != resource || scope != core.Scope || now.IsZero() {
 			unexpectedHTTPCall(t, "OAuth access arguments")
 		}
-		return store.OAuthAccessIdentity{Principal: p, GrantID: grant}, err
+		return store.OAuthAccessIdentity{Principal: p, GrantID: grant, ExpiresAt: now.Add(time.Hour)}, err
 	}}
 	f.Store.WriteCredentialFamilyCall = func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
 		plan.Called("transaction")

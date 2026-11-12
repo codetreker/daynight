@@ -16,7 +16,10 @@ OAuth grants, access tokens and initial refresh tokens are stored as a family.
 Only secret hashes are persisted. Issuance and revocation use caller-bound
 transaction DAOs, allowing code consumption and family creation to commit or
 roll back together. The grant retains the validated client snapshot, resource,
-scope and absolute expiry. Access authentication checks its resource and scope;
+scope and absolute expiry for MCP. The internal
+[fixed API profile](2026-11-12-api-oauth-family.md) shares these family records
+with a separate binding and rolling deadline policy. Access authentication checks
+its resource, scope and any fixed client binding;
 the principal identifies the access credential while the MCP authority reference
 identifies the stable grant. Nullable grant usage metadata persists independently
 of access and refresh rotation; its [persistence decision](2026-11-12-credential-usage-persistence.md)
@@ -29,8 +32,10 @@ Session send and receipt checks use the later
 [grant-before-token protocol](../bug-fix/2026-11-10-task-oauth-family-locks.md):
 their dispatch path reauthorizes an original Actor after acquiring the Session,
 so token-only locking can deadlock with partial deletion of a rotated family.
-Business checks re-evaluate expiry after waiting. REST and private Worker
-admission retain their existing credential boundaries.
+Business checks re-evaluate expiry after waiting. The shared CredentialReader
+joins the actual family and user and returns the earlier access/grant deadline
+while retaining its original access-only shared locks and snapshot behavior.
+REST and private Worker admission retain their existing credential boundaries.
 
 ## Alternatives
 

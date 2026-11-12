@@ -60,9 +60,9 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 	_, err := tx.Exec(ctx, `INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$2,$3,$3)`, issue.Grant.UserID, "family-owner", now)
 	check(t, err)
 	check(t, dao.IssueFamily(ctx, issue))
-	got, err := dao.AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, now)
+	got, err := dao.AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now)
 	check(t, err)
-	if got.Principal != (model.Principal{Kind: model.OAuthCredential, UserID: issue.Grant.UserID, CredentialID: issue.AccessID}) || got.GrantID != issue.Grant.ID {
+	if got.Principal.Kind != model.OAuthCredential || got.Principal.UserID != issue.Grant.UserID || got.Principal.CredentialID != issue.AccessID || !got.ExpiresAt.Equal(issue.AccessExpiresAt) || got.GrantID != issue.Grant.ID {
 		t.Fatalf("access identity: %+v", got)
 	}
 	for _, input := range []struct {
@@ -77,7 +77,7 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 		{"expiry boundary", issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, issue.AccessExpiresAt},
 	} {
 		t.Run(input.name, func(t *testing.T) {
-			_, err := dao.AuthenticateAccess(ctx, input.hash, input.resource, input.scope, input.at)
+			_, err := dao.AuthenticateAccess(ctx, input.hash, []store.OAuthBinding{{Resource: input.resource, Scope: input.scope}}, input.at)
 			missing(t, err)
 		})
 	}
@@ -123,7 +123,7 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 	if revoked.RevokedAt == nil || revoked.RevokedAt.Before(now) {
 		t.Fatalf("revocation timestamp: %+v", revoked)
 	}
-	_, err = dao.AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, now)
+	_, err = dao.AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now)
 	missing(t, err)
 	active, err = dao.ActiveClientReferences(ctx, issue.Grant.ClientID, now)
 	check(t, err)

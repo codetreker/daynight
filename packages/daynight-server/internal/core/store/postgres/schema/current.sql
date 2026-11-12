@@ -1,4 +1,4 @@
--- Schema snapshot version: 66
+-- Schema snapshot version: 67
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -198,8 +198,8 @@ CREATE TABLE "oauth_grants" (
     "expires_at" timestamp with time zone NOT NULL,
     "revoked_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
-    CONSTRAINT "oauth_grants_check" CHECK ((("expires_at" > "created_at") AND ("expires_at" <= ("created_at" + '720:00:00'::interval)))),
     CONSTRAINT "oauth_grants_client_id_check" CHECK (("length"("client_id") > 0)),
+    CONSTRAINT "oauth_grants_lifetime_check" CHECK ((("expires_at" > "created_at") AND ((("scope" = 'daynight:api'::"text") AND ("client_id" = 'societas-bot'::"text")) OR ("expires_at" <= ("created_at" + '720:00:00'::interval))))),
     CONSTRAINT "oauth_grants_resource_check" CHECK (("length"("resource") > 0)),
     CONSTRAINT "oauth_grants_scope_check" CHECK (("length"("scope") > 0))
 );

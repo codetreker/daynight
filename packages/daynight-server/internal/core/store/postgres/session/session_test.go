@@ -405,6 +405,7 @@ func testSessionCredentialKindsAndMissingIdentity(t *testing.T, db *postgres.Sto
 	now := time.Now().UTC()
 	token, grant := uuid.NewString(), uuid.NewString()
 	hash := sha256.Sum256([]byte(token))
+	mustQueryExec(t, db, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'session-test','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, grant, actor.UserID, now, now.Add(time.Hour))
 	mustQueryExec(t, db, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, token, grant, actor.UserID, hash[:], now, now.Add(time.Minute))
 	oauth := model.Principal{Kind: model.OAuthCredential, UserID: actor.UserID, CredentialID: token}
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {

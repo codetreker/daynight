@@ -317,6 +317,53 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 同源预览使用同一 Cookie 和授权规则，没有第二种浏览器凭据。
 
+### OAuth family 的固定 profile 与内部 API 能力
+
+`core/oauth` 集中 MCP 与 API 的固定 profile。MCP resource 为 `PublicOrigin + "/mcp"`，
+scope 为 `daynight:mcp`，保留实际客户端、`dnmcp_` / `dnmcr_` 前缀及原授权码、S256 PKCE
+与客户端元数据。API resource 为 `PublicOrigin + "/api/v1"`，scope 为 `daynight:api`，
+固定 client ID / name 为 `societas-bot` / `Societas Bot`，access / refresh 前缀为
+`dnapi_` / `dnapr_`。API snapshot 只保存真实的
+`{"clientId":"societas-bot","clientName":"Societas Bot"}`，不建立 DCR、redirect 或 PKCE 事实。
+两种秘密都是前缀加 32-byte cryptographic random 值的 canonical raw base64url，数据库只保存
+32-byte SHA-256 hash。Principal 保持真实 user UUID、access UUID 和 `OAuthCredential`；
+稳定 family 标识仍是 grant UUID。
+
+`IssueAPIFamily` 是固定 API profile 的事务内发行操作，`service/oauth.NewAPIIssuer` 以配置的
+PublicOrigin 构造资源并拥有发行事务，只有确认提交才返回秘密。Core 的认证、续期与撤销操作可处理
+固定 API profile。公开 REST 认证仍使用 PAT / Cookie，S2S 发行路由尚未暴露；既有 public OAuth
+refresh/revoke adapter 只准入 MCP profile。
+API 内部能力不授予账号根、Worker 或 Controller 生产者权限。授权列表沿用原 owner 权限和 DTO，
+从实际 snapshot 投影 client ID / name，展示真实 grant 截止与状态。
+
+`store.OAuthBinding` 表达精确 resource、scope 和可选固定 client ID；MCP 的空 client ID 表示
+不额外限制已记录的客户端。`AuthenticateAccess` 验证实际 access、grant 与 user 关联、binding、
+撤销和两项期限，返回非空的 effective expiry，即 `LEAST(access.expires_at, grant.expires_at)`。
+`ReadAccess` 采用无行锁读取；`LockAccess` 保持 grant `FOR SHARE` → access `FOR SHARE`，
+等待后以新鲜数据库时间复核。原 `CredentialReader` / `ThreadCredential` 签名、scope 和调用位置
+保持，OAuth helper 关联实际 family / user 并投影同一 effective expiry。原 snapshot 不加行锁，
+原共享锁读取仍只 `FOR SHARE OF access`，业务等待后的期限检查保持；该 helper 不扩展为持有 grant
+锁的通用事务前置检查，也不把 credential 锁跨网络 body IO 保留。
+
+首次 grant / refresh 截止为发行时间加 30 天，access 为 60 分钟。续期沿用 grant `FOR UPDATE`
+→ refresh `FOR UPDATE` 锁序；取得锁后读取数据库 UTC 微秒 `renewedAt`，复核实际 binding、撤销、
+消费状态及原 grant / refresh 截止。尚有效的 API refresh 原子消费旧行，把 grant 和新 refresh 截止
+写为 `renewedAt + 30 天`，新 access 为 `renewedAt + 60 分钟`，grant.created_at 保持原值。
+`OAuthRotation.GrantExpiresAt` 是该次事务实际写入 grant 与新 refresh 的期限。MCP grant 截止
+保持原绝对期限，新 access 截止仍为签发后 60 分钟与该绝对期限的较早值。
+
+旧 access 与 consumed refresh 各自原截止保持。旧 refresh 原有效窗内的正确绑定重放会提交 family
+撤销再返回 `invalid_grant`；超过该旧截止的重放只拒绝，不撤销已续期 family。同一旧 refresh 不会
+双成功，后到的有效重放可能撤销先到请求已续期的 family。普通访问、失败和 last_used_at 都不延期。
+仅确认提交后交付新秘密；回滚、commit unknown 和提交后响应丢失不触发自动重放或明文恢复。
+现有有界 cleanup 继续按每行自己的期限工作。
+
+数据库 lifetime CHECK 仅允许 `scope=daynight:api` 且 `client_id=societas-bot` 的 grant 越过
+created_at 加 720 hours，其余 grant 保持原上界。迁移不重分类历史 grant，不更改已有 ID、期限、
+metadata、last_used_at、Actor 或 nullability，不增加外键。
+[固定 API family 决策](../../.agents/notes/implemented/architecture/2026-11-12-api-oauth-family.md)
+记录 profile 隔离与滚动期限的选择。
+
 ### 凭据使用时间的持久化
 
 PAT 和 OAuth grant 各自持有可空 `last_used_at timestamptz`，表示已记录的真实合格事件时间。

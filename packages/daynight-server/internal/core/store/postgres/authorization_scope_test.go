@@ -46,7 +46,7 @@ func TestAuthorizationScopeCommitsAndRollsBackAllDAOsTogether(t *testing.T) {
 				if err := scope.CredentialFamilyDAO().IssueFamily(ctx, issue); err != nil {
 					return err
 				}
-				identity, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, issue.Grant.Resource, issue.Grant.Scope, now)
+				identity, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, issue.AccessHash, []store.OAuthBinding{{Resource: issue.Grant.Resource, Scope: issue.Grant.Scope}}, now)
 				if err != nil {
 					return err
 				}

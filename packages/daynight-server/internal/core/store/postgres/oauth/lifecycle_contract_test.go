@@ -42,7 +42,7 @@ func rotateFamilyForTest(t *testing.T, ctx context.Context, db *postgres.Store, 
 		if err != nil {
 			return err
 		}
-		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: hash, AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour)})
+		return dao.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: hash, AccessHash: secret.Hash(uuid.NewString()), RefreshHash: secret.Hash(uuid.NewString()), AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt})
 	})
 	return err
 }
@@ -144,7 +144,7 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 	}()
 	for {
 		var count int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT expires_at FROM oauth_access_tokens%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT LEAST(a.expires_at,g.expires_at) FROM oauth_access_tokens%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count == 2 {
@@ -192,7 +192,7 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
-		_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, secret.Hash(access), grant.Resource, grant.Scope, time.Now())
+		_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, secret.Hash(access), []store.OAuthBinding{{Resource: grant.Resource, Scope: grant.Scope}}, time.Now())
 		return err
 	})
 	if !errors.Is(err, model.ErrNotFound) {
@@ -252,7 +252,7 @@ func TestGrantLifecycleConcurrentReplayAndBinding(t *testing.T) {
 		t.Fatalf("refresh binding: %#v", current)
 	}
 	newAccess, newRefresh := secret.Hash("rotated-access"), secret.Hash("rotated-refresh")
-	check(t, firstDAO.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: newAccess, RefreshHash: newRefresh, AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour)}))
+	check(t, firstDAO.RotateRefresh(ctx, store.OAuthRotation{Grant: locked, OldHash: secret.Hash(refresh), AccessHash: newAccess, RefreshHash: newRefresh, AccessID: uuid.NewString(), CreatedAt: now, AccessExpiresAt: now.Add(time.Hour), GrantExpiresAt: locked.ExpiresAt}))
 	second, err := db.Pool.Begin(ctx)
 	check(t, err)
 	defer second.Rollback(context.Background())
@@ -299,7 +299,7 @@ func TestGrantLifecycleConcurrentReplayAndBinding(t *testing.T) {
 	check(t, err)
 	defer read.Rollback(context.Background())
 	for _, hash := range [][]byte{secret.Hash(access), newAccess} {
-		_, err := oauthpg.NewDAO(read).AuthenticateAccess(ctx, hash, grant.Resource, grant.Scope, time.Now())
+		_, err := oauthpg.NewDAO(read).AuthenticateAccess(ctx, hash, []store.OAuthBinding{{Resource: grant.Resource, Scope: grant.Scope}}, time.Now())
 		missing(t, err)
 	}
 	var revoked bool

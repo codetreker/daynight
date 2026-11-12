@@ -207,6 +207,9 @@ var releaseWorkerOwnershipSQL string
 //go:embed migrations/066_credential_last_used.sql
 var credentialLastUsedSQL string
 
+//go:embed migrations/067_api_oauth_lifetime.sql
+var apiOAuthLifetimeSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -281,6 +284,7 @@ var schemaMigrations = []migration{
 	{version: 64, sql: microsoftIdentitySQL},
 	{version: 65, sql: releaseWorkerOwnershipSQL},
 	{version: 66, sql: credentialLastUsedSQL},
+	{version: 67, sql: apiOAuthLifetimeSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

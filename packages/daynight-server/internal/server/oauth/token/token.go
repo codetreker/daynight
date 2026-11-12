@@ -12,10 +12,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
 // TokenCodes and GrantLifecycle are supplied by the authorization and grant use cases.
@@ -196,7 +198,12 @@ func (h *PublicTokens) Revoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if err := h.Grants.RevokePublic(r.Context(), v.Get("token"), v.Get("client_id")); err != nil {
+	token := v.Get("token")
+	if !secret.Valid(token, model.OAuthAccessPrefix) && !secret.Valid(token, core.RefreshPrefix) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := h.Grants.RevokePublic(r.Context(), token, v.Get("client_id")); err != nil {
 		publicError(w, err)
 		return
 	}

@@ -294,9 +294,17 @@ func (d *familyCapability) IssueFamily(context.Context, store.OAuthFamilyIssue) 
 	d.f.unexpected("DAO IssueFamily")
 	return nil
 }
-func (d *familyCapability) AuthenticateAccess(context.Context, []byte, string, string, time.Time) (store.OAuthAccessIdentity, error) {
+func (d *familyCapability) AuthenticateAccess(context.Context, []byte, []store.OAuthBinding, time.Time) (store.OAuthAccessIdentity, error) {
 	d.f.unexpected("DAO AuthenticateAccess")
 	return store.OAuthAccessIdentity{}, nil
+}
+func (d *familyCapability) LockAccess(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	d.f.unexpected("LockAccess")
+	return nil
+}
+func (d *familyCapability) ReadAccess(context.Context, model.Principal, []store.OAuthBinding, time.Time) error {
+	d.f.unexpected("ReadAccess")
+	return nil
 }
 func (d *familyCapability) ActiveClientReferences(context.Context, string, time.Time) (bool, error) {
 	d.f.unexpected("ActiveClientReferences")

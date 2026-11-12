@@ -36,11 +36,15 @@ func (d *DAO) RotateRefresh(ctx context.Context, r store.OAuthRotation) error {
 	if err != nil {
 		return pg.AuthQueryError("consume OAuth refresh", err)
 	}
+	_, err = d.tx.Exec(ctx, `UPDATE oauth_grants SET expires_at=$2 WHERE id=$1`, r.Grant.ID, r.GrantExpiresAt)
+	if err != nil {
+		return pg.AuthQueryError("renew OAuth grant", err)
+	}
 	_, err = d.tx.Exec(ctx, `INSERT INTO oauth_access_tokens (id,grant_id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6)`, r.AccessID, r.Grant.ID, r.Grant.UserID, r.AccessHash, r.CreatedAt, r.AccessExpiresAt)
 	if err != nil {
 		return pg.AuthQueryError("insert OAuth rotated access", err)
 	}
-	_, err = d.tx.Exec(ctx, `INSERT INTO oauth_refresh_tokens (token_hash,grant_id,client_id,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, r.RefreshHash, r.Grant.ID, r.Grant.ClientID, r.CreatedAt, r.Grant.ExpiresAt)
+	_, err = d.tx.Exec(ctx, `INSERT INTO oauth_refresh_tokens (token_hash,grant_id,client_id,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, r.RefreshHash, r.Grant.ID, r.Grant.ClientID, r.CreatedAt, r.GrantExpiresAt)
 	return pg.AuthQueryError("insert OAuth rotated refresh", err)
 }
 func (d *DAO) OwnerGrants(ctx context.Context, user string) ([]store.OAuthGrant, error) {

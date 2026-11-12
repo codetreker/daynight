@@ -159,11 +159,11 @@ func TestAuthorizationScopeRollsBackFamilyRevocation(t *testing.T) {
 		t.Fatalf("revocation rollback changed family counts: got %v, want %v", got, counts)
 	}
 	completion, err = f.database.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
-		identity, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, f.issue.AccessHash, f.issue.Grant.Resource, f.issue.Grant.Scope, f.now)
+		identity, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, f.issue.AccessHash, []store.OAuthBinding{{Resource: f.issue.Grant.Resource, Scope: f.issue.Grant.Scope}}, f.now)
 		if err != nil {
 			return err
 		}
-		want := store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.issue.Grant.UserID, CredentialID: f.issue.AccessID}, GrantID: f.issue.Grant.ID}
+		want := store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.issue.Grant.UserID, CredentialID: f.issue.AccessID}, GrantID: f.issue.Grant.ID, ExpiresAt: f.issue.AccessExpiresAt}
 		if identity != want {
 			return fmt.Errorf("restored access identity=%+v, want %+v", identity, want)
 		}
