@@ -34,6 +34,8 @@ bootstrap 将私有映射目录置于父 pane 的 PATH，并验证 `Get-Command`
 
 进程清单使用 Toolhelp32 的完整进程快照，只提供候选 PID 与 parent PID；归属仍由原完整 command hash、出生身份及父子链核验决定，快照本身没有终止授权。空清单、重复或非法条目、未完成枚举和句柄关闭失败都保留未知。采集继续受 `min(10s, requestMs, totalRemaining)` 限制，在原生调用前后及库载入后检查预算；已进入的同步系统调用须等待返回，再拒绝过期结果并关闭句柄，不声称能够强行取消内核调用。该观察路径不启动额外 PowerShell，不改变 native 环境或 Herdr daemon 的启动方式。
 
+官方 hook 的运行时探测仍在原 native 环境与 cwd 中执行裸 `powershell`，验证 hook 真正使用的 PATH 命令。只有 Windows 的该探测采用非 detached 子进程，以保留 PowerShell 输出；原命令执行器继续拥有预算、进程树终止与 child/output streams 关闭确认。原生元数据观察不能替代这项运行时可用性检查。
+
 ## 启动、输入与 Session 确认
 
 manager 在 `agent.start` RPC 前持久保存原 request、binding、逻辑 argv 摘要及 attempt；未知结果跨调用与重启禁止再次 RPC。只有当前调用取得明确未启动的拒绝并持久确认后，才能在原初始化重试规则内推进下一 attempt。helper 核验原 manifest 和 recipe，先 create-only 保存 intent，再启动冻结命令并保存 child receipt。intent/receipt 关联 owner、nonce、selectionKey、逻辑 argv 摘要、实际 file/prefixArgs 及 helper/native PID。未知启动结果保留原 intent，不重发 `agent.start`。

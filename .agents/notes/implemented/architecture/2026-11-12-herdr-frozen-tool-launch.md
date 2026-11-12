@@ -43,6 +43,12 @@ chain still establish ownership. Deadlines are checked around native calls, and 
 call already in progress is joined before late results are rejected and handles
 are closed. Inspection changes neither the native environment nor daemon startup.
 
+The official hook runtime probe still executes bare `powershell` in the original
+native environment and working directory. Its Windows child is non-detached so
+the version output is preserved; the existing runner retains its deadline and
+process-tree/stream cleanup. Native metadata inspection cannot establish whether
+the hook's own PATH command is available.
+
 Windows descendant enrollment requires the original parent instance and a
 strictly later child birth, including PIDs supplied directly by callers. The
 [Windows process model](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process#properties)

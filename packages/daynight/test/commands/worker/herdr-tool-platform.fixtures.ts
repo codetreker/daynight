@@ -17,6 +17,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
+import { decodeWindowsExternalScript, decodeWindowsPlatformJson, runWindowsPlatformQuery, windowsExternalScriptQuery } from "./windows-platform-query.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
@@ -54,7 +55,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const link = process.platform !== "win32" ? `/tmp/dn-a0bc-platform-${nonce.slice(0, 8)}` : null;
   const route = link ?? root, home = path.join(root, "home"), cwd = path.join(root, "cwd"), tools = path.join(root, "tools");
   const evidenceFile = path.join(outputRoot, `${argumentRoundTrip ? "argv" : "formal"}-${agent}-${nonce}.json`);
-  const evidence: Record<string, any> = { agent, nonce, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, platform: process.platform, architecture: process.arch, driverNode: { version: process.version, executable: process.execPath }, businessPromptsSent: 0, initialInputAttempts: 0, uiInputsSent: 0, requests: [], cleanup: {}, observations: [], evidenceFile };
+  const evidence: Record<string, any> = { agent, nonce, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, platform: process.platform, architecture: process.arch, driverNode: { version: process.version, executable: process.execPath }, businessPromptsSent: 0, initialInputAttempts: 0, uiInputsSent: 0, requests: [], cleanup: { windowsQueries: [] }, observations: [], evidenceFile };
   const persist = () => writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
   const inventory = async (): Promise<{ pid: number; parent: number; token: string }[]> => {
     if (process.platform === "linux") {
@@ -158,8 +159,12 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       await preparedMapping.verifyReceipt([script, ...args], operation());
       await preparedMapping.verifyProcesses({ shellPid: before.shellPid, receipt }, operation());
       const powershell = path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
-      const scriptCommand = `$c=Get-Command -CommandType ExternalScript -Name '${path.join(path.dirname(preparedMapping.manifestPath), "codex.ps1").replaceAll("'", "''")}'; @{version=$PSVersionTable.PSVersion.ToString();type=$c.CommandType.ToString();source=$c.Source} | ConvertTo-Json -Compress`;
-      evidence.externalScript = JSON.parse((await execute(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(scriptCommand, "utf16le").toString("base64")], { env: environment, timeout: 10_000 })).stdout);
+      const source = path.join(path.dirname(preparedMapping.manifestPath), "codex.ps1"), scriptCommand = windowsExternalScriptQuery(source);
+      evidence.externalScript = decodeWindowsExternalScript(await runWindowsPlatformQuery("external-script", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(scriptCommand, "utf16le").toString("base64")], environment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
+      if (evidence.externalScript.type !== "ExternalScript" || evidence.externalScript.source !== source || !/^5\.1\./.test(evidence.externalScript.version)) {
+        evidence.cleanup.windowsQueries.at(-1).errorType = "IdentityMismatch";
+        throw new Error("The independent ExternalScript proof does not match the original PS5 mapping.");
+      }
       evidence.windowsRootCommand = preparedMapping.windowsCommand;
       evidence.originalShellPreserved = (await adapter.tasks.processInfo(context, binding, operation())).shellPid === before.shellPid;
       evidence.launch = launch;
@@ -187,10 +192,10 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     } else {
       const powershell = path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
       const script = `$ids=@(${before.shellPid},${receipt.helperPid},${receipt.childPid}); @{version=$PSVersionTable.PSVersion.ToString();processes=@(Get-CimInstance Win32_Process | Where-Object {$ids -contains $_.ProcessId} | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate)} | ConvertTo-Json -Depth 4 -Compress`;
-      evidence.windowsProcesses = JSON.parse((await execute(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { env: environment, timeout: 10_000 })).stdout);
+      evidence.windowsProcesses = decodeWindowsPlatformJson("processes", await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
       evidence.windowsRootCommand = mapping.windowsCommand;
       const consoleScript = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class NativeConsole { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint id); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); }'; [NativeConsole]::FreeConsole() | Out-Null; $attached=[NativeConsole]::AttachConsole(${receipt.childPid}); $errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); $ids=New-Object uint[] 256; $count=if($attached){[NativeConsole]::GetConsoleProcessList($ids,256)}else{0}; $result=@{attached=$attached;errorCode=$errorCode;processIds=@($ids | Select-Object -First $count)}; [NativeConsole]::FreeConsole() | Out-Null; $result | ConvertTo-Json -Compress`;
-      evidence.windowsConsole = JSON.parse((await execute(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], { env: environment, timeout: 10_000 })).stdout);
+      evidence.windowsConsole = decodeWindowsPlatformJson("console", await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
     }
     evidence.launch = launch; evidence.herdrLaunch = herdrLaunch;
     const allProcesses = await inventory(), descendants = new Set([daemonPid!, before.shellPid, receipt.helperPid, receipt.childPid]);
@@ -316,7 +321,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     await new Promise<void>(resolve => mock.close(() => resolve())); evidence.cleanup.mockClosed = true;
     if (linked) { await unlink(link!); evidence.cleanup.shortLinkRemoved = true; }
     operations.forEach(operation => operation.dispose());
-    let closed = !adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited");
+    let closed = (!adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited")) && evidence.cleanup.windowsQueries.every((query: { closed: boolean; cleanupConfirmed: boolean }) => query.closed && query.cleanupConfirmed);
     if (closed && adapter && preparingWorkspace && evidence.error && process.platform === "win32" && !cancellation.signal.aborted && preparationProbeEnvironment && !windowsPreparationProbeAttempted) {
       windowsPreparationProbeAttempted = true;
       try {

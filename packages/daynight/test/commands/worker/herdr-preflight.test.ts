@@ -1,11 +1,13 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
-import { createHerdrPreflight, createNativePrerequisiteChecks } from "../../../src/commands/worker/herdr/preflight.js";
+import { createHerdrPreflight, createNativePrerequisiteChecks, nativeHookRuntimeChecks } from "../../../src/commands/worker/herdr/preflight.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
+import * as commands from "../../../src/commands/worker/herdr/command.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
@@ -55,6 +57,45 @@ afterEach(async () => {
 });
 
 describe("Herdr native prerequisites", () => {
+  it.each(["win32", "linux"] as const)("keeps the default %s hook runtime on the original environment and owned command runner", async platform => {
+    const f = await fixture(), environment = { PATH: "/frozen/hook/path", CODEX_HOME: f.codex, PSModulePath: "/unchanged/modules" }, original = { ...environment };
+    const runner = commands.runHerdrCommand;
+    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => {
+      const output = platform === "win32" ? options.detached === false ? "5.1.26100.7628\n" : "" : "GNU bash, version 5.2.0\n";
+      return spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(output)})`], { ...options, detached: true });
+    });
+    const run = vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => runner(command, active, provided ?? start, options));
+    try {
+      const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment, platform }, f.input("codex"));
+      const active = operation({ limits: { totalMs: 2000, requestMs: 1000 } });
+      expect(await checks.find(check => check.kind === "runtime")!.verify(active)).toBe(platform === "win32" ? "5.1.26100.7628" : "GNU bash, version 5.2.0");
+      expect(start).toHaveBeenCalledOnce();
+      expect(start.mock.calls[0]!.slice(0, 2)).toEqual(platform === "win32" ? ["powershell", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"]] : ["bash", ["--version"]]);
+      expect(start.mock.calls[0]![2]).toMatchObject({ env: environment, cwd: f.cwd, detached: platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      expect(run.mock.calls[0]![1]).toBe(active); expect(environment).toEqual(original);
+    } finally { run.mockRestore(); start.mockRestore(); }
+  });
+
+  it.each(["", "not-a-runtime"])("keeps unrecognized Windows hook output rejected through a custom runner (%j)", async stdout => {
+    const f = await fixture(), environment = { PATH: "/exact/official/hook/path" }, runCommand = vi.fn(async (_command: HerdrCommand, _active: Operation) => ({ stdout, stderr: "" }));
+    const active = operation();
+    const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment, platform: "win32", runCommand }, f.input("codex"));
+    await expect(checks.find(check => check.kind === "runtime")!.verify(active)).rejects.toThrow("Cannot identify the powershell runtime");
+    expect(runCommand).toHaveBeenCalledExactlyOnceWith({ file: "powershell", args: ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], environment, cwd: f.cwd }, active);
+  });
+
+  it.skipIf(process.platform !== "win32")("reads the actual Windows PowerShell hook runtime through its supplied PATH", async () => {
+    const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-tools"); await mkdir(scratch, { recursive: true });
+    const cwd = await mkdtemp(path.join(scratch, "hook-runtime-")); roots.push(cwd);
+    const root = process.env.SystemRoot;
+    if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("This Windows runtime test requires its original SystemRoot.");
+    const environment: NodeJS.ProcessEnv = Object.fromEntries(["SystemRoot", "SystemDrive", "ComSpec", "WINDIR", "OS"].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
+    environment.PATH = path.win32.join(root, "System32", "WindowsPowerShell", "v1.0");
+    const original = { ...environment }, checks = nativeHookRuntimeChecks({ environment, cwd, platform: "win32" });
+    expect(await checks[0]!.verify(operation({ limits: { totalMs: 15_000, requestMs: 10_000 } }))).toMatch(/^5\.1\.\d+/);
+    expect(environment).toEqual(original);
+  }, 20_000);
+
   it.each(["help", "hooks"] as const)("keeps frozen Copilot %s inspection on its selected installation", async probe => {
     const f = await fixture(), entry = path.join(f.root, "selected-copilot.cjs");
     await writeFile(entry, "// Isolated Node tool selected by the real resolver.\n");

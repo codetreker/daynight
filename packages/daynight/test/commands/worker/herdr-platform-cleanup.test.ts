@@ -38,3 +38,14 @@ test.each(["live", "close-unknown", "retained", "directory-present", "identity-m
     if (kind === "identity-missing") evidence.pid = null;
   }, (status, result) => { expect(status).not.toBe(0); expect(result.failures).toContain("acceptance-windows-metadata-fixture.json"); });
 });
+
+test.each(["closed", "close-unknown", "cleanup-unknown"])("independently checks %s query cleanup alongside formal resources", async kind => {
+  await withCleanup(async (_evidence, directory) => {
+    const file = path.join(directory, "acceptance-codex-fixture.json"), run = JSON.parse(await readFile(file, "utf8"));
+    run.cleanup.windowsQueries = [{ stage: "external-script", closed: kind !== "close-unknown", cleanupConfirmed: kind !== "cleanup-unknown" }];
+    await writeFile(file, JSON.stringify(run));
+  }, (status, result) => {
+    if (kind === "closed") { expect(status).toBe(0); expect(result.failures).toEqual([]); }
+    else { expect(status).not.toBe(0); expect(result.failures).toContain("acceptance-codex-fixture.json"); }
+  });
+});

@@ -21,9 +21,10 @@ for (const file of files) {
   const endpointsClosed = run.endpoints ? await Promise.all(Object.values(run.endpoints).map(closed)) : [];
   const shortLinkRemoved = !run.shortLink || await lstat(run.shortLink).then(() => false, error => error.code === "ENOENT");
   const preparationProbesClosed = !run.cleanup.preparationProbeSetupError && (run.cleanup.preparationProbes ?? []).every(probe => probe.closed === true);
-  const result = { file, livePids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
+  const windowsQueriesClosed = (run.cleanup.windowsQueries ?? []).every(query => query.closed === true && query.cleanupConfirmed === true);
+  const result = { file, livePids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, windowsQueriesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
   evidence.runs.push(result);
-  if (livePids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
+  if (livePids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !windowsQueriesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
 }
 for (const agent of ["codex", "copilot"]) if (!files.some(file => file.startsWith(`acceptance-${agent}-`))) evidence.failures.push(`Missing ${agent} completion evidence.`);
 if (process.platform === "win32" && !files.some(file => file.startsWith("acceptance-argv-codex-"))) evidence.failures.push("Missing Windows ExternalScript argument evidence.");
