@@ -136,7 +136,15 @@ func TestOwnerGrantsHTTP(t *testing.T) {
 	}
 	active := issue(time.Now())
 	expired := issue(time.Now().Add(-31 * 24 * time.Hour))
+	usedAt := time.Now().UTC().Truncate(time.Microsecond)
+	completion, err := h.Database.WriteCredentialUsage(t.Context(), []model.CredentialUsageEvent{{Kind: model.UsageSubjectOAuthGrant, UserID: user.ID, SubjectID: active.Grant.ID, At: usedAt}})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("write usage: %+v %v", completion, err)
+	}
 	response := list(alice)
+	if strings.Contains(response.Body.String(), "lastUsedAt") {
+		t.Fatalf("v1 exposed usage metadata: %s", response.Body)
+	}
 	pageResult := testsupport.DecodeResponse[page](t, response, 200)
 	if response.Header().Get("Daynight-User-ID") != user.ID || response.Header().Get("Cache-Control") != "no-store" || len(pageResult.Grants) != 2 || pageResult.Grants[0].ID != active.Grant.ID || pageResult.Grants[0].Status != "active" || pageResult.Grants[0].ClientName != "Test app" || pageResult.Grants[1].ID != expired.Grant.ID || pageResult.Grants[1].Status != "expired" || strings.Contains(response.Body.String(), active.AccessToken) || strings.Contains(response.Body.String(), active.RefreshToken) {
 		t.Fatalf("owner page: %d %s", response.Code, response.Body)

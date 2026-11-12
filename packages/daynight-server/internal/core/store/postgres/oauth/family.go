@@ -67,11 +67,11 @@ func (d *DAO) AuthenticateAccess(ctx context.Context, hash []byte, resource, sco
 
 func (d *DAO) InspectGrant(ctx context.Context, id string, lock bool) (store.OAuthGrant, error) {
 	var g store.OAuthGrant
-	q := `SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants WHERE id=$1`
+	q := `SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants WHERE id=$1`
 	if lock {
 		q += ` FOR UPDATE`
 	}
-	err := d.tx.QueryRow(ctx, q, id).Scan(&g.ID, &g.UserID, &g.ClientID, &g.ClientSnapshot, &g.Resource, &g.Scope, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt)
+	err := d.tx.QueryRow(ctx, q, id).Scan(&g.ID, &g.UserID, &g.ClientID, &g.ClientSnapshot, &g.Resource, &g.Scope, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt)
 	return g, pg.AuthQueryError("inspect OAuth grant", err)
 }
 

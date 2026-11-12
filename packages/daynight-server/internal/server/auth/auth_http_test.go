@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
@@ -51,9 +52,14 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if !bytes.Equal(stored, want[:]) {
 		t.Fatal("token hash differs")
 	}
+	usedAt := time.Now().UTC().Truncate(time.Microsecond)
+	completion, err := h.Database.WriteCredentialUsage(t.Context(), []model.CredentialUsageEvent{{Kind: model.UsageSubjectPAT, UserID: user.ID, SubjectID: minted.ID, At: usedAt}})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("write usage: %+v %v", completion, err)
+	}
 	listResponse := h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, "")
 	list := testsupport.DecodeResponse[api.PersonalAccessTokenList](t, listResponse, 200)
-	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") {
+	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") || strings.Contains(listResponse.Body.String(), "lastUsedAt") {
 		t.Fatal("PAT list exposed secret")
 	}
 	bearer := []string{"Bearer " + minted.Token}

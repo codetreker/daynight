@@ -9,6 +9,7 @@ type Transactions interface {
 	TeamWriter
 	IdentityWriter
 	CredentialFamilyWriter
+	CredentialUsageWriter
 	GrantLifecycleWriter
 	PrivateTransferWriter
 	OAuthClientWriter

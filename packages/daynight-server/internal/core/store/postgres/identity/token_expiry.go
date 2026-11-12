@@ -7,13 +7,17 @@ import (
 
 func scanPAT(row pgx.Row) (model.PersonalAccessToken, error) {
 	var c model.PersonalAccessToken
-	err := row.Scan(&c.ID, &c.UserID, &c.Name, &c.CreatedAt, &c.ExpiresAt)
+	err := row.Scan(&c.ID, &c.UserID, &c.Name, &c.CreatedAt, &c.ExpiresAt, &c.LastUsedAt)
 	c.CreatedAt = c.CreatedAt.UTC()
 	if c.ExpiresAt != nil {
 		expiry := c.ExpiresAt.UTC()
 		c.ExpiresAt = &expiry
 	}
+	if c.LastUsedAt != nil {
+		used := c.LastUsedAt.UTC()
+		c.LastUsedAt = &used
+	}
 	return c, err
 }
 
-const patFields = `id::text,user_id::text,name,created_at,expires_at`
+const patFields = `id::text,user_id::text,name,created_at,expires_at,last_used_at`
