@@ -2380,15 +2380,16 @@ package's `.tmp/` and are removed after classification. Typechecking remains a
 separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
-The Web selector starts `verify-web-quality` and `verify-web-browser` independently
-after module detection. Each job prepares its own runner. Quality has a
-30-minute limit and browser validation has a 20-minute limit; the final gate
-requires both to succeed when selected. The quality job runs full typechecking,
-the harness, the Docker Web build, Vitest/V8 collection and coverage checking
-serially with bounded stages and uploads coverage evidence. The browser job runs
-the assistant suite below without depending on the quality job or its artifacts. The module browser
-entry separately runs the navigation, Team, assistant and other fixture
-configurations.
+The Web selector starts `verify-web-quality` after module detection. This job
+has a 30-minute limit, and final `checks` requires it to succeed when selected.
+It runs full typechecking, the harness, the Docker Web build, Vitest/V8 collection
+and coverage checking serially with bounded stages and uploads coverage evidence.
+The separate [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
+runs the assistant suite below on `main` pushes and manual dispatch. Its browser
+job has a 20-minute limit and prepares its own runner without a quality artifact
+or result dependency. Ordinary Web unit and quality commands do not launch
+browser fixtures. The explicit module browser entry separately runs the
+navigation, Team, assistant and other fixture configurations.
 
 The independent login completion page validates the local return target and callback
 path supplied by the successful server callback. It retains the target query and
@@ -2473,12 +2474,18 @@ It uses one worker, zero retries and a 45-second test timeout. An installed Chro
 can be selected with `DAYNIGHT_BROWSER_CHANNEL=chrome` on the test command; record
 that browser choice with the result. Captures are saved under
 `packages/daynight-web/.tmp/acceptance/bots-viewport/`.
-The [checks workflow](../../.github/workflows/checks.yml) runs the same suite in
-`verify-web-browser` when Web checks are selected. Its fresh runner installs the
-locked dependencies and Chromium, then the Playwright configuration starts its
+The [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
+runs the same suite in `verify-web-browser` on every `main` push and through
+`workflow_dispatch`. Its fresh runner installs the locked dependencies and
+Chromium, then the Playwright configuration starts its
 own Vite host. It uploads `daynight-web-assistant-browser` with JUnit results and
 browser captures, including available evidence after a failed browser run.
-Documentation-only PRs follow the repository's separate CI selection rules.
+The ordinary PR `checks` workflow neither invokes nor waits for this job. A
+successful PR gate does not establish a hosted assistant-browser result; a
+main-push or manually dispatched result belongs to that run's checked-out
+revision. The [workflow decision](../../.agents/notes/implemented/testing/2026-11-12-shell-browser-workflow.md)
+records this scheduling trade-off. Product E2E retains its own browser and
+selected-job gate.
 
 These tests prove browser consumption and presentation with controlled services;
 the creation responses, Session operations and archived history are fixtures.

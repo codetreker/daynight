@@ -28,15 +28,22 @@ type Authentication struct {
 	callbackPath string
 }
 
-func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger) (*Authentication, error) {
+func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*Authentication, error) {
+	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
+		return nil, errors.New("invalid credential usage observer")
+	}
 	origin, callbackPath, err := authconfig.ValidateAuthSettings(settings, identity.CallbackURL())
 	if err != nil {
 		return nil, err
 	}
-	return &Authentication{
+	h := &Authentication{
 		RequestAuthentication: &RequestAuthentication{authenticate: identity.Authenticate, origin: settings.PublicOrigin, secure: origin.Scheme == "https", logger: logger},
 		identity:              identity, callbackPath: callbackPath,
-	}, nil
+	}
+	if len(observers) == 1 {
+		h.observeUsage = observers[0]
+	}
+	return h, nil
 }
 
 func (h *Authentication) scopeCookieName() string {

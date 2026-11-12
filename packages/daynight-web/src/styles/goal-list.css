@@ -7,6 +7,7 @@
 .goal-list-title { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; text-align: left; color: inherit; font: inherit; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; cursor: pointer; }
 .goal-list-title:hover { text-decoration: underline; }
 .goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 5px; font-size: 10px; color: #758196; }
+.goal-list-meta .completion-time-label { margin-inline-start: 0; }
 .goal-list-progress { flex: none; width: 145px; font-size: 10px; color: #758196; text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
 .goal-list-track i { background: #78ac94; }

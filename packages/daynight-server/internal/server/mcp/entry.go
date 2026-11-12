@@ -17,6 +17,7 @@ import (
 
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 
+	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -31,6 +32,8 @@ type Authenticator interface {
 type OAuthAuthenticator interface {
 	AuthenticateAccess(context.Context, string, string) (store.OAuthAccessIdentity, error)
 }
+
+type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent) error
 
 type AuthorityRef struct {
 	Kind string
@@ -81,6 +84,7 @@ type Entry struct {
 	http            http.Handler
 	auth            Authenticator
 	oauth           OAuthAuthenticator
+	observeUsage    ObserveUsage
 	resource        string
 	manual          string
 	logger          *slog.Logger
@@ -98,13 +102,16 @@ type Entry struct {
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
-func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator) (*Entry, error) {
-	return newWithManualSource(auth, publicOrigin, allowedOrigins, logger, oauth, productManualFS)
+func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator, observers ...ObserveUsage) (*Entry, error) {
+	return newWithManualSource(auth, publicOrigin, allowedOrigins, logger, oauth, productManualFS, observers...)
 }
 
-func newWithManualSource(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator, source fs.FS) (*Entry, error) {
+func newWithManualSource(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator, source fs.FS, observers ...ObserveUsage) (*Entry, error) {
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
+	}
+	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
+		return nil, errors.New("invalid credential usage observer")
 	}
 	if err := mcpconfig.ValidateOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
 		return nil, err
@@ -130,6 +137,9 @@ func newWithManualSource(auth Authenticator, publicOrigin string, allowedOrigins
 	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, Instructions: manuals.Instructions, Capabilities: &sdk.ServerCapabilities{Logging: &sdk.LoggingCapabilities{}, Resources: &sdk.ResourceCapabilities{}}, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
 	e := &Entry{server: server, auth: auth, oauth: oauth, resource: resource, manual: manual, logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), bodyReadTimeout: transport.JSONBodyReadTimeout, ctx: ctx, cancel: cancel}
+	if len(observers) == 1 {
+		e.observeUsage = observers[0]
+	}
 	registerProductManuals(server, manuals, e.manualHandler)
 	// Raw input is limited before SDK dispatch. Batch correlation adds fewer
 	// than 80 bytes per Task call, each of which occupies over 50 input bytes.
@@ -256,6 +266,15 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", e.challenge())
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
+	}
+	if e.observeUsage != nil {
+		kind, source := model.UsageSubjectPAT, usage.SourceMCPPAT
+		if authority.Kind == "oauth" {
+			kind, source = model.UsageSubjectOAuthGrant, usage.SourceMCPOAuth
+		}
+		event := model.CredentialUsageEvent{Kind: kind, UserID: p.UserID, SubjectID: authority.ID, At: time.Now().UTC().Truncate(time.Microsecond)}
+		_ = e.observeUsage(ctx, source, event)
+		_ = httpx.PublishCredentialUsageFaults(e.logger, ctx)
 	}
 	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()

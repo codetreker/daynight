@@ -14,16 +14,32 @@ import (
 
 // GrantLifecycle owns refresh rotation, revocation and credential retention.
 type GrantLifecycle struct {
-	writer store.GrantLifecycleWriter
-	now    func() time.Time
+	writer          store.GrantLifecycleWriter
+	now             func() time.Time
+	observeRotation RotationObserver
 }
 type RotatedTokens struct {
 	AccessToken, RefreshToken string
 	ExpiresIn                 int64
 }
 
+// RotationObservation describes a real rotation candidate and its transaction
+// completion, independently of any cleanup error.
+type RotationObservation struct {
+	Event   model.CredentialUsageEvent
+	Outcome store.TransactionOutcome
+	Cause   error
+}
+
+type RotationObserver func(context.Context, RotationObservation)
+
 func NewGrantLifecycle(writer store.GrantLifecycleWriter) *GrantLifecycle {
 	return &GrantLifecycle{writer: writer, now: time.Now}
+}
+
+// SetRotationObserver installs the observer before the lifecycle is used.
+func (s *GrantLifecycle) SetRotationObserver(observer RotationObserver) {
+	s.observeRotation = observer
 }
 func (s *GrantLifecycle) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 func lifecycleCompletion(c store.Completion, err error) error {
@@ -75,6 +91,7 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 	}
 	var result RotatedTokens
 	var replay bool
+	var candidate *model.CredentialUsageEvent
 	c, err = s.writer.WriteGrantLifecycle(ctx, func(d store.GrantLifecycleDAO) error {
 		first, e := d.Refresh(ctx, hash, false)
 		if e != nil {
@@ -111,9 +128,13 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 		if e != nil {
 			return e
 		}
+		candidate = &model.CredentialUsageEvent{Kind: model.UsageSubjectOAuthGrant, UserID: grant.UserID, SubjectID: grant.ID, At: now.UTC().Truncate(time.Microsecond)}
 		result = RotatedTokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(accessExpiry.Sub(now) / time.Second)}
 		return nil
 	})
+	if candidate != nil && s.observeRotation != nil {
+		s.observeRotation(ctx, RotationObservation{Event: *candidate, Outcome: c.Outcome, Cause: err})
+	}
 	if c.Outcome != store.TransactionUnknown && errors.Is(err, model.ErrNotFound) {
 		return RotatedTokens{}, ErrInvalidGrant
 	}

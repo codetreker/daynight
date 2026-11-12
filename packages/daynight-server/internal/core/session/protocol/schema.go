@@ -20,7 +20,7 @@ func validateObject(data json.RawMessage, fields schema) bool {
 			delete(fields, "claimId")
 		}
 	}
-	for _, name := range []string{"cleanupInteractionIds", "controls", "turnStartedAt", "contentRevision", "imageBudget", "images", "providerImages", "imageProjectionError", "retainedImages", "imageBindings"} {
+	for _, name := range []string{"cleanupInteractionIds", "controls", "turnStartedAt", "contentRevision", "imageBudget", "images", "providerImages", "imageProjectionError", "retainedImages", "imageBindings", "origin"} {
 		if _, supported := fields[name]; supported && raw[name] == nil {
 			fields = extend(fields, schema{})
 			delete(fields, name)

@@ -3,11 +3,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
 import { startCommand } from "../src/command.ts";
+import { verifyCompletionFlow } from "./completion-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
+  test.setTimeout(240_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
@@ -124,6 +126,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(refreshedHit).toContainText(task.id);
   await refreshedHit.click();
   await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
+
+  await verifyCompletionFlow(page, projectId!, task.id);
 
   // These API registrations exercise the assembled service without starting a
   // Worker process. Resource stopping and archival are owned by their modules.

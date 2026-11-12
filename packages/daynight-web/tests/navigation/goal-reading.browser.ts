@@ -132,7 +132,14 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
+  return { completionGoal: () => {
+    const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z' });
+    details = [{ ...goal, status: 'done', completedAt: '2026-10-22T09:59:40Z' },
+      detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), outside,
+      { ...first, title: 'First task with a long title '.repeat(5), status: 'done', completedAt: '2026-10-22T09:59:10Z', dependsOn: [outsideId] },
+      { ...second, status: 'done', completedAt: '2026-10-22T09:59:30Z', dependsOn: [firstId] }, single];
+    currentGraph = graphFixture(details);
+  }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
     details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
     currentGraph = graphFixture(details);
   }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
@@ -624,7 +631,7 @@ for (const width of [1440, 320]) test(`external Expand opens the target Goal cha
   const expand = target.getByRole('button', { name: 'Expand Other task in its task or Goal', exact: true });
   await test.step('Open the external Goal chain', () => expand.click());
   const targetGoal = page.getByRole('dialog', { name: 'Other goal', exact: true });
-  const targetGraph = page.locator('.task-chain-dialog').last();
+  const targetGraph = page.locator('.task-chain-dialog').filter({ has: page.getByRole('heading', { name: 'Other task', exact: true }) });
   await expect(targetGoal).toBeVisible();
   await expect(targetGoal.getByRole('tab')).toHaveText(['Description', 'Attachments', 'Discussion']);
   await expect(targetGraph).toHaveAccessibleName('Other task');
@@ -639,7 +646,11 @@ for (const width of [1440, 320]) test(`external Expand opens the target Goal cha
   await expect(sourceGraph).toBeVisible();
   await expect(expand).toBeFocused();
   await test.step('Restore the target graph', () => page.goForward({ timeout: 5_000 }));
-  await expect(targetGraph).toBeVisible();
+  await expect(targetGraph).toHaveAccessibleName('Other task');
+  await expect(targetGraph.locator('.task-node')).toHaveCount(2);
+  await expect(targetGoal).toHaveAttribute('inert', '');
+  await expect(closeTargetGraph).toBeFocused();
+  await expectHit(closeTargetGraph);
   await test.step('Close the target graph', () => targetGraph.getByRole('button', { name: 'Close dependency graph' }).click());
   await test.step('Close the target Goal', () => targetGoal.getByRole('button', { name: 'Close task details' }).click());
   await expect(sourceGraph).toBeVisible();
@@ -1689,4 +1700,142 @@ test('Goal list retires an old epoch and rejects its late background result', as
   await expect.poll(fixture.heldSyncFinished).toBe(true);
   await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
   await expect(page.getByText('Goal reading', { exact: true })).toHaveCount(0);
+});
+
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal completion is readable in its list and detail at ${width}px in ${locale}`, async ({ page }) => {
+  const fixture = await install(page, locale); fixture.completionGoal();
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.setViewportSize({ width, height: 800 });
+  const zh = locale === 'zh-CN';
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const title = card.locator('.goal-list-title');
+  const label = card.locator('.goal-list-meta time');
+  await expect(label).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+  await label.hover();
+  await expect(card.getByRole('tooltip')).toBeVisible();
+  await card.getByRole('tooltip').hover();
+  await expect(card.getByRole('tooltip')).toBeVisible();
+  await title.focus();
+  await expect(card.getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(card.getByRole('tooltip')).toBeHidden();
+  await card.locator('.goal-list-toggle').click();
+  await expect(card.locator('.standalone-row')).toContainText(zh ? '待处理' : 'To do');
+  const chain = card.locator('.goal-row');
+  const disclosure = chain.locator('.goal-toggle');
+  const time = chain.getByRole('button', { name: zh ? '查看 Outside chain 的完成时间' : 'View completion time for Outside chain' });
+  await expect(time.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:30Z');
+  await time.focus(); await expect(chain.getByRole('tooltip')).toBeVisible();
+  await time.click();
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+  await page.keyboard.press('Escape');
+  await expect(chain.getByRole('tooltip')).toBeHidden();
+  await disclosure.click();
+  const row = chain.locator(`#chain-task-goal-${goalId}-chain-${outsideId}-${firstId}`);
+  await expect(row.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:10Z');
+  await row.focus(); await expect(row.locator('..').getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Tab'); await expect(row).not.toBeFocused();
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
+  await title.click();
+  const surface = page.locator('.goal-detail-surface');
+  const check = async () => {
+    const meta = surface.locator('.goal-detail-meta');
+    await expect(meta.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+    await expect(meta).toContainText(zh ? '完成时间' : 'Completion time');
+    await expect(meta.locator('time')).toContainText('2026');
+    await expect(meta.locator('time')).toContainText('40');
+    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论'] : ['Description', 'Attachments', 'Discussion']);
+    await expect(surface.locator('[data-goal-task-id]')).toHaveCount(0);
+    await expect(surface.locator('.goal-information-statuses dt').filter({ hasText: zh ? /^未结束$/ : /^Unfinished$/ }).locator('..').locator('dd')).toHaveText('1');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  };
+  await check();
+  await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await check();
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await check();
+  await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await check();
+});
+
+test('touch opens scoped Goal chain time without disclosure or navigation', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 800 }, hasTouch: true, isMobile: true });
+  try {
+    const page = await context.newPage();
+    const fixture = await install(page); fixture.completionGoal();
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+    await page.getByRole('tab', { name: /^Goal/ }).click();
+    const card = page.locator(`[data-goal-id="${goalId}"]`);
+    await card.locator('.goal-list-toggle').click();
+    const chain = card.locator('.goal-row');
+    await chain.getByRole('button', { name: 'View completion time for Outside chain' }).tap();
+    await expect(chain.getByRole('tooltip')).toBeVisible();
+    await expect(chain.locator('.goal-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+    await expect(card).toBeVisible();
+  } finally { await context.close(); }
+});
+
+test('Goal list completion tick retains pinned hint and expansion while its detail retains a nested Task draft', async ({ page }) => {
+  const fixture = await install(page); fixture.completionGoal();
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  const chain = card.locator('.goal-row');
+  const disclosure = chain.locator('.goal-toggle');
+  await disclosure.click();
+  const time = chain.getByRole('button', { name: 'View completion time for Outside chain' });
+  const label = time.locator('time');
+  await time.click();
+  const text = await label.textContent();
+  const node = await time.elementHandle();
+  await page.clock.fastForward(61_000);
+  await expect(label).not.toHaveText(text!);
+  await expect(chain.getByRole('tooltip')).toBeVisible();
+  await expect(time).toBeFocused();
+  expect(await time.evaluate((element, old) => element === old, node)).toBe(true);
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await card.locator('.goal-list-title').click();
+  const goalSurface = page.locator('.goal-detail-surface');
+  await goalSurface.getByRole('tab', { name: 'Discussion' }).click();
+  const draft = goalSurface.locator('.thread-composer textarea');
+  await draft.fill('Keep completion draft');
+  await goalSurface.getByRole('tab', { name: 'Description', exact: true }).click();
+  await restoreGoalChild(page, firstId);
+  const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+  await expect(child.locator('time[datetime="2026-10-22T09:59:10Z"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(goalSurface).toBeVisible();
+  await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+  await goalSurface.getByRole('tab', { name: 'Discussion' }).click();
+  await expect(draft).toHaveValue('Keep completion draft');
+});
+
+test('nested Goal reads its own completion fact from a cross-Goal graph', async ({ page }) => {
+  const fixture = await install(page); fixture.addOutsideChain(); fixture.completeOtherGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list' }).click();
+  await page.getByRole('tab', { name: 'Task chains' }).click();
+  await page.locator(`[data-chain-id="${outsideId}"]`).getByRole('button', { name: /View dependencies/ }).click();
+  await page.getByRole('dialog', { name: 'Outside chain' }).getByRole('button', { name: 'First task, Details' }).click();
+  const firstGoal = page.getByRole('dialog', { name: 'Goal reading' });
+  await page.getByRole('dialog', { name: 'First task', exact: true }).getByRole('button', { name: 'Close task details' }).click();
+  await restoreGoalGraph(page, firstGoal, outsideId);
+  await page.locator('.task-chain-dialog').last().getByRole('button', { name: 'Other task, Details' }).click();
+  const nested = page.getByRole('dialog', { name: 'Other goal' });
+  await expect(nested.locator('.goal-detail-meta time')).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+  await expect(nested.locator('.goal-detail-meta')).toContainText('Completion time');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Other task', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(nested).toHaveCount(0);
 });

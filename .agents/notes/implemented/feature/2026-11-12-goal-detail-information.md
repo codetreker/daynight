@@ -17,7 +17,9 @@ desktop and follows it on narrow screens. It reads the Goal's own timestamps
 from complete detail and its standalone, chain and progress counts from the
 existing Parent scope of the complete ordinary graph. Cancelled work remains
 distinct from successful completion. Missing graph data is a loading state;
-refresh failure retains displayed statistics and its retry action.
+refresh failure retains displayed statistics and its retry action. The Goal
+resource retains its own exact completion time in the common metadata row,
+independently of the child progress and the description aside timestamps.
 
 Child rows and chain disclosures belong to the project Goal list. Goal detail
 retains controlled nested graph and Task reading owners for history restoration.

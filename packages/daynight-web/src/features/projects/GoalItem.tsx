@@ -7,6 +7,10 @@ import { projectTaskScope } from '../task-graph/scope';
 import { ScopedTaskChainRow } from '../task-graph/ScopedTaskChainRow';
 import { goalListContents } from './goal-list-model';
 import { StandaloneTaskRow } from './StandaloneTaskRow';
+import { completedAtFor } from '../task-completion/model';
+import { useCompletionTime } from '../task-completion/useCompletionTime';
+import { useCompletionHint } from '../task-completion/useCompletionHint';
+import { CompletionTimeLabel } from '../task-completion/CompletionTimeLabel';
 
 export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, onOpenGoal, onOpenListTask, onOpenListChain, onOpenSession }: {
   readonly projectId: string;
@@ -20,6 +24,8 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
   const { messages: { workspace: { goals: m }, graph, common } } = useI18n();
+  const completion = useCompletionTime(completedAtFor(goal));
+  const hint = useCompletionHint(completion);
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
   const contents = useMemo(() => goalListContents(scope, index), [scope, index]);
   const [expanded, setExpanded] = useState(false);
@@ -44,8 +50,8 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
         setExpanded(!expanded);
       }}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
       <span className="goal-list-icon" aria-hidden="true">◎</span>
-      <span className="goal-list-main"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" onClick={(event) => onOpenGoal(goal.id, event.currentTarget)}>{title}</button>
-        <span className="goal-list-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={goal.assignedTo} /><span>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span></span></span>
+      <span className="goal-list-main"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" ref={hint.triggerRef} {...hint.triggerEvents} aria-describedby={hint.descriptionId} onClick={(event) => { hint.triggerEvents.onClick(); onOpenGoal(goal.id, event.currentTarget); }}>{title}</button>
+        <span className="goal-list-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={goal.assignedTo} /><span>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span>{hint.hint}</span>
       <span className="goal-list-progress"><span>{graph.progress({ done, cancelled, total: count })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${count === 0 ? 0 : done / count * 100}%` }} /><i className="goal-list-cancelled" style={{ width: `${count === 0 ? 0 : cancelled / count * 100}%` }} /></span></span>
       <span className={`root-status graph-status-${goal.status}`}>{common.status[goal.status]}</span>
     </div>

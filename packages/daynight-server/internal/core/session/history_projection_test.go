@@ -91,3 +91,23 @@ func TestHistoryCanonicalSharedFixture(t *testing.T) {
 		t.Fatalf("cross-language canonical mismatch\n%s\n%s", canonical, fixture.Canonical)
 	}
 }
+
+func TestHistoryProjectionPreservesMessageOrigin(t *testing.T) {
+	id, epoch := uuid.NewString(), uuid.NewString()
+	entry, err := sp.DecodeTimeline([]byte(`{"entryId":"` + uuid.NewString() + `","entrySeq":"1","revision":"1","kind":"user_message","origin":"daynight","content":[{"type":"text","text":"Notification"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"live", "archive"} {
+		for _, conversation := range []bool{false, true} {
+			page, err := BuildHistoryPage(id, epoch, source, epoch, []sp.TimelineEntry{entry}, nil, "", 10, conversation, 0, time.Now())
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("%s history: %#v %v", source, page, err)
+			}
+			got, err := sp.DecodeTimeline(page.Items[0].Body)
+			if err != nil || string(got.Data["origin"]) != `"daynight"` {
+				t.Fatalf("%s origin lost: %#v %v", source, got, err)
+			}
+		}
+	}
+}

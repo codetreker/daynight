@@ -230,16 +230,18 @@ global prefix. Ordinary CLI tests own command behavior and its error and
 concurrency cases. The installed suite does not modify the operator's installed
 CLI or require live review credentials.
 
-Ordinary CLI tests require Python 3 and exercise completion behavior through a real
-Bash 4.2 or newer editor on Linux and a real zsh editor on macOS. The completion CI job also runs the module behavior
-matrix on Bash 4.2, modern Bash and zsh. Shell completion has a separate
-real-shell artifact acceptance command. It requires
-Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
-isolated shell executables from the repository root:
+Ordinary CLI tests retain completion unit tests without launching a real shell
+editor. Real-shell validation has two explicit entries: the complete behavior
+matrix in `shell-module.py`, and the artifact acceptance command
+`pnpm completion:acceptance`. Both require Python 3 on a POSIX host, Bash 4.2,
+a modern Bash and zsh. Linux hosts can prepare isolated shell executables and
+run both suites from the repository root:
 
 ```bash
 bash packages/daynight/scripts/prepare-completion-shells.sh
 source .tmp/shell-completion/environment.sh
+pnpm build
+python3 -u packages/daynight/test/commands/completion/shell-module.py --shell all
 pnpm completion:acceptance
 ```
 
@@ -257,12 +259,21 @@ to the Bash 4.2 executable before running `pnpm completion:acceptance`.
 `DAYNIGHT_TEST_BASH` and `DAYNIGHT_TEST_ZSH` select the other executables and default
 to `bash` and `zsh`. `DAYNIGHT_TEST_ZSH_ROOT` optionally selects an extracted zsh
 toolchain root. `DAYNIGHT_COMPLETION_EVIDENCE` optionally selects the JSON receipt
-path. The command builds the client and runs a Python PTY harness against actual
-Tab insertion in all three shells. It also installs setup into isolated startup
-files and checks interactive shell loading and completion registration. It uses task-local fixtures, with no user
-configuration, review credentials or installed CLI changes.
-A dedicated Ubuntu 24.04 CI job runs this suite separately from the native CLI
-matrix; its result belongs to the tested revision. The
+path. The artifact command builds the client and runs a Python PTY harness
+against actual Tab insertion in all three shells. It also installs setup into isolated startup
+files and checks interactive shell loading and completion registration. The
+module harness additionally owns the complete command, option, directory,
+refusal and setup-error matrix; the artifact suite does not replace it. Both
+use task-local fixtures, with no user configuration, review credentials or
+installed CLI changes. They write `.tmp/completion-module-evidence.json` and
+`.tmp/completion-evidence.json`, respectively, unless the receipt path is overridden.
+The dedicated Ubuntu 24.04 job in the
+[`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+runs both suites on every `main` push and through `workflow_dispatch`.
+Its result belongs to that workflow's checked-out revision and does not gate
+ordinary PR `checks`. The `daynight-completion-acceptance` artifact contains
+both available JSON receipts. Upload runs after the module harness starts,
+including when its failure prevents the later artifact suite from running. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
@@ -289,13 +300,13 @@ requiring the source-development toolchain on each supported runtime.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
-native platform, the runtime compatibility matrix and the dedicated Linux shell
-completion job. Both native matrices need only module detection, so ordinary
-validation does not gate installed validation. Each job owns its checkout,
+native platform and the runtime compatibility matrix. Both native matrices need
+only module detection, so ordinary validation does not gate installed validation.
+Each job owns its checkout,
 toolchain, dependencies, environment recorder, build, fixtures, cleanup and
 artifacts. The Windows ordinary phase has two independent matrix entries; the
 other native phases each have one. Final `checks` requires actual success from
-all selected ordinary, installed, runtime and completion jobs, including both
+all selected ordinary, installed and runtime jobs, including both
 Windows ordinary shards. The two macOS jobs use separate workspaces, so their fixed
 receipt paths need no phase handoff or clearing. A failure or cancellation in
 either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
@@ -844,8 +855,11 @@ gate strictly greater than 90%; it does not start the Go service or an installed
 CLI. `pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
-`checks` gate alongside the independent Web browser job; both must succeed when
-Web validation is selected.
+`checks` gate and must succeed when Web validation is selected. The assistant
+browser suite runs separately in the
+[`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+on `main` pushes or manual dispatch; ordinary Web unit and quality commands do
+not invoke it.
 
 For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
@@ -1074,8 +1088,9 @@ Deletions and both sides of renames count. The
 Go API integration by server and production Web build inputs, and product E2E by
 its framework and production build inputs; the
 [root routing table](../README.md#ci-selection) owns the summary map. Mixed
-changes select their union, and unknown paths select all jobs. Selected jobs
-validate the source and tests in their ordinary event checkout. Remote test PRs
+changes select their union, and unknown paths select all application jobs in
+`checks`. This includes the independent shell/browser workflow's path. Selected
+jobs validate the source and tests in their ordinary event checkout. Remote test PRs
 do not replace test files or produce an additional composed checkout commit.
 The [checkout-source decision](../.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
 owns this input boundary; each runner retains its own source/artifact receipts,
@@ -1099,8 +1114,9 @@ final gate still run; publication validates its frozen artifact separately.
 Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
-Windows and macOS ARM64, plus Node compatibility and shell checks. The Go module
-job runs its PostgreSQL-backed module gate and uploads coverage. The independent
+Windows and macOS ARM64, plus Node compatibility. Completion unit tests remain
+in the ordinary CLI suite. The Go module job runs its PostgreSQL-backed module
+gate and uploads coverage. The independent
 `verify-server-startup-shutdown` job uses the same server selection, waits only
 for detection, and owns its PostgreSQL-backed command lifecycle tests and
 command-package coverage. Selected Go module and startup/shutdown jobs must both
@@ -1111,9 +1127,9 @@ reconciliation step retains original command and cleanup failures; it uploads
 only safe API build/result/log evidence. The
 [API integration decision](../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
 owns the scheduling and build-input rationale. Web quality owns full
-typechecking, harness, production Docker Web build and coverage; its separate
-browser job owns frontend fixtures. Product E2E waits only for detection and
-prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
+typechecking, harness, production Docker Web build and coverage. Product E2E
+waits only for detection and prepares its own Node.js, pnpm, Go, Chromium,
+database and complete auth system.
 It rebuilds every runtime product from the checked-out source, even on a
 build-dependency cache hit.
 
@@ -1126,9 +1142,10 @@ normal completion, failure or runner termination. Original scenario and cleanup
 failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
 and `*/logs/**`, with 30-day retention.
 
-Final `checks` wait for every independent job. Failure and cancellation are
-rejected; selected API integration, Web and product E2E jobs must equal `success`,
-so an unexpected skip cannot pass their gate. Routine CI excludes stress
+Final `checks` wait for every job in that workflow. Failure and cancellation are
+rejected; selected CLI, Go module, startup/shutdown, API integration, Web quality
+and product E2E jobs must equal `success`, so an unexpected skip cannot pass their
+gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
@@ -1136,6 +1153,25 @@ Workflow concurrency cancels an older PR run for the same ref; main pushes queue
 without cancelling an active run. Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
+
+The separate [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
+contains `verify-completion` and `verify-web-browser`. It runs both jobs on every
+`main` push and on `workflow_dispatch`, without module detection or a PR trigger.
+Each job checks out its event's source and installs its own locked dependencies.
+Shell validation retains the Bash 4.2, modern Bash and zsh behavior matrix and
+artifact acceptance. Browser validation retains the complete assistant suite,
+locked Playwright Chromium, its private Vite host and failure evidence. Their
+job deadlines, failure propagation and resource cleanup remain independent.
+Ordinary CLI tests and Web quality do not launch either suite, and final `checks`
+has no dependency on either job. Product E2E's Chromium installation, selection,
+execution and gate remain part of `checks`.
+
+A successful PR `checks` result therefore does not establish hosted shell or
+assistant-browser success for that PR. A `main` run validates the integrated
+revision; manual dispatch and the explicit local commands provide additional
+results for their own revisions and environments. The
+[workflow decision](../.agents/notes/implemented/testing/2026-11-12-shell-browser-workflow.md)
+records this trade-off and the preserved suite ownership.
 
 To validate routing rules locally without application dependencies, run:
 
@@ -1148,7 +1184,8 @@ node --test .github/scripts/*.test.mts
 Use the development commands above for application changes. `pnpm check` covers
 CLI type checking and ordinary tests; `pnpm acceptance` exercises the installed
 package. Native CI records environment and fixture preparation evidence, and
-shell completion writes `.tmp/completion-evidence.json`. Match each result to
+shell completion writes `.tmp/completion-module-evidence.json` and
+`.tmp/completion-evidence.json`. Match each result to
 its tested revision, environment and scope; a local result does not establish a
 successful hosted run. A failed scenario or cleanup remains a failure.
 

@@ -221,6 +221,10 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	if err != nil {
 		return failOpen(err)
 	}
+	app.OAuthGrants.SetRotationObserver(app.CredentialUsage.ObserveRotation)
+	if app.OAuthProfile != nil {
+		app.OAuthProfile.Grants.SetRotationObserver(app.CredentialUsage.ObserveRotation)
+	}
 	if c.Monitoring.Redis.RedisURL != "" {
 		if open.monitoring == nil {
 			return failOpen(errors.New("monitoring store opener is unavailable"))

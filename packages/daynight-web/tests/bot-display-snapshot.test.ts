@@ -53,6 +53,17 @@ function storageFacade(): Storage {
 }
 
 describe('Bot display snapshot codec', () => {
+  it('retains Daynight notification origins when reopening persisted display history', async () => {
+    const owner = crypto.randomUUID();
+    const notification: TimelineEntry = { ...entry(), kind: 'user_message', origin: 'daynight', content: [{ type: 'text', text: 'Read the task manual.' }] };
+    const value = preview(owner, 1, { entries: [notification] });
+    const target = store(owner);
+    expect(await save(target, value)).toBe('saved');
+    target.close();
+    const restored = await store(owner, { storage: storageFacade() }).read(owner, value.botId);
+    expect(restored?.entries).toEqual([notification]);
+  });
+
   it.each(['markdown', 'reasoning', 'unknown_reasoning'] as const)('retains the complete resource closure for %s image bindings', kind => {
     const owner = crypto.randomUUID(), image = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
     const text = '![saved](resource:saved)', textSha256 = createHash('sha256').update(text).digest('hex');
