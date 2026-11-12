@@ -27,3 +27,9 @@
 }
 
 @container standalone-list (max-width:650px){.standalone-row{gap:8px;padding:9px 11px;align-items:flex-start}.task-row-status{flex-direction:column;align-items:flex-end;gap:4px}.standalone-chevron{display:none}.standalone-row .root-meta{font-size:9px}}
+
+@media (max-width: 600px) {
+  .project-task-tabs { gap: 8px; }
+  .project-task-tab { flex: 1 1 0; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
+  .project-task-tab .graph-count-pill { flex: none; }
+}

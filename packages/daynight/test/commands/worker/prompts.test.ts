@@ -41,6 +41,14 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).toEqual({ serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform: "linux", nativeSessionId: null, configuration: task.configuration });
   });
+  it("preserves both new and migrated original worktree paths in assignments", () => {
+    const { task, build } = fixture();
+    const old = task.worktree.worktreePath;
+    task.worktree.worktreePath = path.join(task.worktree.repositoryPath, ".worktrees", "daynight", task.worktreeId);
+    expect(JSON.parse(build(task, "macos").split("Assignment:\n\n")[1]!).worktreePath).toBe(task.worktree.worktreePath);
+    task.worktree.worktreePath = old;
+    expect(JSON.parse(build(task, "macos").split("Assignment:\n\n")[1]!).worktreePath).toBe(old);
+  });
   it("identifies a known native conversation when resuming", async () => {
     const { task, build } = fixture(); task.sessionId = uuid(6);
     const prompt = build(task, "windows"); expect(prompt).toContain("original native conversation");

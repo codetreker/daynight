@@ -398,10 +398,7 @@ func testWorkerInventoryFilteringAndThreadSource(t *testing.T, database *postgre
 	mustOK(t, e)
 	mustTask(t, w, store.TaskWrite{Title: "without worker"})
 	a := mustTask(t, w, store.TaskWrite{Title: "active", Properties: model.TaskProperties{"worker": raw}})
-	worker.State = model.WorkerReleased
-	released, e := taskproperties.EncodeWorker(&worker)
-	mustOK(t, e)
-	mustTask(t, w, store.TaskWrite{Title: "released", Properties: model.TaskProperties{"worker": released}})
+	mustTask(t, w, store.TaskWrite{Title: "released without current worker"})
 	b := mustTask(t, w, store.TaskWrite{Title: "second active", Properties: model.TaskProperties{"worker": raw}})
 	q := store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: f.user, WorkerID: worker.WorkerID}}
 	page, e := r.Tasks(ctx, f.project, q)

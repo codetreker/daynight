@@ -61,6 +61,15 @@ const command = () => ({
     draftRevision: "1",
   },
 });
+it("keeps image input origin in the intent while treating explicit user as the legacy default", () => {
+  const original = parseSessionCommand(command());
+  const user = parseSessionCommand({ ...command(), payload: { ...command().payload, origin: "user" } });
+  const daynight = parseSessionCommand({ ...command(), payload: { ...command().payload, origin: "daynight" } });
+  expect(user).toMatchObject({ payload: { origin: "user" } });
+  expect(daynight).toMatchObject({ payload: { origin: "daynight" } });
+  expect(canonicalSessionIntent(user)).toBe(canonicalSessionIntent(original));
+  expect(canonicalSessionIntent(daynight)).not.toBe(canonicalSessionIntent(original));
+});
 describe("unified image wire input", () => {
   it("preserves ordered images with an exact initialization target", () => {
     expect(parseSessionCommand(command())).toEqual(command());

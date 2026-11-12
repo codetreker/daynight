@@ -24,7 +24,7 @@ func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
 	project := queryProject(t, database, 1)
 	dependency := queryTask(t, database, project.ID, 2, model.TaskDone)
 	target := queryTask(t, database, project.ID, 3, model.TaskTodo, dependency.ID)
-	claim := workerWitnessClaim(3, queryID(4), queryID(5), model.WorkerReleased)
+	claim := workerWitnessClaim(3, queryID(4), queryID(5), model.WorkerActive)
 	values := taskPropertyWriteValues(target)
 	values.Status, values.AllowAgents, values.Properties = model.TaskInProgress, true, fixtureTaskProperties(t, claim)
 	if err := writeProjectForTest(database, context.Background(), project.ID, func(scope ProjectWriteScope) error {

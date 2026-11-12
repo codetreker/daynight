@@ -261,7 +261,9 @@ __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain
 的可空到期由独立领域记录表达，Principal 仍区分 session/PAT。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
 1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI (<hostname>)` 凭据。
-明文只交付一次，列表返回 ID、名称、创建时间与必填的 nullable expiresAt。
+明文只交付一次。列表、创建与期限修改的元数据均返回 ID、名称、创建时间及必填的可空
+`expiresAt`、`lastUsedAt`；创建时 `lastUsedAt` 为 null。设备领取仍只返回
+`{access_token,token_type}`，通过账户列表读取其 PAT 元数据。
 会话可修改或撤销自己的有效 PAT，CLI 可撤销当前 Bearer 自身，均不影响其他凭据。
 
 POST `/api/v1/me/tokens` 严格接受 `{name,expiresAt:null|UTCtimestamp}`，expiresAt 必填，
@@ -280,16 +282,26 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 不确定 PATCH 只通过 GET 令牌列表核对，失败时只提供读取重试；读回值供新的明确决定使用，不自动
 重放原写入。身份切换使旧账号请求和编辑状态失效，语言切换保留输入与请求。
 
-账户页通过 `GET /api/v1/oauth/grants` 读取当前会话账户的无秘密授权元数据。响应包含 `userId` 和
+OAuth v1 的 `GET /api/v1/oauth/grants` 返回当前会话账户的无秘密授权元数据。响应包含 `userId` 和
 `grants`，每项包含 `id`、`clientName`、`clientId`、`resource`、`scope`、`createdAt`、`expiresAt`、
 可空 `revokedAt` 和 `status`（`active`、`expired` 或 `revoked`）；撤销状态优先于过期状态。
+`GET /api/v2/oauth/grants` 使用相同 envelope 和这九个字段，并增加必须存在的可空 `lastUsedAt`。
+两版复用 `ListSessionGrants`、客户端快照解析和状态判断，再分别显式投影；v1 保持精确原表示。
+两版均只接受主站 Session，响应带 `Cache-Control: no-store` 和 `Daynight-User-ID`，拒绝 query、
+HEAD 和其他方法。认证 callback 配置保留 `/api/v2/oauth` 及其后代路径。
 `POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
-重复撤销不改变 family。两个端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
+重复撤销不改变 family。列表和撤销端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
 不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
 服务在同一事务中复核 Session，撤销按 grant、Session、access 锁序执行并在等待后重新检查到期。
 网页核对响应主体并独立维护授权列表与 PAT 状态。提交前按账户在 `sessionStorage` 保存无秘密的 grant ID；
 存储不可用时不派发撤销。撤销结果未知时保留目标并等待显式读取，即使离开页面或刷新也不自动重放。
 读取只说明当前状态，不推断原响应；账户变化等待刷新时保留旧账户界面状态。撤销操作持有自己的取消信号并记录实际派发，准入等待被暂停时取消尚未派发的操作；已派发但未确认的结果仍需显式核对。可信回执和本地 pending 先独立结算，不等待身份准入或列表读取。已确认结果的后续读取由原面板持有可取消的工作，在准入恢复后才能开始；暂停会取消进行中的核对读取，面板销毁或新工作替代时取消旧发布。普通列表读取的结果仍等待准入后安装。关闭对话框还需匹配原实例和可见上下文，避免旧结果覆盖后续交互。
+
+账户页采用 OAuth v2 并严格解析 PAT 与 grant 的必填可空 `lastUsedAt`；缺失或非法时间是协议错误。
+共享凭据时间组件在 null 时显示无记录；否则显示近似相对时间，并以 details/summary 和 title 提供
+本地完整记录时间。未来时间按刚刚显示，不改变原值。凭据 tab 可见时共用一个分钟显示时钟，恢复可见
+立即重算，隐藏或卸载时清理；时钟不请求网络。列表与期限修改回执按同一对象 ID 合并非空最大使用时间，
+不改变列表顺序、原到期观察值或管理状态，新 ID 不继承旧记录。稳定的行和 details 保留交互状态。
 
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
@@ -305,6 +317,106 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 同源预览使用同一 Cookie 和授权规则，没有第二种浏览器凭据。
 
+### 凭据使用时间的持久化
+
+PAT 和 OAuth grant 各自持有可空 `last_used_at timestamptz`，表示已记录的真实合格事件时间。
+新建和升级数据均初始为 NULL，不设置默认值或回填历史。领域元数据的 `LastUsedAt` 对应此列；
+PAT 元数据和 OAuth v2 列表显式投影该字段，OAuth v1 列表保留原表示。存储能力不自行推断事件。
+
+共享事件以 kind、user ID、PAT ID 或 grant ID 和真实 UTC 微秒时间标识；OAuth 使用 grant ID，
+不使用 access token 或 client ID。窄 writer 接受非空、最多 128 个、按 kind/user ID/subject ID
+排序且 key 唯一的事件，在独立 READ COMMITTED 事务中先以相同顺序对存在且属于指定用户的行执行
+`SELECT ... FOR UPDATE NOWAIT`，排空锁阶段后再对实际锁到的行批量条件更新。只有当前值为 NULL
+或小于事件时间才修改；缺失对象或不匹配的 owner 跳过，不插入或恢复对象。即使 grant 已撤销或
+到期，仍存在的行也可接纳此前发生的事件。使用时间不参与期限 CAS 或列表排序。
+
+`NOWAIT` 在行锁竞争时以 `55P03` 结束并回滚整个元数据批，保留原错误链；不能改为先执行等待的
+UPDATE，因为前台可能按相反顺序持有凭据共享锁。独立事务避免元数据失败改变认证或续期事务结果；
+普通池获取、网络及提交仍可能等待或失败。事务沿用现有 Completion 分类和独立五秒 rollback cleanup；
+writer 返回不证明 pgx 内部异步连接销毁结束，`persistence.Close` 负责等待连接池关闭。
+[持久化决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-persistence.md)
+记录取舍和范围。
+
+### 协议发布与恢复
+
+先部署包含迁移、记录 producer 和 PAT 必填字段及 OAuth v2 列表的 backend，再将采用这些字段的
+Web 投入流量。Web 随 server 从同一源码构建并嵌入；新 Web 投入流量前退出旧 backend，避免新
+bundle 请求不支持 v2 的实例。旧页面仍可通过 v1 读取新 backend。新客户端上线后，应用回滚的
+最低恢复 artifact 必须保留 PAT 必填字段、OAuth v2 列表及正确读回能力，或使用前向修复；仅保留
+数据库新增列不足以使旧 binary 安全。若退出新协议，须先真实退役采用它的客户端；当前没有自动
+退役保证。数据库回滚保留新增可空列及已记录值，不做破坏性降级。
+[协议决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-http.md)记录版本取舍。
+
+### 真实凭据使用事件
+
+HTTP 的 PAT 认证成功后立即以服务端 UTC 微秒时间记录该 PAT；直接调用
+`AuthenticateRequest` 也经过这一边界。MCP 在 PAT 或 OAuth 凭据、resource 和 scope
+验证成功后、解析正文和业务处理前记录一次；OAuth 事件归属 grant ID。后续业务拒绝、
+响应失败或客户端断开不撤回已发生的事件。浏览器 Session、内部父凭据重验和纯心跳不产生事件。
+
+刷新轮换只在最终事务的 `RotateRefresh` 成功后建立 grant/user/数据库时间候选；writer 返回后、
+原完成结果映射前观察该候选。确认提交（包括附带 cleanup 错误）接纳事件；未提交不接纳；
+提交结果未知只发布关联 grant 和请求的安全故障，不能推断提交或回滚。确认提交后的响应丢失
+仍是成功使用。初次颁发、重放撤销和失败轮换不生成事件。两个生产 GrantLifecycle 实例显式
+使用同一个 recorder，token endpoint 在原响应或错误处理前发布故障。记录与日志故障不改变
+原认证、授权、续期或业务结果，也不重放刷新。受控直接调用须提供 request ID 和 collector。
+[事件边界决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-events.md)
+记录事件选择及提交结果的取舍。
+
+### 凭据使用事件采样规则
+
+`core/credentialusage` 提供独立于数据库和后台循环的有界状态规则。每个实例最多保留
+1024 个凭据 key，每批最多取出 128 个不同 key；待处理、写入中、冷却中以及带未确认故障的
+key 均占用容量。耗尽重试的 key 保留标记，直到较新事件成功完成，避免淘汰后重放旧事件获得
+新预算；该标记也占用容量。只有没有待处理事件、写入快照、耗尽标记和未确认故障的 key 可以
+为新 key 淘汰；
+满载时显式拒绝新 key。事件按真实 UTC 微秒时间合并，较旧或相同的事件不会使时间回退，
+关联字段随选中的事件一起保留。
+
+首次事件立即可调度，成功批次的 dispatch 起同一 key 冷却 20 秒。调度使用单调时间，按
+due 和首次待处理时间选取，合并不会推迟已有 due；写入中到达的新事件不会被该快照的完成
+清除。失败快照最多再尝试两次，重试间隔至少一秒；预算耗尽后只有新的真实事件可建立新候选。
+Seal 拒绝新事件并使待处理事件可强制 flush。固定阶段和错误类别的故障摘要保留安全关联与
+revision，确认旧 revision 不会抹掉期间新增的故障。采样器不保存请求 context 或记录日志。
+
+在调度检查不超过一秒、每个成功批次不超过两秒的条件下，满载首次事件和冷却后事件的调度
+预算分别为 17 秒和 37 秒；这是规则上界，不是生产时延测量。认证入口与应用生命周期接线由各自的组件负责。
+[采样决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-sampling.md)
+记录其取舍。
+
+### 凭据使用记录器
+
+`service/credentialusage` 显式启动后台记录器：一个数据库 worker 从采样器取出到期批次，
+每次写入使用独立工作 context 和两秒 deadline，完成后立即继续处理合格批次，空闲时至多一秒
+检查到期状态。事件的原始时间用于幂等重试；认证与续期操作本身不会重放。Record 仅复制安全的
+事件、来源和不超过 64 字节的请求标识，不持有请求 context，也不等待数据库或日志。同步拒绝
+写入调用者提供的固定容量 request-local collector，由协议边界发布，不在记录器中写协议日志。
+
+独立诊断 consumer 公平遍历 resident 故障摘要，复制 revision 后写结构化日志，再确认该版本；
+日志阻塞不会持有采样锁或阻塞 Record 和数据库 worker。未确认摘要占用采样容量，故障和过载
+可导致样本丢失。正常 drain 封闭接纳并强制待处理事件到期，等待 worker 和 consumer 退出；
+已退出但存在未落库样本时保留原因和数量并报告完成事实。超时不另起工作，后续调用继续等待
+同一工作。writer 返回不证明 pgx 内部异步资源已释放，连接池关闭由 persistence 负责。
+
+生产 App 从同一个 `Persistence.Transactions` 显式构造唯一 recorder，保存在
+`Application.CredentialUsage`，由 `App.Start` 启动。记录器的工作 context 不随 root 取消，
+已准入请求在 HTTP grace 期间仍可接纳事件；强制取消通过 `App.CancelWork` 传递。
+HTTP 与 relay 完成后，`App.Drain` 先确认现有 producer 停止，再 seal 并等待 recorder。
+外层错误的 `Drained()` 只表达整个应用的完成事实，不能由 joined 子错误推导。
+记录失败但整体已退出时，`App.Close` 继续释放依赖并保留原 cause；只有实际全部关闭后，
+返回错误才声明 `Closed()`。Runtime 保存历史错误，依据整体完成事实继续关闭，后续调用不重启
+已完成的工作。原 `persistenceClosed` channel 等待同一次 pool 关闭，超时重试不会另起关闭。
+
+HTTP `RequestLogging` 在 request ID 后建立固定 collector。协议入口可调用
+`httpx.PublishCredentialUsageFaults`，在返回成功身份或进入长处理前发布安全故障；无故障时
+不输出额外日志。发布复制 revision，在 logger 确认成功后才 acknowledge；发布期间新增故障
+仍待确认，日志失败也保留原版本。故障字段位于请求日志的 `credential_usage` 子对象，保留
+subject/user、phase/error_code、source、原始 request/event 时间、固定类别计数及 revision，
+不输出原始错误、请求正文、URL 或秘密。normal、panic 和 abort 出口补发尚未确认版本；
+panic/abort 保持原中止语义，abort 另有安全请求日志。
+[记录器决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-recorder.md)
+记录其取舍。
+
 ## 数据与并发
 
 | 表 | 关键字段与约束 |
@@ -312,7 +424,7 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
 | sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
-| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
+| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at 与 last_used_at；expires_at 为 null 表示永不过期，last_used_at 为 null 表示无已记录使用，撤销删除。 |
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
 | teams | UUID；唯一 nullable personal_user_id；Personal 的 name 为 null，普通 Team 的 name 非 null；正 version 与时间。 |

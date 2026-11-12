@@ -1,5 +1,4 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { cpSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,7 +9,8 @@ import type { Operation } from "../../../src/api/operation.js";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSettlement, type OwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import * as directoryIdentity from "../../../src/platform/directory-identity.js";
+import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
+import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { ResourceOwner, WorkerProject } from "../../../src/commands/worker/types.js";
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
@@ -47,7 +47,37 @@ const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.e
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
 const operation = (): Operation => { const result = createOperation(); operations.push(result); return result; };
 const manager = (root: string, options: Partial<Parameters<typeof createWorkerGitManager>[0]> = {}) => {
-  const result = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), ...options }); managers.push(result); return result;
+  const raw = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), prepareFormat: async (_project, repo, op) => {
+    await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
+      sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+  }, ...options });
+  const prepared = new Map<string, string>();
+  const pathKey = (project: WorkerProject) => path.normalize(project.localPath);
+  const bindingKey = (project: WorkerProject) => JSON.stringify([project.projectId, project.repoUrl]);
+  const prepare = async (project: WorkerProject, op: Operation) => {
+    const key = pathKey(project);
+    prepared.delete(key);
+    const repository = await raw.prepareRepository(project, op);
+    prepared.set(key, bindingKey(project));
+    return repository;
+  };
+  const result = new Proxy(raw, { get(target, property) {
+    const value = Reflect.get(target, property) as unknown;
+    if (typeof value !== "function" || property === "dispose") return value;
+    if (property === "prepareRepository") return prepare;
+    return async (project: WorkerProject, ...args: unknown[]) => {
+      if (prepared.get(pathKey(project)) !== bindingKey(project)) {
+        if (property === "scanWorktrees" || property === "listWorktrees") {
+          const entry = await lstat(project.localPath).catch(() => null);
+          if (entry === null || entry.isSymbolicLink()) return Reflect.apply(value, target, [project, ...args]);
+        }
+        const op = createOperation();
+        try { await prepare(project, op); } finally { op.dispose(); }
+      }
+      return Reflect.apply(value, target, [project, ...args]);
+    };
+  } });
+  managers.push(result); return result;
 };
 // Legacy fault-injection cases control the command result after the bounded test runner settles.
 // Separate lifecycle tests below exercise the actual owned Git port.
@@ -115,150 +145,6 @@ afterEach(async () => {
 });
 
 describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
-  it.skipIf(process.platform !== "darwin")("persists stable ownership before returning a newly created worktree", async () => {
-    const f = await fixture(); const adapter = manager(f.root);
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    const admin = administrativeDirectory(binding.worktreePath);
-    expect(await readdir(admin)).toContain("daynight-identity.json");
-    const bytes = await readFile(path.join(admin, "locked"));
-    const sidecar = JSON.parse(await readFile(path.join(admin, "daynight-identity.json"), "utf8"));
-    expect(sidecar.owner).toEqual(f.owner);
-    await adapter.prepareWorktree(f.project, f.owner, operation());
-    expect(await readFile(path.join(admin, "locked"))).toEqual(bytes);
-  });
-  describe.skipIf(process.platform !== "darwin")("stable APFS worktree recovery", () => {
-    const drift = async (admin: string, sidecarPresent = true) => {
-      const markerPath = path.join(admin, "locked");
-      const marker = JSON.parse((await readFile(markerPath, "utf8")).slice("daynight-worker:".length));
-      for (const role of ["root", "common", "leaf"]) marker[role] = `1:${marker[role].split(":")[1]}`;
-      const bytes = Buffer.from(`daynight-worker:${JSON.stringify(marker)}\n`);
-      await writeFile(markerPath, bytes);
-      if (sidecarPresent) {
-        const target = path.join(admin, "daynight-identity.json");
-        const sidecar = JSON.parse(await readFile(target, "utf8"));
-        sidecar.markerSha256 = createHash("sha256").update(bytes).digest("hex");
-        await writeFile(target, JSON.stringify(sidecar));
-      }
-      return bytes;
-    };
-
-    it("accepts historical device drift without changing merge, index, dirty bytes or the legacy marker", async () => {
-      const f = await fixture(); const adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
-      await writeFile(path.join(binding.worktreePath, "tracked.txt"), "ours\n"); git(binding.worktreePath, ["commit", "-am", "ours"]);
-      await writeFile(path.join(f.repository, "tracked.txt"), "theirs\n"); git(f.repository, ["commit", "-am", "theirs"]);
-      expect(() => git(binding.worktreePath, ["merge", "main", "--no-edit"])).toThrow();
-      await writeFile(path.join(binding.worktreePath, "untracked"), "keep this dirty work\n");
-      const files = [path.join(binding.worktreePath, "tracked.txt"), path.join(binding.worktreePath, "untracked"), ...["index", "MERGE_HEAD", "MERGE_MSG"].map(name => path.join(admin, name))];
-      const before = await Promise.all(files.map(file => readFile(file)));
-      const marker = await drift(admin);
-      const second = manager(f.root);
-      expect(await second.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
-      expect(await second.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
-      expect(await second.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
-      expect(await Promise.all(files.map(file => readFile(file)))).toEqual(before);
-      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
-      expect(git(binding.worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${binding.branch}`);
-      await second.removeWorktree(f.project, f.owner, operation());
-      await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
-    });
-
-    it("bootstraps a strictly verified legacy worktree only during prepare", async () => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json");
-      const marker = await readFile(path.join(admin, "locked")); await rm(sidecar);
-      await adapter.verifyWorktree(f.project, f.owner, operation()); await adapter.listWorktrees(f.project, operation());
-      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
-      await adapter.prepareWorktree(f.project, f.owner, operation());
-      expect(JSON.parse(await readFile(sidecar, "utf8")).owner).toEqual(f.owner);
-      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
-    });
-
-    it("enrolls strictly verified terminal work before archive without deleting or changing it", async () => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json"); await rm(sidecar);
-      await writeFile(path.join(binding.worktreePath, "tracked.txt"), "unarchived dirty bytes\n");
-      const marker = await readFile(path.join(admin, "locked"));
-      git(f.repository, ["config", "extensions.worktreeConfig", "true"]);
-      git(binding.worktreePath, ["config", "--worktree", "remote.origin.url", "https://example.com/changed/origin.git"]);
-      expect(await adapter.enrollWorktreeIdentity(f.project, f.owner, operation())).toEqual(binding);
-      expect(JSON.parse(await readFile(sidecar, "utf8")).owner).toEqual(f.owner);
-      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
-      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("unarchived dirty bytes\n");
-      await rm(sidecar); await drift(admin, false);
-      await expect(adapter.enrollWorktreeIdentity(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
-      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
-    });
-
-    it("refuses drift without historical evidence instead of bootstrapping current facts", async () => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath), sidecar = path.join(admin, "daynight-identity.json"); await rm(sidecar);
-      const marker = await drift(admin, false);
-      await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Historical stable identity evidence is missing");
-      expect(await readFile(path.join(admin, "locked"))).toEqual(marker);
-      await expect(lstat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    });
-
-    it.each(["volume", "file", "marker", "owner", "corrupt", "version"])("retains work after a conflicting %s sidecar", async kind => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath), target = path.join(admin, "daynight-identity.json");
-      const sidecar = JSON.parse(await readFile(target, "utf8"));
-      if (kind === "volume") sidecar.directories.root.volumeUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      if (kind === "file") sidecar.directories.leaf.fileId = "1";
-      if (kind === "marker") sidecar.markerSha256 = "a".repeat(64);
-      if (kind === "owner") sidecar.owner.claimId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      if (kind === "version") sidecar.version = 2;
-      const bytes = kind === "corrupt" ? "{" : JSON.stringify(sidecar); await writeFile(target, bytes);
-      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      expect(await readFile(target, "utf8")).toBe(bytes);
-      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    });
-
-    it("revalidates stable remaining resources after the original leaf disappeared", async () => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath); await drift(admin); await rm(binding.worktreePath, { recursive: true });
-      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
-      await adapter.removeWorktree(f.project, f.owner, operation());
-      await expect(lstat(admin)).rejects.toMatchObject({ code: "ENOENT" });
-    });
-
-    it.each(["duplicate registration", "replacement directory"])("does not adopt a %s even with copied Git pointers", async kind => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath);
-      if (kind === "duplicate registration") cpSync(admin, path.join(path.dirname(admin), "duplicate"), { recursive: true });
-      else { await rename(binding.worktreePath, `${binding.worktreePath}.original`); cpSync(`${binding.worktreePath}.original`, binding.worktreePath, { recursive: true }); }
-      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow(kind === "duplicate registration" ? "ambiguous" : "volume or object identity changed");
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    });
-
-    it("stops deletion if the sidecar inode is replaced even with identical bytes", async () => {
-      const f = await fixture(); let sidecar = ""; let replaced = false;
-      const adapter = manager(f.root, { removeDirectory: async (target, options) => {
-        await rm(target, options);
-        if (!replaced) { replaced = true; const bytes = await readFile(sidecar); await rename(sidecar, `${sidecar}.original`); await writeFile(sidecar, bytes, { mode: 0o600 }); }
-      } });
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); sidecar = path.join(administrativeDirectory(binding.worktreePath), "daynight-identity.json");
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("sidecar changed");
-      expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toMatch(/^gitdir: /);
-      expect(await readFile(sidecar)).toEqual(await readFile(`${sidecar}.original`));
-    });
-    it("stops before the next deletion when only the raw marker line ending changes", async () => {
-      const f = await fixture(); let marker = "", deletions = 0;
-      const adapter = manager(f.root, { removeDirectory: async (target, options) => {
-        await rm(target, options); deletions++;
-        if (deletions === 1) await writeFile(marker, (await readFile(marker, "utf8")).replace(/\n$/, "\r\n"));
-      } });
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      expect(deletions).toBe(1);
-      expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toMatch(/^gitdir: /);
-    });
-  });
   it.each(["files", "reftable"] as const)("keeps %s seed and sibling bytes, refs and objects independent of a case copy", async (refFormat) => {
     const first = await fixture(refFormat); const sibling = await fixture(refFormat); const source = await seed(refFormat);
     const head = git(first.repository, ["rev-parse", "HEAD"]);
@@ -279,20 +165,21 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
     const f = await fixture(); const adapter = manager(f.root);
-    expect(await adapter.findWorktree(f.project, f.owner, operation())).toBeNull();
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
+    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await writeFile(path.join(binding.worktreePath, "tracked.txt"), "retained dirty work\n");
     expect(await adapter.findWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("retained dirty work\n");
-    await expect(adapter.findWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("ownership marker");
+    await expect(adapter.findWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
   });
 
   it("finds cleanup worktrees read-only and rejects an unattributed present path", async () => {
     const f = await fixture(); const adapter = manager(f.root);
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId); await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep");
-    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId); await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep");
+    await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep");
   });
 
@@ -346,45 +233,39 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it("discovers owned registrations independently of unregistered task paths", async () => {
     const f = await fixture(); const adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
     const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
     await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep\n");
-    const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999" };
+    const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", worktreeId: "99999999-9999-4999-8999-999999999999" };
     const healthy = await adapter.prepareWorktree(f.project, healthyOwner, operation());
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthy }]);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep\n");
   });
 
-  it("settles absent resources and empty unregistered reservations from their actual state", async () => {
-    const f = await fixture(); const adapter = manager(f.root);
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
-    await adapter.removeWorktree(f.project, f.owner, operation());
+  it("settles published empty reservations without inferring an absent manifest", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    const repository = await adapter.prepareRepository(f.project, operation());
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await mkdir(target, { recursive: true });
-    expect(await adapter.findWorktree(f.project, f.owner, operation())).toBeNull();
-    expect(await readdir(target)).toEqual([]);
+    createWorktreeManifestStore(repository.commonDirectory).publish({ schemaVersion: 1, ...f.owner, directoryName: f.owner.worktreeId });
+    expect(await adapter.findWorktree(f.project, f.owner, operation())).not.toBeNull();
     await adapter.removeWorktree(f.project, f.owner, operation());
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
-    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(await adapter.findWorktree(f.project, f.owner, operation())).toBeNull();
   });
 
-  it("cleans an empty reservation by task identity while retaining nonempty and registered resources", async () => {
-    const f = await fixture(); const adapter = manager(f.root);
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
-    await adapter.removeEmptyReservation(f.project, ids.taskId, operation());
+  it("cleans only an exact unpublished empty reservation", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     await mkdir(target, { recursive: true });
-    await adapter.removeEmptyReservation(f.project, ids.taskId, operation());
+    await adapter.removeUnpublishedReservation(f.project, f.owner, operation());
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(target); await writeFile(path.join(target, "foreign"), "keep\n");
-    await expect(adapter.removeEmptyReservation(f.project, ids.taskId, operation())).rejects.toThrow("not empty");
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow("not empty");
     expect(await readFile(path.join(target, "foreign"), "utf8")).toBe("keep\n");
-    await rm(target, { recursive: true });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    await expect(adapter.removeEmptyReservation(f.project, ids.taskId, operation())).rejects.toThrow("Git worktree registration");
-    expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
-    await rm(target, { recursive: true });
-    await expect(adapter.removeEmptyReservation(f.project, ids.taskId, operation())).rejects.toThrow("Git worktree registration");
-    expect(await adapter.findWorktree(f.project, f.owner, operation())).toEqual(binding);
   });
 
   it("rejects symlink parents when cleaning a reservation by task identity", async () => {
@@ -397,50 +278,18 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect((await lstat(path.join(outside, ids.taskId))).isDirectory()).toBe(true);
   });
 
-  it("ignores a stripped ownership marker while retaining its registered task resource", async () => {
-    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    await rm(path.join(administrativeDirectory(binding.worktreePath), "locked"));
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
-    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-  });
 
-  describe("ownership marker discovery", () => {
-    const prepare = async () => {
-      const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999" };
-      const healthyBinding = await adapter.prepareWorktree(f.project, healthyOwner, operation());
-      const admin = administrativeDirectory(binding.worktreePath); const locked = path.join(admin, "locked"); const original = await readFile(locked, "utf8");
-      return { f, adapter, binding, healthyOwner, healthyBinding, admin, locked, original };
-    };
-    let prepared: Awaited<ReturnType<typeof prepare>>;
-    beforeEach(async () => { prepared = await prepare(); });
-
-    it("ignores manual markers but rejects damaged managed markers and moved registrations", async () => {
-      const { f, adapter, binding, healthyOwner, healthyBinding, admin, locked, original } = prepared;
-      for (const marker of ["human", "daynight-worker:{", "daynight-worker:{}", `daynight-worker:${JSON.stringify({ ...JSON.parse(original.slice("daynight-worker:".length)), serverOrigin: "https://example.com" })}`]) {
-        await writeFile(locked, `${marker}\n`);
-        if (marker === "human") expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
-        else await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
-        expect(await readFile(locked, "utf8")).toBe(`${marker}\n`);
-        await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
-      }
-      await writeFile(locked, original);
-      await writeFile(path.join(admin, "gitdir"), path.join(f.root, "foreign", ".git"));
-      await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("fixed task path");
-      expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    });
-  });
 
   describe("partial resource scans", () => {
     it.each(["file", "leaf", "component-case"])("fences case-ambiguous missing Git targets: %s", async kind => {
       const f = await fixture(), adapter = manager(f.root);
-      const owner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+      const owner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", worktreeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
       const binding = await adapter.prepareWorktree(f.project, owner, operation());
-      const admin = administrativeDirectory(binding.worktreePath), markerPath = path.join(admin, "locked"), marker = await readFile(markerPath);
+      const admin = administrativeDirectory(binding.worktreePath), markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${owner.worktreeId}.json`), marker = await readFile(markerPath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const pointer = path.join(administrativeDirectory(manual), "gitdir");
-      const target = kind === "component-case" ? path.join(path.dirname(binding.worktreePath), owner.taskId.toUpperCase(), ".git") : path.join(binding.worktreePath, ".GIT");
+      const target = kind === "component-case" ? path.join(path.dirname(binding.worktreePath), owner.worktreeId.toUpperCase(), ".git") : path.join(binding.worktreePath, ".GIT");
       await writeFile(pointer, `${target}\n`);
       git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       if (kind === "file") {
@@ -462,7 +311,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     it.each(["absolute", "relative", "missing-parent"])("retains raw traversal in manual registration pointers: %s", async kind => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const markerPath = path.join(administrativeDirectory(binding.worktreePath), "locked"), marker = await readFile(markerPath);
+      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
       const admin = administrativeDirectory(manual), pointer = path.join(admin, "gitdir");
@@ -470,13 +319,13 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       await mkdir(extra);
       await symlink(extra, alias, process.platform === "win32" ? "junction" : "dir");
       const start = kind === "relative" ? path.relative(admin, alias) : kind === "missing-parent" ? path.join(f.root, "absent") : alias;
-      const raw = `${start}${path.sep}..${path.sep}${f.owner.taskId}${path.sep}.git`;
+      const raw = `${start}${path.sep}..${path.sep}${f.owner.worktreeId}${path.sep}.git`;
       const absoluteRaw = kind === "relative" ? `${admin}${path.sep}${raw}` : raw;
       if (kind === "missing-parent") await expect(realpath(absoluteRaw)).rejects.toMatchObject({ code: "ENOENT" });
       else if (process.platform === "win32") {
         // Win32 collapses the junction/.. before opening the target. Neither
         // that missing lexical target nor the junction proves safe ownership.
-        expect(path.resolve(absoluteRaw)).toBe(path.join(f.root, f.owner.taskId, ".git"));
+        expect(path.resolve(absoluteRaw)).toBe(path.join(f.root, f.owner.worktreeId, ".git"));
         await expect(realpath(absoluteRaw)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(realpath(path.resolve(absoluteRaw))).rejects.toMatchObject({ code: "ENOENT" });
       } else {
@@ -502,11 +351,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
       const admin = administrativeDirectory(binding.worktreePath), foreign = path.join(f.root, "foreign");
       git(f.root, ["clone", "--no-hardlinks", f.repository, foreign]);
-      const foreignLeaf = path.join(foreign, ".worktrees", "daynight", f.owner.taskId);
+      const foreignLeaf = path.join(foreign, ".worktrees", "daynight", f.owner.worktreeId);
       git(foreign, ["worktree", "add", "--detach", foreignLeaf, "HEAD"]);
       const extra = path.join(foreign, "extra"), alias = path.join(f.repository, "alias");
       await mkdir(extra); await symlink(extra, alias, process.platform === "win32" ? "junction" : "dir");
-      const suffix = kind === "common" ? ".git" : kind === "forward" ? `.worktrees/daynight/${f.owner.taskId}/.git` : `.git/worktrees/${path.basename(admin)}`;
+      const suffix = kind === "common" ? ".git" : kind === "forward" ? `.worktrees/daynight/${f.owner.worktreeId}/.git` : `.git/worktrees/${path.basename(admin)}`;
       const raw = `${alias}/../${suffix}`;
       const expected = kind === "common" ? path.join(f.repository, ".git") : kind === "forward" ? path.join(binding.worktreePath, ".git") : admin;
       expect(path.resolve(raw)).toBe(path.resolve(expected));
@@ -552,7 +401,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     it.each(["case-alias", "hardlink"])("reconciles file-object registration aliases: %s", async kind => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const markerPath = path.join(administrativeDirectory(binding.worktreePath), "locked"), marker = await readFile(markerPath);
+      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const original = path.join(binding.worktreePath, ".git");
       const target = kind === "case-alias" ? path.join(binding.worktreePath, ".GIT") : path.join(f.root, "linked.git");
       if (kind === "hardlink") await link(original, target);
@@ -594,21 +443,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it("quarantines malformed identity bytes after registration ownership is proven", async () => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const sidecar = path.join(administrativeDirectory(binding.worktreePath), "daynight-identity.json");
-      await writeFile(sidecar, "{", { mode: 0o600 });
-      const scan = await adapter.scanWorktrees(f.project, operation());
-      expect(scan.unknown).toEqual([]);
-      expect(scan.quarantined).toEqual([{ owner: f.owner, error: expect.any(Error) }]);
-      expect(await readFile(sidecar, "utf8")).toBe("{");
-    });
-
     it.each(["duplicate", "duplicate-missing", "duplicate-final-symlink", "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const markerPath = path.join(administrativeDirectory(binding.worktreePath), "locked"), marker = await readFile(markerPath);
+      const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
@@ -643,39 +481,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       if (kind !== "unrelated-missing") expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
     }, 20000);
 
-    it.each(["ERRNO_5", "EIO", "wrapped", "uncoded"])("keeps directory identity observation failure %s unknown", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
-      const sibling = await adapter.prepareWorktree(f.project, siblingOwner, operation());
-      const native = Object.assign(new Error("fgetattrlist failed (errno 5)."), { code: kind === "EIO" ? "EIO" : "ERRNO_5" });
-      let error = kind === "wrapped" ? new Error("Directory observation failed.", { cause: native }) : native;
-      if (kind === "uncoded") {
-        // Execute the native-response parser; only the query bytes are controlled.
-        try { directoryIdentity.readMacDirectoryIdentity(-1, () => Buffer.alloc(8)); }
-        catch (cause) { error = cause as Error; }
-        expect(error.message).toBe("Invalid directory attribute response length.");
-      }
-      const open = directoryIdentity.openDirectoryIdentity;
-      const fault = vi.spyOn(directoryIdentity, "openDirectoryIdentity").mockImplementation(async target => {
-        if (target === binding.worktreePath) throw error;
-        return open(target);
-      });
-      try {
-        const scan = await adapter.scanWorktrees(f.project, operation());
-        expect(scan.unknown).toEqual([{ error }]);
-        expect(scan.quarantined).toEqual([]);
-        expect(scan.validated).toEqual([{ owner: siblingOwner, binding: sibling }]);
-        await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow(error.message);
-        expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-      } finally { fault.mockRestore(); }
-      expect(await adapter.listWorktrees(f.project, operation())).toHaveLength(2);
-    }, 20000);
-
     it("quarantines a known registration without losing or invalidating its healthy sibling", async () => {
       const f = await fixture(), adapter = manager(f.root);
       const broken = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const owner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
+      const owner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
       const healthy = await adapter.prepareWorktree(f.project, owner, operation());
       git(broken.worktreePath, ["checkout", "-b", "changed-branch"]);
       const result = await adapter.scanWorktrees(f.project, operation());
@@ -685,7 +494,6 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ code: "branch_mismatch" }) }]);
       await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("original task branch");
       await expect(adapter.verifyWorktree(f.project, owner, operation())).resolves.toEqual(healthy);
-      await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow();
       git(broken.worktreePath, ["checkout", broken.branch]);
       expect((await adapter.scanWorktrees(f.project, operation())).quarantined).toEqual([]);
     });
@@ -694,7 +502,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
       const admin = administrativeDirectory(binding.worktreePath);
-      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
+      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
       const sibling = await adapter.prepareWorktree(f.project, siblingOwner, operation());
       if (kind === "marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{");
       if (kind === "unknown-marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{}");
@@ -718,24 +526,24 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
       const admin = administrativeDirectory(binding.worktreePath), retained = path.join(f.root, "retained-admin");
       await rename(admin, retained);
-      const marker = await readFile(path.join(retained, "locked"), "utf8");
+      const marker = await readFile(path.join(retained, "gitdir"), "utf8");
       if (kind === "symlink") await symlink(retained, admin, "dir");
       else await writeFile(admin, "unreadable registration");
       const scan = await adapter.scanWorktrees(f.project, operation());
       expect(scan.unknown.length).toBeGreaterThan(0);
       expect(scan.validated).toEqual([]); expect(scan.quarantined).toEqual([]);
       await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow();
-      expect(await readFile(path.join(retained, "locked"), "utf8")).toBe(marker);
+      expect(await readFile(path.join(retained, "gitdir"), "utf8")).toBe(marker);
     });
 
     it.each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888" };
+      const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
       await adapter.prepareWorktree(f.project, siblingOwner, operation());
       const admin = administrativeDirectory(binding.worktreePath), pointer = path.join(admin, "gitdir");
       if (marker === "manual") await writeFile(path.join(admin, "locked"), "human");
-      else await rm(path.join(admin, "locked"));
+      else await rm(path.join(admin, "locked"), { force: true });
       const original = await readFile(pointer, "utf8"), retained = path.join(f.root, "retained-gitdir");
       await writeFile(retained, original); await rm(pointer); await symlink(retained, pointer);
       const scan = await adapter.scanWorktrees(f.project, operation());
@@ -750,6 +558,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
     it("does not inventory ordinary unregistered paths or manual worktrees", async () => {
       const f = await fixture(), adapter = manager(f.root);
+      await adapter.prepareRepository(f.project, operation());
       await mkdir(path.join(f.repository, ".worktrees", "daynight", f.owner.taskId), { recursive: true });
       await writeFile(path.join(f.repository, ".worktrees", "daynight", f.owner.taskId, "keep"), "unowned");
       git(f.repository, ["worktree", "add", "--detach", path.join(f.root, "manual"), "HEAD"]);
@@ -844,14 +653,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(destination, "retained"), "utf8")).toBe("user data");
   });
 
-  it("creates fixed task branch/path with native ownership and preserves the reserved directory inode", async () => {
-    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    expect(binding.worktreePath).toBe(path.join(f.repository, ".worktrees", "daynight", ids.taskId)); expect(binding.branch).toBe(`daynight/${ids.taskId}`);
+  it("creates an unlocked worktree at the worktreeId path and task branch", async () => {
+    const f = await fixture(), adapter = manager(f.root), binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    expect(binding.worktreePath).toBe(path.join(f.repository, ".worktrees", "daynight", ids.worktreeId));
+    expect(binding.branch).toBe(`daynight/${ids.taskId}`);
     expect(git(binding.worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${binding.branch}`);
-    const owner = JSON.parse((await readFile(path.join(administrativeDirectory(binding.worktreePath), "locked"), "utf8")).slice("daynight-worker:".length));
-    const entry = await lstat(binding.worktreePath, { bigint: true });
-    expect(owner).toMatchObject({ projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId, leaf: `${entry.dev}:${entry.ino}` });
-    expect(owner).not.toHaveProperty("serverOrigin");
+    const manifest = createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId);
+    expect(manifest).toEqual({ schemaVersion: 1, ...f.owner, directoryName: ids.worktreeId });
+    await expect(lstat(path.join(administrativeDirectory(binding.worktreePath), "locked"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
   });
 
@@ -1002,29 +811,24 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
   });
 
-  it("rejects ownership markers with unexpected fields without changing work", async () => {
-    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    const marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
-    const original = JSON.parse((await readFile(marker, "utf8")).slice("daynight-worker:".length));
-    await writeFile(marker, `daynight-worker:${JSON.stringify({ unexpected: "value", ...original })}\n`);
-    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("ownership marker is invalid");
-    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-  });
+
 
   it("recovers an add whose successful result was lost without resetting dirty work", async () => {
     const f = await fixture(); const lost = new Error("lost add response"); let added = false;
     const first = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("add") && args.includes("worktree")) { added = true; throw lost; } return result; }) });
     await expect(first.prepareWorktree(f.project, f.owner, operation())).rejects.toBe(lost); expect(added).toBe(true);
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId); await writeFile(path.join(target, "tracked.txt"), "changed\n"); await writeFile(path.join(target, "untracked"), "kept\n");
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId); await writeFile(path.join(target, "tracked.txt"), "changed\n"); await writeFile(path.join(target, "untracked"), "kept\n");
     const second = manager(f.root); const binding = await second.prepareWorktree(f.project, f.owner, operation());
     expect(await second.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(target, "tracked.txt"), "utf8")).toBe("changed\n"); expect(await readFile(path.join(target, "untracked"), "utf8")).toBe("kept\n");
   });
 
-  it("never recreates a missing original worktree or repository", async () => {
+  it("restores a missing original worktree but never recreates its repository", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await rm(binding.worktreePath, { recursive: true });
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated"); await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("cannot be recreated");
+    expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+    expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await rename(f.repository, path.join(f.root, "old repository"));
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("original repository");
   });
@@ -1032,11 +836,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it("rejects foreign claims, nonempty unmarked reservations and mismatched projects", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    await expect(adapter.prepareWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("does not match this claim");
-    await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("does not match this claim");
+    await expect(adapter.prepareWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("already checked out");
+    await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
     await expect(adapter.verifyWorktree({ ...f.project, projectId: "88888888-8888-4888-8888-888888888888" }, f.owner, operation())).rejects.toThrow("does not belong to this project");
     await adapter.removeWorktree(f.project, f.owner, operation()); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "keep\n");
-    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching Git registration");
     expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("keep\n");
   }, 30_000);
 
@@ -1046,17 +850,17 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const branch = `daynight/${f.owner.taskId}`;
     const previousHead = git(f.repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "retained task branch"]);
     git(f.repository, ["branch", branch, previousHead]);
-    const target = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
+    const owner = kind === "new claim" ? changedClaim(f.owner) : f.owner;
+    const target = path.join(f.repository, ".worktrees", "daynight", owner.worktreeId);
     await mkdir(target, { recursive: true });
     expect(await readdir(target)).toEqual([]);
     expect(worktreePaths(f.repository)).not.toContain(path.normalize(target));
-    const owner = kind === "new claim" ? changedClaim(f.owner) : f.owner;
     const binding = await reservation(adapter.prepareWorktree(f.project, owner, operation()));
     expect(binding.worktreePath).toBe(target);
     expect(await reservation(adapter.verifyWorktree(f.project, owner, operation()))).toEqual(binding);
     expect(git(f.repository, ["rev-parse", binding.branch])).toBe(previousHead);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    if (kind === "new claim") await expect(reservation(adapter.verifyWorktree(f.project, f.owner, operation()))).rejects.toThrow("does not match this claim");
+    if (kind === "new claim") await expect(reservation(adapter.verifyWorktree(f.project, f.owner, operation()))).rejects.toThrow("cannot be recreated");
   });
 
   it("recovers an interrupted reservation before Git created its branch or registration", async () => {
@@ -1066,12 +870,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       return runRepositoryGit(cwd, args, op, options);
     }) });
     await expect(first.prepareWorktree(f.project, f.owner, operation())).rejects.toBe(failed);
-    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
     expect(await readdir(target)).toEqual([]);
-    expect(await first.listWorktrees(f.project, operation())).toEqual([]);
-    const restarted = manager(f.root); const next = changedClaim(f.owner);
-    const binding = await restarted.prepareWorktree(f.project, next, operation());
-    expect(await restarted.verifyWorktree(f.project, next, operation())).toEqual(binding);
+    const restarted = manager(f.root);
+    const binding = await restarted.prepareWorktree(f.project, f.owner, operation());
+    expect(await restarted.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(target, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
@@ -1095,25 +898,13 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
     const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
-    expect(await readFile(path.join(admin, "locked"), "utf8")).toContain(ids.claimId);
+    expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
     expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
-  it("retains content and the Git pointer when the ownership marker changes during removal", async () => {
-    const f = await fixture(); let marker = "";
-    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
-      await rm(target, options); await writeFile(marker, "human-owned\n");
-    } });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
-    const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("changed during cleanup");
-    expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
-    expect(await readdir(binding.worktreePath)).toHaveLength(2);
-    expect(await readFile(marker, "utf8")).toBe("human-owned\n");
-  });
+
 
   it("keeps cancellation joined and rejects overlapping cleanup until the original removal settles", async () => {
     const f = await fixture();
@@ -1156,7 +947,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     try {
       // A real unprivileged filesystem failure distinguishes this regression from a mocked rm error.
       await expect(rm(cache, { recursive: true })).rejects.toMatchObject({ code: "EACCES" });
-      await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("does not match this claim");
+      await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
       expect((await lstat(nested)).mode & 0o777).toBe(0o555);
       await adapter.removeWorktree(f.project, f.owner, operation());
       await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -1188,7 +979,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(interrupted); await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive inode reuse\n");
     const second = manager(f.root); await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer is missing");
-    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(await readFile(path.join(admin, "locked"), "utf8")).toContain(ids.claimId);
+    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
     await rm(binding.worktreePath, { recursive: true }); await second.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
@@ -1196,7 +987,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     for (const name of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, name), { recursive: true });
     const restarted = manager(f.root);
-    expect(await restarted.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding }]);
+    expect((await restarted.scanWorktrees(f.project, operation())).quarantined).toHaveLength(1);
     await restarted.removeWorktree(f.project, f.owner, operation());
     await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
@@ -1207,8 +998,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => { const result = await runRepositoryGit(cwd, args, op, options); if (args.includes("worktree") && args.includes("remove")) throw lost; return result; }) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); await adapter.removeWorktree(f.project, f.owner, operation());
     const second = manager(f.root); await second.removeWorktree(f.project, f.owner, operation());
-    const next = changedClaim(f.owner); const fresh = await second.prepareWorktree(f.project, next, operation()); expect(fresh.worktreePath).toBe(binding.worktreePath);
-    await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("does not match this claim"); expect(await readFile(path.join(fresh.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    const next = changedClaim(f.owner); const fresh = await second.prepareWorktree(f.project, next, operation()); expect(fresh.worktreePath).not.toBe(binding.worktreePath);
+    await second.removeWorktree(f.project, f.owner, operation()); expect(await readFile(path.join(fresh.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   }, 30_000);
 
   it("preserves retained branch commits for a fresh claim without reset", async () => {
@@ -1256,16 +1047,16 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" }); expect(await readFile(path.join(other, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
-  it("retains worktrees with missing markers or changed Git pointers and branch", async () => {
-    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    const admin = administrativeDirectory(binding.worktreePath); const locked = path.join(admin, "locked"); const original = await readFile(locked, "utf8");
-    await rm(locked); await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("no ownership marker"); await writeFile(locked, original);
-    // Git creates hidden .git files on Windows, where reopening them with 'w' fails:
-    // https://nodejs.org/docs/latest-v24.x/api/fs.html#file-system-flags
-    const pointer = path.join(binding.worktreePath, ".git"); const originalPointer = await readFile(pointer, "utf8");
-    await rm(pointer); await writeFile(pointer, `gitdir: ${path.join(f.repository, ".git")}\n`); await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer has changed"); await rm(pointer); await writeFile(pointer, originalPointer);
+  it("retains changed Git pointers and permits terminal cleanup after a branch change", async () => {
+    const f = await fixture(), adapter = manager(f.root), binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const pointer = path.join(binding.worktreePath, ".git"), original = await readFile(pointer, "utf8");
+    await rm(pointer); await writeFile(pointer, `gitdir: ${path.join(f.repository, ".git")}\n`);
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git pointer has changed");
+    await rm(pointer); await writeFile(pointer, original);
     git(binding.worktreePath, ["checkout", "-b", "other-task"]);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch");
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(git(f.repository, ["show-ref", "--verify", "refs/heads/other-task"])).toContain("other-task");
   });
 
   it("finishes a missing leaf's owned registration without globally pruning unrelated worktrees", async () => {
@@ -1414,11 +1205,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await rm(binding.worktreePath, { recursive: true }); await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
-  it("refuses foreign and detached reftable HEAD without deleting the owned leaf", async () => {
-    const f = await fixture("reftable"); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    git(binding.worktreePath, ["checkout", "-b", "foreign-reftable-branch"]);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("original task branch");
+  it("retains execution checks and permits terminal cleanup for detached reftable HEAD", async () => {
+    const f = await fixture("reftable"), adapter = manager(f.root), binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     git(binding.worktreePath, ["checkout", "--detach", "HEAD"]);
-    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("Git command failed"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

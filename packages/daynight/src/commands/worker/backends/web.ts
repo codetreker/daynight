@@ -8,10 +8,11 @@ import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTi
 import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../controller/launch-tool-selection.js";
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
-import { readControllerOperation, readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
-import { selectedWorktreePath, WorktreePreconditionError } from "../worktrees.js";
+import { WorktreePreconditionError, WorktreeRestoreRequiredError } from "../worktrees.js";
+import { sameWorktreeLocation } from "../worktrees/paths.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
 import type { ClaimIdentity } from "../types.js";
@@ -205,9 +206,60 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
       phase(task, { kind: "execution", phase: "worktree-preparation" });
       const preparing = task.resources.worktree === null;
-      try { monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree?.worktreePath ?? selectedWorktreePath(task.repositoryPath, task.taskId)); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
-      if (preparing) task = options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
-      else { await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal); task = current(task); }
+      const original = task.resources.worktree;
+      if (preparing && task.webExecution !== null && (task.webExecution.launchSubmission !== "not-submitted" || task.webExecution.controllerProcess !== null || task.webExecution.nativeProcesses.length > 0)) throw new Error("An already started Web execution has no original worktree binding.");
+      let allowRestore = task.webExecution === null;
+      const admitRestore = async (): Promise<void> => {
+        const execution = task.webExecution;
+        let ticket: ControllerLaunchTicket | undefined;
+        if (execution !== null) {
+          try { ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); }
+          catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT") || execution.ticketPath !== null || execution.launchSubmission !== "not-submitted") throw error;
+          }
+          if (ticket !== undefined && original === null) throw new Error("The original Web ticket has no worktree binding.");
+          if (ticket !== undefined && (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration
+            || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.controllerId !== execution.controllerId || ticket.claimId !== task.claimId
+            || ticket.projectId !== task.projectId || ticket.taskId !== task.taskId || ticket.workerId !== task.workerId || ticket.worktreeId !== task.worktreeId
+            || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin || ticket.provider !== task.configuration?.agent
+            || ticket.cwd !== original!.worktreePath || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
+            || execution.nativeHome !== null && ticket.nativeHome !== execution.nativeHome
+            || BigInt(execution.executionGeneration) > 1n && ticket.resumeNativeSessionId !== task.resources.nativeSession?.sessionId
+            || task.configuration === null || !matchesLaunchConfiguration(ticket.configuration, task.configuration))) throw new Error("The original Web ticket conflicts with its worktree binding.");
+        }
+        const observation = await workerOperation(operation => observeExecutionStop(task, operation), signal);
+        if (observation.kind !== "not-started" && observation.kind !== "stopped") throw new Error("The original Web processes have not been confirmed stopped; the worktree cannot be restored.", observation.kind === "unknown" ? { cause: observation.error } : undefined);
+        if (execution !== null && execution.launchSubmission !== "not-submitted") {
+          if (ticket === undefined || execution.controllerProcess === null) throw new Error("The original Web launch identity is unavailable; the worktree cannot be restored.");
+          const saved = readCurrentControllerSnapshot(journal(task), ticket);
+          if (!matchesGeneration(task, saved) || saved.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
+            || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses) || task.resources.nativeSession !== null && saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new Error("The original Web process evidence conflicts; the worktree cannot be restored.");
+          if (!await confirmWithLease(ticket.launchId, saved.controllerProcess, saved.nativeProcesses, undefined, saved, ticket)) throw new Error("The original Web process tree remains active; the worktree cannot be restored.");
+          signal.throwIfAborted();
+          if (JSON.stringify(readCurrentControllerSnapshot(journal(task), ticket)) !== JSON.stringify(saved)) throw new Error("The original Web journal changed during worktree restore verification.");
+        }
+        allowRestore = true;
+      };
+      if (preparing && task.webExecution !== null) await admitRestore();
+      if (original !== null && task.webExecution !== null) {
+        let missing = false;
+        try { await lstat(original.worktreePath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; missing = true; }
+        if (missing) await admitRestore();
+      }
+      const prepare = () => workerOperation(operation => options.git.prepareWorktree(project, task, operation, original?.worktreePath, original !== null || task.webExecution?.launchSubmission !== undefined && task.webExecution.launchSubmission !== "not-submitted", original ?? undefined, allowRestore), signal, 180_000);
+      let verified;
+      try { verified = await prepare(); }
+      catch (error) {
+        if (!(error instanceof WorktreeRestoreRequiredError) || allowRestore) throw error;
+        await admitRestore();
+        verified = await prepare();
+      }
+      if (preparing) task = options.store.bindWorktree(task, verified, options.now());
+      else {
+        if (original === null || !await sameWorktreeLocation(verified.worktreePath, original.worktreePath) || !await sameWorktreeLocation(verified.repositoryPath, original.repositoryPath) || !await sameWorktreeLocation(verified.commonDirectory, original.commonDirectory) || verified.branch !== original.branch) throw new Error("The original Web worktree binding differs from its manifest.");
+        task = current(task);
+      }
+      try { if (task.resources.worktree !== null) monitoring.observeWorktree?.(task, task.repositoryPath, task.resources.worktree.worktreePath); } catch { /* Optional monitoring cannot alter worktree preparation. */ }
       success(task, { kind: "execution", phase: "worktree-preparation" });
       if (preparing) phase(task, { kind: "execution", phase: "worktree-preparation" }, true);
       return task;
@@ -672,11 +724,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         signal.throwIfAborted();
         if (!launched) { await notifyStopped(); success(task, { kind: "cleanup", phase: "agent-stop" }); }
-        if (kind === "shutdown") return { task, complete: true };
+        if (kind === "shutdown" || task.status === "done") return { task, complete: true };
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
-        const enroll = (options.git as WorkerGitManager & { enrollWorktreeIdentity?: WorkerGitManager["findWorktree"] }).enrollWorktreeIdentity;
-        stage = "observation";
-        if (enroll) await cleanupOperation(operation => enroll.call(options.git, project, task, operation), signal);
         if (launched) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
@@ -687,8 +736,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);
-        await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-        if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, task, operation), signal);
+        if (binding === null) {
+          if (launched || task.resources.worktree !== null) throw new Error("The original Web execution has no worktree manifest.");
+          await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, task, operation), signal);
+        } else {
+          if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
+          if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
+          await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
+          if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        }
         success(task, { kind: "cleanup", phase: "worktree-removal" });
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
         waiting.delete(task.claimId); rejected.delete(task.claimId);

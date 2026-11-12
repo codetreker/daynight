@@ -55,14 +55,16 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	if err = ValidateDelete(t.Context(), &mutationDAO{}, current, true); err == nil {
 		t.Fatal("deleted active claim")
 	}
-	values, err := ReleaseCandidate(current, worker)
+	values, err := ReleaseCandidate(current)
 	if err != nil || values.Status != model.TaskTodo {
 		t.Fatal(values, err)
 	}
 	released := current
 	released.Status = model.TaskTodo
 	released.Properties = values.Properties
-	withdrawn, err := WithdrawCandidate(released)
+	_, err = WithdrawableWorker(released, worker.ClaimID)
+	faultCode(t, err, "claim_conflict")
+	withdrawn, err := WithdrawCandidate(current)
 	if err != nil || withdrawn.AllowAgents || withdrawn.Status != model.TaskTodo {
 		t.Fatal(withdrawn, err)
 	}
@@ -128,37 +130,54 @@ func TestStatusClaimOwnershipAndTransitions(t *testing.T) {
 	if err != nil || !changed || values.Status != model.TaskDone {
 		t.Fatal(values, changed, err)
 	}
-	released := *worker
-	released.State = model.WorkerReleased
-	_, _, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskTodo}, &released)
-	faultCode(t, err, "invalid_transition")
+	_, changed, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskTodo}, nil)
+	if err != nil || !changed {
+		t.Fatal(changed, err)
+	}
 	current.BlockedBy = []string{"pre"}
 	_, _, err = StatusCandidate(t.Context(), dao, owner, current, SetTaskStatus{Status: model.TaskDone}, nil)
 	faultCode(t, err, "dependency_unsatisfied")
 }
 
-func TestCancelledReleasedHistoryCannotRestoreExecution(t *testing.T) {
+func TestSameStatusCompletionChecksClaim(t *testing.T) {
+	current, worker := activeFixture(t)
+	current.Status = model.TaskDone
+	owner := model.Principal{UserID: worker.UserID}
+	input := SetTaskStatus{Status: model.TaskDone, ClaimID: &worker.ClaimID}
+
+	// An ordinary completion after release has no worker to authorize the old claim.
+	_, _, err := StatusCandidate(t.Context(), nil, owner, current, input, nil)
+	faultCode(t, err, "claim_conflict")
+	completed := *worker
+	completed.State = model.WorkerCompleted
+	_, changed, err := StatusCandidate(t.Context(), nil, owner, current, input, &completed)
+	if err != nil || changed {
+		t.Fatalf("matching completed claim: changed=%v err=%v", changed, err)
+	}
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: "other"}, current, input, &completed)
+	faultCode(t, err, "forbidden")
+	other := completed
+	other.ClaimID = "other"
+	_, _, err = StatusCandidate(t.Context(), nil, owner, current, input, &other)
+	faultCode(t, err, "claim_conflict")
+}
+
+func TestCancelledTaskCannotRestoreExecution(t *testing.T) {
 	current, worker := activeFixture(t)
 	owner := model.Principal{UserID: worker.UserID}
 	_, _, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, worker)
 	faultCode(t, err, "invalid_transition")
-	released := *worker
-	released.State = model.WorkerReleased
 	current.Status = model.TaskTodo
-	current.Properties, err = properties.WithWorker(current.Properties, &released)
+	current.Properties, err = properties.WithWorker(current.Properties, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, changed, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, &released)
+	values, changed, err := StatusCandidate(t.Context(), nil, owner, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
 	if err != nil || !changed || values.Status != model.TaskCancelled {
 		t.Fatal(values, changed, err)
 	}
 	current.Status, current.Properties = values.Status, values.Properties
-	retained, err := taskproperty.Worker(current.Properties)
-	if err != nil || retained.State != model.WorkerReleased || retained.ClaimID != released.ClaimID {
-		t.Fatal(retained, err)
-	}
-	_, err = WithdrawableWorker(current, released.ClaimID)
+	_, err = WithdrawableWorker(current, worker.ClaimID)
 	faultCode(t, err, "invalid_transition")
 	_, err = WithdrawCandidate(current)
 	faultCode(t, err, "invalid_transition")

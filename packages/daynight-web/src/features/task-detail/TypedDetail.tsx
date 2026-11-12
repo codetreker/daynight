@@ -20,7 +20,8 @@ import { ResourceChildDraftHost } from './TaskDraftNavigation';
 
 type Props = TaskDetailSurfaceProps & {
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
-  readonly initialWitness?: string;
+  readonly onNavigateExternalChain?: (id: string, trigger: HTMLElement) => void;
+  readonly goalGraphError?: unknown;
   readonly goalChildren?: GoalChildren;
   readonly onGoalChildrenChange?: (next: GoalChildren, options?: { readonly replace?: boolean }) => void;
   readonly requireParentMatch?: boolean;
@@ -101,16 +102,15 @@ const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeo
     else props.onGoalChildrenChange?.({ ...props.goalChildren, task: next }, { replace });
   };
   useLayoutEffect(() => { if (props.fullscreen.active) props.fullscreen.onChange(false); }, []);
-  const closeChain = useRef<(() => void) | null>(null);
   const [retired, setRetired] = useState(false);
   const refusal = useRef<unknown>(null);
   if (isThreadScopeLoss(props.detailError)) refusal.current = props.detailError;
   const scopeLost = retired || isThreadScopeLoss(props.detailError);
   useLayoutEffect(() => {
-    if (isThreadScopeLoss(props.detailError)) { setRetired(true); setLocalNested(null); closeChain.current?.(); }
+    if (isThreadScopeLoss(props.detailError)) { setRetired(true); setLocalNested(null); }
     else if (retired && props.detailError === null && !props.detailRefreshing && props.detailFresh) { refusal.current = null; setRetired(false); }
   }, [props.detailError, props.detailRefreshing, props.detailFresh, retired]);
-  return <GoalDetailSurface {...props} closeChain={closeChain} resourceUnavailable={scopeLost} detailError={props.detailError ?? (scopeLost ? refusal.current : null)} detail={props.detail} snapshot={props.snapshot ?? null}
+  return <GoalDetailSurface {...props} graphError={props.goalGraphError} resourceUnavailable={scopeLost} detailError={props.detailError ?? (scopeLost ? refusal.current : null)} detail={props.detail} snapshot={props.snapshot ?? null}
     onSelectTask={(id, trigger) => { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); }}
     renderNested={(owner: RefObject<HTMLElement | null>) => nested === null || admittedNested.current !== nested.id ? null : <ResourceChildDraftHost><TaskDetailDialog projectId={props.projectId} taskId={nested.id} parentGoalId={props.taskId} snapshot={props.snapshot ?? null}
       observation={childObservation.current!.input}
@@ -118,9 +118,11 @@ const QualifiedGoal = (props: Props & { readonly resourceState: ReturnType<typeo
       {...(props.goalChildren === undefined ? {} : { navigation: nested.navigation, onNavigate: (navigation: ResourceReading['navigation']) => setNested({ ...nested, navigation }) })}
       {...(props.onNavigateParent === undefined ? {} : { onNavigateParent: props.onNavigateParent })}
       onClose={() => setNested(null, true)} onRestoreFocus={() => { const trigger = nestedTrigger.current; if (trigger?.isConnected && !trigger.closest('[hidden], [inert]')) trigger.focus({ preventScroll: true }); else { const fallback = owner.current?.querySelector<HTMLElement>('.task-chain-close, .task-detail-title') ?? document.querySelector<HTMLElement>('.goal-detail-surface .task-detail-title'); if (fallback !== null && fallback !== undefined && !fallback.closest('[hidden], [inert]')) fallback.focus({ preventScroll: true }); } }}
-      onSelectTask={(id) => { const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : nestedTrigger.current ?? owner.current ?? document.body; if (props.onNavigateExternalTask !== undefined && props.snapshot?.index.nodes.get(id)?.parentId !== props.taskId) { flushSync(() => { if (props.goalChildren === undefined) setLocalNested(null); closeChain.current?.(); }); props.onNavigateExternalTask(id, trigger); } else { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); } }} onRefreshGraph={props.onRefreshGraph}
-      {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })} /></ResourceChildDraftHost>}
-    {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })} />;
+      onSelectTask={(id) => { const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : nestedTrigger.current ?? owner.current ?? document.body; if (props.onNavigateExternalTask !== undefined && props.snapshot?.index.nodes.get(id)?.parentId !== props.taskId) { flushSync(() => { if (props.goalChildren === undefined) setLocalNested(null); }); props.onNavigateExternalTask(id, trigger); } else { nestedTrigger.current = trigger; setNested({ id, navigation: { tab: 'overview', path: null } }); } }} onRefreshGraph={props.onRefreshGraph}
+      {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })}
+      {...(props.onNavigateExternalChain === undefined ? {} : { onNavigateExternalChain: props.onNavigateExternalChain })} /></ResourceChildDraftHost>}
+    {...(props.onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask: props.onNavigateExternalTask })}
+      {...(props.onNavigateExternalChain === undefined ? {} : { onNavigateExternalChain: props.onNavigateExternalChain })} />;
 };
 
 const TypedDetailLoading = (props: Props & { readonly task: ReturnType<typeof useTaskDetail>; readonly restoreOnUnmount: () => boolean }) => {

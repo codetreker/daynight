@@ -97,6 +97,21 @@ it("refuses an unversioned journal without creating or migrating it", async () =
   expect(read.pragma("user_version", { simple: true })).toBe(0); read.close();
 }, 30_000);
 
+it("does not migrate the preceding v8 journal when classifying an exited bootstrap", async () => {
+  const f = await fixture();
+  const store = openControllerLifecycleStore(f.journalFile, f.ticket, { onMigration: () => {} });
+  store.patchSnapshot({ controllerProcess: f.proof }); store.close();
+  const old = new Database(f.journalFile);
+  old.exec("DROP TABLE input_message_origins"); old.pragma("user_version=8");
+  const before = old.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get(); old.close();
+  await stopControllerBootstrap(f.proof, Date.now() + 15_000);
+  await expect(f.observe()).rejects.toThrow(/current format/);
+  const after = new Database(f.journalFile, { readonly: true });
+  expect(after.pragma("user_version", { simple: true })).toBe(8);
+  expect(after.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get()).toEqual(before);
+  expect(after.prepare("SELECT name FROM sqlite_schema WHERE name='input_message_origins'").get()).toBeUndefined(); after.close();
+}, 30_000);
+
 
 it("returns observed only from the original authenticated IPC response", async () => {
   const f = await fixture();

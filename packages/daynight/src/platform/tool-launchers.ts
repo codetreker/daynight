@@ -7,7 +7,7 @@ import { openRegularToolFile, withinOperation } from "./tool-io.js";
 
 export type LauncherHost = { platform: NodeJS.Platform; arch: string; nonGlibcLinux: boolean };
 export type LauncherArtifact = { role: "entry" | "shim" | "runtime" | "manifest"; path: string; parsedSha256?: string; parsedPrefix?: { bytes: number; sha256: string } };
-export type IdentifiedToolLauncher = { executablePath: string; interpreterRequired: boolean; artifacts: LauncherArtifact[]; nodeArgs?: string[] };
+export type IdentifiedToolLauncher = { executablePath: string; interpreterRequired: boolean; artifacts: LauncherArtifact[] };
 
 export class LauncherError extends Error {
   constructor(readonly code: "unsupported_launcher" | "incompatible_runtime" | "not_executable", message: string, options?: ErrorOptions) {
@@ -67,16 +67,6 @@ const owningPackage = async (entry: string, operation: Operation): Promise<Packa
 
 const inside = (root: string, file: string) => { const relative = path.relative(root, file); return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); };
 
-const matchesBin = async (pkg: Package, entry: string, tool: Tool, operation: Operation) => {
-  const bin = pkg.value.bin;
-  const target = typeof bin === "string" ? bin : bin !== null && typeof bin === "object" && !Array.isArray(bin) ? (bin as Record<string, unknown>)[tool] : undefined;
-  if (typeof target !== "string") return false;
-  const resolved = path.resolve(pkg.root, target);
-  if (!inside(pkg.root, resolved)) return false;
-  try { return await withinOperation(realpath(resolved), operation) === entry; }
-  catch (error) { if (missing(error)) return false; throw error; }
-};
-
 const ancestorNodeModules = (origin: string): string[] => {
   const result: string[] = [];
   for (let directory = path.dirname(origin); ; directory = path.dirname(directory)) {
@@ -94,9 +84,9 @@ const dependencyDirectories = (packageRoot: string, origin: string) => {
 };
 
 /** Search in Node order, but never borrow a missing platform package from another installation. */
-const platformPackage = async (pkg: Package, name: string, operation: Operation, origin = pkg.manifestPath, noGlobals = false): Promise<Package | undefined> => {
+const platformPackage = async (pkg: Package, name: string, operation: Operation, origin = pkg.manifestPath): Promise<Package | undefined> => {
   const allowed = dependencyDirectories(pkg.root, origin);
-  const directories = noGlobals ? ancestorNodeModules(origin) : createRequire(origin).resolve.paths(name) ?? [];
+  const directories = createRequire(origin).resolve.paths(name) ?? [];
   for (const directory of directories) {
     const packageRoot = path.join(directory, name);
     try { await withinOperation(stat(packageRoot), operation); } catch (error) { if (missing(error)) continue; throw error; }
@@ -189,35 +179,8 @@ const resolveCopilot = async (pkg: Package, operation: Operation, host?: Launche
   throw missingRuntime(pkg.manifestPath);
 };
 
-// Whole-loader registration prevents an unknown selector from launching an unrecorded binary.
-// The complete official release fixtures and their provenance live in test/platform/fixtures/tool-launchers.
-const codexLoaders = new Set([
-  "d3be844c45c4fd89392536e56e1010963f94785592596b50cd0c45bb8a341406", // 0.142.5
-  "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477", // 0.145.0
-  "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70", // 0.156.1
-]);
-// Node options from the environment must not add global packages or change canonical package resolution.
-const codexNodeArgs = ["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main"];
-const codexTarget = (host?: LauncherHost) => {
-  const platform = host?.platform ?? process.platform, arch = host?.arch ?? process.arch;
-  const architecture = arch === "x64" ? "x86_64" : arch === "arm64" ? "aarch64" : undefined;
-  const target = platform === "linux" || platform === "android" ? "unknown-linux-musl" : platform === "darwin" ? "apple-darwin" : platform === "win32" ? "pc-windows-msvc" : undefined;
-  if (!architecture || !target) throw missingRuntime(`${platform}/${arch}`);
-  return { triple: `${architecture}-${target}`, name: `@openai/codex-${platform === "android" ? "linux" : platform}-${arch}`, file: platform === "win32" ? "codex.exe" : "codex" };
-};
-const resolveCodex = async (pkg: Package, entry: string, loaderDigest: string, operation: Operation, host?: LauncherHost): Promise<LauncherArtifact[]> => {
-  if (!codexLoaders.has(loaderDigest) || path.dirname(entry) !== path.join(pkg.root, "bin")) throw unsupported(entry);
-  const target = codexTarget(host), selected = await platformPackage(pkg, target.name, operation, entry, true);
-  if (selected && (selected.value.name !== "@openai/codex" && selected.value.name !== target.name || selected.value.exports !== undefined)) throw unsupported(selected.manifestPath);
-  if (selected && path.dirname(await withinOperation(realpath(selected.manifestPath), operation)) !== await withinOperation(realpath(selected.root), operation)) throw unsupported(selected.manifestPath);
-  const runtime = path.join(selected?.root ?? pkg.root, "vendor", target.triple, "bin", target.file);
-  const parsedPrefix = await assertNative(runtime, operation);
-  return [...(selected ? [selected.artifact] : []), { role: "runtime", path: runtime, parsedPrefix }];
-};
-
-/*
- * npm cmd-shim 8.0.0 templates, licensed under the ISC License.
- * Copyright (c) npm, Inc. and Contributors
+/* Target extraction patterns adapted from read-cmd-shim 6.0.0.
+ * Copyright (c) 2015, Rebecca Turner <me@re-becca.org>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -228,44 +191,25 @@ const resolveCodex = async (pkg: Package, entry: string, loaderDigest: string, o
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
  * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
- * IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-const cmdTemplate = (target: string) => [
-  "@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
-  'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ") ELSE (", '  SET "_prog=node"', "  SET PATHEXT=%PATHEXT:;.JS;=;%", ")", "",
-  `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*`, "",
-].join("\n");
-const posixTemplate = (target: string) => [
-  "#!/bin/sh", 'basedir=$(dirname "$(echo "$0" | sed -e \'s,\\\\,/,g\')")', "", "case `uname` in", "    *CYGWIN*|*MINGW*|*MSYS*)",
-  "        if command -v cygpath > /dev/null 2>&1; then", '            basedir=`cygpath -w "$basedir"`', "        fi", "    ;;", "esac", "",
-  'if [ -x "$basedir/node" ]; then', `  exec "$basedir/node"  "$basedir/${target}" "$@"`, "else ", `  exec node  "$basedir/${target}" "$@"`, "fi", "",
-].join("\n");
-const powershellTemplate = (target: string) => [
-  "#!/usr/bin/env pwsh", "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent", "", '$exe=""', 'if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {',
-  "  # Fix case when both the Windows and Linux builds of Node", "  # are installed in the same directory", '  $exe=".exe"', "}", "$ret=0",
-  'if (Test-Path "$basedir/node$exe") {', "  # Support pipeline input", "  if ($MyInvocation.ExpectingInput) {",
-  `    $input | & "$basedir/node$exe"  "$basedir/${target}" $args`, "  } else {", `    & "$basedir/node$exe"  "$basedir/${target}" $args`, "  }", "  $ret=$LASTEXITCODE", "} else {",
-  "  # Support pipeline input", "  if ($MyInvocation.ExpectingInput) {", `    $input | & "node$exe"  "$basedir/${target}" $args`, "  } else {", `    & "node$exe"  "$basedir/${target}" $args`, "  }", "  $ret=$LASTEXITCODE", "}", "exit $ret", "",
-].join("\n");
-
 const unwrapShim = (entry: string, bytes: Buffer): string => {
   const extension = path.extname(entry).toLowerCase();
-  const template = extension === ".cmd" ? cmdTemplate : extension === ".ps1" ? powershellTemplate : posixTemplate;
-  const text = bytes.toString("utf8").replaceAll("\r\n", "\n");
-  const prefix = template("\0").split("\0", 1)[0]!;
-  if (!text.startsWith(prefix)) throw unsupported(entry);
-  const end = text.indexOf('"', prefix.length);
-  if (end === -1) throw unsupported(entry);
-  const target = text.slice(prefix.length, end);
-  // Parsing must use the same bounded bytes as the digest, without reopening the pathname.
-  if (!target || text !== template(target)) throw unsupported(entry);
+  // Extract from the bounded snapshot, without opening the pathname again or
+  // executing any of the wrapper's shell text.
+  const text = bytes.toString("utf8");
+  const match = extension === ".cmd" ? text.match(/"%(?:~dp0|dp0%)\\([^"]+?)"\s+%\*/)
+    : extension === ".ps1" ? text.match(/"\$basedir\/([^"]+?)"\s+\$args/)
+      : text.match(/"\$basedir\/([^"]+?)"\s+"\$@"/);
+  const target = match?.[1];
+  if (!target) throw unsupported(entry);
   const normalized = target.replaceAll("\\", "/");
   if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(target) || /[\0\r\n]/.test(target)) throw unsupported(entry);
   return path.resolve(path.dirname(entry), ...normalized.split("/"));
 };
 
-/** Analyze only known launchers. No selected package's JavaScript or shell wrapper is executed. */
+/** Identify native and Node entries without executing the selected wrapper. */
 export const identifyToolLauncher = async (entryPath: string, tool: Tool, operation: Operation, host?: LauncherHost): Promise<IdentifiedToolLauncher> => {
   const artifacts: LauncherArtifact[] = [];
   let entry = await withinOperation(realpath(entryPath), operation);
@@ -284,20 +228,16 @@ export const identifyToolLauncher = async (entryPath: string, tool: Tool, operat
   if (line.startsWith("#!") && header.length === prefixLimit && !header.includes(10)) throw unsupported(entryPath);
   const nodeShebang = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+node|(?:\/[^\s]+\/)?node(?:\.exe)?)[ \t]*$/.test(line);
   if (line.startsWith("#!") ? !nodeShebang : !/\.[cm]?js$/i.test(entry)) throw unsupported(entryPath);
-  const pkg = await owningPackage(entry, operation);
-  const officialName = tool === "codex" ? "@openai/codex" : tool === "copilot" ? "@github/copilot" : undefined;
-  const official = officialName !== undefined && pkg?.value.name === officialName;
-  if (shim && !official || official && !await matchesBin(pkg!, entry, tool, operation)) throw unsupported(entryPath);
   const entryArtifact: LauncherArtifact = { role: "entry", path: artifactPath, parsedPrefix: { bytes: header.length, sha256: digest(header) } };
   artifacts.push(entryArtifact);
-  if (official) {
-    const bytes = await read(entry, operation); entryArtifact.parsedSha256 = digest(bytes);
-    artifacts.push(pkg!.artifact);
-    if (tool === "copilot") {
-      const selected = await resolveCopilot(pkg!, operation, host);
+  if (tool === "copilot") {
+    const pkg = await owningPackage(entry, operation);
+    if (pkg?.value.name === "@github/copilot") {
+      const bytes = await read(entry, operation); entryArtifact.parsedSha256 = digest(bytes);
+      artifacts.push(pkg.artifact);
+      const selected = await resolveCopilot(pkg, operation, host);
       return { executablePath: selected.executablePath, interpreterRequired: false, artifacts: [...artifacts, ...selected.artifacts] };
     }
-    artifacts.push(...await resolveCodex(pkg!, entry, entryArtifact.parsedSha256, operation, host));
   }
-  return { executablePath: entry, interpreterRequired: true, artifacts, ...(official && tool === "codex" ? { nodeArgs: [...codexNodeArgs] } : {}) };
+  return { executablePath: entry, interpreterRequired: true, artifacts };
 };

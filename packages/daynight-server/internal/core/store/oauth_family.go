@@ -23,7 +23,7 @@ type OAuthGrant struct {
 	ID, UserID, ClientID, Resource, Scope string
 	ClientSnapshot                        json.RawMessage
 	CreatedAt, ExpiresAt                  time.Time
-	RevokedAt                             *time.Time
+	RevokedAt, LastUsedAt                 *time.Time
 }
 
 // OAuthFamilyIssue contains hashes only. Access and refresh belong to Grant;

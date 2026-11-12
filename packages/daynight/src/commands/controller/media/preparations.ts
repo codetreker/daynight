@@ -14,7 +14,7 @@ import { IMAGE_LIMITS, canonicalImageJson, imageDecimal, imageId, parseImageCapt
 import { parseSessionResource, sessionBinding, type SessionResource } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
-import type { PendingContent, ControlledResourceLease } from "../pending-content.js";
+import type { ResourceFiles, ControlledResourceLease } from "../content/resource-files.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { NativeInput, NativeImagePart } from "../providers/types.js";
 import { bundledImageDecoder, type ImageDecoder } from "./image-decoder.js";
@@ -38,7 +38,7 @@ const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("h
 const snapshotTarget = (ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot) => ({ serverOrigin: ticket.serverOrigin, fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: snapshot.nativeSessionId });
 
 /** Local validation never publishes a service-owned available resource receipt. */
-export const openControllerMediaStore = (file: string, ticket: ControllerLaunchTicket, db: Database.Database, content: PendingContent, transactions: Transactions, snapshot: () => ControllerSnapshot, decoder: ImageDecoder = bundledImageDecoder(), stateDirectory = path.dirname(file)) => {
+export const openControllerMediaStore = (file: string, ticket: ControllerLaunchTicket, db: Database.Database, content: ResourceFiles, transactions: Transactions, snapshot: () => ControllerSnapshot, decoder: ImageDecoder = bundledImageDecoder(), stateDirectory = path.dirname(file)) => {
   const root = `${file}.media-staging`, nativeRoot = path.join(root, "native"), wireRoot = path.join(root, "wire");
   checkedDirectory(root); checkedDirectory(nativeRoot); checkedDirectory(wireRoot); syncDirectory(path.dirname(root));
   const ownerFile = path.join(root, "owner.json"), owner = { schemaVersion: 1, serverOrigin: ticket.serverOrigin, executionId: ticket.executionId, sessionId: ticket.sessionId, ...sessionBinding(ticket) };

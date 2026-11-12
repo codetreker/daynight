@@ -54,7 +54,6 @@ export type InspectionMessages = {
   readonly claim: {
     readonly controls: string;
     readonly active: string;
-    readonly released: string;
     readonly machine: string;
     readonly agent: string;
     readonly phase: Readonly<Record<WorkerPhase, string>>;
@@ -243,6 +242,8 @@ export type InspectionMessages = {
     readonly choosePreview: string;
     readonly preview: string;
     readonly fileMetadata: (args: { contentType: string; size: string }) => string;
+    readonly created: string;
+    readonly lastModified: string;
     readonly download: string;
     readonly openInNewTab: string;
     readonly missing: string;

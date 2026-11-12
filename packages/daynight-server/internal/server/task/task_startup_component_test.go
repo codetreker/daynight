@@ -380,7 +380,10 @@ func TestStartupReportFreshClaimClearsPreviousEvidence(t *testing.T) {
 	f := startupTaskSetup(t)
 	sendStartup(t, f, startupBody(f))
 	current := startupTaskModel(f.task)
-	released := startupReplaceWorker(t, current, func(w *api.WorkerClaim) { w.State = "released" })
+	released := current
+	released.Properties = taskproperty.Clone(current.Properties)
+	delete(released.Properties, "worker")
+	delete(released.Properties, "sessionStartup")
 	released.Status, released.Version, released.UpdatedAt = model.TaskTodo, current.Version+1, current.UpdatedAt.Add(time.Second)
 	released.Ready = true
 	startupExpectWrite(t, f, current, nil, false, &released, nil, f.handler.principal, nil)

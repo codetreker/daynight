@@ -1,7 +1,7 @@
 import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
+import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole, updateTokenExpiry } from "../src/api/auth";
 import { ApiError, cancelAuthNetworkRequests, checkAttachmentPreview, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
@@ -11,7 +11,7 @@ const inviteId = "40000000-0000-0000-0000-00000000000d";
 const otherId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-22T12:34:56.123456789Z";
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
-const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time };
+const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time, lastUsedAt: null };
 const member = { projectId, userId, email: null, name: "Member", avatarUrl: null, role: "admin", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
 const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant } = member;
 const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
@@ -312,6 +312,23 @@ describe("session and personal credentials API", () => {
     fetcher.mockResolvedValue(response({ ...pat, token: "default-lifetime-token" }, 201));
     await createToken({ name: "Default lifetime", expiresAt: null }, signal());
     expect(fetcher.mock.calls[2]?.[1].body).toBe('{"name":"Default lifetime","expiresAt":null}');
+  });
+
+  it("requires valid nullable usage metadata in list, create and expiry receipts", async () => {
+    const fetcher = mock(response({ items: [{ ...pat, lastUsedAt: time }] }));
+    await expect(listTokens(signal(), userId, vi.fn())).resolves.toEqual([{ ...pat, lastUsedAt: time }]);
+    fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: time }));
+    const input = { expiresAt: time, expectedExpiresAt: time, expectedUserId: userId };
+    await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).resolves.toEqual({ ...pat, lastUsedAt: time });
+    expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify(input));
+    for (const bad of [undefined, "2026-02-30T00:00:00Z", 3]) {
+      fetcher.mockResolvedValue(response({ items: [{ ...pat, lastUsedAt: bad }] }));
+      await expect(listTokens(signal(), userId, vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+      fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad, token: "secret" }, 201));
+      await expect(createToken({ name: pat.name, expiresAt: null }, signal())).rejects.toMatchObject({ kind: "protocol" });
+      fetcher.mockResolvedValue(response({ ...pat, lastUsedAt: bad }));
+      await expect(updateTokenExpiry(tokenId, input, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    }
   });
 
   it("accepts names using the server's Unicode code point and control-character rules", async () => {

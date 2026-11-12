@@ -41,7 +41,7 @@ func cancelledMaterialWrite(t *testing.T, database *postgres.Store, current mode
 func TestTaskMutationStore(t *testing.T) {
 	suite := newTaskStoreSuite(t)
 	suite.run(t, "CancelledTaskStoragePreservesMaterialsAndTerminalProjections", testCancelledTaskStoragePreservesMaterialsAndTerminalProjections)
-	suite.run(t, "CancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker", testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker)
+	suite.run(t, "CancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties", testCancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties)
 	suite.run(t, "TaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts", testTaskDescriptionUpdatesPersistRawMarkdownAndUnrelatedFacts)
 	suite.run(t, "TaskCompletionCommitsAtMaximumRevision", testTaskCompletionCommitsAtMaximumRevision)
 	suite.run(t, "TaskDeleteAndDependentLookupFailuresPreserveCauses", testTaskDeleteAndDependentLookupFailuresPreserveCauses)
@@ -193,8 +193,8 @@ func testCancelledTaskStoragePreservesMaterialsAndTerminalProjections(t *testing
 	}
 }
 
-func testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *testing.T, database *postgres.Store) {
-	owner, _, project := testutil.ProjectMembershipFixture(t, database)
+func testCancelledTaskStoragePreservesCompletedIntervalAndOrdinaryProperties(t *testing.T, database *postgres.Store) {
+	_, _, project := testutil.ProjectMembershipFixture(t, database)
 	target := writerTask(t, database, project.ID, 11, model.TaskTodo)
 	started := cancelledMaterialWrite(t, database, target, func(values *store.TaskWrite) { values.Status = model.TaskInProgress })
 	completed := cancelledMaterialWrite(t, database, started, func(values *store.TaskWrite) { values.Status = model.TaskDone })
@@ -211,15 +211,14 @@ func testCancelledTaskStoragePreservesCompletedIntervalAndReleasedWorker(t *test
 		t.Fatalf("done cancellation changed an already-started follower: %#v %#v", follower, got)
 	}
 	released := writerTask(t, database, project.ID, 13, model.TaskTodo)
-	history := testutil.WorkerClaim(13, owner.UserID, testutil.QueryID(50), model.WorkerReleased)
 	released = cancelledMaterialWrite(t, database, released, func(values *store.TaskWrite) {
 		values.AllowAgents = true
-		values.Properties = testutil.TaskProperties(t, history)
+		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"https://example.test/pr","title":"retained"}]`)}
 	})
 	beforeProperties := released.Properties
 	retained := cancelledMaterialWrite(t, database, released, func(values *store.TaskWrite) { values.Status = model.TaskCancelled })
-	if !reflect.DeepEqual(retained.Properties, beforeProperties) || !reflect.DeepEqual(testutil.Worker(t, retained.Properties), history) {
-		t.Fatalf("cancellation rewrote released Worker history: %#v", retained)
+	if !reflect.DeepEqual(retained.Properties, beforeProperties) {
+		t.Fatalf("cancellation rewrote ordinary properties: %#v", retained)
 	}
 }
 
@@ -606,7 +605,7 @@ func testTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	writerTask(t, database, project.ID, 10, model.TaskTodo)
 	writerWorkerTask(t, database, project.ID, 11, testutil.WorkerClaim(11, owner, testutil.QueryID(6), model.WorkerActive), true, nil)
 	writerWorkerTask(t, database, project.ID, 12, testutil.WorkerClaim(12, other, workerID, model.WorkerActive), true, nil)
-	writerWorkerTask(t, database, project.ID, 13, testutil.WorkerClaim(13, owner, workerID, model.WorkerReleased), true, nil)
+	writerWorkerTask(t, database, project.ID, 13, nil, true, nil)
 	writerWorkerTask(t, database, project.ID, 14, testutil.WorkerClaim(14, owner, workerID, model.WorkerCompleted), true, nil)
 	first := writerWorkerTask(t, database, project.ID, 15, testutil.WorkerClaim(15, owner, workerID, model.WorkerActive), true, nil)
 	writerWorkerTask(t, database, project.ID, 16, testutil.WorkerClaim(16, other, workerID, model.WorkerActive), true, nil)
@@ -677,10 +676,14 @@ func testTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 		}
 	}
 	check(claim)
-	for _, state := range []model.WorkerState{model.WorkerReleased, model.WorkerActive, model.WorkerCompleted, model.WorkerActive} {
-		claim = testutil.WorkerClaim(20+int(target.Version), owner, workerID, state)
+	for _, state := range []model.WorkerState{"", model.WorkerActive, model.WorkerCompleted, model.WorkerActive} {
 		values := testutil.TaskWrite(target)
-		values.Properties = testutil.TaskProperties(t, claim)
+		if state == "" {
+			values.Properties = model.TaskProperties{}
+		} else {
+			claim = testutil.WorkerClaim(20+int(target.Version), owner, workerID, state)
+			values.Properties = testutil.TaskProperties(t, claim)
+		}
 		if state == model.WorkerCompleted {
 			values.Status = model.TaskDone
 		} else {

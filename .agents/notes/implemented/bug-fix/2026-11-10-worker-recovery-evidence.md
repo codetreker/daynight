@@ -14,18 +14,21 @@ upload attempt.
 
 ## Decision
 
-The [Worker design](../../../../docs/design/daynight-worker.md) separates stable
-worktree identity, inventory coverage and archive repair conditions.
+The persistent APFS identity and Git lock mechanism described below was replaced
+by the [manifest adoption decision](../architecture/2026-11-12-worktree-manifest-adoption.md).
+The first two paragraphs preserve its original rationale; the remaining coverage
+and archive decisions remain active.
 
-On supported macOS APFS, immutable sidecars bind persistent volume and object
-identities to the original marker bytes and owner. Bootstrap requires successful
-legacy validation; it cannot retroactively attest a directory after drift.
-Keeping the marker unchanged preserves older readers' discovery and avoids a
-two-file identity update transaction. Current object checks and Git attribution
-still guard every mutation. Unsupported platforms retain strict legacy checks.
+The [Worker design](../../../../docs/design/daynight-worker.md) separates worktree ownership, inventory coverage and archive repair conditions.
+
+The original approach used immutable APFS sidecars to bind volume and object
+identities to marker bytes and owner. Bootstrap required successful legacy
+validation and could not attest a directory after drift. Keeping the marker
+unchanged preserved older readers and avoided a two-file identity transaction.
+Other platforms retained strict historical identity checks.
 
 Complete discovery can retain a locally attributable invalid resource as a
-quarantined claim, with capacity and same-task fencing intact. Partial enumeration,
+quarantined claim, preserving the same-task barrier and independently observed execution capacity. Partial enumeration,
 unknown ownership or conflicting identities still prevent new acquisition.
 Registration uniqueness compares physical targets, including manual registrations
 and aliases. Forward, reverse and common-directory pointers require
@@ -38,15 +41,9 @@ coverage unknown. Ordinary relative paths remain admissible when those checks
 succeed; passing the raw string alone cannot preserve Windows traversal semantics.
 Parent traversal through missing components remains unknown. Only explicitly
 classified static, resource-local validation failures under stable observations
-can become quarantine candidates. A mismatch against historical identity evidence
-does not imply that observations changed during inspection. Observed changes to
-owner, marker or sidecar metadata, current directory objects or Git pointers retain
-unknown coverage instead of attributing the resource to its indexed owner. Before
-accepting an early branch or sidecar validation failure, the scan still reads the
-locked marker stably and checks it against the index; changed, missing or
-unconfirmed marker evidence cannot hide a new owner conflict. Filesystem reads,
-native queries, response parsing and otherwise unclassified failures also retain
-unknown coverage. These rechecks retain the controlled-writer assumption, not an
+can become quarantine candidates. Changed ownership or current directory objects,
+Git pointers, filesystem reads and unclassified failures retain unknown coverage.
+These rechecks retain the controlled-writer assumption, not an
 atomic snapshot guarantee against malicious same-user replacement. Mapping
 admission does not grant resource ownership. Strict readers used by cleanup cannot
 omit invalid records and infer absence.
@@ -91,14 +88,14 @@ cheap condition checks without pretending missing data has been recovered.
 
 ## Consequences
 
-Normal device-number drift can recover only after stable evidence has been saved.
-Legacy records already affected by drift remain explicitly blocked. Complete
-volume clones can reproduce the evidence, and same-user concurrent path replacement
-is outside the controlled-writer assumption; the sidecar is not an anti-cloning
-or sandbox mechanism.
+The original sidecar scheme required evidence saved before device-number drift.
+It did not protect against copied volume identities or same-user concurrent path
+replacement. The replacement and its current trade-offs are recorded in the
+manifest adoption decision.
 
-Quarantine retains capacity and storage. Unknown inventories remain globally
-blocking because historical counts do not prove a present upper bound. Archive
+Quarantine retains storage and the same-task barrier; confirmed execution stop
+releases capacity independently. Unknown execution responsibility or unbounded inventory remains blocking; a
+localized repository format gate does not stop independent prepared repositories. Archive
 repair probes preserve data and may wait indefinitely when complete source proof
 cannot be recovered. Reconstruction, incomplete-archive acceptance and separate
 storage quotas are independent designs, not automatic outcomes of a retry.

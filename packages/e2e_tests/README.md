@@ -71,8 +71,11 @@ are not inserted directly to bypass these flows.
 `tests/main-flow.spec.ts` verifies browser login, CLI device login, CLI project
 and task creation, default proposed readback, explicit todo creation for confirmed
 reference work, project detail and attachment-tab Back/Forward, direct Web proposed-to-in_progress modification, CLI readback and
-completion, and Web reload. The same resource IDs and content cross the clients and persist in
-the real database.
+completion, and Web reload. A second Task is claimed, registered, released and
+claimed again through the real service; CLI reads both Session identities and the
+Web shows the retained history without the old current claim. These API registrations
+do not start a Worker process. The same resource IDs and content cross the clients
+and persist in the real database.
 
 Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the
 compiled CLI, isolated configuration and topology. Product scenarios use valid

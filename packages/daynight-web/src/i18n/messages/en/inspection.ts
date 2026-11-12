@@ -53,7 +53,7 @@ export const inspection: InspectionMessages = {
   },
   claim: {
     controls: "Task settings and claim",
-    active: "Claimed by", released: "Released claim", machine: "Machine", agent: "Agent",
+    active: "Claimed by", machine: "Machine", agent: "Agent",
     phase: { preparing: "Preparing", executing: "Executing", verifying: "Verifying", completing: "Completing", waiting: "Waiting", paused: "Paused" },
     membersLoading: "Loading claim owner details…", membersError: "Claim owner details could not be loaded.", retryMembers: "Retry member details", formerMember: "Former project member",
     membersProtocolError: "The claim owner response cannot be read by this page. The page and service versions may be incompatible.",
@@ -176,6 +176,7 @@ export const inspection: InspectionMessages = {
     retry: "Retry attachments", empty: "No attachments. Upload a file to browse it here.", files: "Attachment files",
     choosePreview: "Select a file to preview or download it.", preview: "Attachment preview",
     fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`,
+    created: "Created", lastModified: "Last modified",
     download: "Download", deleting: "Deleting…", delete: "Delete",
     fileActions: ({ path }) => `More actions: ${path}`, deleteTitle: "Delete attachment?", deleteConfirmation: "Delete this attachment? This action cannot be undone.", cancelDelete: "Cancel", confirmDelete: "Delete attachment", previewLoading: "Loading preview…",
     previewLoadError: "Unable to load the file preview. Try again or download the file.",

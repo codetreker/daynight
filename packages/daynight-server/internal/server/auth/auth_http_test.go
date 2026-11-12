@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
@@ -39,7 +40,11 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if empty.Items == nil || len(empty.Items) != 0 {
 		t.Fatalf("empty tokens: %+v", empty)
 	}
-	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin), 201)
+	createResponse := h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin)
+	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createResponse, 201)
+	if !strings.Contains(createResponse.Body.String(), `"lastUsedAt":null`) {
+		t.Fatal("created PAT must contain null lastUsedAt")
+	}
 	if !strings.HasPrefix(minted.Token, "dnpat_") || minted.ExpiresAt != nil {
 		t.Fatalf("token: %+v", minted)
 	}
@@ -51,9 +56,14 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if !bytes.Equal(stored, want[:]) {
 		t.Fatal("token hash differs")
 	}
+	usedAt := time.Now().UTC().Truncate(time.Microsecond)
+	completion, err := h.Database.WriteCredentialUsage(t.Context(), []model.CredentialUsageEvent{{Kind: model.UsageSubjectPAT, UserID: user.ID, SubjectID: minted.ID, At: usedAt}})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("write usage: %+v %v", completion, err)
+	}
 	listResponse := h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, "")
 	list := testsupport.DecodeResponse[api.PersonalAccessTokenList](t, listResponse, 200)
-	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") {
+	if len(list.Items) != 1 || strings.Contains(listResponse.Body.String(), minted.Token) || strings.Contains(listResponse.Body.String(), "token_hash") || list.Items[0].LastUsedAt == nil || !list.Items[0].LastUsedAt.Equal(usedAt) || !strings.Contains(listResponse.Body.String(), `"lastUsedAt":"`+usedAt.Format(time.RFC3339Nano)+`"`) {
 		t.Fatal("PAT list exposed secret")
 	}
 	bearer := []string{"Bearer " + minted.Token}

@@ -31,7 +31,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
   };
   const worker: WorkerClaim = {
-    claimId, state: "released", userId: principal, workerId: taskId, machine: { id: claimId, name: "Native fixture" },
+    claimId, state: "active", userId: principal, workerId: taskId, machine: { id: claimId, name: "Native fixture" },
     platform: "windows", agent: "codex", agentControlMode: "web", worktreeId: projectId, phase: "executing",
     herdr: null, nativeSessionId: null, claimedAt: time,
   };
@@ -139,9 +139,13 @@ it("cancels through both installed native launchers and reconciles an unknown re
       expect(requests.at(-1)!.body).toEqual({ version: original.version, status: "cancelled" });
     }
     mode = "write";
-    current = { ...original, status: "todo", startedAt: null, completedAt: null, cancelledAt: null, ready: true, properties: { ...original.properties, worker } };
-    const released = await invoke(receipt.launcherPath, cancel(current.version));
-    expect(released.code, released.stderr).toBe(0); expect(current.properties.worker).toEqual(worker);
+    current = { ...original, status: "todo", startedAt: null, completedAt: null, cancelledAt: null, ready: true };
+    const cancelledUnowned = await invoke(receipt.launcherPath, cancel(current.version));
+    expect(cancelledUnowned.code, cancelledUnowned.stderr).toBe(0);
+    expect(current).toMatchObject({ status: "cancelled", cancelledAt, properties: original.properties });
+    expect(current.properties.worker).toBeUndefined();
+    const cancelledRead = await invoke(receipt.launcherPath, ["show", taskId, "--json"]);
+    expect(cancelledRead.code, cancelledRead.stderr).toBe(0); expect(parseApiJson(cancelledRead.stdout)).toEqual(withTaskObservation(current));
     mode = "unknown"; current = original;
     const beforeUnknown = requests.length;
     const unknown = await invoke(receipt.launcherPath, cancel(current.version));

@@ -35,7 +35,9 @@ code 或 state。账户变化触发重新读取，后台检查不应卸载稳定
 
 批准的 code 只保存 hash，一次交换在同一事务内消费 code 并发行凭据 family。匹配的重放
 先提交 family 撤销再返回拒绝；错误绑定不消费 code。refresh 轮换和 public revoke 使
-family 与 access 凭据保持一致。持久预算限制公开入口，统一有界维护清理过期记录。
+family 与 access 凭据保持一致。grant 的已记录使用时间独立于 access/refresh 轮换；账户列表的
+v1、v2 投影与发布恢复约束由[身份认证架构](daynight-auth.md#主站-session-与-pat)拥有。
+持久预算限制公开入口，统一有界维护清理过期记录。
 授权和凭据响应禁止缓存，授权页面不发送 referrer。注册、token 和 revoke 的公开 CORS
 不授予业务权限。
 

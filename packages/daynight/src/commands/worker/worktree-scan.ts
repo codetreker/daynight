@@ -2,7 +2,7 @@ import path from "node:path";
 import { readdir } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { WorktreeValidationError } from "./worktree-errors.js";
-import { verifyWorktreeMarker } from "./worktree-identity.js";
+import { createWorktreeManifestStore } from "./worktrees/manifest.js";
 import { ambiguousMissingGitTargets, resolveGitDirectory, resolveGitFile, type GitFileTarget } from "./worktree-paths.js";
 import type { ResourceOwner, WorkerProject } from "./types.js";
 import type { OwnedWorktree, WorkerRepository } from "./worktrees.js";
@@ -85,49 +85,29 @@ export const registrationsFor = async (index: RegistrationIndex, target: string,
 
 export const scanRepositoryWorktrees = async (
   project: WorkerProject, repository: WorkerRepository, index: RegistrationIndex, operation: Operation, readers: Readers,
-  inspect: (owner: ResourceOwner, observedPointer: string | null) => Promise<OwnedWorktree>, includeOtherProjects: boolean,
+  inspect: (owner: ResourceOwner, observedPointer: string | null | undefined) => Promise<OwnedWorktree>, includeOtherProjects: boolean, settled: readonly OwnedWorktree[] = [],
 ): Promise<WorktreeScan> => {
   const result: WorktreeScan = { enumerationComplete: true, validated: [], quarantined: [], unknown: [] };
-  const namespace = path.join(repository.root, ".worktrees", "daynight");
-  await readers.directory(path.dirname(namespace));
-  await readers.directory(namespace);
+  const manifests = createWorktreeManifestStore(repository.commonDirectory).list();
+  // An unreadable Git entry cannot be proved unrelated even when no manifest
+  // currently names it. Preserve the incomplete observation as unknown.
   for (const entry of index.entries) {
+    if (entry.physicalPointer === null && entry.errors.length > 0) result.unknown.push(...entry.errors.map(error => ({ error })));
+  }
+  for (const manifest of manifests) {
     operation.check();
-    if (entry.errors.length > 0) { result.unknown.push(...entry.errors.map(error => ({ error }))); continue; }
-    if (!entry.managed) continue;
-    const owner = entry.owner;
-    if (owner === null) { result.unknown.push({ error: new Error("The owned registration has no recognized owner.") }); continue; }
-    let observedPointer: string | null = null;
+    const owner: ResourceOwner = { projectId: manifest.projectId, taskId: manifest.taskId, claimId: manifest.claimId, worktreeId: manifest.worktreeId };
+    if (!includeOtherProjects && owner.projectId !== project.projectId) continue;
+    if (settled.some(item => item.owner.projectId === owner.projectId && item.owner.taskId === owner.taskId && item.owner.claimId === owner.claimId && item.owner.worktreeId === owner.worktreeId && path.basename(item.binding.worktreePath) === manifest.directoryName)) continue;
     try {
-      if (index.entries.some(other => other.physicalPointer === null && other.errors.length > 0)) throw new Error("An unreadable registration prevents proving unique worktree ownership.");
-      const target = entry.physicalPointer;
-      if (target === null || target.path !== (await resolveGitFile(path.join(namespace, owner.taskId), ".git")).path) throw new Error("The owned task worktree registration does not point to its fixed task path.");
-      if (index.entries.filter(other => other.physicalPointer?.path === target.path).length !== 1
-        || index.entries.some(other => other !== entry && other.physicalPointer !== null && ambiguousMissingGitTargets(target, other.physicalPointer))
-        || index.entries.some(other => other !== entry && other.owner?.projectId === owner.projectId && other.owner.taskId === owner.taskId && other.owner.claimId === owner.claimId)) throw new Error("The owned task worktree registration is ambiguous.");
-      if (entry.common === null || await readers.directory(entry.common) !== repository.commonIdentity) throw new Error("The task worktree registration points to another Git repository.");
-      const leaf = path.join(namespace, owner.taskId);
-      // A foreign reverse pointer is not a local identity-validation failure.
-      if (await readers.directory(leaf) !== null) {
-        const reverse = await readers.ordinaryFile(path.join(leaf, ".git"));
-        observedPointer = reverse;
-        if (reverse !== null && (!reverse.startsWith("gitdir: ") || await resolveGitDirectory(leaf, reverse.slice(8)) !== await resolveGitDirectory(entry.directory, "."))) throw new Error("The original worktree Git pointer has changed.");
-      }
-    } catch (error) { operation.check(); result.unknown.push({ error }); continue; }
-    try {
-      const found = await inspect(owner, observedPointer);
-      if (includeOtherProjects || owner.projectId === project.projectId) result.validated.push(found);
+      const found = await inspect(owner, undefined);
+      const leaf = await readers.directory(found.binding.worktreePath);
+      const matches = await registrationsFor(index, found.binding.worktreePath, readers);
+      if (leaf !== null || matches.length > 0) result.validated.push(found);
     } catch (error) {
       operation.check();
-      // Unknown errors, including native failures without a code or wrapped
-      // filesystem errors, cannot establish bounded resource failure.
-      if (error instanceof WorktreeValidationError) {
-        // Static failures can precede identity inspection. Attribute them only
-        // while the indexed owner still has a stable, matching marker.
-        try { await verifyWorktreeMarker(entry.directory, entry.marker!); }
-        catch (observationError) { operation.check(); result.unknown.push({ error: observationError }); continue; }
-        result.quarantined.push({ owner, error });
-      } else result.unknown.push({ error });
+      if (error instanceof WorktreeValidationError) result.quarantined.push({ owner, error });
+      else result.unknown.push({ error });
     }
   }
   operation.check();

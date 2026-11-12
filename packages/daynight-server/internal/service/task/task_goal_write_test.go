@@ -174,22 +174,7 @@ func TestGoalEndRejectsFreshClaim(t *testing.T) {
 			if parentReads != 1 || !reflect.DeepEqual(got, model.Task{}) {
 				t.Fatalf("claim refusal returned %+v", got)
 			}
-			old := workerDescriptor()
-			released := current
-			previous := &model.WorkerClaim{ClaimID: old.ClaimID, WorkerID: old.WorkerID, UserID: owner.UserID, Machine: old.Machine, Platform: old.Platform, Agent: old.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: old.WorktreeID, State: model.WorkerReleased, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
-			released.Properties = testWithWorker(t, current.Properties, previous)
-			f = workerMockWrite(t, released, owner)
-			f.Task.ParentTaskFn = func(ctx context.Context, id string) (model.Task, error) {
-				if ctx != f.Context || id != parentID {
-					t.Fatal("parent lookup escaped claim transaction")
-				}
-				return parent, nil
-			}
-			got, err = f.Tasks.ClaimWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: fresh})
-			requireFault(t, err, "invalid_transition")
-			if !reflect.DeepEqual(got, model.Task{}) {
-				t.Fatalf("released claim refusal returned %+v", got)
-			}
+
 		})
 	}
 }

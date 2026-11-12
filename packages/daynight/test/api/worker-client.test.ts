@@ -19,7 +19,7 @@ const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "
   id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
   allowAgents: true, requiredPlatform: null, assignedTo: null, version, startedAt: worker?.state === "active" ? time : null,
-  completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
+  completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined,
 });
 const cleanups: (() => void | Promise<void>)[] = [];
 const api = (serverUrl: string): ApiClient => {
@@ -85,7 +85,7 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), { ...task(undefined), allowAgents: false }];
+    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -108,6 +108,7 @@ describe("in-process worker task API", () => {
     expect(requests[0]!.body).toEqual(initial);
     expect(requests[1]!.body).toEqual(update);
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
+    expect(requests[3]!.body).toEqual({ version: 1n, claimId, stoppedConfirmed: true });
     expect(requests[4]!.body).toEqual({ version: 1n, claimId });
   });
 
@@ -125,7 +126,7 @@ describe("in-process worker task API", () => {
     const lower = { claimId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", workerId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", machine: { id: "cccccccc-cccc-cccc-cccc-cccccccccccc", name: "Build machine" }, worktreeId: "dddddddd-dddd-dddd-dddd-dddddddddddd", userId: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" };
     const upper = { ...descriptor, claimId: lower.claimId.toUpperCase(), workerId: lower.workerId.toUpperCase(), machine: { ...lower.machine, id: lower.machine.id.toUpperCase() }, worktreeId: lower.worktreeId.toUpperCase() };
     const active = { ...claim(), ...lower };
-    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), { ...task(undefined), allowAgents: false }];
+    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((_request, response) => respond(response, responses.shift()));
     const client = api(origin);
     await expect(client.claimWorkerTask(projectId, taskId, { ...upper, version: 1n })).resolves.toHaveProperty("properties.worker.claimId", lower.claimId);
@@ -137,8 +138,17 @@ describe("in-process worker task API", () => {
 
   it.each([
     task(claim()),
-    task({ ...claim("released"), claimId: newClaimId }),
-    task(claim("released"), 3n),
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released" } } },
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released", claimId: newClaimId } } },
+    task(undefined, 1n),
+    task(undefined, 3n),
+    { ...task(undefined), properties: { ...task(undefined).properties, sessionStartup: null } },
+    { ...task(undefined), properties: { ...task(undefined).properties, worker: null } },
+    { ...task(undefined), status: "in_progress" },
+    { ...task(undefined), startedAt: time },
+    { ...task(undefined), completedAt: time },
+    { ...task(undefined), id: newClaimId },
+    { ...task(undefined), projectId: newClaimId },
   ])("rejects an unconfirmed release response without another request %#", async (responseTask) => {
     let requests = 0;
     const origin = await listen((_request, response) => { requests++; respond(response, responseTask); });
@@ -204,20 +214,20 @@ describe("in-process worker task API", () => {
     expect(count).toBe(1);
   });
 
-  it("retains the candidate cursor so an unavailable released task does not hide later work", async () => {
+  it("retains the candidate cursor so an unavailable task does not hide later work", async () => {
     const urls: URL[] = [];
     const availableId = "99999999-9999-9999-9999-999999999999";
-    const released = task(claim("released"));
+    const candidate = task(undefined);
     const available = { ...task(undefined), id: availableId };
     const origin = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost");
       urls.push(url);
-      respond(response, url.searchParams.has("cursor") ? { items: [available], nextCursor: null } : { items: [released], nextCursor: "next+/=" });
+      respond(response, url.searchParams.has("cursor") ? { items: [available], nextCursor: null } : { items: [candidate], nextCursor: "next+/=" });
     });
     const client = api(origin);
     const filters = { limit: 1, ready: true, allowAgents: true, compatiblePlatform: "linux" } as const;
     const first = await client.listTaskPage(projectId, filters);
-    expect(first).toEqual({ items: [released], nextCursor: "next+/=" });
+    expect(first).toEqual({ items: [candidate], nextCursor: "next+/=" });
     if (first.nextCursor === null) throw new Error("Missing candidate continuation");
     const second = await client.listTaskPage(projectId, { ...filters, cursor: first.nextCursor });
     expect(second).toEqual({ items: [available], nextCursor: null });
@@ -278,7 +288,7 @@ describe("in-process worker task API", () => {
 
   it.each([
     { name: "no claim", value: task(undefined) },
-    { name: "released claim", value: task(claim("released")) },
+    { name: "retired released claim", value: { ...task(undefined), properties: { ...task(undefined).properties, worker: { ...claim(), state: "released" } } } },
     { name: "completed claim", value: task(claim("completed")) },
     { name: "another worker", value: task({ ...claim(), workerId: newClaimId }) },
     { name: "malformed worker ID", value: { ...task(claim()), properties: { pullRequests: [], worker: { ...claim(), workerId: "not-a-worker-id" } } } },

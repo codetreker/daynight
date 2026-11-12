@@ -38,7 +38,7 @@ const workerClaim = (value: unknown): WorkerClaim => {
   if (agentControlMode !== "herdr" && agentControlMode !== "web") return malformed();
   if (agentControlMode === "web" && herdr !== null) return malformed();
   return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
     agent: data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed(), agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },

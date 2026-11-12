@@ -4,6 +4,7 @@ import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
+import { retainedWorktreePathInScope } from "./worktrees/paths.js";
 import type { WorkerStore } from "./store.js";
 import type { HerdrDisposalRequest, HerdrResourceTarget, HerdrRetainedResource } from "./herdr/resource-types.js";
 
@@ -64,7 +65,7 @@ export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: Herd
   assertConfirmedHerdrResourceDeletion(resource);
   const owner = resource.owner;
   const project = store.getProject(owner), schedule = store.getCleanupSchedule(owner), task = store.getTask(owner);
-  if (!project || path.join(project.localPath, ".worktrees", "daynight", owner.taskId) !== resource.worktreePath) throw new Error("Deleted-resource reconciliation has no matching original project path.");
+  if (!project || !retainedWorktreePathInScope(project.localPath, owner, resource.worktreePath)) throw new Error("Deleted-resource reconciliation has no matching original project path.");
   if (schedule !== null && schedule.worktreeId !== owner.worktreeId) throw new Error("The cleanup schedule belongs to another original worktree.");
   if (task?.agentControlMode === "web") throw new Error("Herdr deletion cannot complete a Web execution.");
   // Each SQLite write is idempotent. Keep the durable deletion record as the

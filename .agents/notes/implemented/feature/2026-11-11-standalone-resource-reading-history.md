@@ -43,6 +43,12 @@ The [inspection design](../../../../docs/design/daynight-task-inspection.md#独�
 owns the current composition and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
 owns indexed and native-history boundaries. The [Goal description tab decision](2026-11-12-goal-description-tab.md) extends
 the eligible tab selections without changing the root and nested history boundary.
+The [Goal detail information decision](2026-11-12-goal-detail-information.md)
+removes the detail Task panel while keeping controlled graph and child selections;
+cross-Goal Details selects the target Goal and child together, while external
+Expand selects that Goal and complete chain graph for a multi-member target.
+Unparented chain expansion uses a transient project graph witness; it does not
+change the root and nested detail sharing contract.
 This extends the shared entry model
 in the [account reading-history decision](2026-11-11-account-reading-history.md)
 and partially supersedes the dialog-local history boundary in the archived

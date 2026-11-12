@@ -229,16 +229,10 @@ describe('irreversible cancellation through the shared status session', () => {
 });
 
 
-it.each(['active', 'released'] as const)('requires release before cancelling an %s Worker history', async (state) => {
-  const claim: WorkerClaim = { claimId: otherTask, state, userId: TEST_VIEWER_ID, workerId: otherProject, machine: { id: otherProject, name: 'History machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: task, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: stamp };
-  const previous = { ...source(state === 'active' ? 'in_progress' : 'todo'), properties: { ...initial.properties, worker: claim } };
+it('requires release before cancelling an active Worker', async () => {
+  const claim: WorkerClaim = { claimId: otherTask, state: 'active', userId: TEST_VIEWER_ID, workerId: otherProject, machine: { id: otherProject, name: 'History machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: task, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: stamp };
+  const previous = { ...source('in_progress'), properties: { ...initial.properties, worker: claim } };
   const saved = result(previous, 'cancelled'); reads.mockResolvedValueOnce(previous).mockResolvedValue(saved); writes.mockResolvedValueOnce(saved);
   const sessions = createSessions(); await open(sessions, previous); submit(sessions, 'cancelled');
-  if (state === 'active') {
-    expect(writes).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).detail).toEqual(previous);
-  } else {
-    await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved);
-    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
-    expect(sessions.snapshot(project, task).detail?.properties.worker).toEqual(claim);
-  }
+  expect(writes).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).detail).toEqual(previous);
 });

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -71,6 +72,36 @@ func TestTokenExpiryHTTPCreateEditAndCurrentBearer(t *testing.T) {
 	}
 	if strings.Contains(h.Logs.String(), minted.Token) || strings.Contains(h.Logs.String(), finite.Token) {
 		t.Fatal("expiry management logged token secret")
+	}
+}
+
+func TestTokenExpiryResponseIncludesUsageTime(t *testing.T) {
+	h := authTestHarness(t)
+	cookie := h.Login(t, "metadata-user")
+	user := testsupport.DecodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{cookie}, nil, ""), 200)
+	token := createHTTPPAT(t, h, cookie, nil)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := h.Database.Pool.Exec(t.Context(), `UPDATE personal_access_tokens SET last_used_at=$2 WHERE id=$1`, token.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	expiry := now.Add(time.Hour)
+	body := testsupport.JSONBody(t, map[string]any{"expiresAt": expiry, "expectedExpiresAt": nil, "expectedUserId": user.ID})
+	patch := h.Request("PATCH", "/api/v1/me/tokens/"+token.ID, body, []*http.Cookie{cookie}, nil, h.Origin)
+	var changed map[string]json.RawMessage
+	if patch.Code != http.StatusOK || json.Unmarshal(patch.Body.Bytes(), &changed) != nil {
+		t.Fatalf("patch: %d %s", patch.Code, patch.Body)
+	}
+	want := []string{"id", "name", "createdAt", "expiresAt", "lastUsedAt"}
+	if len(changed) != len(want) {
+		t.Fatalf("unexpected metadata fields: %v", changed)
+	}
+	if string(changed["lastUsedAt"]) != `"`+now.Format(time.RFC3339Nano)+`"` {
+		t.Fatalf("usage time changed by expiry edit: %s", changed["lastUsedAt"])
+	}
+	for _, field := range want {
+		if _, ok := changed[field]; !ok {
+			t.Fatalf("missing metadata field %s: %v", field, changed)
+		}
 	}
 }
 

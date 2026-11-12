@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -43,6 +44,10 @@ type App struct {
 	oauthMaintenance     *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
+	drainLock         chan struct{}
+	drained           bool
+	drainErr          error
+	usageStarted      bool
 	files             interface{ Close() error }
 	monitoring        monitoringBackend
 	monitoringClosed  chan struct{}
@@ -50,6 +55,7 @@ type App struct {
 	persistence       *Persistence
 	persistenceClosed chan struct{}
 	filesClosed       chan struct{}
+	filesErr          error
 	closed            bool
 	producersStopped  bool
 	closeErr          error
@@ -78,9 +84,10 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
 		Application: application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
-		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
+		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
+	app.drainLock <- struct{}{}
 	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
 	app.ImageValidationError = err
 	if decoder != nil {
@@ -210,6 +217,14 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		}
 		return nil, cause
 	}
+	app.CredentialUsage, err = credentialusage.New(database.Transactions, logger, nil)
+	if err != nil {
+		return failOpen(err)
+	}
+	app.OAuthGrants.SetRotationObserver(app.CredentialUsage.ObserveRotation)
+	if app.OAuthProfile != nil {
+		app.OAuthProfile.Grants.SetRotationObserver(app.CredentialUsage.ObserveRotation)
+	}
 	if c.Monitoring.Redis.RedisURL != "" {
 		if open.monitoring == nil {
 			return failOpen(errors.New("monitoring store opener is unavailable"))
@@ -279,30 +294,19 @@ func (a *App) Close(ctx context.Context) error {
 		return err
 	}
 	if a.closed {
-		return a.closeErr
+		return a.closedResult(nil)
 	}
 	if err := a.Drain(ctx); err != nil {
-		return err
-	}
-	if a.oauthMaintenance != nil {
-		if err := a.oauthMaintenance.Stop(ctx); err != nil {
+		if completed, ok := err.(interface{ Drained() bool }); !ok || !completed.Drained() {
 			return err
 		}
-	}
-	if a.PrivateContent != nil {
-		if err := a.PrivateContent.Close(ctx); err != nil {
-			return err
+		if a.closeErr == nil {
+			a.closeErr = err
 		}
-	}
-	if a.WorkerReadOnly != nil {
-		a.WorkerReadOnly.Close()
-	}
-	if err := a.Engine.Stop(ctx); err != nil {
-		return err
 	}
 	a.producersStopped = true
 	if err := ctx.Err(); err != nil {
-		return err
+		return errors.Join(a.closeErr, err)
 	}
 	if a.monitoring != nil {
 		if a.monitoringClosed == nil {
@@ -315,10 +319,10 @@ func (a *App) Close(ctx context.Context) error {
 		select {
 		case <-a.monitoringClosed:
 		case <-ctx.Done():
-			return ctx.Err()
+			return errors.Join(a.closeErr, ctx.Err())
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(a.closeErr, err)
 		}
 	}
 	if a.persistence != nil {
@@ -332,10 +336,10 @@ func (a *App) Close(ctx context.Context) error {
 		select {
 		case <-a.persistenceClosed:
 		case <-ctx.Done():
-			return ctx.Err()
+			return errors.Join(a.closeErr, ctx.Err())
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(a.closeErr, err)
 		}
 	}
 	if a.files != nil {
@@ -343,29 +347,46 @@ func (a *App) Close(ctx context.Context) error {
 			done := make(chan struct{})
 			a.filesClosed = done
 			go func() {
-				a.closeErr = errors.Join(a.monitoringErr, a.files.Close())
+				a.filesErr = a.files.Close()
 				close(done)
 			}()
 		}
 		select {
 		case <-a.filesClosed:
 			a.closed = true
-			return errors.Join(a.closeErr, ctx.Err())
+			a.closeErr = errors.Join(a.closeErr, a.monitoringErr, a.filesErr)
+			return a.closedResult(ctx.Err())
 		case <-ctx.Done():
 			// If closure completed concurrently, retain its result as well as
 			// the caller's deadline; the channel synchronizes the error value.
 			select {
 			case <-a.filesClosed:
 				a.closed = true
-				return errors.Join(a.closeErr, ctx.Err())
+				a.closeErr = errors.Join(a.closeErr, a.monitoringErr, a.filesErr)
+				return a.closedResult(ctx.Err())
 			default:
-				return ctx.Err()
+				return errors.Join(a.closeErr, ctx.Err())
 			}
 		}
 	}
 	a.closed = true
-	a.closeErr = a.monitoringErr
-	return errors.Join(a.closeErr, ctx.Err())
+	a.closeErr = errors.Join(a.closeErr, a.monitoringErr)
+	return a.closedResult(ctx.Err())
+}
+
+// appCloseError describes the completion of the whole application, independently
+// of completion facts on errors returned by an individual dependency.
+type appCloseError struct{ cause error }
+
+func (e appCloseError) Error() string { return e.cause.Error() }
+func (e appCloseError) Unwrap() error { return e.cause }
+func (e appCloseError) Closed() bool  { return true }
+
+func (a *App) closedResult(extra error) error {
+	if err := errors.Join(a.closeErr, extra); err != nil {
+		return appCloseError{cause: err}
+	}
+	return nil
 }
 
 // ProducersStopped reports whether all application-owned log producers stopped.

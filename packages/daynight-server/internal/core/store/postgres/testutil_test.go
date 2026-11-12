@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
 	teamstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
@@ -154,7 +156,18 @@ func putTaskPropertyFixture(t *testing.T, database *Store, taskID, name string, 
 	testutil.PutTaskProperty(t, database.Pool, taskID, name, value)
 }
 func decodeHistoricalPropertiesFixture(data []byte) (model.TaskProperties, error) {
-	return testutil.DecodeHistoricalProperties(data)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if _, exists := fields["worker"]; !exists {
+		fields["worker"] = json.RawMessage("null")
+	}
+	normalized, err := json.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	return migration026.DecodeLegacyProperties(normalized)
 }
 func currentTaskFactsFixture(t *testing.T, database *Store) map[string]string {
 	t.Helper()

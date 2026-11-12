@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
@@ -110,7 +110,7 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(stopped.windowsJobStopProof).toMatchObject({ version: 1, ticketHash: expect.stringMatching(/^[a-f0-9]{64}$/), snapshotHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
   expect(proof.stopped).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, deadline, jobLease);
   const db = new Database(f.file, { readonly: true });
-  expect(db.pragma("user_version", { simple: true })).toBe(8); db.close();
+  expect(db.pragma("user_version", { simple: true })).toBe(9); db.close();
   expect(readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toEqual(stopped);
   proof.stopped.mockClear();
   expect(await recordStoppedControllerGeneration(f.file, f.ticket)).toEqual(stopped);
@@ -232,6 +232,36 @@ test("Windows stop-proof reads do not migrate an older journal", async () => {
   expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/current journal format/);
   const db = new Database(f.file, { readonly: true });
   expect(db.pragma("user_version", { simple: true })).toBe(1); db.close();
+});
+
+test("current controller snapshot verifies the full ticket without writing the v9 journal", async () => {
+  const f = await currentStopFixture();
+  const before = new Database(f.file, { readonly: true });
+  const row = before.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get();
+  expect(before.pragma("user_version", { simple: true })).toBe(9); before.close();
+  expect(readCurrentControllerSnapshot(f.file, f.ticket)).toMatchObject({ executionId: f.ticket.executionId });
+  expect(() => readCurrentControllerSnapshot(f.file, { ...f.ticket, ipcSecret: "b".repeat(64) })).toThrow(/conflicts/);
+  const after = new Database(f.file, { readonly: true });
+  expect(after.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get()).toEqual(row);
+  expect(after.pragma("user_version", { simple: true })).toBe(9); after.close();
+});
+
+test("current controller snapshot rejects malformed retained process evidence and expired reads", async () => {
+  const f = await currentStopFixture(), db = new Database(f.file);
+  const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+  const value = JSON.parse(row.snapshot); value.nativeProcesses = [{ pid: 0 }];
+  db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/snapshot format/);
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket, Date.now() - 1)).toThrow(/deadline/);
+});
+
+test("current controller snapshot rejects v8 without migrating it", async () => {
+  const f = await currentStopFixture(), db = new Database(f.file);
+  db.exec("DROP TABLE input_message_origins"); db.pragma("user_version=8"); db.close();
+  expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/current journal format/);
+  const after = new Database(f.file, { readonly: true });
+  expect(after.pragma("user_version", { simple: true })).toBe(8);
+  expect(after.prepare("SELECT name FROM sqlite_schema WHERE name='input_message_origins'").get()).toBeUndefined(); after.close();
 });
 
 test.each([1, 2, 3, 4])("readonly helpers upgrade journal v%s without claiming or rewriting execution evidence", async version => {

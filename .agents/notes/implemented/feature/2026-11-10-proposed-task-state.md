@@ -33,9 +33,7 @@ fields after exact-version validation.
 
 The existing [cancellation decision](2026-11-06-task-cancellation-terminal.md)
 continues to own the irreversible cancelled outcome and readable retained data.
-Active claims still require controlled release; retained released history stays
-on todo or cancelled and does not permit ordinary status setting to bypass
-continuation rules.
+Active claims still require controlled release. The [release decision](../simplification/2026-11-12-release-clears-ownership.md) clears current ownership so ordinary status rules apply afterwards.
 
 A new migration expands the status constraint and changes the default without
 altering existing rows, versions, timestamps or materials. Historical migrations,

@@ -68,12 +68,12 @@ const herdrRecord = (value: ResourceOwner, cwd: string): HerdrLifecycleRecord =>
   registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending",
   initialPrompt: null, automationBlocked: false, preparation: null, runs: [], segments: [], version: 1,
 });
-const fixture = () => {
+const fixture = (refFormat: "files" | "reftable" = "files") => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-migration");
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(path.join(scratch, "case-")); roots.push(root);
   const repositoryPath = path.join(root, "repo"); mkdirSync(repositoryPath);
-  git(repositoryPath, ["init", "--initial-branch=main"]);
+  git(repositoryPath, ["init", "--initial-branch=main", ...(refFormat === "reftable" ? ["--ref-format=reftable"] : [])]);
   git(repositoryPath, ["config", "user.name", "Fixture"]); git(repositoryPath, ["config", "user.email", "fixture@example.com"]);
   writeFileSync(path.join(repositoryPath, "tracked.txt"), "original\n");
   git(repositoryPath, ["add", "tracked.txt"]); git(repositoryPath, ["commit", "-m", "fixture"]);
@@ -236,6 +236,44 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     await expect(f.migrate()).rejects.toThrow("foreign Git lock");
     expect(readFileSync(path.join(original.admin, "locked"), "utf8").trim()).toBe("manual");
     expect(readdirSync(original.cwd)).toEqual([]);
+    expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+  });
+
+  it("migrates a populated reftable repository using its actual worktree HEAD", async () => {
+    const f = fixture("reftable"), value = owner(), original = f.add(value);
+    expect(git(f.repositoryPath, ["rev-parse", "--show-ref-format"])).toBe("reftable");
+    expect(readFileSync(path.join(original.admin, "HEAD"), "utf8").trim()).toContain(".invalid");
+    const pointer = readFileSync(path.join(original.cwd, ".git"));
+    writeFileSync(path.join(original.cwd, "tracked.txt"), "dirty bytes\n");
+    f.schedule.push(value);
+    await f.migrate();
+    expect(f.store.read(value.worktreeId)).toEqual(expected(value));
+    expect(existsSync(path.join(original.admin, "locked"))).toBe(false);
+    expect(readFileSync(path.join(original.cwd, ".git"))).toEqual(pointer);
+    expect(readFileSync(path.join(original.cwd, "tracked.txt"), "utf8")).toBe("dirty bytes\n");
+    expect(git(original.cwd, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/daynight/${value.taskId}`);
+    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
+    await f.migrate();
+    expect(f.store.read(value.worktreeId)).toEqual(expected(value));
+  });
+
+  it.each(["files", "reftable"] as const)("retains a %s legacy checkout whose branch changed", async refFormat => {
+    const f = fixture(refFormat), value = owner(), original = f.add(value);
+    git(original.cwd, ["checkout", "-b", "unexpected"]);
+    const pointer = readFileSync(path.join(original.cwd, ".git"));
+    await expect(f.migrate()).rejects.toThrow("unexpected branch");
+    expect(readFileSync(path.join(original.admin, "locked"), "utf8").trim()).toBe(original.marker);
+    expect(readFileSync(path.join(original.cwd, ".git"))).toEqual(pointer);
+    expect(f.store.read(value.worktreeId)).toBeNull();
+    expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+  });
+
+  it.each(["files", "reftable"] as const)("retains a %s legacy checkout with a detached HEAD", async refFormat => {
+    const f = fixture(refFormat), value = owner(), original = f.add(value);
+    git(original.cwd, ["checkout", "--detach"]);
+    await expect(f.migrate()).rejects.toThrow();
+    expect(readFileSync(path.join(original.admin, "locked"), "utf8").trim()).toBe(original.marker);
+    expect(f.store.read(value.worktreeId)).toBeNull();
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
 

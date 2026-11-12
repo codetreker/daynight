@@ -772,11 +772,11 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 10 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 10 rebuilds incompatible project, summary and detail records and their
-watermarks for required type, parentId and dependency states, preserving user
-fences, profiles and compatible Session-history formats. Upgrades from schema 1
-through 4 rotate user fences; schema 7 Session records lack the complete-empty
+schema 11 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 11 clears project, summary and
+detail records and their watermarks before strict parsing, preserving user fences,
+profiles and compatible Session-history formats. A full snapshot can clear the
+refetchable Session catalogue. Upgrades from schema 1 through 4 rotate user fences; schema 7 Session records lack the complete-empty
 proof and are cleared. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
@@ -1136,7 +1136,7 @@ separate decisions. Unknown manual input is never automatically resent.
 The main Session tab automatically follows the task's actual claim and lifecycle,
 without an execution-record selector or catalogue refresh row. Active claims keep
 their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed and released claims resolve their original Session through a
+an older Session. Completed claims resolve their original Session through a
 read-only current request and display fixed history without input or control
 operations. Task completion does not imply archive readiness: pending, failed and
 unavailable archives retain their status and recovery action. Opening, refreshing
@@ -1235,30 +1235,34 @@ records the original trade-offs.
 
 A local-only snapshot has revision zero and no server clock or successful receipt.
 It displays neither a refreshed timestamp nor running durations or stall warnings;
-completed durations still use their persisted endpoints. Overview uses client wall
-time for provisional recent-completion classification, then switches to the live
-server sample. This provisional time never establishes execution time or sync
-coverage.
+completed durations still use their persisted endpoints. Overview and completion-time readings use the local snapshot time for provisional
+display, then switch to the live server sample. This provisional time never
+establishes execution time, completion facts or sync coverage.
 
 The successful task-sync API reader captures `receivedMonotonic` immediately
 after `response.text()` completes, before JSON decoding, source scanning or
 validation. `getTaskSync` returns local `TaskSyncRead {sync, receivedMonotonic}`;
 `useTaskGraph` carries that receipt through history, IDB and index work and pairs
 it with the response's database `observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
-`TaskExecutionClockProvider` per loaded project advances the server sample with
+`TaskExecutionClockProvider` at each project or standalone resource page root advances the server sample with
 `performance.now()` elapsed time and publishes saved threshold changes in the
 same layout effect. Its estimate includes post-receipt render/commit delay but
 does not compensate for network delay before that receipt; client
 `Date.now()` does not determine duration or warnings.
 
-Only mounted running tasks with a known start subscribe to one visible-page
-one-second ticker. Completed tasks subscribe only to threshold metadata and use
-their persisted endpoint difference; unknown timing has no active subscription.
-Hiding pauses ticks, visibility return publishes monotonic elapsed immediately,
-and ordinary guarded polling separately reanchors time. The last running
-unsubscribe and provider unmount release timer/listener work. There is no new
-blur listener, per-card request or server worker. Clock samples and settings stay
-outside graph-index, projection and layout dependencies.
+Mounted running tasks with a known start and completion-time consumers share one
+visible-page one-second ticker. Completion readings use the server sample at
+nanosecond precision, or the local snapshot anchor for a cached preview. The
+completion hook publishes only semantic bucket changes. Completed execution
+durations subscribe only to threshold metadata and use their persisted endpoint
+difference; unknown timing has no active subscription. Without a snapshot all
+samples and settings remain unknown and no ticker starts. Hiding pauses ticks,
+visibility return publishes monotonic elapsed immediately, and ordinary guarded
+polling separately reanchors time. The last active unsubscribe, clearing the
+sample and provider unmount release timer/listener work. The provider stays mounted
+across first receipt and same-project presentation changes. There is no new
+per-card request or server worker. Clock samples and settings stay outside
+graph-index, projection and layout dependencies.
 
 Task cards, standalone rows and Goal child rows show live elapsed or a frozen
 original execution duration for done and cancelled records. Todo tasks and
@@ -1574,8 +1578,8 @@ database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
-phase; released claims are labeled, while completed history is not a current
-claim. Project participant profiles supply nullable names and email addresses,
+phase; completed history and a missing worker are not a current claim. Project
+participant profiles supply nullable names and email addresses,
 independently of the current-access owner that authorizes controls. The profile
 reader retains loading, request errors and retry; a former participant remains
 identified by its real user ID. A missing canonical profile is a roster error,
@@ -1589,7 +1593,7 @@ standalone pages also compact the auxiliary navigation bar spacing so complete
 return links and language controls fit together at 320px in both languages
 without consuming the attachment reading area. Keyboard
 focus can reveal the withdrawal control within that region. Only
-the original owner or a project admin sees **Force withdraw** for active/released
+the original owner or a project admin sees **Force withdraw** for active
 ownership; the service rechecks membership and authority.
 
 Withdrawal confirmation freezes the task, claim and precise version. It explains
@@ -1613,14 +1617,24 @@ graph action can wrap on narrow screens. Desktop header titles stay 13px and
 narrow-screen titles 12px. Child tasks use compact rows with visible individual
 status.
 
-Each mounted Goal row owns an initially collapsed disclosure state, separate
-from graph opening. Several lists can be expanded at once. Same-row refreshes
+Each mounted ordinary chain representative row owns an initially collapsed disclosure
+state, separate from graph opening. Several lists can be expanded at once. Same-row refreshes
 and detail/graph round trips preserve that choice while updating current
 members. Inactive inner categories unmount their rows, and filtering or
 representative replacement can also remove a row; remounting starts collapsed.
 Outer Overview switching retains the visited task subtree and its disclosure
 choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
+
+The typed Goal category also expands each Goal in place. Its independent title
+opens Goal details, while the disclosure shows all direct standalone tasks and
+scoped chains. Classification uses the complete ordinary graph before selecting
+the Goal, so a scoped single member of a larger component remains a chain.
+Goal and chain disclosures start closed; closing a Goal preserves its chain
+choices until that row unmounts. Scoped progress counts only its own members,
+including separate done and cancelled results. List filters and 20-item pagination
+apply to Goals themselves, not their children. Graph and Task readers preserve
+the original Goal source, background list state and focus fallback.
 
 In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`
@@ -2003,6 +2017,12 @@ reloads the selected content and remounts native previews; the server's
 `Cache-Control: no-store` keeps mutable paths current. Empty inventory and no
 selection have distinct states; deleting the selected file clears its preview, while deleting another file preserves the loaded preview and reading position. A failed delete retains the last-known row and preview without promising server-side rollback under K1.
 
+The shared Task and Goal preview header displays the selected attachment's created
+and last-modified timestamps using the current locale and browser time zone, with
+seconds and semantic `time` values. It retains known metadata during refresh,
+preview errors and remote-operation pauses; confirmed removal or absence clears it.
+File information, timestamps and actions can wrap on narrow screens.
+
 The right preview has one vertical scroll owner. Markdown, text/JSON/source and
 large images use `attachment-preview-body`; their renderers have no nested
 vertical height limits. Tables and code can scroll horizontally. For ready
@@ -2078,14 +2098,22 @@ Escape does not navigate or close the window. Native PDF readers may not expose
 a controllable document: HTML keyboard proof does not establish PDF key behavior,
 and explicit exit/return controls remain available.
 
-`/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
+`/projects/{projectId}/tasks/{taskId}` defaults to Overview for ordinary Tasks and
+Description for Goals. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
 `tab=overview|description|attachments|steps|discussion|session` enters shared
-navigation. A Goal presents Description, Tasks, Attachments and Discussion in that
-order, with `overview` selecting the default Tasks panel. Description uses the
-Goal’s Markdown and attachment owner and shows the existing empty state when
-empty. Description and Tasks scroll independently; the four panels remain mounted
+navigation. A Goal presents Description, Attachments and Discussion in that
+order, with `description` and `overview` selecting Description. Its child tasks
+and scoped chains remain in the project Goal list. Description uses the Goal's
+Markdown and attachment owner and shows the existing empty state when empty.
+Its information aside displays the Goal's creation and modification times in the
+selected language and browser timezone, together with direct-child standalone,
+chain, total, done, cancelled and unfinished counts. Classification uses the
+complete ordinary graph before Parent projection; external edges do not merge
+chains. The description scroll owner contains both desktop columns, stacked on
+narrow screens. Unknown graph state is distinct from zero tasks, and a failed
+refresh retains displayed counts with retry. The three panels remain mounted
 across tab changes, refreshes and fullscreen transitions. Ordinary Tasks do not
 have a Description tab and fall back to Overview for `tab=description`; Session
 falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
@@ -2101,6 +2129,14 @@ upload selection synchronize the address and add history only for a new state.
 Back/Forward apply the address state without adding an entry. Goal graphs, child
 Task dialogs and external Goal dialogs on a standalone resource page also restore
 their reading selections with Back/Forward without changing the root URL.
+A cross-Goal Details destination selects its Goal and child Task together.
+External Expand selects the Goal and complete chain graph for a multi-member
+destination, or opens Task details for a single member. From a standalone reader,
+unparented chain Expand carries its witness through the project URL
+`#chain={taskId}`. The project consumes and clears that transient fragment once
+its complete index is available; `#task={taskId}` retains task reading and list
+location semantics. Invalid or missing targets use existing unavailable feedback.
+These fragments do not add persistent preferences or nested detail URL state.
 Closing a layer replaces the current selection after draft admission. Project-page
 sections, graph, details and their nested reading selections also participate in
 Back/Forward without changing the project URL. Traversal does not replay operations
@@ -2350,15 +2386,16 @@ package's `.tmp/` and are removed after classification. Typechecking remains a
 separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
-The Web selector starts `verify-web-quality` and `verify-web-browser` independently
-after module detection. Each job prepares its own runner. Quality has a
-30-minute limit and browser validation has a 20-minute limit; the final gate
-requires both to succeed when selected. The quality job runs full typechecking,
-the harness, the Docker Web build, Vitest/V8 collection and coverage checking
-serially with bounded stages and uploads coverage evidence. The browser job runs
-the assistant suite below without depending on the quality job or its artifacts. The module browser
-entry separately runs the navigation, Team, assistant and other fixture
-configurations.
+The Web selector starts `verify-web-quality` after module detection. This job
+has a 30-minute limit, and final `checks` requires it to succeed when selected.
+It runs full typechecking, the harness, the Docker Web build, Vitest/V8 collection
+and coverage checking serially with bounded stages and uploads coverage evidence.
+The separate [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
+runs the assistant suite below on `main` pushes and manual dispatch. Its browser
+job has a 20-minute limit and prepares its own runner without a quality artifact
+or result dependency. Ordinary Web unit and quality commands do not launch
+browser fixtures. The explicit module browser entry separately runs the
+navigation, Team, assistant and other fixture configurations.
 
 The independent login completion page validates the local return target and callback
 path supplied by the successful server callback. It retains the target query and
@@ -2443,12 +2480,18 @@ It uses one worker, zero retries and a 45-second test timeout. An installed Chro
 can be selected with `DAYNIGHT_BROWSER_CHANNEL=chrome` on the test command; record
 that browser choice with the result. Captures are saved under
 `packages/daynight-web/.tmp/acceptance/bots-viewport/`.
-The [checks workflow](../../.github/workflows/checks.yml) runs the same suite in
-`verify-web-browser` when Web checks are selected. Its fresh runner installs the
-locked dependencies and Chromium, then the Playwright configuration starts its
+The [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
+runs the same suite in `verify-web-browser` on every `main` push and through
+`workflow_dispatch`. Its fresh runner installs the locked dependencies and
+Chromium, then the Playwright configuration starts its
 own Vite host. It uploads `daynight-web-assistant-browser` with JUnit results and
 browser captures, including available evidence after a failed browser run.
-Documentation-only PRs follow the repository's separate CI selection rules.
+The ordinary PR `checks` workflow neither invokes nor waits for this job. A
+successful PR gate does not establish a hosted assistant-browser result; a
+main-push or manually dispatched result belongs to that run's checked-out
+revision. The [workflow decision](../../.agents/notes/implemented/testing/2026-11-12-shell-browser-workflow.md)
+records this scheduling trade-off. Product E2E retains its own browser and
+selected-job gate.
 
 These tests prove browser consumption and presentation with controlled services;
 the creation responses, Session operations and archived history are fixtures.

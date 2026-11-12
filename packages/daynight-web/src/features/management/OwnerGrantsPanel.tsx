@@ -5,6 +5,7 @@ import { listOwnerGrants, revokeOwnerGrant, type OwnerGrant } from "../../api/oa
 import { useI18n } from "../../i18n/LocaleProvider";
 import { ManagementDialog } from "./ManagementDialog";
 import { DateLabel, Identity, ManagementError } from "./feedback";
+import { CredentialLastUse, mergeCredentialUses } from "./CredentialLastUse";
 
 type GrantApi = { readonly list: typeof listOwnerGrants; readonly revoke: typeof revokeOwnerGrant };
 const api: GrantApi = { list: listOwnerGrants, revoke: revokeOwnerGrant };
@@ -66,7 +67,7 @@ const OwnerGrantsContent = ({ user, onIdentityMismatch, transport, visible }: {
       const result = await transport.list(signal, user.id, onIdentityMismatch);
       await waitForAuthRequests(signal);
       if (signal.aborted || reading.current !== read) return;
-      setGrants(result);
+      setGrants(items => mergeCredentialUses(items, result));
       if (reconcile !== null) {
         if (!writeMarker(user.id, null)) { setStorageError(true); return; }
         setStorageError(false); setRecovery(null);
@@ -172,9 +173,9 @@ const OwnerGrantsContent = ({ user, onIdentityMismatch, transport, visible }: {
       {notice !== null && <p className="notice grant-status-notice" role="status"><strong>{notice.name}</strong> · {notice.kind === "observed" ? m.grantObserved : m.grantSaved}</p>}
       {grants !== null && (grants.length === 0 ? <div className="empty-inline">{m.grantsEmpty}</div> : grants.map((grant) => {
         const name = grant.clientName || grant.clientId;
-        return <div className={`row grant-row${grant.status === "active" ? "" : " revoked"}`} key={grant.id}>
+        return <div className={`row grant-row owner-grant-row${grant.status === "active" ? "" : " revoked"}`} key={grant.id}>
           <div className="grant-main"><div className="grant-meta-line"><strong className="person-name">{name}</strong><span className={`badge${grant.status === "active" ? "" : " warning"}`}>{grant.status === "active" ? m.grantActive : grant.status === "expired" ? m.grantExpired : m.grantRevoked}</span></div><div className="grant-origin">{m.grantClient}: {grant.clientId}</div><div className="grant-scope">{m.grantScope}: {grant.scope}</div></div>
-          <div className="grant-facts"><p>{m.grantResource}: <strong>{grant.resource}</strong></p><p>{common.createdAt}: <DateLabel value={grant.createdAt} /></p><p>{common.expiresAt}: <DateLabel value={grant.expiresAt} /></p>{grant.revokedAt !== null && <p>{m.grantRevoked}: <DateLabel value={grant.revokedAt} /></p>}</div>
+          <div className="grant-facts"><p>{m.grantResource}: <strong>{grant.resource}</strong></p><p>{common.createdAt}: <DateLabel value={grant.createdAt} /></p><p>{common.expiresAt}: <DateLabel value={grant.expiresAt} /></p><CredentialLastUse value={grant.lastUsedAt} />{grant.revokedAt !== null && <p>{m.grantRevoked}: <DateLabel value={grant.revokedAt} /></p>}</div>
           <div className="actions">{grant.status === "active" ? <button className="button quiet" type="button" disabled={blocked} aria-label={m.grantRevoke({ name })} onClick={() => { dialogRevision.current += 1; setSelected(grant); setDialogError(null); setNotice(null); }}>{common.revoke}</button> : <span className="muted small">{common.unusable}</span>}</div>
         </div>;
       }))}

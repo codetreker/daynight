@@ -525,11 +525,10 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		t.Fatal("same-value Worker update changed version, timing or summary fields")
 	}
 	assertSummary(noop, current)
-	worker.State = model.WorkerReleased
 	released := current
 	released.Status, released.Version, released.Ready = model.TaskTodo, current.Version+1, true
 	released.StartedAt, released.CompletedAt, released.UpdatedAt = nil, nil, current.UpdatedAt.Add(time.Second)
-	released.Properties = workerHTTPProperties(t, current.Properties, &worker)
+	released.Properties = workerHTTPProperties(t, current.Properties, nil)
 	values = workerHTTPWriteValues(released)
 	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, released, nil, store.TransactionCommitted)
 	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/release", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
@@ -539,20 +538,8 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		t.Fatal("release lost status timing contract")
 	}
 	f.expectRead(released)
-	if read := readHTTPTask(t, f.handler, full); !reflect.DeepEqual(read, full) || apiWorker(t, read.Properties).NativeSessionID == nil || *apiWorker(t, read.Properties).NativeSessionID != native {
-		t.Fatal("summary projection changed full execution resource")
-	}
-	current = released
-	withdrawn := current
-	withdrawn.AllowAgents, withdrawn.Version, withdrawn.UpdatedAt = false, current.Version+1, current.UpdatedAt.Add(time.Second)
-	withdrawn.Properties = workerHTTPProperties(t, current.Properties, nil)
-	values = workerHTTPWriteValues(withdrawn)
-	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, withdrawn, nil, store.TransactionCommitted)
-	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID})), http.StatusOK)
-	plan.check()
-	assertSummary(full, withdrawn)
-	if apiWorker(t, full.Properties) != nil || full.AllowAgents || full.Status != "todo" || full.StartedAt != nil || full.CompletedAt != nil {
-		t.Fatal("withdrawal retained released record or automatic permission")
+	if read := readHTTPTask(t, f.handler, full); !reflect.DeepEqual(read, full) || apiWorker(t, read.Properties) != nil {
+		t.Fatal("released Task projection retained execution")
 	}
 }
 

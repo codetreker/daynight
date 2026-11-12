@@ -14,7 +14,7 @@ replay input, and a spawn proof on Windows has no Job Object boundary yet.
 Task, Bot and independent Test launchers retain the submitted ticket and spawn
 proof and share one observation of authenticated IPC, original process identity
 and the current journal. Only authenticated IPC acknowledges the launch. After
-the original process exits, a short read-only v8 snapshot distinguishes the
+the original process exits, a short read-only current-format snapshot distinguishes the
 committed current generation from a missing writer or exact stopped predecessor;
 conflicting identity and unknown process facts remain errors. The
 [protocol design](../../../../docs/design/task-session-protocol.md) owns the
@@ -47,7 +47,7 @@ A Windows Job name can be reused after the original name or object disappears.
 The Controller retains its Job handle for its lifetime. An observer acquires a
 lease while an original member is verifiable and keeps that same handle through
 termination and complete stop confirmation. A missing name or unavailable lease
-remains unknown. A versioned marker in the v8 snapshot binds the committed stop
+remains unknown. A versioned marker in the current snapshot binds the committed stop
 to the ticket and snapshot only after that confirmation; it permits later recovery
 without reopening a vanished name. Older records without the marker remain blocked.
 Older binaries do not enforce the marker, so their existing stop behavior does
@@ -77,5 +77,7 @@ journal's evidence.
 
 Waiting and failed cleanup retain the original execution identity and resource
 responsibility. A pre-writer exit cannot establish native stop or authorize a
-new generation. Production journal format remains v8; later storage ownership
-work can protect the same read-only classification without changing its result.
+new generation. This work originally targeted journal v8; mainline subsequently
+introduced v9 for message origins. The shared observer uses the current format
+without migrating it, and later storage ownership work can protect the same
+read-only classification without changing its result.

@@ -4,11 +4,12 @@ import { ApiError } from "../src/api/client";
 import type { PersonalAccessToken } from "../src/api/auth-types";
 import { TokensPanel, type TokenManagementApi } from "../src/features/management/TokensPanel";
 import { parseTokenExpiryDraft, tokenExpiryDraft } from "../src/features/management/TokenExpiryField";
+import { CredentialClockProvider } from "../src/features/management/CredentialLastUse";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
 const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
-const token: PersonalAccessToken = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", createdAt: "2026-10-25T08:00:00Z", expiresAt: null };
+const token: PersonalAccessToken = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", lastUsedAt: null, createdAt: "2026-10-25T08:00:00Z", expiresAt: null };
 const exactExpiry = "2099-10-25T12:34:56.123456789Z";
 const futureInput = "2099-11-26T10:30";
 const mismatch = vi.fn();
@@ -22,6 +23,50 @@ const save = () => fireEvent.submit(document.getElementById("edit-token-expiry-f
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 describe("optional token expiration", () => {
+  it.each([null, "2026-11-12T12:00:00.123456788Z"])("keeps the editor through a clock tick and merges an older PATCH usage value %s", async (receiptUse) => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-12T12:03:01Z"));
+    try {
+      const recent = "2026-11-12T12:00:00.123456789Z";
+      const pending = deferred<PersonalAccessToken>();
+      const transport = fixture([{ ...token, expiresAt: exactExpiry, lastUsedAt: recent }]);
+      transport.update.mockReturnValue(pending.promise);
+      await act(async () => { render(<CredentialClockProvider visible>{page(transport)}</CredentialClockProvider>); });
+      expect(screen.getByText(token.name)).toBeInTheDocument();
+      const summary = document.querySelector(".credential-last-use summary")!;
+      fireEvent.click(summary);
+      expect(summary.parentElement).toHaveAttribute("open");
+      edit(); date();
+      const draft = screen.getByLabelText("到期日期和时间");
+      const dialog = screen.getByRole("dialog"); draft.focus();
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(summary).toHaveTextContent("约 4 分钟前");
+      expect(summary.parentElement).toHaveAttribute("open");
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(draft).toHaveFocus(); expect(draft).toHaveValue(futureInput);
+      save();
+      expect(transport.update).toHaveBeenCalledExactlyOnceWith(token.id, { expiresAt: new Date(futureInput).toISOString(), expectedExpiresAt: exactExpiry, expectedUserId: user.id }, expect.any(AbortSignal), mismatch);
+      expect(screen.getByRole("button", { name: "正在保存…" })).toBeDisabled();
+      await act(async () => pending.resolve({ ...token, expiresAt: new Date(futureInput).toISOString(), lastUsedAt: receiptUse }));
+      expect(screen.getByText("令牌有效期已更新。")).toBeInTheDocument();
+      expect(document.querySelector(".credential-last-use summary")).toBe(summary);
+      expect(summary.parentElement).toHaveAttribute("open");
+      expect(summary.querySelector("time")).toHaveAttribute("datetime", recent);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not give a replacement token the removed token's usage time", async () => {
+    const recent = "2026-11-12T12:00:00Z";
+    const replacement = { ...token, id: "00000000-0000-4000-8000-000000000003", lastUsedAt: null };
+    const transport = fixture([{ ...token, lastUsedAt: recent }]);
+    transport.update.mockRejectedValue(new ApiError("network"));
+    transport.list.mockResolvedValueOnce([{ ...token, lastUsedAt: recent }]).mockResolvedValueOnce([replacement]);
+    render(page(transport)); await ready(); edit(); mode("custom"); date(); save();
+    await screen.findByText("此令牌已不可用，可能已过期或已撤销。");
+    expect(screen.getByText("最后使用: 暂无使用记录")).toBeInTheDocument();
+    expect(document.querySelector(".credential-last-use")).toBeNull();
+    expect(transport.update).toHaveBeenCalledTimes(1);
+  });
+
   it("renders an unlimited token without an invalid date and creates another unlimited token by default", async () => {
     const transport = fixture(); render(page(transport)); await ready();
     expect(screen.getByText(/到期 永不过期/)).toBeInTheDocument();

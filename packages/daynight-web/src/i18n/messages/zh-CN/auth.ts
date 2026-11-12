@@ -92,6 +92,8 @@ export const auth: AuthMessages = {
       grantsTitle: "应用授权", grantsDescription: "管理通过浏览器授权访问 Daynight 的客户端。",
       grantsNotice: "撤销应用授权后，该次授权下的访问和续期凭据都将失效；客户端需要重新请求授权。",
       grantsLoading: "正在读取应用授权…", grantsEmpty: "你还没有授权任何应用。", grantsRefresh: "刷新",
+      lastUsed: "最后使用", noUsageRecorded: "暂无使用记录", recordedTime: "记录时间（近似）", usageJustNow: "约刚刚",
+      usageMinutes: value => `约 ${value} 分钟前`, usageHours: value => `约 ${value} 小时前`, usageDays: value => `约 ${value} 天前`,
       grantClient: "客户端", grantResource: "访问资源", grantScope: "授权范围", grantActive: "有效", grantExpired: "已过期", grantRevoked: "已撤销",
       grantRevoke: ({ name }) => `撤销 ${name} 的应用授权`, grantRevokeTitle: "撤销应用授权？", grantRevokeEffect: "此授权下的访问和续期凭据都将失效。客户端需要重新请求授权才能继续访问。", grantRevokeConfirm: "撤销授权",
       grantStorage: "浏览器会话存储不可用。请恢复后再撤销或确认当前状态。",

@@ -292,7 +292,7 @@ func TestGrantLifecycleConcurrentReplayAndBinding(t *testing.T) {
 			t.Error("replay waiter did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants", first.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", first.Conn().PgConn().PID())
 	check(t, first.Commit(ctx))
 	check(t, testutil.ReceiveQueryResult(t, ctx, done))
 	read, err := db.Pool.Begin(ctx)
@@ -349,7 +349,7 @@ func TestGrantLifecycleWaitRechecksExpiry(t *testing.T) {
 			t.Error("expiry waiter did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants", holder.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants", holder.Conn().PgConn().PID())
 	var expiry time.Time
 	check(t, holder.QueryRow(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()+interval '20 milliseconds' WHERE id=$1 RETURNING expires_at`, grant.ID).Scan(&expiry))
 	_, err = holder.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.005)`, expiry)

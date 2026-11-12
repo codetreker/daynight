@@ -229,19 +229,17 @@ func WithdrawableWorker(current model.Task, claimID string) (*model.WorkerClaim,
 	if err != nil {
 		return nil, err
 	}
-	if worker == nil || worker.ClaimID != claimID || (worker.State != model.WorkerActive && worker.State != model.WorkerReleased) {
+	if worker == nil || worker.ClaimID != claimID || worker.State != model.WorkerActive || current.Status != model.TaskInProgress {
 		return nil, ClaimConflict()
 	}
 	return worker, nil
 }
 
-func ReleaseCandidate(current model.Task, worker *model.WorkerClaim) (store.TaskWrite, error) {
-	next := *worker
-	next.State = model.WorkerReleased
+func ReleaseCandidate(current model.Task) (store.TaskWrite, error) {
 	values := CurrentWrite(current)
 	values.Status = model.TaskTodo
 	var err error
-	values.Properties, err = properties.WithWorker(values.Properties, &next)
+	values.Properties, err = properties.WithWorker(values.Properties, nil)
 	return values, PropertyInputError(err)
 }
 

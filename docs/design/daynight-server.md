@@ -245,7 +245,7 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
 实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回proposed/todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查与普通重新认领。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active；release 清除当前归属后普通状态规则生效，cancelled 不能恢复。[认领架构](daynight-worker-claims.md)拥有归属检查与普通重新认领。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人、Parent 和属性。完整候选校验保证
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
@@ -355,7 +355,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
-| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
+| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active，清除归属并关闭自动执行 |
 | `POST /api/v1/me/workers/{workerId}/report` | 原子保存账号级最新运行快照，不写 task |
 | `GET /api/v1/me/workers` | 近期 Worker 摘要、当前可见任务计数及稳定 cursor |
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
@@ -478,6 +478,13 @@ driver 错误或完整请求体。成功日志提供方法、路由模板、状�
 保留供下次启动使用。stderr 管道断开时，普通服务将 SIGPIPE 转为写入错误，仍尝试
 文件输出并完成关闭。HTTP 和 metrics 的 drain 覆盖整个日志包装器，包括已劫持连接的
 完成记录。`verify-storage` 只写 stderr，不创建日志或获取锁。
+
+凭据使用记录器由 App 显式构造和启动，HTTP grace 期间继续接受已准入请求的事件。
+HTTP/relay 退出后 App 等待其他 producer，再 seal 并 join 记录器及其日志 consumer。
+App 的外层 `Drained()`/`Closed()` 错误分别表明整个应用已排空或已关闭，并保留原始 cause；
+Runtime 不从单个嵌套错误推断整体完成。完成但失败的 drain 不阻止依赖释放，未退出时则保留
+资源。persistence 通过原关闭 channel join pool，包括驱动异步清理，超时后继续等待同一次关闭。
+request-local 故障的前置发布、版本确认和异常兜底见[认证设计](daynight-auth.md#凭据使用记录器)。
 
 诊断服务失败时，先以响应 `requestId` 定位日志，再沿组件和阶段定位失败；数据库
 问题另外检查迁移版本及 PostgreSQL 日志。验收应通过非法状态、版本冲突和受控

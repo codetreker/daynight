@@ -14,6 +14,7 @@ import (
 
 	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 
+	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
@@ -307,6 +308,7 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 			id = rand.Text()
 		}
 		request = request.WithContext(requestid.With(request.Context(), id))
+		request = request.WithContext(usage.WithCollector(request.Context(), &usage.Collector{}))
 		if request.Body != nil && request.Body != http.NoBody {
 			body := &trackedRequestBody{ReadCloser: request.Body}
 			request = request.WithContext(context.WithValue(request.Context(), bodyCompletionKey{}, body))
@@ -322,6 +324,9 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 		}
 		defer func() {
 			value := recover()
+			// Protocol entry points publish before potentially long-lived work;
+			// completion also publishes any revision they have not confirmed.
+			_ = PublishCredentialUsageFaults(logger, request.Context())
 			if metrics != nil {
 				outcome := "returned"
 				switch {
@@ -338,6 +343,8 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 			}
 			if value != nil {
 				if value == http.ErrAbortHandler {
+					logger.ErrorContext(request.Context(), "request aborted", "type", "request_error", "component", "server",
+						"phase", "handler", "cause", "aborted", "request_id", id)
 					panic(value)
 				}
 				logger.ErrorContext(request.Context(), "request interrupted", "type", "request_error", "component", "server",

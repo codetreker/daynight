@@ -5,6 +5,7 @@ import { parseSessionControls, type SessionControls } from "./controls.js";
 export const SESSION_PROTOCOL = "daynight.session.v1" as const;
 export const SESSION_SCHEMA_VERSION = 1 as const;
 export const SESSION_PROJECTION_VERSION = 1 as const;
+export type MessageOrigin = "user" | "daynight";
 export type SessionProvider = "codex" | "claude" | "copilot";
 export type DecimalSequence = string;
 export type SessionBinding = { readonly claimId: string; readonly testExecutionId?: never } | { readonly testExecutionId: string; readonly claimId?: never };
@@ -109,7 +110,8 @@ export type SessionInteraction = {
 export type TimelineEntry = {
   readonly entryId: string; readonly entrySeq: DecimalSequence; readonly revision: DecimalSequence; readonly imageProjectionError?: ImageError | null;
 } & (
-  | { readonly kind: "user_message" | "assistant_message"; readonly content: readonly MessagePart[] }
+  | { readonly kind: "user_message"; readonly content: readonly MessagePart[]; readonly origin?: MessageOrigin }
+  | { readonly kind: "assistant_message"; readonly content: readonly MessagePart[] }
   | { readonly kind: "reasoning"; readonly text: string; readonly markdown?: MarkdownImageMetadata }
   | { readonly kind: "tool_call"; readonly callId: string; readonly name: string; readonly input: string; readonly output: readonly MessagePart[]; readonly status: "running" | "completed" | "failed"; readonly truncated: boolean }
   | { readonly kind: "interaction"; readonly interaction: SessionInteraction }
@@ -358,7 +360,7 @@ export const parseTimelineEntry = (value: unknown): TimelineEntry => {
   const enriched = Object.hasOwn(value, "imageProjectionError");
   const common = ["entryId", "entrySeq", "revision", "kind", ...(enriched ? ["imageProjectionError"] : [])];
   const extras: Record<string, readonly string[]> = {
-    user_message: ["content"], assistant_message: ["content"], reasoning: ["text", ...(enriched ? ["markdown"] : [])], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
+    user_message: ["content", ...(Object.hasOwn(value, "origin") ? ["origin"] : [])], assistant_message: ["content"], reasoning: ["text", ...(enriched ? ["markdown"] : [])], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
     interaction: ["interaction"], error: ["code", "message"], compaction: ["summary"], todo: ["items"],
   };
   const kind = oneOf(value.kind, ["user_message", "assistant_message", "reasoning", "tool_call", "interaction", "error", "compaction", "todo"]);
@@ -383,7 +385,8 @@ export const parseTimelineEntry = (value: unknown): TimelineEntry => {
     if (base.imageProjectionError && !parts.some((part, index) => part.type === "markdown" && index > 0 && parts[index - 1]?.type === "text" && part.text === "" && part.complete && !part.truncated && part.bindings?.length === 0)) return invalid();
     return parts;
   };
-  if (kind === "user_message" || kind === "assistant_message") return { ...base, kind, content: content(data.content) };
+  if (kind === "user_message") return { ...base, kind, content: content(data.content), ...(Object.hasOwn(data, "origin") ? { origin: oneOf(data.origin, ["user", "daynight"]) } : {}) };
+  if (kind === "assistant_message") return { ...base, kind, content: content(data.content) };
   if (kind === "reasoning") {
     const body = text(data.text, true), markdown = enriched ? parseMarkdownImageMetadata(data.markdown, body, !!base.imageProjectionError) : null;
     if (markdown && (markdown.bindings === null) !== !!base.imageProjectionError) return invalid();

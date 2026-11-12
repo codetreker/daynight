@@ -165,8 +165,13 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   });
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
-  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
+  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
   const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+    const source = db.prepare("SELECT origin FROM input_message_origins WHERE entry_id=?").get(entry.entryId) as { origin: "user" | "daynight" } | undefined;
+    if (source) {
+      if (entry.kind !== "user_message" || entry.origin !== undefined && entry.origin !== source.origin) throw new Error("Timeline update changed its original input origin.");
+      entry = { ...entry, origin: source.origin };
+    }
     metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
     const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
     void ignored; void ignoredSequence;
@@ -187,6 +192,31 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
     pendingContent.saveEntry(durableEntry);
     return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
+  });
+  const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
+    const operation = getOperation(operationId);
+    if (operation?.kind !== "send_message" || !operation.payload || typeof operation.payload !== "object" || !("origin" in operation.payload)) return entryId;
+    const origin = operation.payload.origin;
+    if (origin !== "user" && origin !== "daynight") throw new Error("Invalid persisted input origin.");
+    if (nativeSessionId !== getSnapshot().nativeSessionId || !/^[a-f0-9-]{36}$/.test(entryId)) throw new Error("Native message identity differs from its original input.");
+    if (!["dispatching", "unknown", "provider_accepted", "confirmed"].includes(operation.state)) throw new Error("Native message has no dispatched original input.");
+    // Native history can rebuild raw item IDs while retaining the original
+    // operation identity. Provenance and projection must reuse one durable row.
+    const original = db.prepare("SELECT entry_id,origin FROM input_message_origins WHERE operation_id=?").get(operationId) as { entry_id: string; origin: string } | undefined;
+    if (original) {
+      if (original.origin !== origin) throw new Error("Native message origin conflicts with its original input.");
+      entryId = original.entry_id;
+    }
+    const existing = db.prepare("SELECT operation_id,origin FROM input_message_origins WHERE entry_id=?").get(entryId) as { operation_id: string; origin: string } | undefined;
+    if (existing && (existing.operation_id !== operationId || existing.origin !== origin)) throw new Error("Native message origin conflicts with its original input.");
+    const current = pendingContent.getEntry(entryId);
+    if (current && current.kind !== "user_message") throw new Error("Native input cannot replace another timeline kind.");
+    if (!existing) {
+      metadataBudget.assert(Buffer.byteLength(entryId + operationId + origin) + 16384, true);
+      db.prepare("INSERT INTO input_message_origins VALUES(?,?,?)").run(entryId, operationId, origin);
+    }
+    if (current) projectTimeline(current);
+    return entryId;
   });
   const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
     const current = pendingContent.getEntry(entry.entryId);
@@ -221,7 +251,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       markdownStore.put("projection", state.entryId, state);
       return projectTimeline(entry);
     }),
-    ...createNativeInputPublication({ db, ticket, pendingContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
+    ...createNativeInputPublication({ db, ticket, pendingContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
     ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
@@ -302,12 +332,15 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.hasEntry(entryId)),
     getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => pendingContent.getEntry(entryId)),
     projectTimeline,
+    associateInputMessage,
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");
       const images = input.kind === "send_message" && input.payload !== null && typeof input.payload === "object" && "content" in input.payload && Array.isArray(input.payload.content) && input.payload.content.some((part: unknown) => part !== null && typeof part === "object" && "type" in part && part.type === "image");
       if (images && input.intent === undefined) throw new Error("Image input requires the complete original operation intent.");
       const canonical = images ? canonicalSessionIntent(input.intent!) : null;
-      const hash = canonical === null ? controllerPayloadHash({ kind: input.kind, payload: input.payload }) : createHash("sha256").update(canonical).digest("hex"); const existing = getOperation(input.operationId);
+      const hashPayload = input.kind === "send_message" && input.payload && typeof input.payload === "object" && "origin" in input.payload && input.payload.origin === "user"
+        ? (({ origin: _origin, ...payload }) => payload)(input.payload) : input.payload;
+      const hash = canonical === null ? controllerPayloadHash({ kind: input.kind, payload: hashPayload }) : createHash("sha256").update(canonical).digest("hex"); const existing = getOperation(input.operationId);
       if (existing !== null) { if (existing.payloadHash !== hash) throw new Error("The operation ID has different content."); return existing; }
       metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) * 2 + 16384);
       if (input.kind === "initial" || input.kind === "send_message" || input.kind === "interaction_response" || input.kind === "execute_command" || input.kind === "update_setting") assertInputCapacity();
@@ -411,6 +444,32 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
       if (cause instanceof SqliteAccessError) throw new SqliteAccessError(cause.kind, cause.context, { cause: failure, outcome: cause.outcome, connectionClosed: cause.connectionClosed });
       throw failure;
     }
+    throw cause;
+  }
+};
+
+/** Read the current journal without migration and verify its original ticket fence. */
+export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLaunchTicket, deadline?: number): ControllerSnapshot => {
+  try {
+    const row = readControllerStopRow(file, deadline, true);
+    if (row === null) throw new Error("Original controller journal evidence is unavailable.");
+    const value = row.snapshot;
+    const processProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && typeof proof.startedAt === "string" && proof.startedAt.trim() !== "" && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
+    if (value === null || typeof value !== "object" || Array.isArray(value) || row.ticketHash !== controllerPayloadHash(ticket)
+      || value.executionId !== ticket.executionId || value.sessionId !== ticket.sessionId || value.claimId !== ticket.claimId || value.testExecutionId !== ticket.testExecutionId
+      || value.executionGeneration !== ticket.executionGeneration || value.controllerInstanceId !== ticket.controllerInstanceId
+      || !["starting", "ready", "working", "stopping", "stopped", "paused", "failed"].includes(value.lifecycle)
+      || !["initializing", "idle", "working", "waiting_input", "stopped", "unknown"].includes(value.activity)
+      || !["not_required", "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"].includes(value.initialInputState)
+      || !(value.nativeSessionId === null || typeof value.nativeSessionId === "string" && value.nativeSessionId.trim() !== "" && value.nativeSessionId.isWellFormed())
+      || !(value.controllerProcess === null || processProof(value.controllerProcess)) || !Array.isArray(value.nativeProcesses) || !value.nativeProcesses.every(processProof)
+      || typeof value.nativeStopped !== "boolean" || !(value.stoppedAt === null || typeof value.stoppedAt === "string" && Number.isFinite(Date.parse(value.stoppedAt)))
+      || !(value.error === null || typeof value.error === "string") || !(value.currentTurnId === null || typeof value.currentTurnId === "string")
+      || value.capabilities === null || typeof value.capabilities !== "object" || ["send", "steer", "cancel", "respond"].some(key => typeof value.capabilities[key as keyof SessionCapabilities] !== "boolean")) throw new Error("Controller current journal conflicts with its original ticket or snapshot format.");
+    if (deadline !== undefined && Date.now() >= deadline) throw new Error("Controller stop recording exceeded its deadline.");
+    return value;
+  } catch (cause) {
+    if (deadline !== undefined && Date.now() >= deadline && !(cause instanceof Error && /deadline/.test(cause.message))) throw new AggregateError([cause, new Error("Controller stop recording exceeded its deadline.")], "Controller journal observation failed at its deadline.", { cause });
     throw cause;
   }
 };

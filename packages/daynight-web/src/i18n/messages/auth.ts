@@ -192,6 +192,13 @@ export type AuthMessages = {
       readonly grantsLoading: string;
       readonly grantsEmpty: string;
       readonly grantsRefresh: string;
+      readonly lastUsed: string;
+      readonly noUsageRecorded: string;
+      readonly recordedTime: string;
+      readonly usageJustNow: string;
+      readonly usageMinutes: (value: number) => string;
+      readonly usageHours: (value: number) => string;
+      readonly usageDays: (value: number) => string;
       readonly grantClient: string;
       readonly grantResource: string;
       readonly grantScope: string;

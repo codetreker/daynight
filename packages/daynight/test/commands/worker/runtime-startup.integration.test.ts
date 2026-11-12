@@ -430,7 +430,8 @@ describe("worker cloud-first startup", () => {
     mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
-      await vi.waitFor(() => { expect(options).toBeDefined(); expect(listWorktrees).toHaveBeenCalled(); }, { timeout: 5000, interval: 10 });
+      await vi.waitFor(() => { expect(options).toBeDefined(); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 5000, interval: 10 });
+      expect(listWorktrees).not.toHaveBeenCalled();
       expect(options!.configurationComplete!()).toBe(false);
       expect(options!.store.getProject({ projectId: uuid(9) })).toBeNull();
       expect(remote.resolveProject).not.toHaveBeenCalledWith({ repoUrl: remoteUrl }, expect.any(AbortSignal));
@@ -940,7 +941,11 @@ describe("real runtime resource isolation", () => {
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [{ ...legacy, ...(scenario === "invalid" ? { projectId: "invalid" } : {}) }] } }));
     const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
     const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
-    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp") });
+    const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
+      await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation,
+        sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+    } });
     await mkdir(f.repository.path);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, stdio: "pipe", timeout: 10000 });
     run(["init", "--initial-branch=main"]); run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]); run(["remote", "add", "origin", remoteUrl]);
@@ -948,7 +953,9 @@ describe("real runtime resource isolation", () => {
     run(["branch", `daynight/${owner.taskId}`]);
     const op = createOperation();
     try {
-      const binding = await git.prepareWorktree({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path }, owner, op);
+      const project = { projectId: owner.projectId, repoUrl: remoteUrl, localPath: f.repository.path };
+      await git.prepareRepository(project, op);
+      const binding = await git.prepareWorktree(project, owner, op);
       execFileSync("git", ["checkout", "-b", "changed-branch"], { cwd: binding.worktreePath, stdio: "pipe", timeout: 10000 });
     } finally { op.dispose(); }
     mocks.git.mockReturnValue(git);
@@ -981,7 +988,7 @@ describe("real runtime resource isolation", () => {
       else await vi.waitFor(() => { expect(cycles).toBeGreaterThan(0); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 6000 });
       if (scenario !== "known") expect(remote.claim).not.toHaveBeenCalled();
       if (scenario === "foreign" || scenario === "invalid") expect(configurationComplete).toBe(false);
-      expect(await readFile(path.join(f.repository.path, ".worktrees", "daynight", owner.taskId, ".git"), "utf8")).toContain("gitdir:");
+      expect(await readFile(path.join(f.repository.path, ".worktrees", "daynight", owner.worktreeId, ".git"), "utf8")).toContain("gitdir:");
     } finally { cancellation.abort(); await running; durable.mockRestore(); await git.dispose(); }
   }, 12000);
 });

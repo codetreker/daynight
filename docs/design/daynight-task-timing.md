@@ -106,7 +106,7 @@ Project、items[] 和 graph.project.settings.version 均保持 bigint，覆盖�
 它与任务起止时间共享时钟来源；不使用 Go HTTP Date 的秒精度时间或客户端墙钟推算执行耗时。
 
 成功 task-sync API reader 在 `await response.text()` 完成后立即捕获 `performance.now()`，早于 JSON 解码、source scan 和合同校验；本地 `TaskSyncRead` 将该时间交给 `useTaskGraph`，历史接纳、IDB 原子应用和索引计算沿用它作为 `GraphSnapshot.receivedMonotonic`。这个 receipt 不来自服务端 JSON、磁盘或其它标签页。
-同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。仅本地摘要的 snapshot 将 `observedAt`、`receivedAt` 置为 null，revision 为 0，不产生服务器时钟；它的本机时间与单调锚点只服务概览近期分类。
+同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。仅本地摘要的 snapshot 将 `observedAt`、`receivedAt` 置为 null，revision 为 0，不产生服务器时钟；它的本机时间与单调锚点服务概览近期分类和完成距今显示，不建立服务端执行时间。
 摘要按任务 ID 和精确业务版本合并，Project 设置独立按版本合并；仅时钟变化时复用整个 graph/index，仅设置变化时替换 Project 元数据并复用任务索引。持久与跨页数据不能恢复本页的单调时钟锚点。
 因此缓存图自身的 `graph.observedAt` 可能仍是旧样本。
 页面时钟消费最新 `snapshot.observedAt` 与 `snapshot.receivedMonotonic`，使用如下独立锚点：
@@ -127,10 +127,11 @@ const currentServerTime = (anchor: ClockAnchor) =>
 仅时钟或设置变化都不重建 `GraphIndex`。
 时钟与阈值不得进入投影、节点位置或边路由的 memo 依赖。
 
-`TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。项目任务区由 `ProjectTaskWorkspace` 提供该上下文；Goal 详情属于独立的详情树，由 `GoalDetailSurface` 在已有非空项目快照的任务链对话框分支提供同样的上下文。该 Provider 包含整个图 portal，覆盖普通成员和直接外部前置，使用完整 `GraphSnapshot` 的最新时间样本与项目阈值。图关闭时卸载时钟；同项目快照更新只更新稳定 store，不重挂图或 Goal 的草稿、附件与阅读内容。带计时字段的任务缺少 Provider 仍抛出装配错误，不以客户端墙钟或空耗时掩盖缺失上下文。
-仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅、实际服务端样本且页面可见时才有一个一秒定时器。没有服务端样本时不显示运行中耗时或可能卡住提醒；已完成任务仍按持久起止端点计算耗时。
-完成任务只订阅设置变化以更新说明，不订阅时钟；未知计时无活动订阅。隐藏页暂停 ticker，恢复可见时立即发布单调差值结果，
-既有项目摘要同步随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
+`TaskExecutionClockProvider` 在项目页和独立资源页的稳定内容边界按 projectId 组织 store/context，覆盖列表、详情和图 portal。快照初始为空时仍保留同一 Provider；首份快照、同项目任务切换、普通与全屏切换及背景刷新都不重挂其子树。项目或身份隔离释放旧实例；错项目快照和需要计时却缺少 Provider 均暴露装配错误。原 Goal 图局部时钟决策的背景见[历史记录](../../.agents/notes/implemented/bug-fix/2026-11-12-goal-graph-execution-clock.md)。
+
+运行中耗时只在服务端样本存在时推进；完成执行耗时由持久起止端点计算并冻结。完成距今读取独立订阅：在线以 `snapshot.observedAt` 的纳秒值为锚点，缓存预览以 `snapshot.localTime` 为锚点，均加接收后的单调差值。缓存不产生执行样本或完成事实。空快照使样本和设置均未知，不启动定时器；有效样本到达后原子更新。完成时间按纳秒划分刚刚、分钟、小时、天和本地日期，短暂负差显示为零，原始事实不变。
+
+有效运行订阅或完成订阅共享一个可见页一秒定时器，仅设置订阅不启动。隐藏暂停，恢复时立即重算；最后活动订阅移除、样本清空或 owner 卸载时释放定时器和监听。完成读取的 hook 预解析时间，只在显示分段发生语义变化时发布新对象；每次 tick 不调用本地化格式、不重建索引或重排列表。完成时间的消费者与精确提示由[完成时间设计](daynight-completion-time.md)拥有，时钟取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-12-shared-completion-clock.md)。
 API 读取沿既有账户准入、AbortController 和 generation，旧响应不能更新新项目时钟或阈值。
 单调差值包含接收到提交的 UI 延迟；服务端采样至接收/解析完成的网络与解析延迟仍是估计精度边界，不通过客户端 Date.now 补偿。
 运行同提交暂态的负估计只在显示层限为零，完成态始终使用持久化起止差。
@@ -159,7 +160,7 @@ time 使用 `PT<秒数>S` 语义时长；可见文字对小于一分钟及 d/h/m
 独立行的可见新元数据对名称计算隐藏，计时 tick 不改变按钮名称；没有 alert/status/live-region 逐秒广播。
 完成、未知与进行中都保留现有焦点和控制；显式外部边、链外卡片及选中/前置强调不被琥珀提醒覆盖。
 
-`ChainList` 的 memoized `GoalTaskRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
+共享的 memoized `ChainMemberRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
 `todo`、未知起点及完成态未知终点由共享计时判定返回 null，不补造元数据时间；完成值只取持久端点差。
 标题保持独立 `.root-title` 文本，后接 `TaskExecutionDuration`，两者使用行内排版；空间不足时自然换行，耗时允许内部换行且不省略文本，状态及箭头保留各自空间。
 耗时外层对按钮名称计算隐藏，`time` 保留机器可读时长；`tooltip="duration"` 仅显示格式化耗时，避免把图卡片和独立行的阈值或提醒说明带入子任务行。

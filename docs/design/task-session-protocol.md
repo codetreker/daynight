@@ -31,7 +31,7 @@ Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task
 
 浏览器操作包含 requestId、operationId、sessionId、对应绑定、executionGeneration、kind 和 payload。浏览器操作不绑定某次 Controller 网络连接；实际投递和回执由服务端连接代次约束。操作包括：
 
-- `send_message`：typed text content 与 expectedTurnId，空闲发送或受原生能力限制的 steer。
+- `send_message`：typed content、expectedTurnId 与可选的 `origin: "user" | "daynight"`，空闲发送或受原生能力限制的 steer。
 - `cancel`：精确的活动 expectedTurnId。
 - `interaction_response`：当前交互身份、修订、submissionId 及 typed response。
 - `update_setting`、`execute_command`、`refresh_controls`：原生设置修改、命令执行和能力目录刷新；目录修订与活动 turn 的绑定见[会话设置与原生命令](#会话设置与原生命令)。
@@ -43,6 +43,14 @@ Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task
 Test 创建时显式声明有无首条 prompt。无 prompt 使用 not_required，不伪造一次 confirmed 输入。该分支只在 Controller 取得 Provider handle、Provider ready 且 relay 同步后允许首次网页发送；Claude 此时可尚无已确认原生 ID，收到真实原生证据后才填入。Task 不能使用 not_required，有 prompt 的 Test 仍遵守原首次输入受理门控。未知输入按原 operation 查询，不能借空会话状态重发。
 
 共享 JSON fixtures 是 Go/TypeScript 对协议表示和拒绝行为的共同输入；验证必须经过各自的真实 codec，不能仅将 JSON 解析到通用 map 后回写。
+
+### 输入消息来源
+
+`send_message.payload.origin` 和 `user_message.origin` 是可选的来源字段，只接受 `user`、`daynight`；缺省表示 `user`，显式 `null`、空字符串和未知值均拒绝。字段不属于 Provider 输入正文，也不改变 Session owner 权限、发送门禁、原生受理及操作恢复规则。它用于区分同一所有者提交的普通输入与 Daynight 通知，不是独立的身份认证证明。
+
+服务端保存操作的来源并透传给 Controller；操作指纹区分 `daynight` 与普通输入，显式 `user` 与缺省的来源语义相同。相同 operationId 不能改换来源后作为原操作恢复。Controller 将来源与原提交操作对应的原生用户消息关联，在本次执行的 journal 保存该关联，并在同一 Session 恢复重建时间线时保留；不得仅凭正文相同修改另一条用户消息。Codex 恢复历史时可在保留 `clientId` 的同时重建 raw item ID；同一 operation 与 native Session 的持久关联固定最初的 timeline entry ID，来源关联与重建投影都复用该 ID，避免重复条目或唯一约束冲突。图片输入继续沿用已有 publication 的稳定身份。历史投影、浏览器持久快照与归档沿用同一 `user_message` 字段。原生投递结果未知且没有取得消息身份时，不能按正文猜测来源；后续取得原操作的身份可补齐关联。独立 `controller resume` 会创建新 Session 和 journal，仅导入原生历史，不迁移旧 Session 的 Daynight 来源元数据；旧 Session 的归档保持不变。
+
+网站在 Standard 和 Conversation 中均将 `origin=daynight` 显示为默认折叠的一行带图标的“Daynight 通知”（英文 “Daynight notification”），展开后显示原有完整内容与资源。缺省或 `user` 保持用户气泡。展开不提交命令、不改变消息正文，刷新和归档读取保留来源。事件的生成、合并与投递由其调用者负责，不属于来源字段本身。
 
 ## 在线测试会话目录
 
@@ -80,7 +88,7 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订索引及有界 outbox，timeline 和资源正文写入相邻的待归档文件。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
-Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察读取当前 v8 journal 的单次只读快照，核对完整执行身份、generation 和 ticket 绑定。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
+Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察读取当前 v9 journal 的单次只读快照，核对完整执行身份、generation 和 ticket 绑定；观察不迁移旧格式。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
 
 同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。
 
@@ -256,7 +264,7 @@ observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90
 
 ### 本机内容与在线读取
 
-活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/。每个 entry revision 先写入不可变候选文件并 flush，再由同一 SQLite 事务提交 `content_index` 指针和 outbox。在线分页、inspection、历史同步和归档均按调用者 SQLite 快照的指针读取，不从目录扫描或可变内存 Map 推断当前 revision。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
+活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/。`controller/content/resource-files.ts` 管理资源 descriptor、blob、pin 和 lease；`pending-content.ts` 组合资源与正文，并在删除前于同一同步读事务检查当前正文和原生输入图片引用。资源导入收尾使用该受保护的删除入口。每个 entry revision 先写入不可变候选文件并 flush，再由同一 SQLite 事务提交 `content_index` 指针和 outbox。在线分页、inspection、历史同步和归档均按调用者 SQLite 快照的指针读取，不从目录扫描或可变内存 Map 推断当前 revision。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
 
 sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；不可变内容候选先可靠写入，再提交 SQL 指针与投递事务；超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
 

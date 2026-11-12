@@ -25,6 +25,7 @@ import (
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -45,7 +46,19 @@ func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.
 	if err != nil {
 		return nil, err
 	}
-	return New(service.NewModules(c, d.Store, d.Ready, d.Files, client), c, logger)
+	app := service.NewModules(c, d.Store, d.Ready, d.Files, client)
+	app.CredentialUsage = unusedUsageRecorder(logger)
+	return New(app, c, logger)
+}
+
+func unusedUsageRecorder(logger *slog.Logger) *credentialusage.Recorder {
+	r, err := credentialusage.New(runtimeUsageWriter(func(context.Context, []model.CredentialUsageEvent) (store.Completion, error) {
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}), logger, nil)
+	if err != nil {
+		panic(err)
+	}
+	return r
 }
 
 type resourceTestHandler struct {
@@ -105,6 +118,7 @@ type httpTestStore struct {
 	WriteOAuthClientsCall       func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
 	WriteAuthorizationsCall     func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
 	WriteCredentialFamilyCall   func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
+	WriteCredentialUsageCall    func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
 	WriteGrantLifecycleCall     func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
 	ReadTaskSearchCall          func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
 	WriteWebhookCall            func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
@@ -237,6 +251,13 @@ func (s *httpTestStore) WriteAuthorizations(ctx context.Context, fn func(store.A
 		unexpectedHTTPCall(s.t, "WriteAuthorizations")
 	}
 	return s.WriteAuthorizationsCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteCredentialUsage(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error) {
+	if s.WriteCredentialUsageCall == nil {
+		unexpectedHTTPCall(s.t, "WriteCredentialUsage")
+	}
+	return s.WriteCredentialUsageCall(ctx, events)
 }
 
 func (s *httpTestStore) WriteCredentialFamily(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error) {
@@ -837,6 +858,7 @@ func (f *webhookHTTPApplicationFixture) start() {
 		f.t.Fatal(err)
 	}
 	app := service.NewModules(f.cfg, f.store, func(context.Context) error { return nil }, attachmentTestFiles(f.t), client)
+	app.CredentialUsage = unusedUsageRecorder(testLogger())
 	// Routes consume the selected service. Process tests own OpenApp's worker and resource assembly.
 	app.Webhooks = &webhookservice.Service{DB: f.store, ConfigurationExpansionAvailable: f.cfg.Webhook.Enabled, DispatchEnabled: f.cfg.Webhook.Enabled, Random: bytes.NewReader(nil)}
 	handler, err := New(app, f.cfg, testLogger())

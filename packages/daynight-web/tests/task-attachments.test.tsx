@@ -57,6 +57,50 @@ const showDeleteConfirmation = (path: string) => {
 
 
 describe('task attachments', () => {
+  it('binds localized timestamps to the selected metadata through refresh, failures and pause', async () => {
+    const first = { ...file('one.txt'), updatedAt: '2026-10-22T01:02:03Z' };
+    const second = { ...file('two.txt'), createdAt: '2026-10-23T04:05:06Z', updatedAt: '2026-10-23T04:05:06Z' };
+    const refresh = deferred<AttachmentPage>();
+    const api = fixture([first, second]);
+    vi.mocked(api.list).mockReturnValueOnce(Promise.resolve({ items: [first, second], nextCursor: null })).mockReturnValueOnce(refresh.promise);
+    vi.mocked(api.readText).mockRejectedValueOnce(new Error('preview failed'));
+    const view = open(api);
+    expect(document.querySelectorAll('.attachment-timestamps time')).toHaveLength(0);
+    fireEvent.click(await findFileButton(/^one\.txt/));
+    await screen.findByText('无法读取文件预览，请重试或下载文件。');
+    const times = () => [...document.querySelectorAll('.attachment-timestamps time')];
+    const expectTimes = (created: string, modified: string) => {
+      expect(times().map((time) => time.getAttribute('datetime'))).toEqual([created, modified]);
+      const formatter = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false });
+      expect(times().map((time) => time.textContent)).toEqual([formatter.format(new Date(created)), formatter.format(new Date(modified))]);
+    };
+    expect(screen.getByText('创建时间')).toBeVisible();
+    expect(screen.getByText('最后修改时间')).toBeVisible();
+    expectTimes(first.createdAt, first.updatedAt);
+    fireEvent.click(fileButton(/^two\.txt/));
+    await screen.findByText('Contents of two.txt');
+    expectTimes(second.createdAt, second.updatedAt);
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    expectTimes(second.createdAt, second.updatedAt);
+    const updated = { ...second, updatedAt: '2026-10-24T05:06:07Z' };
+    await act(async () => { refresh.resolve({ items: [first, updated], nextCursor: null }); });
+    await waitFor(() => expectTimes(updated.createdAt, updated.updatedAt));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新附件' })).toBeEnabled());
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); });
+      expectTimes(updated.createdAt, updated.updatedAt);
+      view.setLocale('en');
+      expect(screen.getByText('Created')).toBeVisible();
+      expect(screen.getByText('Last modified')).toBeVisible();
+      expect(times().map((time) => time.getAttribute('datetime'))).toEqual([updated.createdAt, updated.updatedAt]);
+    } finally { await act(async () => { resume(); }); }
+    vi.mocked(api.list).mockResolvedValue({ items: [first], nextCursor: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh attachments' }));
+    await screen.findByText('This attachment was not found. It may have been deleted.');
+    expect(times()).toHaveLength(0);
+  });
+
   it('preserves displayed content and upload drafts while blocking remote actions until resume', async () => {
     const api = fixture([file('one.txt'), file('two.txt')]);
     open(api);
@@ -381,6 +425,7 @@ describe('task attachments', () => {
     await user.type(path, 'docs/readme.md');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'docs/readme.md' });
+    expect([...document.querySelectorAll('.attachment-timestamps time')].map((time) => time.getAttribute('datetime'))).toEqual([timestamp, expect.not.stringMatching(timestamp)]);
     expect(api.put).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000100', '00000000-0000-4000-8000-000000000001', 'docs/readme.md', source, expect.any(AbortSignal));
     expect(path).toHaveValue('');
     expect(input.files).toHaveLength(0);
@@ -392,6 +437,7 @@ describe('task attachments', () => {
     expect(api.remove).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000100', '00000000-0000-4000-8000-000000000001', 'docs/readme.md', expect.any(AbortSignal));
     expect(api.list).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
+    expect(document.querySelectorAll('.attachment-timestamps time')).toHaveLength(0);
   });
 
   it('retains upload form and current preview after failed writes and exposes request IDs without private details', async () => {

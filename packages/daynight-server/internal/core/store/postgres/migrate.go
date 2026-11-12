@@ -201,6 +201,12 @@ var taskAssignmentAllIndexSQL string
 //go:embed migrations/064_microsoft_identity.sql
 var microsoftIdentitySQL string
 
+//go:embed migrations/065_release_worker_ownership.sql
+var releaseWorkerOwnershipSQL string
+
+//go:embed migrations/066_credential_last_used.sql
+var credentialLastUsedSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -273,6 +279,8 @@ var schemaMigrations = []migration{
 	{version: 62, sql: taskResourceRowsSQL},
 	{version: 63, sql: taskAssignmentAllIndexSQL},
 	{version: 64, sql: microsoftIdentitySQL},
+	{version: 65, sql: releaseWorkerOwnershipSQL},
+	{version: 66, sql: credentialLastUsedSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

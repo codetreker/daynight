@@ -5,6 +5,7 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { ManagementDialog } from "./ManagementDialog";
 import { DateLabel, ManagementError, SecretDialog } from "./feedback";
 import { parseTokenExpiryDraft, tokenExpiryDraft, TokenExpiryField } from "./TokenExpiryField";
+import { CredentialLastUse, latestCredentialUse, mergeCredentialUses } from "./CredentialLastUse";
 
 export type TokenManagementApi = { readonly list: typeof listTokens; readonly create: typeof createToken; readonly revoke: typeof revokeToken; readonly update: typeof updateTokenExpiry };
 const api: TokenManagementApi = { list: listTokens, create: createToken, revoke: revokeToken, update: updateTokenExpiry };
@@ -48,7 +49,7 @@ const TokensContent = ({ user, onIdentityMismatch, transport = api, visible = tr
     try {
       const result = await transport.list(signal, user.id, onIdentityMismatch);
       if (signal.aborted || request !== generation.current) return;
-      setTokens(result);
+      setTokens(items => mergeCredentialUses(items, result));
       if (reconcile !== undefined) {
         const actual = result.find((token) => token.id === reconcile.tokenId);
         setRecovery(null); setDialogError(null); setInvalid(false);
@@ -108,7 +109,7 @@ const TokensContent = ({ user, onIdentityMismatch, transport = api, visible = tr
     try {
       const saved = await transport.update(token.id, { expiresAt, expectedExpiresAt: token.expiresAt, expectedUserId: user.id }, signal, onIdentityMismatch);
       if (signal.aborted) return;
-      setTokens((items) => items!.map((item) => item.id === saved.id ? saved : item)); setDialog(null); setNotice("expirySaved");
+      setTokens((items) => items!.map((item) => item.id === saved.id ? { ...saved, lastUsedAt: latestCredentialUse(item.lastUsedAt, saved.lastUsedAt) } : item)); setDialog(null); setNotice("expirySaved");
     } catch (failure) {
       if (signal.aborted || isAbortError(failure)) return;
       if (failure instanceof ApiError && failure.kind === "server" && failure.status === 404) {
@@ -130,7 +131,7 @@ const TokensContent = ({ user, onIdentityMismatch, transport = api, visible = tr
       {loading && <div className="empty-inline" role="status">{m.loading}</div>}
       {tokens !== null && (tokens.length === 0 ? !loading && <div className="empty-inline">{m.empty}</div> : tokens.map((token) => {
         const expired = token.expiresAt !== null && Date.parse(token.expiresAt) <= Date.now();
-        return <div className={`row token-row${expired ? " revoked" : ""}`} key={token.id}><div><div className="person-name">{token.name}</div><div className="person-meta">{common.createdAt} <DateLabel value={token.createdAt} /> {expired && <span className="badge warning">{common.expired}</span>}</div></div><div className="row-detail"><strong>{common.expiresAt} <TokenExpiration value={token.expiresAt} /></strong></div><div className="actions">{expired ? <span className="muted small">{common.unusable}</span> : <><button className="button quiet" type="button" disabled={blocked} aria-label={m.editExpiryLabel({ name: token.name })} onClick={() => open({ kind: "expiry", token })}>{m.editExpiry}</button><button className="button quiet" type="button" disabled={blocked} aria-label={m.revokeLabel({ name: token.name })} onClick={() => open({ kind: "revoke", token })}>{common.revoke}</button></>}</div></div>;
+        return <div className={`row token-row${expired ? " revoked" : ""}`} key={token.id}><div><div className="person-name">{token.name}</div><div className="person-meta">{common.createdAt} <DateLabel value={token.createdAt} /> {expired && <span className="badge warning">{common.expired}</span>}</div></div><div className="row-detail"><strong>{common.expiresAt} <TokenExpiration value={token.expiresAt} /></strong><CredentialLastUse value={token.lastUsedAt} /></div><div className="actions">{expired ? <span className="muted small">{common.unusable}</span> : <><button className="button quiet" type="button" disabled={blocked} aria-label={m.editExpiryLabel({ name: token.name })} onClick={() => open({ kind: "expiry", token })}>{m.editExpiry}</button><button className="button quiet" type="button" disabled={blocked} aria-label={m.revokeLabel({ name: token.name })} onClick={() => open({ kind: "revoke", token })}>{common.revoke}</button></>}</div></div>;
       }))}
     </section><div className="notice">{m.authorityNotice}</div><p className="muted small">{m.oneTimeNotice}</p>
     {dialog?.kind === "secret" && <SecretDialog kind="token" secret={dialog.secret} suspended={!visible} onClose={() => setDialog(null)} />}

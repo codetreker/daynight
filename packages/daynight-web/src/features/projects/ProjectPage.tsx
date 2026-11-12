@@ -11,6 +11,7 @@ import { canonicalId } from "../../api/validation";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
+import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
@@ -19,6 +20,7 @@ import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
+import { focusProjectList, focusVisible, type ProjectListOrigin } from "./project-list-focus";
 import { useProjectAssigneeFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
@@ -40,12 +42,6 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 const emptyIds: readonly string[] = [];
 
 type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
-
-const focusVisible = (element: HTMLElement | null | undefined) => {
-  if (element == null || !element.isConnected || element.closest('[hidden], [inert]') !== null) return false;
-  element.focus();
-  return true;
-};
 
 const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilter, status: TaskStatus | "all", userId: string, every: boolean) => {
   const assigneeMatches = (task: GraphTask) => matchesAssignee(task.assignedTo, assignee, userId);
@@ -76,8 +72,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: openChainWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
-  const initialWitness = useRef<{ id: string; witness: string } | null>(null);
-  if (initialWitness.current !== null && initialWitness.current.id !== detailSelection?.id) initialWitness.current = null;
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
   const searchActive = search.applied !== null;
@@ -89,6 +83,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
+  const listOrigin = useRef<ProjectListOrigin | null>(null);
+  const lastGraphWitness = useRef<string | null>(null);
   const restoreRequested = useRef(false);
   const previousDetail = useRef(detailSelection);
   const pendingRetirement = useRef<{ summaryId: string | null } | null>(null);
@@ -100,6 +96,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
       const detail = currentSelection.current.detail;
       pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null };
+      listOrigin.current = null; originalTrigger.current = null; lastGraphWitness.current = null;
     }
   }), [viewer, projectId]);
   const suppressRestore = useRef(false);
@@ -183,16 +180,22 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     }
     setPageNavigation(null);
   }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
+  if (openChainWitness !== null) lastGraphWitness.current = openChainWitness;
   const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
-  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
+  const openChainId = section === "tasks" && (activeView === "chains" || activeView === "goals") && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
   openChain.current = openChainId;
   useLayoutEffect(() => {
     if (openChainWitness === null || snapshot === null || openChainId !== null) return;
     history.select({ ...selection, projectGraphWitness: null }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
-    else if (activeView !== "chains") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
+    else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
   }, [openChainWitness, openChainId, section, activeView, snapshot, selection, history.select]);
-  const onOpenChain = useCallback((id: string) => { history.select({ ...selection, projectGraphWitness: id }); }, [history.select, selection]);
+  const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
+    history.select({ ...selection, projectGraphWitness: id }, false, () => {
+      listOrigin.current = { view: activeView, sourceGoalId, taskWitness: id, trigger };
+      restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false;
+    });
+  }, [activeView, history.select, selection]);
   const onCloseChain = useCallback(() => { history.select({ ...selection, projectGraphWitness: null }, true); }, [history.select, selection]);
 
   const selectedSummary = useRef<{ id: string; revision: number } | null>(null);
@@ -209,13 +212,20 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onOpenTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: trigger.closest(".task-chain-dialog") !== null,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = false; initialWitness.current = null; setNotice(null);
+      restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
     });
   }, [history.select, selection]);
+  const onOpenListTask = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
+    history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
+      navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+      listOrigin.current = { view: activeView, sourceGoalId, taskWitness: id, trigger };
+      restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false; setNotice(null);
+    });
+  }, [activeView, history.select, selection]);
   const onOpenSearchTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "direct", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = true; initialWitness.current = null; setNotice(null);
+      restoreRequested.current = false; listOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = true; setNotice(null);
     });
   }, [history.select, selection]);
   const onOpenSession = useCallback((id: string) => {
@@ -223,37 +233,47 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [projectId]);
   const onSelectRelation = useCallback((id: string) => {
     history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || snapshot === null ? "direct" : "summary",
-      insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false,
-      () => { initialWitness.current = null; });
+      insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false);
   }, [history.select, selection, detailSelection, snapshot]);
   const onClose = useCallback(() => { history.select({ ...selection, detail: null }, true, () => { restoreRequested.current = true; }); }, [history.select, selection]);
   const projectMounted = useRef(true);
   useLayoutEffect(() => { projectMounted.current = true; return () => { projectMounted.current = false; }; }, []);
+  const indexForFocus = useRef(snapshot?.index ?? null);
+  indexForFocus.current = snapshot?.index ?? null;
   const restoreFocus = useCallback(() => {
-    if (!restoreRequested.current || pendingRetirement.current !== null) return;
-    restoreRequested.current = false;
+    if (!restoreRequested.current || pendingRetirement.current !== null || previousDetail.current !== null) return;
     const trigger = originalTrigger.current;
     const fromSearch = searchTrigger.current;
-    originalTrigger.current = null;
-    searchTrigger.current = false;
+    const origin = listOrigin.current;
     const focus = () => {
       if (!projectMounted.current || previousDetail.current !== null) return false;
-      if (focusVisible(trigger)) return true;
-      if (fromSearch && focusVisible(searchInput.current)) return true;
-      const chainClose = currentView.current !== "chains" || openChain.current === null ? null : document.getElementById(`task-graph-${openChain.current}`)
-        ?.querySelector<HTMLButtonElement>('.task-chain-close');
-      if (focusVisible(chainClose)) return true;
-      const root = currentView.current !== "chains" ? null : document.querySelector<HTMLButtonElement>('.root-toggle');
-      if (focusVisible(root)) return true;
-      const standalone = currentView.current !== "standalone" ? null : document.querySelector<HTMLButtonElement>(".standalone-row");
-      if (focusVisible(standalone)) return true;
+      if (openChain.current !== null) {
+        if (focusVisible(trigger)) return true;
+        return focusVisible(document.getElementById(`task-graph-${openChain.current}`)?.querySelector<HTMLButtonElement>('.task-chain-close'));
+      }
+      if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
+      if (origin === null && focusVisible(trigger)) return true;
+      if (focusProjectList(currentView.current, origin, origin?.taskWitness ?? lastGraphWitness.current, indexForFocus.current)) return true;
       if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
       if (focusVisible(document.getElementById(`project-section-tab-${currentSection.current}`))) return true;
       return focusVisible(heading.current);
     };
-    // Overlay cleanups can release inertness after the detail unmounts.
-    if (!focus()) queueMicrotask(focus);
+    const finish = () => {
+      if (!restoreRequested.current || pendingRetirement.current !== null || !focus()) return;
+      restoreRequested.current = false;
+      originalTrigger.current = null;
+      searchTrigger.current = false;
+      if (openChain.current === null) { listOrigin.current = null; lastGraphWitness.current = null; }
+    };
+    // Overlay cleanups can release inertness after the detail or graph unmounts.
+    finish();
+    if (restoreRequested.current) queueMicrotask(finish);
   }, []);
+  const restoreGraphFocus = useCallback(() => {
+    if (currentSelection.current.detail !== null || openChain.current !== null) return;
+    restoreRequested.current = true;
+    restoreFocus();
+  }, [restoreFocus]);
   useEffect(() => {
     const retired = pendingRetirement.current;
     if (retired === null || snapshot === null) return;
@@ -289,12 +309,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
-    if (task.parentId === null && detailSelection === null && activeView === "chains" && openChainId !== null) {
+    if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openChainId !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
         history.select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
           navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-          restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = false; initialWitness.current = null; setNotice(null);
+          restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false; setNotice(null);
         });
       } else history.select({ ...selection, projectGraphWitness: id });
       return;
@@ -304,9 +324,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       const insideProjectGraph = detailSelection?.insideProjectGraph === true || openChainId !== null && trigger.closest(".task-chain-dialog") !== null;
       const goalId = task.parentId;
       history.select({ ...selection, detail: { id: goalId, source: "summary", insideProjectGraph,
-        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        navigation: { tab: "description", path: null }, goalChildren: { graphRootId: null, task: { id, navigation: { tab: "overview", path: null } } } } }, false, () => {
         if (originalTrigger.current === null) originalTrigger.current = trigger;
-        initialWitness.current = { id: goalId, witness: id }; setNotice(null);
+        setNotice(null);
       });
       return;
     }
@@ -324,6 +344,40 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (section === "tasks" && activeView === view && openChainWitness === null && detailSelection === null) commit();
     else history.select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
   }, [snapshot, detailSelection, activeView, openChainId, openChainWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, section, snapshotReady, onSectionChange, onViewChange]);
+
+  const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
+    const task = snapshot?.index.nodes.get(id);
+    if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    const representative = snapshot.index.componentByTask.get(id)!;
+    if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
+      if (task.parentId !== null) onNavigateExternalTask(id, trigger);
+      else history.select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
+        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        restoreRequested.current = false;
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        searchTrigger.current = false; setNotice(null);
+      });
+      return;
+    }
+    if (task.parentId !== null) {
+      if (snapshot.summaries.get(task.parentId)?.type !== "goal") { setNotice({ kind: "overview-target-unavailable" }); return; }
+      const insideProjectGraph = detailSelection?.insideProjectGraph === true || openChainId !== null && trigger.closest(".task-chain-dialog") !== null;
+      history.select({ ...selection, detail: { id: task.parentId, source: "summary", insideProjectGraph,
+        navigation: { tab: "description", path: null }, goalChildren: { graphRootId: representative, task: null } } }, false, () => {
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+      });
+    } else {
+      const view = activeView === "goals" ? "goals" : "chains";
+      history.select({ ...selection, section: "tasks", view, projectGraphWitness: id, detail: null }, false, () => {
+        if (detailSelection !== null) suppressRestore.current = true;
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+        if (section !== "tasks") { if (snapshotReady) overviewPosition.current = window.scrollY; onSectionChange("tasks"); }
+        if (activeView !== view) onViewChange(view);
+      });
+    }
+  }, [snapshot, onNavigateExternalTask, detailSelection, openChainId, history.select, selection, activeView, section, snapshotReady, onSectionChange, onViewChange]);
 
   const onOpenChainTask = useCallback((id: string, trigger: HTMLElement) => {
     if (trigger.closest(".task-chain-dialog") !== null && snapshot?.index.nodes.get(id)?.parentId != null) onNavigateExternalTask(id, trigger);
@@ -357,13 +411,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, snapshotReady, onSectionChange]);
 
   useEffect(() => {
-    if (snapshot === null || !window.location.hash.startsWith("#task=")) return;
-    const value = new URLSearchParams(window.location.hash.slice(1)).get("task");
+    if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;
+    const chain = window.location.hash.startsWith("#chain=");
+    const value = new URLSearchParams(window.location.hash.slice(1)).get(chain ? "chain" : "task");
     const id = value === null ? null : canonicalId(value);
     browserNavigation().clearFragment();
     if (id === null || !snapshot.index.nodes.has(id)) { setNotice({ kind: "overview-target-unavailable" }); return; }
-    onNavigateExternalTask(id, heading.current!);
-  }, [snapshot, onNavigateExternalTask]);
+    if (chain) onNavigateExternalChain(id, heading.current!);
+    else onNavigateExternalTask(id, heading.current!);
+  }, [snapshot, onNavigateExternalTask, onNavigateExternalChain]);
 
   useLayoutEffect(() => {
     if (navigationWitness === null || snapshot === null || section !== "tasks") return;
@@ -423,10 +479,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const detailDialog = detailSelection === null ? null : <ProjectDraftHost projectId={projectId} taskId={detailSelection.id} source={detailSelection.source} summaryType={snapshot === null ? undefined : snapshot.summaries.get(detailSelection.id)?.type ?? null} insideProjectGraph={detailSelection.insideProjectGraph} graphWitness={selection.projectGraphWitness}><TaskDetailDialog projectId={projectId} taskId={detailSelection.id} snapshot={snapshot} observation={detailSelection.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: snapshot?.revision ?? 0, task: snapshot?.index.nodes.get(detailSelection.id) }} onSelectTask={onSelectRelation}
     navigation={detailSelection.navigation} onNavigate={(navigation) => history.select({ ...selection, detail: { ...detailSelection, navigation } })}
     goalChildren={detailSelection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...selection, detail: { ...detailSelection, goalChildren } }, options?.replace)}
-    onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} onNavigateExternalTask={onNavigateExternalTask} {...(initialWitness.current?.id === detailSelection.id ? { initialWitness: initialWitness.current.witness } : {})} /></ProjectDraftHost>;
+    onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} goalGraphError={graph.error} onNavigateExternalTask={onNavigateExternalTask} onNavigateExternalChain={onNavigateExternalChain} /></ProjectDraftHost>;
 
   return (
-    <>
+    <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
       {history.error && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
       <div hidden={history.error} inert={history.error}>
       <div className="project-navigation">
@@ -483,22 +539,24 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={scopedStandaloneIds.filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length}
               unfinishedChainTaskCount={[...scopedMembers.values()].flat().filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length} goalCount={allGoals.length} onViewChange={selectView}
-              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openChainId, onOpenChain, onCloseChain, onNavigateExternalTask,
-                onOpenTask: onOpenChainTask, onOpenSession,
+              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openChainId, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
+                onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
-              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: onOpenTask,
+              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination }} />}
+              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination,
+                summaries: snapshot.summaries, openChainId, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
+                onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
           </section>
         </div>
       </div>
       <OverlayOwnerContext value={detailOwner}>{detailDialog}</OverlayOwnerContext>
       </div>
-    </>
+    </TaskExecutionClockProvider>
   );
 };
 

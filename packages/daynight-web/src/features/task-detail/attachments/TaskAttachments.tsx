@@ -218,7 +218,11 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
           </div> : null}
             <section className="attachment-preview" aria-label={m.preview} hidden={selected === undefined || navigation?.invalid === true} style={selected === undefined || navigation?.invalid === true ? { display: 'none' } : undefined}>
               {selected !== undefined && <header className="attachment-preview-header">
-                <div><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
+                <div className="attachment-file-information"><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
+                <dl className="attachment-timestamps">
+                  <div><dt>{m.created}</dt><dd><time dateTime={selected.createdAt}>{format.dateTime(selected.createdAt)}</time></dd></div>
+                  <div><dt>{m.lastModified}</dt><dd><time dateTime={selected.updatedAt}>{format.dateTime(selected.updatedAt)}</time></dd></div>
+                </dl>
                 <div className="attachment-preview-actions">
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentDownloadUrl(projectId, taskId, selected.path) : urls.download(selected.path)} download={paused ? undefined : true} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined}>{m.download}</a>
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentPageUrl(projectId, taskId, selected.path) : urls.page(selected.path)} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span className="attachment-preview-open-label">{m.openInNewTab}</span></a>

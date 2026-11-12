@@ -188,7 +188,7 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 	})
 }
 
-func TestWorkerReleaseRetainsExecution(t *testing.T) {
+func TestWorkerReleaseClearsExecution(t *testing.T) {
 	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
 	active := *testWorker(t, current.Properties)
 	active.Herdr = &model.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
@@ -196,9 +196,7 @@ func TestWorkerReleaseRetainsExecution(t *testing.T) {
 	current.Properties = testWithWorker(t, current.Properties, &active)
 	released := workerTestResult(current)
 	released.Status, released.Ready, released.StartedAt, released.CompletedAt = model.TaskTodo, true, nil, nil
-	previous := active
-	previous.State = model.WorkerReleased
-	released.Properties = testWithWorker(t, current.Properties, &previous)
+	released.Properties = testWithWorker(t, current.Properties, nil)
 	administrator := owner
 	administrator.UserID, administrator.CredentialID = uuid.NewString(), uuid.NewString()
 	f := workerMockWrite(t, current, administrator)
@@ -212,14 +210,32 @@ func TestWorkerReleaseRetainsExecution(t *testing.T) {
 		t.Fatalf("release: %#v %v", got, err)
 	}
 	for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
+		after := workerTestResult(released)
+		after.Status, after.Ready = status, false
+		if status == model.TaskInProgress {
+			after.StartedAt = &after.UpdatedAt
+		} else {
+			after.CompletedAt = &after.UpdatedAt
+		}
 		f := workerMockWrite(t, released, owner)
-		_, err := f.Tasks.SetStatus(f.Context, owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: released.Version, Status: status})
-		requireFault(t, err, "invalid_transition")
+		workerExpectUpdate(t, f, workerTestValues(after), after)
+		got, err := f.Tasks.SetStatus(f.Context, owner, released.ProjectID, released.ID, taskcore.SetTaskStatus{Version: released.Version, Status: status})
+		if err != nil || !reflect.DeepEqual(got, after) {
+			t.Fatalf("ordinary status after release: %#v %v", got, err)
+		}
 	}
+	for _, operation := range []string{"release", "withdraw", "complete"} {
+		f := workerMockWrite(t, released, owner)
+		_, err := workerManagementInvoke(f, released, owner, operation, descriptor)
+		requireFault(t, err, "claim_conflict")
+	}
+	f = workerMockWrite(t, released, owner)
+	_, err = f.Tasks.UpdateWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.UpdateWorker{Version: released.Version, ClaimID: descriptor.ClaimID, Phase: pointer(model.WorkerExecuting)})
+	requireFault(t, err, "claim_conflict")
 }
 
 func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
-	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased} {
+	for _, state := range []model.WorkerState{model.WorkerActive} {
 		for _, operator := range []string{"owner", "administrator"} {
 			t.Run(string(state)+"/"+operator, func(t *testing.T) {
 				current, owner, descriptor := workerTestCurrent(t, state)
@@ -426,26 +442,9 @@ func TestWorkerClaimPreservesScopedMembershipAndWriteFailures(t *testing.T) {
 }
 
 func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testing.T) {
-	released, owner, previous := workerTestCurrent(t, model.WorkerReleased)
-	worker := *testWorker(t, released.Properties)
-	worker.Herdr = &model.WorkerHerdr{Session: "source", WorkspaceID: "workspace", PaneID: "pane"}
-	worker.NativeSessionID = pointer("source-native")
-	released.Properties = testWithWorker(t, released.Properties, &worker)
+	released, owner, previous := workerTestCurrent(t, "")
 	next := workerDescriptor()
 	next.Agent = model.AgentCopilot
-	for _, entry := range []struct {
-		name, code string
-		descriptor taskcore.WorkerDescriptor
-	}{
-		{"same claim", "claim_conflict", previous},
-		{"same worktree", "invalid_transition", func() taskcore.WorkerDescriptor { d := next; d.WorktreeID = previous.WorktreeID; return d }()},
-	} {
-		t.Run(entry.name, func(t *testing.T) {
-			f := workerMockWrite(t, released, owner)
-			_, err := f.Tasks.ClaimWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: entry.descriptor})
-			requireFault(t, err, entry.code)
-		})
-	}
 	observed := released.UpdatedAt.Add(time.Second)
 	fresh := &model.WorkerClaim{ClaimID: next.ClaimID, WorkerID: next.WorkerID, UserID: owner.UserID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
 	resumed := workerTestResult(released)

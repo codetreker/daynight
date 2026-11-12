@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/checks.yml", import.meta.url), "utf8");
-const jobs = new Map([...workflow.split("\njobs:\n")[1]!.matchAll(/^  ([a-z][a-z0-9-]+):\n([\s\S]*?)(?=^  [a-z][a-z0-9-]+:\n|$(?![\s\S]))/gm)].map((match) => [match[1]!, match[2]!]));
+const jobsOf = (source: string) => new Map([...source.split("\njobs:\n")[1]!.matchAll(/^  ([a-z][a-z0-9-]+):\n([\s\S]*?)(?=^  [a-z][a-z0-9-]+:\n|$(?![\s\S]))/gm)].map((match) => [match[1]!, match[2]!]));
+const jobs = jobsOf(workflow);
+const shellBrowserWorkflow = readFileSync(new URL("../workflows/shell-browser.yml", import.meta.url), "utf8");
+const shellBrowserJobs = jobsOf(shellBrowserWorkflow);
 const gate = jobs.get("checks")!;
 const required = gate.match(/^    needs: \[([^\]]+)\]$/m)![1]!.split(", ");
 const command = gate.match(/^        run: (.+)$/m)![1]!;
@@ -34,11 +37,18 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
+test("ordinary PR validation does not wait for shell or frontend browser acceptance", () => {
+  assert.equal(jobs.has("verify-completion"), false);
+  assert.equal(jobs.has("verify-web-browser"), false);
+  assert.equal(required.includes("verify-completion"), false);
+  assert.equal(required.includes("verify-web-browser"), false);
+});
+
 test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-runtime", "verify-completion", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -145,6 +155,48 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
 
 const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
 const stepsOf = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+
+test("shell and browser acceptance runs only on main pushes and manual dispatch", () => {
+  assert.match(shellBrowserWorkflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:\n/m);
+  assert.doesNotMatch(shellBrowserWorkflow, /pull_request|workflow_run|paths:|paths-ignore:/);
+  assert.deepEqual([...shellBrowserJobs.keys()], ["verify-completion", "verify-web-browser"]);
+  assert.match(shellBrowserWorkflow, /^  contents: read$/m);
+  assert.match(shellBrowserWorkflow, /^  cancel-in-progress: \$\{\{ github.ref != 'refs\/heads\/main' \}\}$/m);
+  for (const stage of shellBrowserJobs.values()) {
+    assert.doesNotMatch(stage, /^    (?:needs|if):/m);
+    assert.doesNotMatch(stage, /continue-on-error|download-artifact|GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
+    const checkout = stepsOf(stage).find(step => step.includes("uses: actions/checkout@"))!;
+    assert.ok(checkout);
+    assert.match(checkout, /^          persist-credentials: false$/m);
+    assert.doesNotMatch(checkout, /^          (?:ref|repository):/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /^          version: 11\.28\.6$/m);
+    assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+  }
+});
+
+test("shell acceptance retains both complete real-shell suites and their failure evidence", () => {
+  const stage = shellBrowserJobs.get("verify-completion")!;
+  const steps = stepsOf(stage);
+  const prepare = steps.find(step => step.includes("run: bash packages/daynight/scripts/prepare-completion-shells.sh"))!;
+  const module = steps.find(step => step.includes("id: completion-module"))!;
+  const acceptance = steps.find(step => step.includes("id: completion-validation"))!;
+  const uploads = uploadSteps(stage);
+  assert.match(stage, /^    runs-on: ubuntu-24.04$/m);
+  assert.match(stage, /^    timeout-minutes: 15$/m);
+  assert.ok(prepare); assert.ok(module); assert.ok(acceptance);
+  assert.match(module, /pnpm build\n          python3 -u packages\/daynight\/test\/commands\/completion\/shell-module.py --shell all/);
+  assert.match(acceptance, /^        run: pnpm completion:acceptance$/m);
+  assert.doesNotMatch(module + acceptance, /continue-on-error|if:|\|\| true/);
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(module));
+  assert.ok(steps.indexOf(module) < steps.indexOf(acceptance));
+  assert.deepEqual(uploads.map(artifactName), ["daynight-completion-acceptance"]);
+  assert.deepEqual(artifactPaths(uploads[0]!), [".tmp/completion-module-evidence.json", ".tmp/completion-evidence.json"]);
+  assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.completion-module.outcome != 'skipped' \}\}$/m);
+  assert.match(uploads[0]!, /^          include-hidden-files: true$/m);
+  assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
+  assert.match(uploads[0]!, /^          retention-days: 30$/m);
+});
 
 const selectsPlatform = (step: string, platform: string): boolean => {
   const condition = step.match(/^        if: (.+)$/m)?.[1];
@@ -259,11 +311,11 @@ test("Windows discovery remains whole and execution outcome comes from the real 
 
 const selectedCLIStep = stepsOf(gate).find(step => step.includes("name: Require selected CLI jobs to succeed\n"))!;
 const selectedCLICommand = selectedCLIStep.match(/^        run: (.+)$/m)![1]!;
-const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success", COMPLETION_RESULT: "success" };
+const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success" };
 
-test("selected CLI requires every ordinary shard, installed phase, runtime and completion job", () => {
+test("selected CLI requires every ordinary shard, installed phase, runtime job", () => {
   assert.match(selectedCLIStep, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
-  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"], ["COMPLETION_RESULT", "verify-completion"]]) {
+  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"]]) {
     assert.ok(selectedCLIStep.includes(`${variable}: \${{ needs.${job}.result }}`));
   }
 });
@@ -303,18 +355,18 @@ test("the final gate verifies both current-run artifacts against its own checkou
 });
 
 test("unselected CLI matrices may skip while other selected modules succeed", () => {
-  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
+  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-runtime": "skipped" }), 0);
 });
 
 const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
 const webQuality = jobs.get("verify-web-quality")!;
-const webBrowser = jobs.get("verify-web-browser")!;
+const webBrowser = shellBrowserJobs.get("verify-web-browser")!;
 
-test("Web quality and browser jobs prepare independent runners after module selection", () => {
+test("Web quality and browser jobs prepare independent runners", () => {
+  assert.match(webQuality, /^    needs: detect-changes$/m);
+  assert.match(webQuality, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   for (const stage of [webQuality, webBrowser]) {
-    assert.match(stage, /^    needs: detect-changes$/m);
-    assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
     assert.match(stage, /^    runs-on: ubuntu-latest$/m);
     assert.match(stage, /uses: actions\/checkout@/);
     assert.match(stage, /^          persist-credentials: false$/m);
@@ -362,24 +414,22 @@ test("Web browser owns the unchanged frontend Playwright regressions and evidenc
   assert.match(upload, /^          if-no-files-found: error$/m);
 });
 
-test("selected Web validation requires actual quality and browser success", () => {
+test("selected Web validation requires actual quality success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
-  assert.match(selectedWebStep, /WEB_BROWSER_RESULT: \$\{\{ needs.verify-web-browser.result \}\}/);
+  assert.doesNotMatch(selectedWebStep, /WEB_BROWSER_RESULT/);
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  for (const browser of ["success", "skipped", "failure", "cancelled"]) {
-    test(`selected Web quality=${quality}, browser=${browser} executes the workflow guard`, () => {
-      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_BROWSER_RESULT: browser },
-        encoding: "utf8", timeout: 5_000,
-      });
-      if (result.error) throw result.error;
-      assert.equal(result.signal, null);
-      assert.equal(result.status === 0, quality === "success" && browser === "success");
+  test(`selected Web quality=${quality} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+      env: { ...process.env, WEB_QUALITY_RESULT: quality },
+      encoding: "utf8", timeout: 5_000,
     });
-  }
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, quality === "success");
+  });
 }
 
 const productE2E = jobs.get("verify-e2e")!;
@@ -478,9 +528,8 @@ test("unselected product E2E may skip while selected modules succeed", () => {
 
 
 test("Web jobs validate the current checkout without restoring retired acceptance", () => {
-  for (const [name, id] of [["verify-web-quality", "web-quality"], ["verify-web-browser", "web-browser"]]) {
-    const stage = jobs.get(name!)!;
-    const validation = stepsOf(stage).find((entry) => entry.includes(`id: ${id}\n`));
+  for (const [stage, id] of [[webQuality, "web-quality"], [webBrowser, "web-browser"]]) {
+    const validation = stepsOf(stage!).find((entry) => entry.includes(`id: ${id}\n`));
     assert.ok(validation);
   }
   assert.doesNotMatch(workflow, /verify-web:|verify-web-[12]|WEB_SHARD_RESULT|daynight-web-summary|scripts\/acceptance|ci\.mts browser/);

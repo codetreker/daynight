@@ -95,7 +95,13 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     claimId: task.claimId, executionGeneration: e.executionGeneration, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId })) } as unknown as WorkerSessionApi;
   let clock = 10;
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), verifyWorktree: vi.fn(async () => {}) } as unknown as WorkerGitManager;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
+    operation.check();
+    expect(candidate).toMatchObject({ projectId: project.projectId, localPath: home });
+    expect(owner).toMatchObject({ projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId, worktreeId: identity.worktreeId });
+    expect(cwd).toBe(home); expect(requireBranch).toBe(true); expect(binding).toEqual(task.resources.worktree); expect(allowRestore).toBe(false);
+    return task.resources.worktree!;
+  }) } as unknown as WorkerGitManager;
   const backend = createWebExecutionBackend({ homeDirectory: home, store, git, launcher, platform: "linux", buildPrompt: () => "fixture", emit() {}, now: () => clock });
   let remoteTask: Task = { type: "task", parentId: null, id: task.taskId, projectId: project.projectId, title: "fixture", description: "fixture", status: "in_progress", allowAgents: true,
     assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),

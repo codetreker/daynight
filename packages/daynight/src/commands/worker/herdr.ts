@@ -75,6 +75,15 @@ export const createWorkerHerdr = (options: {
 };
 
 export type WorkerHerdrLifecycle = {
+  /** Complete original records used by the one-time worktree format conversion. */
+  migration?: {
+    listLifecycles(): import("./herdr/lifecycle-types.js").HerdrLifecycleRecord[];
+    listRetired(): import("./herdr/lifecycle-types.js").HerdrLifecycleRecord[];
+    assertOrigin(record: import("./herdr/lifecycle-types.js").HerdrLifecycleRecord): void;
+    listBindings(projectId: string, operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
+    listLegacyBindings(operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
+    listLegacyPendingStops(): readonly import("./herdr/agents.js").HerdrPendingStop[];
+  };
   neverStarted?: {
     candidates(): HerdrExecutionOwner[];
     retired(): { owner: HerdrExecutionOwner; cwd: string; agent: import("./types.js").ExecutionConfiguration["agent"] }[];
@@ -83,6 +92,8 @@ export type WorkerHerdrLifecycle = {
   archive?: import("./herdr/resource-types.js").HerdrArchiveResources;
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;
+  /** Missing or uncertain original evidence cannot authorize checkout recreation. */
+  hasStarted?(owner: HerdrExecutionOwner): boolean;
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;
   pendingInitialPrompt?(owner: HerdrExecutionOwner): string | null;
   responsibilities(): HerdrExecutionOwner[];

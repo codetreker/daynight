@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project, TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
+import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -26,16 +27,16 @@ let sessionStore: TaskSessionSummaryStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
 afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ProjectTaskWorkspace pausedTaskCount={0} sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
-  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop }}
+const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace pausedTaskCount={0} sessionStore={sessionStore} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
-  standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
+  standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
 
 describe('chain worker machine presentation', () => {
   it('projects every claim state and mode strictly without adding properties to graph tasks', () => {
-    const value = snapshot([root, child(2), child(3, { properties: { worker: claim('active host', 'active') } }), child(4, { properties: { worker: claim('released host', 'released', 'herdr') } }), child(5, { properties: { worker: claim('completed host', 'completed') } })]);
-    expect([...value.workerMachines].map(([key, entry]) => [key, entry.state, entry.machine.name])).toEqual([[id(3), 'active', 'active host'], [id(4), 'released', 'released host'], [id(5), 'completed', 'completed host']]);
+    const value = snapshot([root, child(2), child(3, { properties: { worker: claim('active host', 'active') } }), child(4), child(5, { properties: { worker: claim('completed host', 'completed') } })]);
+    expect([...value.workerMachines].map(([key, entry]) => [key, entry.state, entry.machine.name])).toEqual([[id(3), 'active', 'active host'], [id(5), 'completed', 'completed host']]);
     expect(value.graph.tasks[1]).not.toHaveProperty('properties');
     expect(() => snapshot([root, child(2, { properties: { worker: null } })])).toThrow();
   });
@@ -59,7 +60,7 @@ describe('chain worker machine presentation', () => {
     view.setLocale('en');
     expect(row(3)).toHaveTextContent(`Recorded machine: ${longName}`);
     expect(row(4)).toHaveTextContent('Claim machine: live host');
-    const changed = initial.map((item) => item.id === id(3) ? { ...item, allowAgents: true, properties: { worker: claim('replacement', 'released') } } : item.id === id(4) ? { ...item, properties: {} } : item);
+    const changed = initial.map((item) => item.id === id(3) ? { ...item, allowAgents: true, properties: { worker: claim('replacement', 'completed') } } : item.id === id(4) ? { ...item, properties: {} } : item);
     view.rerender(workspace(snapshot(changed), onOpenTask));
     expect(document.getElementById(`task-root-${root.id}`)).toHaveAttribute('aria-expanded', 'true');
     expect(row(3)).toHaveTextContent('Automatic execution on');
@@ -93,8 +94,8 @@ describe('chain worker machine presentation', () => {
     expect(header).toHaveAttribute('aria-expanded', 'false');
     expect(header).toHaveAccessibleName(/Automatic execution active/);
 
-    for (const state of ['released', 'completed'] as const) {
-      view.rerender(workspace(snapshot([root, child(2, { status: state === 'completed' ? 'done' : 'todo', properties: { worker: claim('historical', state) } })])));
+    for (const state of ['completed'] as const) {
+      view.rerender(workspace(snapshot([root, child(2, { status: 'done', properties: { worker: claim('historical', state) } })])));
       expect(header).not.toHaveAccessibleName(/Automatic execution active/);
     }
     view.rerender(workspace(snapshot(items)));
@@ -114,7 +115,7 @@ describe('chain worker machine presentation', () => {
     const active = { ...inside, status: 'in_progress' as const, dependsOn: [root.id], externalDependsOn: [], properties: { worker: claim('inside', 'active') } };
     view.rerender(workspace(snapshot([root, active, remaining, external])));
     expect(header).toHaveAccessibleName(/自动执行中/);
-    view.rerender(workspace(snapshot([root, { ...active, status: 'todo', properties: { worker: claim('inside', 'released') } }, remaining, external])));
+    view.rerender(workspace(snapshot([root, { ...active, status: 'todo', properties: {} }, remaining, external])));
     expect(header).not.toHaveAccessibleName(/自动执行中/);
     view.rerender(workspace(snapshot([root, active, remaining, external])));
     expect(header).toHaveAccessibleName(/自动执行中/);

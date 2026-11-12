@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../src/api/operation.js";
-import { probeResourceKey, resolveToolLaunch, toolCommand, verifyToolLaunch } from "../../src/platform/tool-executables.js";
+import { fingerprintToolArtifact, probeResourceKey, resolveToolLaunch, toolCommand, toolSelectionKey, verifyToolLaunch } from "../../src/platform/tool-executables.js";
+import { parseResolvedToolLaunch } from "../../src/platform/tool-launch-record.js";
 import { removeFixtureRoot } from "../helpers/tool-fixture-cleanup.js";
 
 const execute = promisify(execFile);
@@ -21,16 +22,14 @@ const script = async (root: string, name: string, label: string) => {
 };
 const resolve = (entry: string, cwd: string, workerNode = process.execPath) => resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd, workerNode, environment: process.env }, operation());
 const codexFixture = async () => {
-  const root = await fixture(), packageRoot = path.join(root, "node_modules/@openai/codex"), entry = path.join(packageRoot, "bin/codex.js");
+  const root = await fixture(), packageRoot = path.join(root, "node_modules/@openai/codex"), entry = path.join(packageRoot, "custom/loader.js");
   await mkdir(path.dirname(entry), { recursive: true });
-  await copyFile(new URL("./fixtures/tool-launchers/codex-0.156.1.js", import.meta.url), entry);
-  await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@openai/codex", type: "module", bin: { codex: "bin/codex.js" } }));
-  const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
-  const target = process.platform === "win32" ? "pc-windows-msvc" : process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl";
-  const relativeRuntime = path.join("vendor", `${architecture}-${target}`, "bin", process.platform === "win32" ? "codex.exe" : "codex");
-  const runtime = path.join(packageRoot, relativeRuntime);
-  await mkdir(path.dirname(runtime), { recursive: true }); await copyFile(process.execPath, runtime); await chmod(runtime, 0o755);
-  return { root, entry, runtime, relativeRuntime, packageRoot };
+  await writeFile(entry, "#!/usr/bin/env node\nconsole.log('loader')\n");
+  const manifest = path.join(packageRoot, "package.json");
+  await writeFile(manifest, JSON.stringify({ name: "@openai/codex", bin: { codex: "custom/loader.js" } }));
+  const runtime = path.join(packageRoot, process.platform === "win32" ? "native.exe" : "native");
+  await copyFile(process.execPath, runtime); await chmod(runtime, 0o755);
+  return { root, entry, runtime, manifest };
 };
 afterEach(async () => { vi.restoreAllMocks(); for (const item of operations.splice(0)) item.dispose(); await Promise.all(roots.splice(0).map(root => removeFixtureRoot(root))); });
 
@@ -209,28 +208,51 @@ describe("resolved tool commands", () => {
     expect(JSON.parse((await execute(command.file, command.args, { timeout: 5000 })).stdout).label).toBe("external");
   });
 
-  it("runs the registered Codex loader with its frozen native and detects native-only replacement", async () => {
-    const { root, entry, runtime } = await codexFixture();
-    const launch = await resolve(entry, root), command = toolCommand(launch, ["--eval", "console.log(JSON.stringify({native:process.execPath,managed:process.env.CODEX_MANAGED_BY_NPM}))"]);
-    expect(JSON.parse((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout)).toEqual({ native: await realpath(runtime), managed: "1" });
-    expect(launch.executablePath).toBe(await realpath(entry));
-    await writeFile(runtime, "replaced native");
-    await expect(verifyToolLaunch(launch, operation())).rejects.toMatchObject({ stage: "verify", code: "tool_identity_changed" });
+  it.skipIf(process.platform === "win32")("executes a Node loader that replaces itself and propagates argv and exit", async () => {
+    const root = await fixture(), entry = path.join(root, "loader.js");
+    const program = "process.stdout.write(JSON.stringify({pid:process.pid,args:process.argv.slice(1)}));process.exit(23)";
+    await writeFile(entry, `#!/usr/bin/env node\nprocess.execve(process.execPath, [process.execPath, "-e", ${JSON.stringify(program)}, "--", ...process.argv.slice(2)], process.env);\n`);
+    const launch = await resolve(entry, root), args = ["space and 中文", "$(literal)", "&", "'quoted'"], command = toolCommand(launch, args);
+    const child = spawn(command.file, command.args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", chunk => { stdout += String(chunk); });
+    child.stderr.on("data", chunk => { stderr += String(chunk); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    const watchdog = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      const result = await closed;
+      expect(result, stderr).toEqual({ code: 23, signal: null });
+      expect(JSON.parse(stdout)).toEqual({ pid: child.pid, args });
+      expect(() => process.kill(child.pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    } finally { clearTimeout(watchdog); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await closed; } }
+  }, 10_000);
+
+  it("verifies a legacy recipe using its recorded files and Node flags", async () => {
+    const { root, entry, runtime, manifest } = await codexFixture();
+    const current = await resolve(entry, root);
+    const artifacts = [...current.artifacts,
+      await fingerprintToolArtifact({ role: "manifest", path: manifest }, operation()),
+      await fingerprintToolArtifact({ role: "runtime", path: runtime }, operation())];
+    const command = { file: current.command.file, prefixArgs: ["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", entry] };
+    const old = { ...current, command, artifacts };
+    const legacy = { ...old, selectionKey: toolSelectionKey(old) };
+    const persisted = parseResolvedToolLaunch(JSON.parse(JSON.stringify(legacy)));
+    await verifyToolLaunch(persisted, operation());
+    expect((await execute(toolCommand(legacy, []).file, toolCommand(legacy, []).args, { timeout: 5000 })).stdout.trim()).toBe("loader");
+    await writeFile(runtime, "changed runtime");
+    await expect(verifyToolLaunch(legacy, operation())).rejects.toMatchObject({ stage: "verify", code: "tool_identity_changed" });
   });
 
-  it("rejects a newly preferred platform package even when the frozen vendor native is unchanged", async () => {
-    const { root, entry, relativeRuntime } = await codexFixture(), launch = await resolve(entry, root);
-    const platformPackage = path.join(root, `node_modules/@openai/codex-${process.platform}-${process.arch}`);
-    await mkdir(path.dirname(path.join(platformPackage, relativeRuntime)), { recursive: true });
-    await writeFile(path.join(platformPackage, "package.json"), JSON.stringify({ name: "@openai/codex" }));
-    await copyFile(process.execPath, path.join(platformPackage, relativeRuntime));
-    await expect(verifyToolLaunch(launch, operation())).rejects.toMatchObject({ code: "tool_identity_changed" });
+  it.skipIf(process.platform === "win32")("rejects loss of execute permission on a recorded runtime", async () => {
+    const { root, entry, runtime } = await codexFixture(), current = await resolve(entry, root);
+    const artifacts = [...current.artifacts, await fingerprintToolArtifact({ role: "runtime", path: runtime }, operation())];
+    const old = { ...current, artifacts }, legacy = { ...old, selectionKey: toolSelectionKey(old) };
+    await chmod(runtime, 0o644);
+    await expect(verifyToolLaunch(legacy, operation())).rejects.toMatchObject({ stage: "verify", code: "tool_identity_changed" });
   });
 
-  it.skipIf(process.platform === "win32")("refuses an official loader whose selected native has no execute permission", async () => {
-    const { root, entry, runtime } = await codexFixture(); await chmod(runtime, 0o644);
-    await expect(resolve(entry, root)).rejects.toMatchObject({ stage: "resolve", code: "permission_denied" });
-  });
 });
 
 describe("tool fixture cleanup", () => {

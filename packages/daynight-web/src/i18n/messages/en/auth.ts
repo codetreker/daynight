@@ -126,6 +126,8 @@ export const auth: AuthMessages = {
       grantsTitle: "Application authorizations", grantsDescription: "Manage clients you authorized in the browser to access Daynight.",
       grantsNotice: "Revoking an authorization invalidates its access and renewal credentials. The client must request authorization again.",
       grantsLoading: "Reading application authorizations…", grantsEmpty: "You have not authorized any applications.", grantsRefresh: "Refresh",
+      lastUsed: "Last used", noUsageRecorded: "No usage recorded", recordedTime: "Recorded time (approximate)", usageJustNow: "About just now",
+      usageMinutes: value => `About ${value} min ago`, usageHours: value => `About ${value} ${value === 1 ? "hour" : "hours"} ago`, usageDays: value => `About ${value} ${value === 1 ? "day" : "days"} ago`,
       grantClient: "Client", grantResource: "Resource", grantScope: "Scope", grantActive: "Active", grantExpired: "Expired", grantRevoked: "Revoked",
       grantRevoke: ({ name }) => `Revoke authorization for ${name}`, grantRevokeTitle: "Revoke application authorization?", grantRevokeEffect: "Its access and renewal credentials will become invalid. The client must request authorization again.", grantRevokeConfirm: "Revoke authorization",
       grantStorage: "Browser session storage is unavailable. Restore access before revoking or confirming the current state.",
