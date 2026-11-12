@@ -18,6 +18,8 @@ type TeamWriter interface {
 type TeamWriteScope interface {
 	TeamDAO() TeamWriteDAO
 	EligibilityDAO() WebhookEligibilityDAO
+	IdentityDAO() IdentityDAO
+	CredentialFamilyDAO() CredentialFamilyDAO
 }
 
 type TeamCreationDAO interface {
@@ -39,5 +41,5 @@ type TeamWriteDAO interface {
 	ConsumeInvitation(context.Context, string, string, time.Time) error
 	InvitationTeam(context.Context) (model.TeamRef, error)
 	InvitationMember(context.Context, string) (model.TeamMember, error)
-	AddInvitedMember(context.Context, string) (model.TeamMember, error)
+	AddMember(context.Context, string, model.ProjectRole) (model.TeamMember, error)
 }

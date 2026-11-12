@@ -34,7 +34,10 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	}
 	for _, operation := range []func(TeamWriteDAO) error{
 		func(tx TeamWriteDAO) error { return tx.CreateInvitation(ctx, invitation) },
-		func(tx TeamWriteDAO) error { _, err := tx.AddInvitedMember(ctx, admin.UserID); return err },
+		func(tx TeamWriteDAO) error {
+			_, err := tx.AddMember(ctx, admin.UserID, model.ProjectMemberRole)
+			return err
+		},
 	} {
 		assertRollback(testWriteTeam(s, ctx, team.ID, operation))
 	}
@@ -70,7 +73,7 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 			if err != nil {
 				return err
 			}
-			if _, err := tx.AddInvitedMember(ctx, newcomer.UserID); err != nil {
+			if _, err := tx.AddMember(ctx, newcomer.UserID, model.ProjectMemberRole); err != nil {
 				return err
 			}
 			return tx.ConsumeInvitation(ctx, locked.ID, newcomer.UserID, time.Now())
@@ -122,7 +125,7 @@ CREATE TRIGGER refuse_team_invitation_consume BEFORE UPDATE ON team_invitations 
 				dao := scope.TeamDAO()
 				switch change {
 				case "consumed":
-					if _, err := dao.AddInvitedMember(ctx, first.UserID); err != nil {
+					if _, err := dao.AddMember(ctx, first.UserID, model.ProjectMemberRole); err != nil {
 						return err
 					}
 					if err := dao.ConsumeInvitation(ctx, invitation.ID, first.UserID, at); err != nil {

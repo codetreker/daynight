@@ -203,7 +203,7 @@ func AcceptInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	}
 	result := TeamInvitationAcceptance{}
 	if errors.Is(err, model.ErrNotFound) {
-		member, err = dao.AddInvitedMember(ctx, p.UserID)
+		member, err = dao.AddMember(ctx, p.UserID, model.ProjectMemberRole)
 		if err != nil {
 			return TeamInvitationAcceptance{}, err
 		}

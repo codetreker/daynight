@@ -121,6 +121,10 @@ func (m *strictIdentity) PersonalTeamID(context.Context, model.Principal) (strin
 	return "", m.unexpected("PersonalTeamID")
 }
 
+func (m *strictIdentity) EnsureUser(context.Context, model.User) (model.User, error) {
+	return model.User{}, m.unexpected("EnsureUser")
+}
+
 var errAssemblyResourceCall = errors.New("unexpected assembly resource call")
 
 type borrowedStore struct {

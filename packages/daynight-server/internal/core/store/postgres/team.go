@@ -6,7 +6,9 @@ import (
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/identity"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
 	"github.com/jackc/pgx/v5"
 )
@@ -33,6 +35,11 @@ type teamWriteScope struct {
 
 func (s teamWriteScope) TeamDAO() TeamWriteDAO                 { return team.NewWriter(s.tx, s.teamID) }
 func (s teamWriteScope) EligibilityDAO() WebhookEligibilityDAO { return eligibility.New(s.tx) }
+
+func (s teamWriteScope) IdentityDAO() IdentityDAO {
+	return identity.NewScope(s.tx, oauth.NewDAO(s.tx)).IdentityDAO()
+}
+func (s teamWriteScope) CredentialFamilyDAO() CredentialFamilyDAO { return oauth.NewDAO(s.tx) }
 
 func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(TeamWriteScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

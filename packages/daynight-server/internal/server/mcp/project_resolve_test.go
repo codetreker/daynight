@@ -369,7 +369,7 @@ type mcpOrgTeamWriter struct {
 	LockInvitationCall    func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
 	InvitationTeamCall    func(ctx context.Context) (model.TeamRef, error)
 	InvitationMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
-	AddInvitedMemberCall  func(ctx context.Context, user string) (model.TeamMember, error)
+	AddMemberCall         func(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error)
 	ConsumeInvitationCall func(ctx context.Context, id, user string, now time.Time) error
 	RevokeInvitationCall  func(ctx context.Context, id string, now time.Time) (bool, error)
 }
@@ -389,8 +389,8 @@ func (d mcpOrgTeamWriter) InvitationTeam(ctx context.Context) (model.TeamRef, er
 func (d mcpOrgTeamWriter) InvitationMember(ctx context.Context, user string) (model.TeamMember, error) {
 	return requireCallback(d.t, "MCP DAO InvitationMemberCall", d.InvitationMemberCall)(ctx, user)
 }
-func (d mcpOrgTeamWriter) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
-	return requireCallback(d.t, "MCP DAO AddInvitedMemberCall", d.AddInvitedMemberCall)(ctx, user)
+func (d mcpOrgTeamWriter) AddMember(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
+	return requireCallback(d.t, "MCP DAO AddMemberCall", d.AddMemberCall)(ctx, user, role)
 }
 func (d mcpOrgTeamWriter) ConsumeInvitation(ctx context.Context, id, user string, now time.Time) error {
 	return requireCallback(d.t, "MCP DAO ConsumeInvitationCall", d.ConsumeInvitationCall)(ctx, id, user, now)

@@ -1445,8 +1445,13 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 Completion tests retain allocated-ID errors, staged snapshot refusals and the
 method-specific result contracts. Invitation acceptance uses a completed read
 snapshot followed by an independent Team write scope; eligibility refresh uses
-that write scope and runs only after the lower mutation succeeds. Core tests
-own lifecycle, last-admin, invitation and post-lock clock decisions. PostgreSQL
+that write scope and runs only after the lower mutation succeeds. Direct-member
+service tests execute initial admission, confirmed independent initialization and
+final member/eligibility completion, including partial-account retention and
+fresh post-member-wait credential checks. Its normal integration flow creates a
+Team, adds an external identity through real PAT authentication and rereads the
+exact member UUID, profile, version and timestamps. Core tests own direct-member
+convergence and role conflicts, lifecycle, last-admin, invitation and post-lock clock decisions. PostgreSQL
 owners verify current facts after Team/invitation locks, SQL failures, consumption,
 rollback and fresh persisted readback. `PersonalTeamID` belongs to Identity.
 The [Team test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-team-service-test-boundary.md)
@@ -2637,6 +2642,32 @@ owns existence locking, completion classification and independent versions.
 members. Each item contains the real membership fields and
 `profile:{name,email,avatarUrl}` with nullable fields. A missing canonical user
 fails the entire read. Project grants do not grant directory access.
+
+An admin directly adds an external identity with
+`POST /api/v1/teams/{teamId}/members` and exactly
+`{expectedUserId,user:{externalUserId,profile?},role}`. The actor UUID must match
+the principal; role is explicitly `admin` or `member`, and no query or version
+is accepted. The shared external-user input permits an optional profile containing
+only nullable name/avatarUrl fields. Existing account profiles are preserved.
+
+A short original Team scope checks the credential, ordinary Team and current
+admin before target initialization. The independent EnsureUser operation must
+confirm its complete user/Personal Team commit before the final Team scope
+rechecks credential, Team/admin and target membership. That scope binds the
+existing identity and family DAOs to the same transaction, preserves the Team
+prelock, refreshes eligibility atomically and checks fresh credential validity
+after member contention. Native Session/PAT checks use their reader-compatible
+SHARE capability; API principals use the fixed API tuple. A late refusal can leave
+a complete target account, while membership and eligibility roll back together.
+
+Success is `200 {membership,added,actorRole:"admin"}` with the actual target UUID,
+role, independent membership version and UTC timestamps. A new relationship
+returns added=true. An existing same-role relationship returns added=false with
+its original version and timestamps; a different role returns
+`409 resource_conflict` without a membership write. Use the existing versioned
+PATCH to change that role. Direct addition neither changes the Team metadata
+version nor creates or consumes an invitation. Invitation acceptance still
+explicitly adds member and retains its existing actor and consumption rules.
 
 An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
 and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.

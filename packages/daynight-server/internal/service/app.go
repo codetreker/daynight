@@ -23,6 +23,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
@@ -40,6 +41,7 @@ type App struct {
 	webhookRuntime       *webhookRuntime
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
+	DirectMembers        *team.DirectMembers
 	ImageValidationError error
 	oauthMaintenance     *oauthservice.MaintenanceRunner
 
@@ -87,6 +89,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
+	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
 	app.drainLock <- struct{}{}
 	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
 	app.ImageValidationError = err

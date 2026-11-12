@@ -1,6 +1,7 @@
 package team
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -16,9 +17,10 @@ import (
 )
 
 type teamHandler struct {
-	teams  *teamservice.Teams
-	logger *slog.Logger
-	origin string
+	teams     *teamservice.Teams
+	addMember func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
+	logger    *slog.Logger
+	origin    string
 }
 
 func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
@@ -31,7 +33,7 @@ func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/members", auth.Require(h.listMembers))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.setMemberRole))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH, DELETE")))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/invitations", auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/invitations", auth.Require(h.createInvitation))
