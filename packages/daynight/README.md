@@ -2813,7 +2813,14 @@ The Worker prepares each selected or retained repository by converting legacy
 ownership into durable manifests before admitting file operations. Conversion
 preserves existing checkouts and frozen cwd, and leaves conflicting or unknown
 resources visible. A manifest locates a worktree but does not authorize deleting
-unregistered nonempty content. The old Worker cannot manage converted resources.
+unregistered nonempty content. The common-directory and origin inspection
+queries run from the stable primary checkout with explicit verified
+administrative and manifest-bound worktree paths, so their cwd does not prevent
+concurrent leaf removal on Windows. Git continues to interpret the linked
+worktree's configuration; a `core.worktree` redirect does not change the physical
+resource identified by its manifest. The old Worker cannot manage converted
+resources. The [Worker design](../../docs/design/daynight-worker.md#git-工作区与资源身份)
+defines the inspection and cleanup checks.
 
 A fully enumerated, independently attributed damaged worktree can be quarantined
 only for static local validation failures under stable observations, while

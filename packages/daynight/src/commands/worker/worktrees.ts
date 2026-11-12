@@ -148,8 +148,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       try { await command.joined; } finally { handles.delete(command); }
     }
   };
-  const validateOrigin = async (root: string, repoUrl: string, operation: Operation): Promise<void> => {
-    const remote = await git(root, ["config", "--get-all", "remote.origin.url"], operation);
+  const validateOrigin = async (root: string, repoUrl: string, operation: Operation, context: readonly string[] = []): Promise<void> => {
+    const remote = await git(root, [...context, "config", "--get-all", "remote.origin.url"], operation);
     if (remote.includes("\n") || repositoryIdentity(remote) !== repositoryIdentity(repoUrl)) throw new Error("The repository origin does not match its configured address.");
   };
   const inspectRepository = async (project: WorkerProject, operation: Operation): Promise<WorkerRepository> => {
@@ -207,10 +207,15 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (pointer === null) {
         if (!terminal || (await readdir(binding.worktreePath)).length > 0) throw new WorktreeValidationError("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
       } else {
-        if (!pointer.startsWith("gitdir: ") || await resolveGitDirectory(binding.worktreePath, pointer.slice(8)) !== await resolveGitDirectory(registration.directory, ".")) throw new Error("The original worktree Git pointer has changed.");
-        const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
-        if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
-        if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
+        if (!pointer.startsWith("gitdir: ")) throw new Error("The original worktree Git pointer has changed.");
+        const gitDirectory = await resolveGitDirectory(binding.worktreePath, pointer.slice(8));
+        if (gitDirectory !== await resolveGitDirectory(registration.directory, ".")) throw new Error("The original worktree Git pointer has changed.");
+        // Windows locks a process's cwd against removal. Bind these metadata
+        // reads to the verified leaf without entering a concurrently removed directory.
+        const context = [`--git-dir=${gitDirectory}`, `--work-tree=${absolute(binding.worktreePath, "Task worktree path")}`];
+        const common = await git(repository.root, [...context, "rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
+        if (await directory(path.resolve(repository.root, common)) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
+        if (!terminal) await validateOrigin(repository.root, project.repoUrl, operation, context);
       }
     }
     if (!terminal) {

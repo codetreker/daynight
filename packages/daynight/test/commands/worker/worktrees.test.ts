@@ -195,6 +195,57 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(adapter.findWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
   });
 
+  it("inspects linked metadata from the repository cwd with its original absolute context and operation budget", async () => {
+    const f = await fixture();
+    const calls: { cwd: string; args: readonly string[]; op: Operation; timeoutMs: number | undefined }[] = [];
+    let inspect = false;
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      const result = await runRepositoryGit(cwd, args, op, options);
+      if (inspect && args.some(arg => arg.startsWith("--work-tree="))) {
+        calls.push({ cwd, args, op, timeoutMs: options?.timeoutMs });
+        if (args.includes("--git-common-dir")) return { ...result, stdout: `${path.relative(cwd, result.stdout.trim())}\n` };
+      }
+      return result;
+    } });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const admin = await realpath(administrativeDirectory(binding.worktreePath));
+    const op = createOperation({ limits: { totalMs: 60_000, requestMs: 12_345 } }); operations.push(op);
+    const remaining = op.remainingMs();
+    inspect = true;
+    await expect(adapter.verifyWorktree(f.project, f.owner, op)).resolves.toEqual(binding);
+    expect(calls).toHaveLength(2);
+    expect(calls.map(call => call.args.slice(-3))).toEqual([
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      ["config", "--get-all", "remote.origin.url"],
+    ]);
+    for (const call of calls) {
+      expect(call.cwd).toBe(f.repository);
+      expect(call.args).toContain(`--git-dir=${admin}`);
+      expect(call.args).toContain(`--work-tree=${binding.worktreePath}`);
+      expect(call.args).not.toContain("-C");
+      expect(call.op.limits).toBe(op.limits);
+      expect(call.op.remainingMs()).toBeLessThanOrEqual(remaining);
+      expect(call.timeoutMs).toBe(12_345);
+    }
+  });
+
+  it.each(["--git-common-dir", "remote.origin.url"])("retains the original %s inspection error and unknown inventory", async command => {
+    const f = await fixture(); const failure = new Error("metadata query failed"); let inspect = false;
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (inspect && args.some(arg => arg.startsWith("--work-tree=")) && args.includes(command)) throw failure;
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
+    inspect = true;
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
+    const scan = await adapter.scanWorktrees(f.project, operation());
+    expect(scan.validated).toEqual([]);
+    expect(scan.quarantined).toEqual([]);
+    expect(scan.unknown).toEqual([{ error: failure }]);
+    expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
+  });
+
   it("finds cleanup worktrees read-only and rejects an unattributed present path", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     await adapter.prepareRepository(f.project, operation());
