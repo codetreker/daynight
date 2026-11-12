@@ -11,7 +11,7 @@ import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, r
 import { parseStartupObservation } from "../../session/startup.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { inspectBootstrapProcessProof, type ProcessProof } from "./process-proof.js";
-import { WindowsProcessProofError, stopWindowsBootstrapProcess } from "./windows-process-proof.js";
+import { stopWindowsBootstrapProcess } from "./windows-process-proof.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "./storage-lock.js";
 import { ControllerStorageWaitingError } from "./storage-preparation.js";
 
@@ -206,20 +206,7 @@ export const reconcileSubmittedControllerLaunch = async (input: { journalFile: s
 export const stopControllerBootstrap = async (proof: ProcessProof, deadline: number): Promise<void> => {
   if (!Number.isSafeInteger(deadline) || deadline <= 0) throw new Error("Invalid controller bootstrap deadline.");
   if (Date.now() >= deadline) throw new Error("Controller bootstrap stop exceeded its deadline.");
-  if (process.platform === "win32") {
-    try { return await stopWindowsBootstrapProcess(proof, deadline); }
-    catch (error) {
-      // ERROR_INVALID_PARAMETER means the PID may have disappeared before open.
-      // Only a separate liveness check can establish that no process remains.
-      if (!(error instanceof WindowsProcessProofError) || error.stage !== "open-process" || error.code !== 87 || Date.now() >= deadline) throw error;
-      let mismatch: { sameBirth: boolean } | undefined;
-      const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; });
-      if (Date.now() >= deadline) throw error;
-      if (state === "stopped") return;
-      if (state === "replaced" && mismatch?.sameBirth === false) throw new ControllerBootstrapReplacedError(undefined, { cause: error });
-      throw error;
-    }
-  }
+  if (process.platform === "win32") return stopWindowsBootstrapProcess(proof, deadline);
   let uncertainty: Error | undefined;
   const deadlineError = () => new Error("Controller bootstrap stop exceeded its deadline.", uncertainty === undefined ? {} : { cause: uncertainty });
   const remaining = () => { if (Date.now() >= deadline) throw deadlineError(); };

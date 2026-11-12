@@ -20,7 +20,10 @@ and handle release. Inspection opens with query access, adding terminate access
 only for a stop request. The original termination queried membership after
 using exit code 1; the [submitted launch identity decision](../bug-fix/2026-11-12-submitted-controller-launch.md)
 supersedes that ordering with same-handle ownership verification and bounded
-waiting. No breakaway or kill-on-close policy is added.
+waiting. The [exit completion decision](../bug-fix/2026-11-13-windows-controller-exit-completion.md)
+requires known original process handles to be pinned before termination and
+signaled before successful complete stop; it preserves this Job API and its
+member inventory checks. No breakaway or kill-on-close policy is added.
 
 The original implementation treated `ERROR_FILE_NOT_FOUND` as an empty inventory;
 the [submitted launch identity decision](../bug-fix/2026-11-12-submitted-controller-launch.md)

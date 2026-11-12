@@ -65,13 +65,16 @@ inspection use the same complete command text. Historical hashes made from
 lossy PowerShell output are not byte-equivalent to the full Unicode hash; they
 are not accepted or recomputed through a legacy hash fallback.
 
-Windows inspection reports `running` only when birth, command hash and process
-group all agree. A different birth establishes `replaced`. When birth still
-matches but the command hash or process group differs, inspection throws an
-identity-uncertainty error. The original process instance has not been proved
-stopped, regardless of why those fields differ. Stop confirmation propagates
-that error before inspecting the Job inventory, retaining execution evidence and
-resource responsibility. POSIX comparison behavior is unchanged.
+Windows inspection uses a query-and-synchronization handle to separate original
+birth, running identity and completed exit. The [exit completion decision](2026-11-13-windows-controller-exit-completion.md)
+owns this lifecycle: a signaled original handle establishes completed exit;
+changed exit status on an unsignaled handle permits waiting only. A different
+birth establishes `replaced`. A running original reports `running` only when
+birth, parent PID, command hash and process group agree. Same-birth conflicting
+identity remains an error, preserving execution evidence and resource
+responsibility. Unconfirmed native permission and unknown status failures remain
+errors.
+POSIX comparison behavior is unchanged.
 
 The existing acquisition defaults remain fifteen seconds on Windows and five
 seconds on POSIX, with explicit caller budgets and five-second inspection.
@@ -139,9 +142,12 @@ A proof saved from lossy Unicode output remains uncertain when the same live
 birth is inspected against the complete native command line. The stored hash is
 not treated as another process's proof or replaced with a newly computed hash.
 A named Job lookup cannot substitute for original process-instance termination;
-stop confirmation therefore rejects the same-birth mismatch before considering
-its inventory. Recovery and resource deletion retain the original responsibility
-until complete stop evidence can be established.
+stop confirmation therefore rejects conflicting full identity of a running
+same-birth instance before considering its inventory. The linked exit completion
+decision retains original process handles through termination; an already-exiting
+instance is waited on through its birth-verified handle. Recovery and resource
+deletion retain the original responsibility until complete stop evidence can be
+established.
 
 Focused regressions cover birth precision, complete Unicode command lines,
 PID replacement, same-birth identity uncertainty before Job inspection, native
