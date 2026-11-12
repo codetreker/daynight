@@ -754,6 +754,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
+| `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |
@@ -761,7 +762,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth backend App ID | Required |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Server-only UniAuth App secret | Required |
 | `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Exact same-origin callback URL with a canonical non-root path and no query/fragment | Required |
-| `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` | Explicit main-site HTTP test-origin policy (`0` or `1`) | `0` |
+| `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` | Explicit main-site HTTP test-origin and loopback application CORS test policy (`0` or `1`) | `0` |
 | `DAYNIGHT_ALLOW_LOOPBACK_HTTP` | Separate SDK permission for a literal loopback UniAuth HTTP gateway (`0` or `1`) | `0` |
 | `DAYNIGHT_LISTEN_ADDR` | Numeric loopback IP and port, including IPv6 syntax | `127.0.0.1:8787` |
 | `DAYNIGHT_METRICS_LISTEN_ADDR` | Optional numeric IP and port for the independent metrics listener | Empty (disabled) |
@@ -772,6 +773,28 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_HELPER_PATH` | Path to the packaged image validation helper | Unconfigured |
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
+
+`s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` accepts one canonical exact
+HTTPS origin: lowercase host, no default port, userinfo, path, query, fragment or
+wildcard. HTTP requires `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` and a literal localhost
+or numeric loopback application host. Invalid values fail startup. If the environment
+variable is absent, the loaded YAML value remains effective. The supplied
+localhost and dev-ci Compose configurations preserve that distinction: an absent
+variable in both the host environment and private environment file retains YAML;
+an explicitly empty value overrides YAML and disables application browser CORS;
+a nonempty value overrides YAML with that origin. The blank entry in
+[localhost .env.example](../../deployment/localhost/.env.example) deliberately
+disables browser CORS when copied unchanged without a host override. The host
+environment takes precedence over the private environment file. An empty origin
+leaves no-Origin REST, internal issuance and existing public refresh available.
+Restart after changing it. The outer user REST adapter decorates success and error
+responses and handles registered-method preflight without credentials or business
+work. It echoes the exact origin, merges Vary and sends no
+Access-Control-Allow-Credentials. Native Cookie mutation, account-root and
+producer authentication remain unchanged. Public OAuth/MCP retain their separate
+CORS; the S2S issuer, static assets and health routes are outside this adapter.
+The [authentication design](../../docs/design/daynight-auth.md#用户-rest-的精确-cors)
+owns the complete allowed and exposed header tables and method rules.
 
 Image validation settings are configured together or omitted together. Omitting
 them retains text service and refuses new image uploads. A configured runtime,

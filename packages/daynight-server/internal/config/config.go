@@ -7,6 +7,7 @@ import (
 	redisconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis/config"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	corsconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/cors/config"
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
@@ -24,6 +25,7 @@ type MCPConfig struct {
 	Transfer transferconfig.Config `yaml:",inline"`
 }
 type Config struct {
+	S2S                 corsconfig.Config                `yaml:"s2s"`
 	LocalOverrideLoaded bool                             `yaml:"-"`
 	Server              serverconfig.Config              `yaml:"server"`
 	Database            databaseconfig.Config            `yaml:"database"`
@@ -50,7 +52,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	lookup := func(key string) (string, bool) { v := getenv(key); return v, v != "" }
 	mark := func(string, string) {}
 	for _, apply := range []func(func(string) (string, bool), func(string, string)) error{
-		c.OAuth.ApplyEnvironment, c.MCP.Transfer.ApplyEnvironment, c.Server.ApplyEnvironmentDurations, c.TaskSync.ApplyEnvironment, c.Server.ApplyEnvironmentRemaining, c.UniAuth.ApplyEnvironment, c.Webhook.ApplyEnvironment, c.Database.ApplyEnvironment, c.Monitoring.Redis.ApplyEnvironment, c.Storage.ApplyEnvironment, c.MCP.Origins.ApplyEnvironment, c.Monitoring.Metrics.ApplyEnvironment, c.ImageDecoder.ApplyEnvironment,
+		c.S2S.ApplyEnvironment, c.OAuth.ApplyEnvironment, c.MCP.Transfer.ApplyEnvironment, c.Server.ApplyEnvironmentDurations, c.TaskSync.ApplyEnvironment, c.Server.ApplyEnvironmentRemaining, c.UniAuth.ApplyEnvironment, c.Webhook.ApplyEnvironment, c.Database.ApplyEnvironment, c.Monitoring.Redis.ApplyEnvironment, c.Storage.ApplyEnvironment, c.MCP.Origins.ApplyEnvironment, c.Monitoring.Metrics.ApplyEnvironment, c.ImageDecoder.ApplyEnvironment,
 	} {
 		if err := apply(lookup, mark); err != nil {
 			return Config{}, err
@@ -59,6 +61,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
+	if err := c.S2S.Validate(c.Server.AllowHTTPTestOrigin); err != nil {
+		return err
+	}
 	for _, validate := range []func() error{c.OAuth.Validate, c.MCP.Transfer.Validate, c.Database.Validate, c.Monitoring.Redis.Validate, c.Storage.Validate, c.Server.ValidateRequired, c.UniAuth.ValidateRequired} {
 		if err := validate(); err != nil {
 			return err
