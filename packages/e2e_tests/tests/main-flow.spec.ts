@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
 import { startCommand } from "../src/command.ts";
 
@@ -139,13 +141,22 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     expect(response.status(), await response.text()).toBe(200);
     return await response.json() as Task & { properties: { worker: { claimId: string; worktreeId: string } } };
   };
+  // Session registration is a Worker operation and requires the PAT issued to
+  // the CLI by device login. Keep it out of the browser and Playwright traces.
+  const configModule = pathToFileURL(path.join(path.dirname(topology.cliEntry), "config/server.js")).href;
+  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverToken?: string }> };
+  const { serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
+  if (serverToken === undefined) throw new Error("CLI device login did not save its Worker credential.");
   const register = async (claimId: string, worktreeId: string) => {
-    const response = await page.request.post(`${taskRoot}/sessions`, { headers, data: {
-      protocol: "daynight.session.v1", registrationId: randomUUID(), claimId, workerId, worktreeId,
-      provider: "codex", controllerId: randomUUID(), controllerInstanceId: randomUUID(),
-    } });
-    expect(response.status(), await response.text()).toBe(200);
-    return (await response.json() as { session: { sessionId: string; claimId: string } }).session;
+    const response = await fetch(`${topology.baseURL}${taskRoot}/sessions`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
+      body: JSON.stringify({ protocol: "daynight.session.v1", registrationId: randomUUID(), claimId, workerId, worktreeId,
+        provider: "codex", controllerId: randomUUID(), controllerInstanceId: randomUUID() }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await response.text();
+    expect(response.status, body).toBe(200);
+    return (JSON.parse(body) as { session: { sessionId: string; claimId: string } }).session;
   };
   const first = await claim(ready.version, firstClaimId, firstWorktreeId, "Original E2E worker");
   expect(first.properties.worker).toMatchObject({ claimId: firstClaimId, worktreeId: firstWorktreeId });
