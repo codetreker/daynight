@@ -81,6 +81,7 @@ export const createWorkerBotHost = (options: {
         closed = true;
         const failures: unknown[] = [];
         try { await collector.close(); } catch (error) { failures.push(error); }
+        try { await botProcess.close(); } catch (error) { failures.push(error); }
         try { executions!.close(); } catch (error) { failures.push(error); }
         try { store.close(); } catch (error) { failures.push(error); }
         if (failures.length) throw new AggregateError(failures, "Bot stores could not close.");

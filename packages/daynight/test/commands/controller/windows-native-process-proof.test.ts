@@ -2,14 +2,17 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const f = vi.hoisted(() => ({ open: vi.fn(), times: vi.fn(), query: vi.fn(), close: vi.fn(), load: vi.fn(), pointerSize: 8, error: 5, now: 0 }));
+const f = vi.hoisted(() => ({ open: vi.fn(), times: vi.fn(), query: vi.fn(), close: vi.fn(), terminate: vi.fn(), wait: vi.fn(), load: vi.fn(), pointerSize: 8, error: 5, now: 0 }));
 vi.mock("koffi", () => ({
   load: f.load, sizeof: () => f.pointerSize, address: () => 0x100000n,
 }));
 const handle = {}, pid = 4101, parentPid = 4000;
 const command = '"C:\\Program Files\\node.exe" "C:\\controller 📖.mjs" --role "a  b"';
 const fileTime = 134067744001234567n;
+let ControllerBootstrapReplacedError: typeof import("../../../src/commands/controller/bootstrap-error.js").ControllerBootstrapReplacedError;
+let stop: typeof import("../../../src/commands/controller/windows-process-proof.js").stopWindowsBootstrapProcess;
 let capture: typeof import("../../../src/commands/controller/windows-process-proof.js").captureWindowsProcessProof;
+let verifyMember: typeof import("../../../src/commands/controller/windows-process-proof.js").verifyWindowsJobMember;
 const writePointer = (data: Buffer, offset: number, value: bigint) => f.pointerSize === 8 ? data.writeBigUInt64LE(value, offset) : data.writeUInt32LE(Number(value), offset);
 const basic = (data: Buffer, returned: Buffer) => {
   writePointer(data, f.pointerSize * 4, BigInt(pid)); writePointer(data, f.pointerSize * 5, BigInt(parentPid));
@@ -28,18 +31,21 @@ beforeEach(async () => {
     if (declaration.includes("OpenProcess")) return f.open;
     if (declaration.includes("GetProcessTimes")) return f.times;
     if (declaration.includes("NtQueryInformationProcess")) return f.query;
+    if (declaration.includes("TerminateProcess")) return f.terminate;
+    if (declaration.includes("WaitForSingleObject")) return f.wait;
     if (declaration.includes("CloseHandle")) return f.close;
     if (declaration.includes("GetLastError")) return () => f.error;
     throw new Error(`Unexpected native declaration: ${declaration}`);
   } }));
-  f.open.mockReturnValue(handle); f.close.mockReturnValue(1);
+  f.open.mockReturnValue(handle); f.close.mockReturnValue(1); f.terminate.mockReturnValue(1); f.wait.mockReset().mockReturnValueOnce(258).mockReturnValue(0);
   f.times.mockImplementation((observed, creation: Buffer) => { expect(observed).toBe(handle); creation.writeBigUInt64LE(fileTime); return 1; });
   f.query.mockImplementation((observed, kind, data: Buffer, size, returned: Buffer) => {
     expect(observed).toBe(handle); expect(size).toBe(data.length);
     if (kind === 0) basic(data, returned); else if (kind === 60) commandLine(data, returned); else throw new Error("Unexpected information class");
     return 0;
   });
-  ({ captureWindowsProcessProof: capture } = await import("../../../src/commands/controller/windows-process-proof.js"));
+  ({ captureWindowsProcessProof: capture, stopWindowsBootstrapProcess: stop, verifyWindowsJobMember: verifyMember } = await import("../../../src/commands/controller/windows-process-proof.js"));
+  ({ ControllerBootstrapReplacedError } = await import("../../../src/commands/controller/bootstrap-error.js"));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -147,5 +153,62 @@ describe("Windows native process identity", () => {
     f.load.mockImplementation(() => { f.now = 5001; return { func: () => vi.fn() }; });
     await expect(capture(pid, 5000)).rejects.toThrow(/deadline/);
     expect(f.open).not.toHaveBeenCalled(); expect(f.close).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Windows bootstrap stop handle", () => {
+  const proof = { pid, parentPid, processGroupId: null, startedAt: "2025-11-05T00:00:00.1234560Z", commandHash: createHash("sha256").update(command).digest("hex") };
+  it("checks identity, terminates and waits on the same handle", async () => {
+    await stop(proof, Date.now() + 5000);
+    expect(f.open).toHaveBeenCalledExactlyOnceWith(0x101001, 0, pid);
+    expect(f.terminate).toHaveBeenCalledExactlyOnceWith(handle, 1);
+    expect(f.wait.mock.calls).toHaveLength(2);
+    expect(f.wait.mock.calls.every(call => call[0] === handle)).toBe(true);
+    expect(f.wait.mock.calls[0]?.[1]).toBe(0);
+    expect(f.wait.mock.calls[1]?.[1]).toBeGreaterThan(0);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("does not terminate a different instance", async () => {
+    await expect(stop({ ...proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/identity mismatch/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("distinguishes a different birth from conflicting identity at the same birth", async () => {
+    const replaced = await stop({ ...proof, startedAt: "older" }, Date.now() + 5000).catch(error => error);
+    expect(replaced).toBeInstanceOf(ControllerBootstrapReplacedError); expect(f.terminate).not.toHaveBeenCalled();
+    const conflict = await stop({ ...proof, commandHash: "replacement" }, Date.now() + 5000).catch(error => error);
+    expect(conflict).toBeInstanceOf(Error); expect(conflict).not.toBeInstanceOf(ControllerBootstrapReplacedError);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledTimes(2);
+  });
+  it("retains wait and close failures", async () => {
+    f.wait.mockReset().mockReturnValue(258); f.close.mockReturnValue(0);
+    const error = await stop(proof, Date.now() + 5000).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toMatch(/deadline/);
+    expect(error.errors[1]).toMatchObject({ stage: "close-process-handle" });
+  });
+});
+
+describe("Windows Job original member verification", () => {
+  const proof = { pid, parentPid, processGroupId: null, startedAt: "2025-11-05T00:00:00.1234560Z", commandHash: createHash("sha256").update(command).digest("hex") };
+  it("uses the same process handle for birth, command and membership before closing", async () => {
+    const membership = vi.fn(() => true);
+    expect(await verifyMember(proof, Date.now() + 5000, membership)).toBe(true);
+    expect(f.open).toHaveBeenCalledExactlyOnceWith(0x101000, 0, pid);
+    expect(f.times.mock.calls[0]?.[0]).toBe(handle);
+    expect(f.query.mock.calls.every(call => call[0] === handle)).toBe(true);
+    expect(membership).toHaveBeenCalledExactlyOnceWith(handle);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("does not accept a replacement birth or consult its membership", async () => {
+    const membership = vi.fn(() => true);
+    expect(await verifyMember({ ...proof, startedAt: "earlier" }, Date.now() + 5000, membership)).toBe(false);
+    expect(membership).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("retains identity and handle close failures together", async () => {
+    f.close.mockReturnValue(0);
+    const membership = vi.fn(() => { throw new Error("membership failed"); });
+    const error = await verifyMember(proof, Date.now() + 5000, membership).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("membership failed");
+    expect(error.errors[1]).toMatchObject({ stage: "close-process-handle" });
   });
 });

@@ -88,6 +88,20 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订索引及有界 outbox，timeline 和资源正文写入相邻的待归档文件。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
+Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察读取当前 v9 journal 的单次只读快照，核对完整执行身份、generation 和 ticket 绑定；观察不迁移旧格式。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
+
+同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。
+
+POSIX 进程退出期间命令显示可能暂时改变。出生时间、父进程和进程组仍匹配但命令不一致时，停止操作在原期限内只读等待，不向该实例发信号；完整身份恢复后才能继续发送信号。持续冲突、观察失败或期限耗尽保留错误，不推断停止。
+
+POSIX 原 Controller 被重新收养后，匹配出生时间和进程组的 zombie 仍证明该单进程退出；父进程与 zombie 命令显示可能改变。此观察不证明 native 进程或进程组停止。Bot 有序关闭使用同次鉴权的最新健康快照判断重启资格，保留已经记录的明确启动失败。
+
+取消未鉴权的启动先使用原 spawn proof 和清理的绝对期限停止 Controller 单进程，再分类 journal。POSIX 每次发送 TERM 或 KILL 前复核原实例；Windows 使用同一进程句柄核对身份、终止和有界等待，不依赖尚未建立的 Job Object。此证明不覆盖 native 进程；当前 generation 已提交时仍以 journal 的完整证明独立确认整个原生边界。清理一旦开始便完成有界停止收尾，失败保留原意图和错误。取舍见[启动身份决策](../../.agents/notes/implemented/bug-fix/2026-11-12-submitted-controller-launch.md)。
+
+进入主动清理后，观察、停止 IPC 或本机记账失败不会跳过原 spawn proof 的有界停止尝试。单进程退出后重新分类 journal，完整匹配的当前代证据允许继续停止和核验 native 边界。journal 纯 I/O 故障时，先前鉴权且匹配的 POSIX 进程证据仅允许对仍可归属的原组尝试停止，不能代替当前完整证明；身份或格式冲突不能使用旧证据。原失败仍被报告，不能据此归档或释放资源。完整停止、进程查询、Job 操作及 stopped 记录共用清理期限；已开始的原生调用必须结束并关闭句柄，提交跨过期限时保留实际事务结果。
+
+独立 Test launcher 在 spawn 成功但采集 spawn proof 失败时，仍在有界期限内尝试原 ticket 鉴权 IPC 停止；鉴权快照中的 Controller 进程必须匹配原子进程 PID。Windows 可用 spawn 保留的原进程句柄尝试停止；POSIX 不向缺少身份验证的 PID 发信号。不能确认退出时解除子进程引用，保留原错误、执行资料和 native lease；缺少 spawn proof 不记录完整 stopped 或归档证明。
+
 `captureProcessProof` 统一拥有新进程证明采集的默认预算：Windows 为 15 秒，POSIX 为 5 秒；显式调用预算仍优先。父 launcher、Controller 自身以及 native spawn 共用该机制，`inspectProcessProof` 的日常身份复核仍显式使用 5 秒。Windows 通过已有 Koffi 依赖在本进程内打开原 PID 的 process handle，保持该句柄直到出生时间、父进程身份和完整 UTF-16 命令行采集及校验完成。全部字段来自同一进程实例，PID 复用不能把多次查询拼成另一实例的证明；证明字段结构与出生时间的既有 UTC 表示、CIM 微秒精度保持不变，命令行按完整 Unicode 文本计算哈希，不经过 PowerShell console 编码，也不用 executable path 代替。旧查询曾因 console code page 丢失字符，其错误文本的哈希与完整 Unicode 哈希不保证相同；不接受旧哈希 fallback，也不重算或替换原证明。Windows 复核只有出生时间、命令行哈希和 process group 均相同时返回 running；出生时间不同才返回 replaced。出生时间仍相同而命令行哈希或 process group 不同时，原进程实例尚未证明停止，复核抛出身份不确定错误，停止确认在查询 Job 成员前传播该错误并保留执行资料与资源责任，不能据此恢复或删除资源。POSIX 的比较行为保持不变。Windows 在 native 调用之间检查预算并等待已开始的调用返回，JavaScript 计时器不能抢占 kernel 调用。Controller 先保存自身证明及 Windows Job 边界，再绑定认证 IPC。权限、native 查询或结果格式错误继续失败并保留原错误和未确认责任，缺失管道不能证明启动未提交或进程已停止。机制与依赖限制见[Windows 原生进程证明决策](../../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)，预算依据见[启动证明预算决策](../../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)。
 
 Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0 在准入后丢弃原 schema 和数据，从基线与编号升级重建。已有空版本 0 文件也在查询访问时初始化。启动在同一事务中先检查旧 owner，再重置或升级及执行原 ticket/generation 认领；版本 0 没有 `execution` 表时可重置，已有该表时必须能读取 `id` 和 `owner_pid`，缺列或活跃、未知 owner 均在 DDL 前失败。纯读取只完成格式重置或升级，不启动 Controller 或认领 writer。当前格式在同一只读快照内检查并读取，不创建或重建待归档文件。版本 0 重置不删除独立待归档源；若启动时已没有 execution 身份记录而待归档 timeline 或资源非空，必须拒绝采用，不能只凭相同 Session ID 把历史归入新 ticket。空 manifest 可以用于尚未写入内容的初始化重试。独立 stopped writer 在事务外验证进程树，最终事务重查格式及 snapshot 后写停止状态；close 清除 owner_pid 也是受格式检查的写入口。
@@ -480,7 +494,7 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 Controller 用 `cleanupInteractionIds` 标识清理阶段实际产生的交互。服务端冻结时保存 Timeline 序号边界，拒绝将冻结前的 pending 交互重新标为 cleanup；只有边界后且属于当前白名单的交互响应可以提交。浏览器按相同白名单启用控件，服务端在接受、Poll 投递和 operation_begin 时分别重验，避免排队期间权限变化绕过限制。
 
-Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 的创建、成员查询与终止通过已有 Koffi 依赖调用 Win32 API，保留原有命名、权限与逐次句柄释放方式。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。只有打开 Job 时的 `ERROR_FILE_NOT_FOUND` 表示名称不存在，权限、查询、终止和释放失败均保留错误；空 Job 清单仍不能代替原进程实例的停止证明。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。缺失名称或无法取得可信句柄保持未知，不能推断空 Job。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞。摘要保护一致性，不认证本机恶意写入者。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。权限、查询、终止和释放失败均保留错误；空 Job 清单仍不能代替原进程实例的停止证明。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
 
 ## 升级与安全失败
 

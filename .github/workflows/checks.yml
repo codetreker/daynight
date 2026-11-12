@@ -63,7 +63,7 @@ jobs:
             shard: ""
             suffix: ""
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 15 || 10 }}
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache

@@ -6,10 +6,11 @@ import Database from "better-sqlite3";
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
-import type { requestController } from "../../../src/commands/controller/local-client.js";
+import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { access, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { execFileSync, type ChildProcess } from "node:child_process";
@@ -261,9 +262,10 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   task = store.updateWebExecution(task, { controllerProcess: snapshot.controllerProcess }, 7);
   vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+  vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => ({ kind: "controller-exited", process: input.spawnProof, snapshot }));
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  return { task, request: vi.fn<typeof requestController>().mockRejectedValue(new Error("Original controller is stopped.")) };
+  return { task, request: vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original controller is stopped.")) };
 };
 
 const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) => {

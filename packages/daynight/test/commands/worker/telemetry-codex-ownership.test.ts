@@ -27,7 +27,7 @@ vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ..
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ workerSqliteMigrationEvent: () => undefined }));
 vi.mock("../../../src/commands/worker/bots/store.js", () => ({ openBotStore: () => ({ close: () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/execution-store.js", () => ({ openBotExecutionStore: () => ({ close: () => {} }) }));
-vi.mock("../../../src/commands/worker/bots/process.js", () => ({ createBotProcess: () => ({}) }));
+vi.mock("../../../src/commands/worker/bots/process.js", () => ({ createBotProcess: () => ({ close: async () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/delete.js", () => ({ createBotDeletion: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/remote.js", () => ({ createBotRemote: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/session-api.js", () => ({ createBotSessionApi: () => ({}) }));
@@ -63,7 +63,7 @@ beforeEach(() => {
   mocks.ordinary.mockImplementation(output); mocks.assistant.mockImplementation(output);
   mocks.nativeEnvironment.mockReturnValue(environment);
 });
-afterEach(() => { operations.splice(0).forEach(value => value.dispose()); hosts.splice(0).forEach(host => host.close()); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(hosts.splice(0).map(host => host.close())); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("composed Codex probe ownership", () => {
   it("blocks assistant version/help after ordinary cleanup uncertainty and preserves the original error", async () => {

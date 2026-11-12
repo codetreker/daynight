@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
 import { performance } from "node:perf_hooks";
 import type { ProcessProof } from "./process-proof.js";
 
@@ -11,7 +12,9 @@ export class WindowsProcessProofError extends Error {
 
 type ProcessKernel = {
   readonly pointerSize: number;
-  open(pid: number): unknown;
+  open(pid: number, access?: number): unknown;
+  terminate(handle: unknown): void;
+  wait(handle: unknown, timeout: number): boolean;
   times(handle: unknown, creation: Buffer): void;
   query(handle: unknown, kind: number, data: Buffer): number;
   address(data: Buffer): bigint;
@@ -23,16 +26,25 @@ const loadKernel = async (): Promise<ProcessKernel> => {
   const win32 = koffi.load("kernel32.dll"), nt = koffi.load("ntdll.dll");
   const open = win32.func("void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
   const times = win32.func("int __stdcall GetProcessTimes(void *process, void *creation, void *exit, void *kernel, void *user)");
+  const terminate = win32.func("int __stdcall TerminateProcess(void *process, uint32_t exitCode)");
+  const wait = win32.func("uint32_t __stdcall WaitForSingleObject(void *handle, uint32_t milliseconds)");
   const close = win32.func("int __stdcall CloseHandle(void *handle)");
   const lastError = win32.func("uint32_t __stdcall GetLastError()");
   const query = nt.func("int32_t __stdcall NtQueryInformationProcess(void *process, uint32_t kind, void *data, uint32_t size, void *returned)");
   const fail = (stage: string) => new WindowsProcessProofError(stage, lastError() as number, "Win32");
   return {
     pointerSize: koffi.sizeof("uintptr_t"),
-    open: pid => {
-      const handle: unknown = open(0x1000, 0, pid);
+    open: (pid, access = 0x1000) => {
+      const handle: unknown = open(access, 0, pid);
       if (handle === null) throw fail("open-process");
       return handle;
+    },
+    terminate: handle => { if (terminate(handle, 1) === 0) throw fail("terminate-process"); },
+    wait: (handle, timeout) => {
+      const status = wait(handle, timeout) as number;
+      if (status === 0) return true;
+      if (status === 258) return false;
+      throw fail("wait-process");
     },
     times: (handle, creation) => {
       if (times(handle, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)) === 0) throw fail("creation-time");
@@ -59,21 +71,7 @@ const birth = (fileTime: bigint): string => {
   return `${new Date(Number(seconds) * 1000).toISOString().slice(0, 19)}.${fraction}Z`;
 };
 
-/** Native calls retain one process handle; deadlines are checked between calls,
- * including library loading. A running kernel call is joined, never cancelled.
- */
-export const captureWindowsProcessProof = async (pid: number, timeoutMs: number): Promise<ProcessProof> => {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity.");
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Process identity timeout must be a positive supported integer.");
-  const deadline = performance.now() + timeoutMs;
-  const checkDeadline = () => { if (performance.now() >= deadline) throw new Error("Windows process identity observation exceeded its deadline."); };
-  const api = await (kernel ??= loadKernel());
-  checkDeadline();
-  if (api.pointerSize !== 4 && api.pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
-  const handle = api.open(pid);
-  let proof: ProcessProof | undefined, failure: unknown, failed = false;
-  try {
-    checkDeadline();
+const readHandleProof = (api: ProcessKernel, handle: unknown, pid: number, checkDeadline: () => void): ProcessProof => {
     const creation = Buffer.alloc(8);
     api.times(handle, creation); checkDeadline();
     const basic = Buffer.alloc(api.pointerSize * 6);
@@ -92,7 +90,25 @@ export const captureWindowsProcessProof = async (pid: number, timeoutMs: number)
     const offset = pointer(data, api.pointerSize, api.pointerSize) - api.address(data);
     if (length === 0 || length % 2 !== 0 || maximum % 2 !== 0 || length > maximum || offset % 2n !== 0n || offset < BigInt(header) || offset + BigInt(maximum) > BigInt(returned)) throw new Error("Invalid Windows process command-line identity.");
     const command = data.toString("utf16le", Number(offset), Number(offset) + length);
-    proof = { pid, parentPid: Number(parentPid), processGroupId: null, startedAt: birth(creation.readBigUInt64LE()), commandHash: createHash("sha256").update(command).digest("hex") };
+    return { pid, parentPid: Number(parentPid), processGroupId: null, startedAt: birth(creation.readBigUInt64LE()), commandHash: createHash("sha256").update(command).digest("hex") };
+};
+
+/** Native calls retain one process handle; deadlines are checked between calls,
+ * including library loading. A running kernel call is joined, never cancelled.
+ */
+export const captureWindowsProcessProof = async (pid: number, timeoutMs: number): Promise<ProcessProof> => {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity.");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Process identity timeout must be a positive supported integer.");
+  const deadline = performance.now() + timeoutMs;
+  const checkDeadline = () => { if (performance.now() >= deadline) throw new Error("Windows process identity observation exceeded its deadline."); };
+  const api = await (kernel ??= loadKernel());
+  checkDeadline();
+  if (api.pointerSize !== 4 && api.pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
+  const handle = api.open(pid);
+  let proof: ProcessProof | undefined, failure: unknown, failed = false;
+  try {
+    checkDeadline();
+    proof = readHandleProof(api, handle, pid, checkDeadline);
     checkDeadline();
   } catch (error) { failed = true; failure = error; }
   try { api.close(handle); }
@@ -103,4 +119,65 @@ export const captureWindowsProcessProof = async (pid: number, timeoutMs: number)
   if (failed) throw failure;
   checkDeadline();
   return proof!;
+};
+
+/** The handle pins the inspected instance through termination and the bounded wait. */
+export const stopWindowsBootstrapProcess = async (proof: ProcessProof, deadline: number): Promise<void> => {
+  if (!Number.isSafeInteger(proof.pid) || proof.pid <= 0 || proof.pid > 2_147_483_647) throw new Error("Invalid process identity.");
+  const checkDeadline = () => { if (Date.now() >= deadline) throw new Error("Windows bootstrap stop exceeded its deadline."); };
+  checkDeadline();
+  const api = await (kernel ??= loadKernel());
+  checkDeadline();
+  if (api.pointerSize !== 4 && api.pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
+  const handle = api.open(proof.pid, 0x101001); // QUERY_LIMITED_INFORMATION | SYNCHRONIZE | TERMINATE
+  let failure: unknown, failed = false;
+  try {
+    checkDeadline();
+    const observed = readHandleProof(api, handle, proof.pid, checkDeadline);
+    if (observed.startedAt !== proof.startedAt) throw new ControllerBootstrapReplacedError();
+    if (observed.commandHash !== proof.commandHash || observed.parentPid !== proof.parentPid || observed.processGroupId !== proof.processGroupId) throw new Error("Windows bootstrap process identity mismatch.");
+    checkDeadline();
+    if (!api.wait(handle, 0)) {
+      api.terminate(handle);
+      checkDeadline();
+      const remaining = Math.min(2_147_483_647, Math.max(0, deadline - Date.now()));
+      if (!api.wait(handle, remaining)) throw new Error("Windows bootstrap stop exceeded its deadline.");
+      checkDeadline();
+    }
+  } catch (error) { failed = true; failure = error; }
+  try { api.close(handle); }
+  catch (error) { if (failed) throw new AggregateError([failure, error], "Windows bootstrap stop and handle release failed.", { cause: failure }); throw error; }
+  if (failed) throw failure;
+};
+
+/** Hold the process handle through identity and Job membership verification. */
+export const verifyWindowsJobMember = async (proof: ProcessProof, deadline: number, belongs: (handle: unknown) => boolean): Promise<boolean> => {
+  if (!Number.isSafeInteger(proof.pid) || proof.pid <= 0 || proof.pid > 2_147_483_647) throw new Error("Invalid process identity.");
+  const checkDeadline = () => { if (Date.now() >= deadline) throw new Error("Windows Job process verification exceeded its deadline."); };
+  checkDeadline();
+  const api = await (kernel ??= loadKernel());
+  checkDeadline();
+  if (api.pointerSize !== 4 && api.pointerSize !== 8) throw new Error("Unsupported Windows process pointer size.");
+  let handle: unknown;
+  try { handle = api.open(proof.pid, 0x101000); }
+  catch (error) {
+    if (error instanceof WindowsProcessProofError && error.stage === "open-process" && error.code === 87) { checkDeadline(); return false; }
+    throw error;
+  }
+  let result = false, failure: unknown, failed = false;
+  try {
+    checkDeadline();
+    if (!api.wait(handle, 0)) {
+      const observed = readHandleProof(api, handle, proof.pid, checkDeadline);
+      if (observed.startedAt === proof.startedAt) {
+        if (observed.commandHash !== proof.commandHash || observed.parentPid !== proof.parentPid || observed.processGroupId !== proof.processGroupId) throw new Error("Windows Job member has conflicting original process identity.");
+        checkDeadline(); result = belongs(handle); checkDeadline();
+      }
+    }
+  } catch (error) { failed = true; failure = error; }
+  try { api.close(handle); }
+  catch (error) { if (failed) throw new AggregateError([failure, error], "Windows Job process verification and handle release failed.", { cause: failure }); throw error; }
+  if (failed) throw failure;
+  checkDeadline();
+  return result;
 };

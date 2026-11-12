@@ -11,6 +11,7 @@ import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "..
 
 const roots: string[] = [];
 const scopes: BotCliProbe[] = [];
+const observedJobs = new Map<BotCliProbe, windowsJob.ControllerJobLease>();
 const operations: ReturnType<typeof createOperation>[] = [];
 const fixture = async (tail = "console.log('help-result');", signal?: AbortSignal, requestMs = 5_000) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
@@ -21,11 +22,12 @@ const fixture = async (tail = "console.log('help-result');", signal?: AbortSigna
   await writeFile(file, `const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'}); require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, String(child.pid)+'\\n'); child.unref(); ${tail}\n`);
   const operation = createOperation({ ...(signal === undefined ? {} : { signal }), limits: { totalMs: 90_000, requestMs } }); operations.push(operation);
   const scope = await createBotCliProbe({ environment: process.env, cwd: root }, operation); scopes.push(scope);
+  if (process.platform === "win32") observedJobs.set(scope, await windowsJob.acquireControllerJobLease(scope.ownership.launchId, scope.ownership.process!, Date.now() + 15_000));
   return { root, file, pidFile, scope, operation };
 };
 const checkStopped = async (scope: BotCliProbe) => {
   expect(scope.ownership.process).not.toBeNull();
-  expect(await processProof.confirmControllerProcessesStopped(scope.ownership.process!, [])).toBe(true);
+  expect(await processProof.confirmControllerProcessesStopped(scope.ownership.process!, [], undefined, observedJobs.get(scope))).toBe(true);
 };
 // These diagnostics cover only fixed, test-owned OS probes. Their commands and
 // output contain fixture process metadata, never CLI credentials or target output.
@@ -66,6 +68,10 @@ afterEach(async () => {
   for (const scope of [...scopes]) {
     try { await scope.close(); scopes.splice(scopes.indexOf(scope), 1); }
     catch (error) { diagnostic("fixture-cleanup", error); failures.push(error); }
+  }
+  for (const [scope, lease] of observedJobs) {
+    try { windowsJob.releaseControllerJobLease(lease); observedJobs.delete(scope); }
+    catch (error) { failures.push(error); }
   }
   for (const operation of operations.splice(0)) operation.dispose();
   // Retain failed owners and their directories for the next cleanup attempt;
@@ -200,6 +206,7 @@ setInterval(() => {}, 1000);`;
     const preload = `--require ${JSON.stringify(hook)}`;
     const operation = createOperation({ limits: { totalMs: 90_000, requestMs: 10_000 } }); operations.push(operation);
     const scope = await createBotCliProbe({ environment: { ...process.env, NODE_OPTIONS: preload }, cwd: root }, operation); scopes.push(scope);
+    if (process.platform === "win32") observedJobs.set(scope, await windowsJob.acquireControllerJobLease(scope.ownership.launchId, scope.ownership.process!, Date.now() + 15_000));
     await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await scope.run(process.execPath, ["-e", "console.log(process.env.NODE_OPTIONS)"]);
     expect(result.stdout.trim()).toBe(testIsolation.guardedEnvironment({ NODE_OPTIONS: preload }).NODE_OPTIONS);

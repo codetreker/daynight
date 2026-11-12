@@ -12,15 +12,24 @@ import { SESSION_PROTOCOL, sessionFence, assertSessionFence, type SessionSnapsho
 import { parseControllerGrantResponse, parseRegistrationResponse } from "../../session/controller-protocol.js";
 import { writeControllerCredential } from "../worker/backends/session-api.js";
 import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
-import { readControllerSnapshot, recordStoppedControllerGeneration } from "./lifecycle-store.js";
-import { captureProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
+import { recordStoppedControllerGeneration, type ControllerSnapshot } from "./lifecycle-store.js";
+import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "./launch-observation.js";
+import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
+import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { prepareControllerIpcEndpoint } from "./paths.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
 
 class TestSessionRequestError extends Error {
   constructor(message: string, readonly retryable: boolean, options?: ErrorOptions) { super(message, options); }
+}
+
+class ControllerSnapshotEvidenceConflictError extends Error {}
+
+class TestControllerCommittedCleanupError extends Error {
+  readonly outcome = "committed";
+  constructor(cause: unknown) { super("Test controller stopped journal was committed, but cleanup could not be completed; archival remains unconfirmed.", { cause }); }
 }
 
 const waitForExit = async (exited: Promise<void> | undefined, milliseconds: number): Promise<void> => {
@@ -33,6 +42,36 @@ const waitForExit = async (exited: Promise<void> | undefined, milliseconds: numb
 const sqliteFailure = (error: unknown): boolean => error instanceof SqliteAccessError
   || error instanceof AggregateError && error.errors.some(sqliteFailure)
   || error instanceof Error && error.cause !== undefined && sqliteFailure(error.cause);
+const causedByCancellation = (error: unknown, reason: unknown): boolean => error === reason
+  || error instanceof Error && error.cause !== undefined && causedByCancellation(error.cause, reason);
+
+// A saved IPC observation may authorize only a later attempt to stop its known
+// process group. It cannot prove that the snapshot contains every later native.
+const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTicket, spawn: ProcessProof, previous: ControllerSnapshot | undefined): ControllerSnapshot | undefined => {
+  const controller = snapshot.controllerProcess;
+  if (controller === null || controller === undefined) {
+    if (previous !== undefined) throw new ControllerSnapshotEvidenceConflictError("Test controller IPC discarded its original process evidence.");
+    return undefined;
+  }
+  const valid = (value: ProcessProof): boolean => value !== null && typeof value === "object"
+    && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2_147_483_647
+    && Number.isSafeInteger(value.parentPid) && value.parentPid >= 0
+    && (value.processGroupId === null || Number.isSafeInteger(value.processGroupId) && value.processGroupId > 0)
+    && typeof value.startedAt === "string" && value.startedAt.trim() !== ""
+    && typeof value.commandHash === "string" && /^[a-f0-9]{64}$/.test(value.commandHash)
+    && (value.jobObjectName === undefined || typeof value.jobObjectName === "string" && value.jobObjectName.trim() !== "" && !value.jobObjectName.includes("\0"));
+  const same = (left: ProcessProof, right: ProcessProof): boolean => left.pid === right.pid && left.parentPid === right.parentPid
+    && left.processGroupId === right.processGroupId && left.startedAt === right.startedAt && left.commandHash === right.commandHash;
+  if (!valid(controller) || !valid(spawn) || !same(controller, spawn)
+    || snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.testExecutionId !== ticket.testExecutionId
+    || snapshot.claimId !== ticket.claimId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId
+    || !Array.isArray(snapshot.nativeProcesses) || !snapshot.nativeProcesses.every(valid)
+    || (process.platform === "win32" ? controller.jobObjectName !== `Local\\Daynight-${ticket.launchId}` : controller.jobObjectName !== undefined || controller.processGroupId !== controller.pid)
+    || previous !== undefined && !previous.nativeProcesses.every(proof => snapshot.nativeProcesses.some(current => same(proof, current) && proof.jobObjectName === current.jobObjectName))) {
+    throw new ControllerSnapshotEvidenceConflictError("Test controller IPC snapshot has conflicting process evidence.");
+  }
+  return structuredClone(snapshot);
+};
 
 // Keep the registration identity before the first network write. A timeout does
 // not authorize replacing it with another execution or replaying initial input.
@@ -46,10 +85,16 @@ export const runIndependentController = async (input: IndependentControllerInput
   let child: ChildProcess | undefined, ticket: ControllerLaunchTicket | undefined;
   let directory: string | undefined, failed: unknown;
   let registeredSession: SessionSnapshot | undefined;
-  let spawnAttempted = false, archived = false, nativeStopped = false, unstartedTicketRetired = true;
+  let spawnAttempted = false, spawnConfirmed = false, archived = false, nativeStopped = false, unstartedTicketRetired = true;
   let resume: ResumeLease | undefined;
   let processProof: ProcessProof | undefined;
+  let initialObservationFailure: { cause: unknown } | undefined;
+  let previousAuthenticatedSnapshot: ControllerSnapshot | undefined;
+  let jobLease: ControllerJobLease | undefined;
+  const jobLeaseFailures: unknown[] = [];
   let childExit: Promise<void> | undefined;
+  let childExited = false;
+  const childFailures: unknown[] = [];
   const request = async (target: string, body?: unknown, independent = false): Promise<unknown> => {
     if (!independent) cancellation.signal.throwIfAborted();
     let response: Response;
@@ -108,26 +153,46 @@ export const runIndependentController = async (input: IndependentControllerInput
     try {
       spawnAttempted = true;
       child = spawn(process.execPath, [path.join(context.packageDirectory, "dist", "main.js"), "controller", input.provider, "--launch-id", launchId], { cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(home).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
-      childExit = new Promise<void>(resolve => { child!.once("exit", () => resolve()); child!.once("error", () => resolve()); });
+      childExit = new Promise<void>(resolve => { child!.once("exit", () => { childExited = true; resolve(); }); });
+      child.on("error", error => { childFailures.push(error); });
       await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
+      spawnConfirmed = true;
     } finally { await log.close(); }
     if (!child.pid) throw new Error("Test controller process identity is unknown.");
     processProof = await captureProcessProof(child.pid);
     await persist("process.json", processProof);
     let submitted = input.prompt === null, connected = false;
-    let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false, hasObserved = false;
+    let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false, hasObserved = false, startupTimeoutReported = false;
     const startupDeadline = Date.now() + 60_000;
     while (!requestedStop) {
-      if (child.exitCode !== null || child.signalCode !== null) throw new Error("Test controller exited; inspect its private controller.log. No replacement native session was created.");
-      let observed;
-      try { observed = await requestController(ticket, { kind: "observe" }, { timeoutMs: 2000, signal: cancellation.signal }); }
+      let observation: Awaited<ReturnType<typeof reconcileSubmittedControllerLaunch>>;
+      try { observation = await reconcileSubmittedControllerLaunch({ journalFile: path.join(directory, "journal.sqlite"), ticket, spawnProof: processProof, signal: cancellation.signal }); }
       catch (error) {
-        if (requestedStop || !(error instanceof ControllerIpcOutcomeUnknownError) || !connected && Date.now() >= startupDeadline) throw error;
-        // The endpoint may not exist yet until the child initializes its IPC server.
-        if (hasObserved) {
-          if (!ipcUnavailable) context.stderr("Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n");
-          ipcUnavailable = true;
+        if (!requestedStop || !causedByCancellation(error, cancellation.signal.reason)) initialObservationFailure = { cause: error };
+        throw error;
+      }
+      if (observation.kind === "observed") {
+        try { previousAuthenticatedSnapshot = savedCleanupSnapshot(observation.snapshot, ticket, processProof, previousAuthenticatedSnapshot); }
+        catch (error) { initialObservationFailure = { cause: error }; throw error; }
+        if (process.platform === "win32" && previousAuthenticatedSnapshot && !jobLease) {
+          try { jobLease = await acquireControllerJobLease(ticket.launchId, processProof, Date.now() + 15_000); }
+          catch (error) { jobLeaseFailures.push(error); initialObservationFailure = { cause: error }; throw error; }
         }
+      }
+      if (observation.kind === "unknown") {
+        const error = new Error("Test controller process status is unknown; the original execution is retained.", { cause: observation.cause });
+        initialObservationFailure = { cause: error }; throw error;
+      }
+      if (observation.kind === "controller-exited") throw new Error("Test controller exited after committing its generation; the original execution is retained.");
+      if (observation.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${observation.journal}); the original launch is blocked.`);
+      const observed = observation.kind === "observed" ? { snapshot: observation.snapshot } : undefined;
+      if (!observed && hasObserved && !ipcUnavailable) {
+        context.stderr("Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n");
+        ipcUnavailable = true;
+      }
+      if (!connected && Date.now() >= startupDeadline && !startupTimeoutReported) {
+        startupTimeoutReported = true;
+        context.stderr("Test controller startup remains unconfirmed; continuing to observe the original execution.\n");
       }
       if (observed) {
         hasObserved = true;
@@ -137,7 +202,6 @@ export const runIndependentController = async (input: IndependentControllerInput
         // the provider remains ready. Reconcile that outcome without resubmission.
         if (input.prompt !== null && observed.snapshot.initialInputState === "failed") throw new Error("Initial input failed; the same operation remains recorded.");
         if (observed.snapshot.lifecycle === "ready" && !connected) { connected = true; context.stdout(`Provider ready: ${input.provider}; native session ${observed.snapshot.nativeSessionId ?? "awaiting first input confirmation"}\n`); }
-        if (!connected && Date.now() >= startupDeadline) throw new Error("Test controller startup timed out; its original execution is retained.");
         if (!submitted && observed.snapshot.lifecycle === "ready") {
           try {
             const initial = await requestController(ticket, { kind: "submit_initial", operationId: ticket.initialOperationId }, { timeoutMs: 65_000, signal: cancellation.signal });
@@ -147,6 +211,7 @@ export const runIndependentController = async (input: IndependentControllerInput
               if (["failed", "rejected", "expired"].includes(initial.operation.state)) throw new Error("Initial input failed; the same operation remains recorded.");
             }
           } catch (error) {
+            if (hasUnsafeControllerObservationFailure(error)) initialObservationFailure = { cause: error };
             if (requestedStop || !(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
             // Even a later not_submitted snapshot cannot prove that this request
             // never crossed dispatch. Only observe; keep the original operation ID.
@@ -169,33 +234,163 @@ export const runIndependentController = async (input: IndependentControllerInput
       }
       await delay(250, undefined, { signal: cancellation.signal });
     }
-  } catch (error) { if (!requestedStop || sqliteFailure(error)) failed = error; }
+  } catch (error) { if (!requestedStop || !causedByCancellation(error, cancellation.signal.reason) || sqliteFailure(error)) failed = error; }
   finally {
     // Credential revocation and network failure must never prevent local stop.
     if (child && ticket && directory) {
+      let ipcStopFailure: { cause: unknown } | undefined;
       try {
-        await requestController(ticket, { kind: "stop", deadline: Date.now() + 15_000 }, { timeoutMs: 2000 }).catch(() => {});
-        await waitForExit(childExit, 2500);
-        const journal = path.join(directory, "journal.sqlite");
-        let snapshot: ReturnType<typeof readControllerSnapshot> = null;
-        const stopFailures: unknown[] = [];
-        try { snapshot = readControllerSnapshot(journal); } catch (error) { stopFailures.push(error); }
-        const proof = snapshot?.controllerProcess ?? processProof;
-        try {
-          if (proof) await stopControllerProcesses(proof, snapshot?.nativeProcesses ?? [], Date.now() + 10_000);
-          else if (child.pid && child.exitCode === null && child.signalCode === null) {
-            // This ChildProcess handle belongs to the spawn above, even if proof
-            // capture failed. Terminate it; do not infer descendants are stopped.
-            child.kill("SIGTERM");
-            await waitForExit(childExit, 2000);
-            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-            throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
+        const deadline = Date.now() + 15_000;
+        const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Test controller cleanup exceeded its deadline; execution evidence is retained."); return time; };
+        if (process.platform === "win32" && processProof && !jobLease) {
+          try { remaining(); jobLease = await acquireControllerJobLease(ticket.launchId, processProof, deadline); remaining(); }
+          catch (error) { jobLeaseFailures.push(error); }
+        }
+        const requireJobLease = () => {
+          if (process.platform === "win32" && !jobLease) throw new Error("Original Test controller Job identity is unavailable; complete stopping is unconfirmed.", { cause: jobLeaseFailures.at(-1) });
+        };
+        const stopKnownSnapshot = async (journalFailure: unknown, prerequisite?: unknown): Promise<unknown[]> => {
+          const saved = previousAuthenticatedSnapshot;
+          if (process.platform === "win32" || saved?.controllerProcess == null || !isControllerJournalIoFailure(journalFailure)
+            || prerequisite !== undefined && !isControllerJournalIoFailure(prerequisite)
+            || initialObservationFailure !== undefined && !isControllerJournalIoFailure(initialObservationFailure.cause)
+            || ipcStopFailure !== undefined && !(ipcStopFailure.cause instanceof ControllerIpcOutcomeUnknownError)) return [];
+          try {
+            remaining();
+            await stopControllerProcesses(saved.controllerProcess, saved.nativeProcesses, deadline);
+            remaining();
+            if (!await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses, deadline)) throw new Error("Known Test controller processes remain active; complete stopping is unconfirmed.");
+            remaining();
+            return [];
+          } catch (error) { return [error]; }
+        };
+        if (!processProof) {
+          const failures: unknown[] = [];
+          let observed: Awaited<ReturnType<typeof requestController>> | undefined;
+          try {
+            // The original ticket can authenticate an IPC peer, but a failed spawn
+            // proof cannot authorize POSIX signals to a possibly recycled PID.
+            const observationDeadline = deadline - (process.platform === "win32" ? 2500 : 0);
+            while (spawnConfirmed && !childExited && Date.now() < observationDeadline) {
+              try {
+                const available = observationDeadline - Date.now();
+                if (available <= 0) break;
+                const response = await requestController(ticket, { kind: "observe" }, { timeoutMs: Math.min(500, available) });
+                if (response.snapshot.sessionId !== ticket.sessionId) throw new Error("Test controller IPC session identity mismatch.");
+                if (response.snapshot.controllerProcess === null || typeof response.snapshot.controllerProcess !== "object" || response.snapshot.controllerProcess.pid !== child.pid) throw new Error("Test controller IPC process does not match the spawned child.");
+                observed = response;
+                break;
+              } catch (error) {
+                failures.push(error);
+                if (!(error instanceof ControllerIpcOutcomeUnknownError)) break;
+                await waitForExit(childExit, Math.min(250, Math.max(0, observationDeadline - Date.now())));
+              }
+            }
+            if (spawnConfirmed && !childExited && !observed && Date.now() >= observationDeadline) failures.push(new Error("Original Test controller IPC observation window expired; exit remains unconfirmed."));
+            if (observed) {
+              const available = observationDeadline - Date.now();
+              if (available > 0) {
+                try { await requestController(ticket, { kind: "stop", deadline }, { timeoutMs: Math.min(2000, available) }); }
+                catch (error) { failures.push(error); }
+                const wait = observationDeadline - Date.now();
+                if (wait > 0) await waitForExit(childExit, Math.min(2500, wait));
+              } else failures.push(new Error("Original Test controller IPC stop window expired; exit remains unconfirmed."));
+            }
+            // Windows retains the original process handle from spawn. POSIX's
+            // ChildProcess.kill uses a PID that may already have been recycled.
+            if (spawnConfirmed && !childExited && process.platform === "win32") {
+              try {
+                remaining();
+                if (!child.kill("SIGTERM")) throw new Error("Original Test controller handle did not accept termination.");
+                await waitForExit(childExit, remaining());
+                if (!childExited) throw new Error("Test controller handle termination did not complete before its deadline.");
+              } catch (error) { failures.push(error); }
+            }
+          } catch (error) { failures.push(error); }
+          finally {
+            failures.push(...childFailures);
+            if (spawnConfirmed) { try { child.unref(); } catch (error) { failures.push(error); } }
           }
-          await childExit;
-        } catch (error) { stopFailures.push(error); }
-        if (stopFailures.length === 1) throw stopFailures[0];
-        if (stopFailures.length > 1) throw new AggregateError(stopFailures, "Controller journal observation and local stopping failed.");
-        const stopped = await recordStoppedControllerGeneration(journal, ticket);
+          throw new AggregateError(failures, "Original controller spawn proof is unavailable; complete stopping remains unconfirmed and execution evidence is retained.");
+        }
+        const journal = path.join(directory, "journal.sqlite");
+        let replacement: ControllerBootstrapReplacedError | undefined;
+        let observation: Awaited<ReturnType<typeof reconcileSubmittedControllerLaunch>>;
+        try {
+          if (initialObservationFailure !== undefined) throw initialObservationFailure.cause;
+          observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline });
+          remaining();
+          if (observation.kind === "observed") previousAuthenticatedSnapshot = savedCleanupSnapshot(observation.snapshot, ticket, processProof, previousAuthenticatedSnapshot);
+          if (observation.kind === "unknown") throw new Error("Test controller status is unknown; original execution evidence is retained.", { cause: observation.cause });
+        } catch (observationFailure) {
+          const failures: unknown[] = [observationFailure];
+          let bootstrapStopped = false;
+          try { remaining(); await stopControllerBootstrap(processProof, deadline); remaining(); bootstrapStopped = true; }
+          catch (stopFailure) {
+            failures.push(stopFailure);
+            if (stopFailure instanceof ControllerBootstrapReplacedError) { try { remaining(); bootstrapStopped = true; } catch (deadlineFailure) { failures.push(deadlineFailure); } }
+          }
+          if (bootstrapStopped && !(observationFailure instanceof ControllerSnapshotEvidenceConflictError) && !hasUnsafeControllerObservationFailure(observationFailure)) {
+            try {
+              const after = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline });
+              remaining();
+              if (after.kind === "unknown") throw new Error("Test controller exit could not be classified; original execution evidence is retained.", { cause: after.cause });
+              if (after.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${after.journal}); the original launch is blocked.`);
+              if (after.kind !== "controller-exited") throw new Error("Test controller exit is not confirmed; the original launch is retained.");
+              if (!after.snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.");
+              requireJobLease();
+              await stopControllerProcesses(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
+              remaining();
+              if (!await confirmControllerProcessesStopped(after.snapshot.controllerProcess, after.snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []))) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
+              remaining();
+            } catch (stopFailure) {
+              failures.push(stopFailure);
+              failures.push(...await stopKnownSnapshot(stopFailure, observationFailure));
+            }
+          }
+          throw new AggregateError(failures, "Test controller observation failed; bounded bootstrap cleanup was attempted and complete stopping remains unconfirmed.", { cause: observationFailure });
+        }
+        if (observation.kind === "observed" || observation.kind === "running-unobserved") {
+          if (observation.kind === "observed") {
+            try { await requestController(ticket, { kind: "stop", deadline }, { timeoutMs: Math.min(2000, remaining()) }); }
+            catch (error) { ipcStopFailure = { cause: error }; }
+            await waitForExit(childExit, Math.min(2500, remaining()));
+          }
+          try { await stopControllerBootstrap(processProof, deadline); }
+          catch (error) { if (!(error instanceof ControllerBootstrapReplacedError)) throw error; replacement = error; }
+          if (ipcStopFailure !== undefined && hasUnsafeControllerObservationFailure(ipcStopFailure.cause)) {
+            throw new Error("Test controller IPC identity conflict blocks native process cleanup; original execution evidence is retained.", { cause: replacement ? new AggregateError([ipcStopFailure.cause, replacement]) : ipcStopFailure.cause });
+          }
+          try { observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline }); remaining(); }
+          catch (error) {
+            const knownStopFailures = await stopKnownSnapshot(error);
+            if (replacement || knownStopFailures.length) throw new AggregateError([...(replacement ? [replacement] : []), error, ...knownStopFailures], "Test controller bootstrap exit and launch classification failed.", { cause: error });
+            throw error;
+          }
+        }
+        if (observation.kind === "unknown") throw new Error("Test controller exit could not be classified; the original launch is retained.", { cause: replacement ? new AggregateError([replacement, observation.cause], "Test controller bootstrap replacement and launch status are unconfirmed.") : observation.cause });
+        if (observation.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${observation.journal}); the original launch is blocked.`, { cause: replacement });
+        if (observation.kind !== "controller-exited") throw new Error("Test controller exit is not confirmed; the original launch is retained.", { cause: replacement });
+        const snapshot = observation.snapshot;
+        if (!snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.", { cause: replacement });
+        let stopped: Awaited<ReturnType<typeof recordStoppedControllerGeneration>>;
+        try {
+          requireJobLease();
+          await stopControllerProcesses(snapshot.controllerProcess, snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
+          remaining();
+          if (ipcStopFailure !== undefined) {
+            if (!await confirmControllerProcessesStopped(snapshot.controllerProcess, snapshot.nativeProcesses, deadline, ...(process.platform === "win32" ? [jobLease] as const : []))) throw new Error("Test controller native process stop is unconfirmed; original execution evidence is retained.");
+            remaining();
+            throw new Error("Test controller IPC stop failed; the original execution evidence is retained.");
+          }
+          stopped = await recordStoppedControllerGeneration(journal, ticket, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
+          try { remaining(); } catch (error) { throw new TestControllerCommittedCleanupError(error); }
+        } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Test controller bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
+        if (jobLeaseFailures.length) throw new AggregateError(jobLeaseFailures, "Test controller Job lease acquisition failed; execution evidence is retained.");
+        if (jobLease) {
+          const owned = jobLease; jobLease = undefined;
+          try { releaseControllerJobLease(owned); } catch (error) { throw new TestControllerCommittedCleanupError(error); }
+        }
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };
@@ -218,7 +413,17 @@ export const runIndependentController = async (input: IndependentControllerInput
             context.stderr(`Native execution stopped; session history upload is pending. Source retained in ${directory}.\nRetry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
           }
         } else context.stderr(`Retry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
-      } catch (error) { failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and stopping failed."); context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`); }
+      } catch (error) {
+        const failures: unknown[] = [...jobLeaseFailures, ...(ipcStopFailure === undefined ? [] : [ipcStopFailure.cause]), error];
+        if (jobLease) { const owned = jobLease; jobLease = undefined; try { releaseControllerJobLease(owned); } catch (releaseFailure) { failures.push(releaseFailure); } }
+        if (processProof) {
+          failures.push(...childFailures);
+          if (spawnConfirmed && !childExited) { try { child.unref(); } catch (unrefFailure) { failures.push(unrefFailure); } }
+        }
+        const cleanupFailure = failures.length === 1 ? error : new AggregateError(failures, "Test controller cleanup and handle release failed.", { cause: error });
+        failed = failed === undefined ? cleanupFailure : new AggregateError([failed, cleanupFailure], "Test Session execution and stopping failed.");
+        context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`);
+      }
     }
     if (ticket && directory && !spawnAttempted) {
       // A never-launched continuation has no journal. Keep its launch intent as

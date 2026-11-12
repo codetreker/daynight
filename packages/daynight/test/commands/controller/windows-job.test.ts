@@ -2,14 +2,21 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({
-  create: vi.fn(), open: vi.fn(), openProcess: vi.fn(), assign: vi.fn(), query: vi.fn(), terminate: vi.fn(), close: vi.fn(),
+  create: vi.fn(), open: vi.fn(), openProcess: vi.fn(), assign: vi.fn(), query: vi.fn(), terminate: vi.fn(), close: vi.fn(), contains: vi.fn(), verify: vi.fn(),
   load: vi.fn(), setLastError: vi.fn(), pointerSize: 8, error: 0, now: 0,
 }));
 vi.mock("koffi", () => ({ load: f.load, sizeof: () => f.pointerSize }));
+vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ verifyWindowsJobMember: f.verify }));
 const launchId = "11111111-1111-4111-8111-111111111111", name = `Local\\Daynight-${launchId}`;
 const job = { kind: "job" }, processHandle = { kind: "process" }, pid = 4101;
+const proof = { pid, parentPid: 4000, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64) };
 let create: typeof import("../../../src/commands/controller/windows-job.js").createControllerJob;
 let inspect: typeof import("../../../src/commands/controller/windows-job.js").inspectControllerJob;
+let acquire: typeof import("../../../src/commands/controller/windows-job.js").acquireControllerJobLease;
+let inspectLease: typeof import("../../../src/commands/controller/windows-job.js").inspectControllerJobLease;
+let release: typeof import("../../../src/commands/controller/windows-job.js").releaseControllerJobLease;
+let createOwned: typeof import("../../../src/commands/controller/windows-job.js").createOwnedControllerJob;
+let releaseOwned: typeof import("../../../src/commands/controller/windows-job.js").releaseOwnedControllerJob;
 const members = (data: Buffer, pids: readonly bigint[] = [4101n, 4202n]) => {
   data.writeUInt32LE(pids.length, 0); data.writeUInt32LE(pids.length, 4);
   for (const [index, pid] of pids.entries()) {
@@ -26,6 +33,7 @@ beforeEach(async () => {
     if (declaration.includes("OpenProcess")) return f.openProcess;
     if (declaration.includes("AssignProcessToJobObject")) return f.assign;
     if (declaration.includes("QueryInformationJobObject")) return f.query;
+    if (declaration.includes("IsProcessInJob")) return f.contains;
     if (declaration.includes("TerminateJobObject")) return f.terminate;
     if (declaration.includes("CloseHandle")) return f.close;
     if (declaration.includes("SetLastError")) return f.setLastError;
@@ -34,12 +42,72 @@ beforeEach(async () => {
   } }));
   f.create.mockReturnValue(job); f.open.mockReturnValue(job); f.openProcess.mockReturnValue(processHandle);
   f.assign.mockReturnValue(1); f.terminate.mockReturnValue(1); f.close.mockReturnValue(1);
-  f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data); return 1; });
-  ({ createControllerJob: create, inspectControllerJob: inspect } = await import("../../../src/commands/controller/windows-job.js"));
+  f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data, f.terminate.mock.calls.length ? [] : [4101n, 4202n]); return 1; });
+  f.contains.mockImplementation((_process, _job, result: Buffer) => { result.writeInt32LE(1); return 1; });
+  f.verify.mockImplementation(async (_proof, _deadline, belongs) => belongs(processHandle));
+  ({ createControllerJob: create, inspectControllerJob: inspect, acquireControllerJobLease: acquire, inspectControllerJobLease: inspectLease, releaseControllerJobLease: release, createOwnedControllerJob: createOwned, releaseOwnedControllerJob: releaseOwned } = await import("../../../src/commands/controller/windows-job.js"));
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("native Controller Job Objects", () => {
+  it("retains the Controller-owned handle until explicitly released", async () => {
+    expect(await createOwned(launchId, process.pid)).toBe(name);
+    expect(f.close.mock.calls).toEqual([[processHandle]]);
+    releaseOwned(name);
+    expect(f.close.mock.calls).toEqual([[processHandle], [job]]);
+  });
+
+  it("retains an authenticated Job through termination and later empty confirmation", async () => {
+    const lease = await acquire(launchId, proof, Date.now() + 5000);
+    expect(f.close).not.toHaveBeenCalled();
+    expect(f.contains).toHaveBeenCalledExactlyOnceWith(processHandle, job, expect.any(Buffer));
+    expect(await inspectLease(lease, { ...proof, jobObjectName: name }, true, Date.now() + 5000)).toEqual([]);
+    expect(await inspectLease(lease, { ...proof, jobObjectName: name }, false, Date.now() + 5000)).toEqual([]);
+    expect(f.open).toHaveBeenCalledOnce(); expect(f.terminate).toHaveBeenCalledExactlyOnceWith(job, 1);
+    expect(f.query.mock.calls.every(call => call[0] === job)).toBe(true);
+    release(lease); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+    await expect(inspectLease(lease, { ...proof, jobObjectName: name }, false)).rejects.toThrow(/unavailable/);
+  });
+
+  it("rejects unauthenticated and differently bound Job handles", async () => {
+    f.verify.mockResolvedValueOnce(false);
+    await expect(acquire(launchId, proof, Date.now() + 5000)).rejects.toThrow(/verified original/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+    const lease = await acquire(launchId, proof, Date.now() + 5000);
+    await expect(inspectLease(lease, { ...proof, startedAt: "replacement", jobObjectName: name }, true, Date.now() + 5000)).rejects.toThrow(/identity/);
+    expect(f.terminate).not.toHaveBeenCalled(); release(lease);
+  });
+
+  it("preserves authentication and handle release failures", async () => {
+    f.verify.mockRejectedValueOnce(new Error("member denied")); f.close.mockReturnValueOnce(0); f.error = 5;
+    const error = await acquire(launchId, proof, Date.now() + 5000).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0].message).toContain("member denied");
+    expect(error.errors[1]).toMatchObject({ stage: "close-job-handle", win32Code: 5 });
+  });
+
+  it("rejects further use after an uncertain lease handle release", async () => {
+    const lease = await acquire(launchId, proof, Date.now() + 5000);
+    f.close.mockReturnValueOnce(0); f.error = 5;
+    expect(() => release(lease)).toThrow(/close-job-handle/);
+    await expect(inspectLease(lease, { ...proof, jobObjectName: name }, true)).rejects.toThrow(/unavailable/);
+    expect(f.terminate).not.toHaveBeenCalled();
+  });
+
+  it("preserves a native open error when acquisition reaches its deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.open.mockImplementationOnce(() => { f.error = 5; clock.mockReturnValue(deadline); return null; });
+    const error = await acquire(launchId, proof, deadline).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toMatchObject({ stage: "open", win32Code: 5 });
+    expect(error.errors[1].message).toContain("deadline"); expect(f.close).not.toHaveBeenCalled();
+  });
+
+  it("closes an acquired Job if verification exhausts the deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.verify.mockImplementationOnce(async () => { clock.mockReturnValue(deadline); return true; });
+    await expect(acquire(launchId, proof, deadline)).rejects.toThrow(/deadline/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
   it("creates one noninheritable Job membership and releases both handles in ownership order", async () => {
     expect(await create(launchId, pid)).toBe(name);
     expect(f.setLastError).toHaveBeenCalledExactlyOnceWith(0);
@@ -63,18 +131,57 @@ describe("native Controller Job Objects", () => {
     expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
-  it("terminates before querying while retaining the same open Job handle", async () => {
-    expect(await inspect(name, true)).toEqual([4101, 4202]);
+  it("authenticates a member and waits for an empty inventory on the original Job handle", async () => {
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
     expect(f.open).toHaveBeenCalledExactlyOnceWith(12, 0, name);
     expect(f.terminate).toHaveBeenCalledExactlyOnceWith(job, 1);
-    expect(f.terminate.mock.invocationCallOrder[0]).toBeLessThan(f.query.mock.invocationCallOrder[0]!);
+    expect(f.query).toHaveBeenCalledTimes(2);
+    expect(f.query.mock.invocationCallOrder[0]).toBeLessThan(f.terminate.mock.invocationCallOrder[0]!);
+    expect(f.contains).toHaveBeenCalledExactlyOnceWith(processHandle, job, expect.any(Buffer));
     expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
-  it("maps only a missing named Job to an empty inventory without inventing a handle", async () => {
+  it("does not terminate a same-name Job without a verified original member", async () => {
+    f.verify.mockResolvedValue(false);
+    await expect(inspect(name, true, Date.now() + 5000, [proof])).rejects.toThrow(/no verified original/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("keeps the same Job handle open until termination empties the inventory", async () => {
+    f.query.mockImplementation((_job, _kind, data: Buffer) => {
+      expect(f.close).not.toHaveBeenCalled();
+      members(data, f.query.mock.calls.length < 4 ? [4101n] : []);
+      return 1;
+    });
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
+    expect(f.query).toHaveBeenCalledTimes(4);
+    expect(f.query.mock.calls.every(call => call[0] === job)).toBe(true);
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("closes the Job if its members do not exit before the deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.query.mockImplementation((_job, _kind, data: Buffer) => {
+      members(data, [4101n]);
+      if (f.terminate.mock.calls.length) clock.mockReturnValue(deadline);
+      return 1;
+    });
+    await expect(inspect(name, true, deadline, [proof])).rejects.toThrow(/deadline/);
+    expect(f.terminate).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("does not terminate an empty Job", async () => {
+    f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data, []); return 1; });
+    expect(await inspect(name, true, Date.now() + 5000, [proof])).toEqual([]);
+    expect(f.verify).not.toHaveBeenCalled(); expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("retains unknown ownership when the Job name is missing", async () => {
     f.open.mockReturnValue(null); f.error = 2;
-    expect(await inspect(name)).toEqual([]);
+    await expect(inspect(name)).rejects.toMatchObject({ stage: "open", win32Code: 2 });
+    await expect(inspect(name, true, Date.now() + 5000, [proof])).rejects.toMatchObject({ stage: "open", win32Code: 2 });
     expect(f.query).not.toHaveBeenCalled(); expect(f.close).not.toHaveBeenCalled();
+    expect(f.terminate).not.toHaveBeenCalled();
   });
 
   it("rejects an existing identity and closes its handle without assigning another process", async () => {
@@ -115,8 +222,8 @@ describe("native Controller Job Objects", () => {
 
   it("propagates termination failure without claiming a stopped inventory", async () => {
     f.terminate.mockReturnValue(0); f.error = 5;
-    await expect(inspect(name, true)).rejects.toMatchObject({ stage: "terminate-members", win32Code: 5 });
-    expect(f.query).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+    await expect(inspect(name, true, Date.now() + 5000, [proof])).rejects.toMatchObject({ stage: "terminate-members", win32Code: 5 });
+    expect(f.query).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
   });
 
   it("preserves an exact thrown native error while releasing its handle", async () => {
@@ -194,6 +301,38 @@ describe("native Controller Job Objects", () => {
     f.query.mockImplementation((_job, _kind, data: Buffer) => { members(data); f.now = 15_000; return 1; });
     await expect(inspect(name)).rejects.toThrow(/deadline/);
     expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("does not open or terminate a Job after the caller's deadline", async () => {
+    await expect(inspect(name, true, Date.now() - 1)).rejects.toThrow(/deadline/);
+    expect(f.open).not.toHaveBeenCalled(); expect(f.terminate).not.toHaveBeenCalled();
+  });
+
+  it("closes a Job whose open call consumes the caller's deadline without terminating it", async () => {
+    const deadline = Date.now() + 100;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.open.mockImplementation(() => { clock.mockReturnValue(deadline); return job; });
+    await expect(inspect(name, true, deadline)).rejects.toThrow(/deadline/);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("joins a Job termination that crosses the caller's deadline and closes its handle", async () => {
+    const deadline = Date.now() + 100;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.terminate.mockImplementation(() => { clock.mockReturnValue(deadline); return 1; });
+    await expect(inspect(name, true, deadline, [proof])).rejects.toThrow(/deadline/);
+    expect(f.terminate).toHaveBeenCalledOnce(); expect(f.query).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalledExactlyOnceWith(job);
+  });
+
+  it("retains termination and close failures when a native call crosses the deadline", async () => {
+    const deadline = Date.now() + 100, clock = vi.spyOn(Date, "now").mockReturnValue(deadline - 1);
+    f.terminate.mockImplementation(() => { f.error = 5; clock.mockReturnValue(deadline); return 0; });
+    f.close.mockReturnValue(0);
+    const error = await inspect(name, true, deadline, [proof]).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError); expect(error.message).toMatch(/deadline/);
+    expect(error.errors[0]).toBeInstanceOf(AggregateError);
+    expect(error.errors[0].errors.map((failure: { stage: string }) => failure.stage)).toEqual(["terminate-members", "close-job-handle"]);
+    expect(f.close).toHaveBeenCalledOnce();
   });
 
   it("closes an acquired Job even when creation consumes the budget", async () => {

@@ -176,10 +176,10 @@ const botFixture = async (legacy: boolean) => {
     return { bot: definition, snapshot: {} as never };
   });
   const dependencies = { prepareEnvironment: vi.fn(async () => ({ environment: { ...process.env }, aliasDirectory: null, bindings: [], release: async () => {} })),
-    launch: vi.fn<NonNullable<NonNullable<Parameters<typeof createBotProcess>[0]["dependencies"]>["launch"]>>(async options => { await options.onSubmitting?.(); const value = snapshot(options.ticket); await options.onObserved?.(value); return value; }),
+    launch: vi.fn<NonNullable<NonNullable<Parameters<typeof createBotProcess>[0]["dependencies"]>["launch"]>>(async options => { await options.onSubmitting(); const value = snapshot(options.ticket); await options.onSpawned(value.controllerProcess!); await options.onObserved(value); return value; }),
     observe: vi.fn(async (ticket: ControllerLaunchTicket) => snapshot(ticket)), readSnapshot: vi.fn((): ControllerSnapshot | null => null), confirmStopped: vi.fn(async () => true) };
   const sessionApi = { register, grant: vi.fn(async () => ({ token: "fixture", expiresAt: new Date(Date.now() + 300_000).toISOString() })) } as unknown as Parameters<typeof createBotProcess>[0]["sessionApi"];
-  const manager = () => createBotProcess({ homeDirectory: f.root, packageDirectory: f.root, store: bots, executions, sessionApi, recoveryLimit: 2, selectToolLaunch, toolObservationFor: () => toolObservation, dependencies });
+  const manager = () => createBotProcess({ homeDirectory: f.root, packageDirectory: f.root, store: bots, executions, sessionApi, recoveryLimit: 2, selectToolLaunch, toolObservationFor: () => toolObservation, dependencies, jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
   return { ...f, current, manager, dependencies, selectToolLaunch, register, originalTicket, snapshot, toolObservation,
     executions: () => executions,
     reopen: () => { executions.close(); bots.close(); bots = openBotStore(file); executions = openBotExecutionStore(file); },
@@ -214,7 +214,7 @@ it("keeps a legacy submitted Bot observable and refuses recovery before allocati
     const stopped: ControllerSnapshot = { ...ready, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-12T00:00:00Z" };
     f.dependencies.observe.mockResolvedValue(stopped);
     f.dependencies.readSnapshot.mockReturnValue(stopped);
-    await expect(f.manager().advance(f.current(), new AbortController().signal)).rejects.toThrow("legacy_tool_identity_missing");
+    await expect(f.manager().advance(f.current(), new AbortController().signal)).rejects.toThrow("spawn proof is unavailable");
     expect(f.current().intent).toEqual(original);
     expect(f.selectToolLaunch).not.toHaveBeenCalled();
     expect(f.dependencies.launch).not.toHaveBeenCalled();
