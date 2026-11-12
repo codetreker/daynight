@@ -14,6 +14,7 @@ import { parseWindowsMappingProcessInventory, windowsMappingProcessInventoryComm
 import { hasUnconfirmedHerdrCommandCleanup, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import * as commands from "../../../src/commands/worker/herdr/command.js";
 import * as processProofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
+import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -105,6 +106,19 @@ const windowsInventoryDiagnostics = async (environment: NodeJS.ProcessEnv) => {
 afterEach(async () => { Object.defineProperty(process, "platform", platformDescriptor); vi.restoreAllMocks(); operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 const windowsProof = (pid: number, parentPid: number, startedAt: string): processProofs.MappingProcessProof => ({ pid, parentPid, processGroupId: null, startedAt, commandHash: "a".repeat(64) });
+const windowsTree = async (proofs: processProofs.MappingProcessProof[], rows = proofs) => {
+  const f = await fixture("win32");
+  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+  const capture = vi.spyOn(processProofs, "captureMappingProcessProof").mockImplementation(async id => {
+    const proof = proofs.find(value => value.pid === id);
+    if (proof === undefined) throw new Error("An unexpected process proof was requested.");
+    return { ...proof };
+  });
+  vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
+  const query = vi.spyOn(commands, "runHerdrCommand").mockResolvedValue({ stdout: JSON.stringify(rows.map(row => ({ ProcessId: row.pid, ParentProcessId: row.parentPid }))), stderr: "" });
+  return { ...f, capture, query, journal: path.join(path.dirname(f.mapping.manifestPath), "processes.json") };
+};
+const controlledReceipt = (f: Awaited<ReturnType<typeof fixture>>, helperPid: number, childPid: number) => ({ schemaVersion: 1 as const, owner, nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, logicalArgvDigest: "b".repeat(64), file: f.launch.command.file, prefixArgs: [...f.launch.command.prefixArgs], helperPid, childPid });
 
 describe("owned Herdr launch mapping", () => {
   it.each(["inventory", "readiness"] as const)("keeps Windows %s metadata attached while the owned command runner joins its output", async consumer => {
@@ -123,6 +137,83 @@ describe("owned Herdr launch mapping", () => {
     expect(start.mock.calls[0]![2]).toMatchObject({ detached: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   });
 
+  it.each(["2026-11-12T00:00:00.1233000Z", "2026-11-12T00:00:00.1234000Z", "unproved-birth"])("does not register a Windows descendant without strictly later birth (%s)", async startedAt => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, startedAt), f = await windowsTree([root, child]);
+    await expect(f.mapping.captureProcesses([root.pid], operation())).rejects.toThrow(/birth|parent/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it.each(["prepare", "cleanup"] as const)("does not register an unrelated foreground PID using its stale Windows PPID during %s", async phase => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, "2026-11-12T00:00:00.1233000Z"), f = await windowsTree([root, child]);
+    if (phase === "cleanup") await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    await expect(f.mapping.captureProcesses(phase === "cleanup" ? [child.pid] : [root.pid, child.pid], operation(), phase === "cleanup")).rejects.toThrow(/birth|parent/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it("rejects an additional Windows foreground process whose parent is outside the original tree", async () => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, 999, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, child]);
+    await expect(f.mapping.captureProcesses([root.pid, child.pid], operation())).rejects.toThrow(/parent/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it("does not invent a Windows cleanup root from foreground PIDs when the original journal is missing", async () => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), f = await windowsTree([root]);
+    await expect(f.mapping.captureProcesses([root.pid], operation(), true)).rejects.toThrow(/root|journal/);
+    expect(f.capture).not.toHaveBeenCalled();
+    await expect(readFile(f.journal, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["before-replaced", "after-replaced", "before-stopped", "after-stopped", "after-command-changed"])("keeps a Windows candidate unknown when its original parent is %s", async transition => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, child]);
+    let parents = 0;
+    f.capture.mockImplementation(async id => {
+      if (id === child.pid) return child;
+      const changed = ++parents >= (transition.startsWith("before") ? 2 : 3);
+      if (changed && transition.endsWith("stopped")) throw new Error("The controlled parent stopped.");
+      if (changed && transition.endsWith("command-changed")) return { ...root, commandHash: "c".repeat(64) };
+      return changed ? { ...root, startedAt: "2026-11-12T00:00:00.1236000Z" } : root;
+    });
+    await expect(f.mapping.captureProcesses([root.pid], operation())).rejects.toThrow(/parent|identity/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it("registers a Windows multilevel tree in parent order despite reversed inventory and foreground rows", async () => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, "2026-11-12T00:00:00.1235000Z"), grandchild = windowsProof(503, child.pid, "2026-11-12T00:00:00.1236000Z"), f = await windowsTree([root, child, grandchild], [grandchild, child, root]);
+    expect(await f.mapping.captureProcesses([root.pid, grandchild.pid, child.pid], operation())).toEqual(expect.arrayContaining([root.pid, child.pid, grandchild.pid]));
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root, child, grandchild]);
+  });
+
+  it("rejects a Windows helper receipt whose process predates the original shell", async () => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), helper = windowsProof(502, root.pid, "2026-11-12T00:00:00.1233000Z"), child = windowsProof(503, helper.pid, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, helper, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    await expect(f.mapping.verifyProcesses({ shellPid: root.pid, receipt: controlledReceipt(f, helper.pid, child.pid) }, operation())).rejects.toThrow(/birth|parent/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it.each(["older-parent-instance", "equal-birth", "missing-parent"] as const)("preserves an invalid historical Windows responsibility journal without terminating its Job or PIDs (%s)", async invalid => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), helper = windowsProof(502, invalid === "missing-parent" ? 999 : root.pid, invalid === "equal-birth" ? root.startedAt : "2026-11-12T00:00:00.1233000Z"), child = windowsProof(503, helper.pid, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, helper, child]);
+    const journal = JSON.stringify({ nonce: f.mapping.nonce, proofs: [root, helper, child] });
+    await writeFile(f.journal, journal, { mode: 0o600 });
+    const receipt = controlledReceipt(f, helper.pid, child.pid), { childPid: _child, ...intent } = receipt, directory = path.dirname(f.mapping.manifestPath);
+    await writeFile(path.join(directory, "launch-intent.json"), JSON.stringify(intent), { mode: 0o600 });
+    await writeFile(path.join(directory, "launch-receipt.json"), JSON.stringify(receipt), { mode: 0o600 });
+    const alive = new Set([root.pid, helper.pid, child.pid]), job = vi.spyOn(windowsJobs, "inspectControllerJob").mockResolvedValue([]), kill = vi.spyOn(process, "kill").mockImplementation(id => { alive.delete(id); return true; });
+    f.query.mockImplementation(async () => ({ stdout: JSON.stringify([... [root, helper, child].filter(row => alive.has(row.pid)).map(row => ({ ProcessId: row.pid, ParentProcessId: row.parentPid })), { ProcessId: 999, ParentProcessId: 1 }]), stderr: "" }));
+    await expect(f.mapping.stopProcesses(operation())).rejects.toThrow(/birth|parent/);
+    expect(job).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled();
+    expect(await readFile(f.journal, "utf8")).toBe(journal);
+  });
+
+  it("retains a valid Windows descendant as cleanup responsibility after its original parent exits", async () => {
+    const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root, child] }), { mode: 0o600 });
+    vi.mocked(processProofs.inspectMappingProcessForCleanup).mockImplementation(async proof => proof.pid === root.pid ? "stopped" : "running");
+    let running = true;
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => { running = false; return true; });
+    f.query.mockImplementation(async () => ({ stdout: JSON.stringify(running ? [{ ProcessId: child.pid, ParentProcessId: root.pid }] : [{ ProcessId: 999, ParentProcessId: 1 }]), stderr: "" }));
+    await f.mapping.stopProcesses(operation());
+    expect(kill).toHaveBeenCalledExactlyOnceWith(child.pid, "SIGKILL");
+  });
   it("isolates system PowerShell metadata queries from inherited module paths without changing the native environment", () => {
     const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules", pSmOdUlEpAtH: "C:\\OtherModules", PATH: "/frozen/native/path", CODEX_HOME: "/native/home" };
     const command = windowsMappingProcessInventoryCommand(environment);

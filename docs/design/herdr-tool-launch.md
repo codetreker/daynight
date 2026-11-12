@@ -30,13 +30,15 @@ Herdr 的 `agent.start` 仍接收原 kind 与逻辑参数，回执必须精确�
 
 bootstrap 将私有映射目录置于父 pane 的 PATH，并验证 `Get-Command` 命中原 `ExternalScript`。`codex.ps1`、`copilot.ps1` 将参数数组编码为 JSON/base64，再由 Node 解码后 `spawn(..., shell:false)`，避免 PowerShell 5 的 native 参数拼接改变空字符串、引号和反斜线。调用 helper 前恢复 native 原 PATH，Codex 内部 CLI 环境同样使用原 PATH。执行策略、系统 PowerShell、脚本发现或 readiness 验证失败均明确拒绝；不改用任意 shell，不宣称 PowerShell 7 支持。
 
-独立进程清单查询只在自己的 PowerShell 5 子环境移除继承的 `PSModulePath`，由系统重建模块路径，避免经 Node 传入 PowerShell 7 的模块。查询将命令错误作为终止错误，必须返回有效的非空 JSON 数组；空白、空数组、损坏或不完整输出均保持进程归属未知。该环境处理不改变 native 子进程环境。
+进程清单和根进程 readiness 的 PowerShell 5 元数据查询使用非 detached 子进程，保留原命令执行器的期限、进程树终止与原 child/output streams 关闭确认。Windows 的 detached 启动可能返回 exit 0 而没有查询输出，不能用退出码推断查询成功。查询只在自己的子环境移除继承的 `PSModulePath`，由系统重建模块路径，避免经 Node 传入 PowerShell 7 的模块。进程清单将命令错误作为终止错误，必须返回有效的非空 JSON 数组；空白、空数组、损坏或不完整输出均保持进程归属未知。这些处理不改变 native 子进程环境或 Herdr daemon 的启动方式。
 
 ## 启动、输入与 Session 确认
 
 manager 在 `agent.start` RPC 前持久保存原 request、binding、逻辑 argv 摘要及 attempt；未知结果跨调用与重启禁止再次 RPC。只有当前调用取得明确未启动的拒绝并持久确认后，才能在原初始化重试规则内推进下一 attempt。helper 核验原 manifest 和 recipe，先 create-only 保存 intent，再启动冻结命令并保存 child receipt。intent/receipt 关联 owner、nonce、selectionKey、逻辑 argv 摘要、实际 file/prefixArgs 及 helper/native PID。未知启动结果保留原 intent，不重发 `agent.start`。
 
 输入前必须同时核实原 workspace/pane/terminal、Herdr kind/readiness、逻辑 argv 回执、manifest/nonce、实际 launch receipt、原 shell 和完整 shell→helper→loader/native 归属。`tool-launch-lifecycle.ts` 保存原进程证明并沿已证实的父子关系追加后代。helper 名称不伪装成原生工具，不设置假的进程名，不调用 `pane.report_agent` 补造识别结果；Herdr 必须识别真正 native。
+
+Windows 的 `ParentProcessId` 可能保留已退出父进程的编号，并指向后来复用该编号的无关进程。因此新后代登记同时核验原父进程实例和父子出生顺序；调用方直接提供的 PID 与清单发现的 PID 使用同一规则。子进程的精确出生时间必须严格晚于原父进程；相同时间不能证明先后，保持未知。登记前后父进程必须仍匹配原出生证明，候选按父子顺序建立完整链。已有 journal 的出生链也须在终止任何 Job 或进程前通过核验，缺证或矛盾不能靠删除旧记录、重新采样或改认新根进程消除。清理阶段缺少原 journal 时，不得从当前 foreground PID 新建根进程归属。
 
 新会话的官方 integration 可能直到首次输入触发 SessionStart 才报告 ID。因此初始输入最多提交一次，递交前持久保存原 intent；macOS 继续使用原输入 journal 与仲裁器。启动成功必须等待同 pane 的官方 integration 报告符合原 kind 的合法 native Session UUID，并再次核验原进程归属。已知 ID 必须精确相同。缺失事件、不同 Session、进程变化及未知输入结果均保持未确认，不重放初始输入、不换会话、不人工补报。普通自动输入不能越过 frozen 执行的未知 native Session。
 

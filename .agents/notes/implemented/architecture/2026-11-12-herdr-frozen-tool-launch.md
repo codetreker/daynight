@@ -34,10 +34,22 @@ channel. Node, helper and native processes must remain attributable to the
 original shell. Shutdown keeps responsibility for native descendants after their
 helper exits.
 
-Private PowerShell 5 process queries reconstruct their system module search path
-so an intermediate Node process cannot carry incompatible PowerShell 7 modules
-into inspection. Query errors and incomplete inventories retain unknown ownership;
-this isolation does not alter the native environment.
+Private PowerShell 5 metadata queries use non-detached children: detached creation
+can return exit zero without query output. The original command
+runner still owns deadlines, tree termination and child/output-stream closure.
+Queries reconstruct their system module search path so an intermediate Node
+process cannot carry incompatible PowerShell 7 modules into inspection. Query
+errors and incomplete inventories retain unknown ownership; these choices change
+neither the native environment nor daemon startup.
+
+Windows descendant enrollment requires the original parent instance and a
+strictly later child birth, including PIDs supplied directly by callers. The
+[Windows process model](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process#properties)
+can retain a dead parent's PID after an unrelated new process reuses it. Parent
+PID equality alone therefore cannot authorize enrollment or termination. Equal
+recorded birth times retain unknown ownership because their precision cannot
+establish ordering. Existing journal chains are checked before any Job or process
+termination; invalid records remain intact instead of being recaptured or pruned.
 
 Before first input, launch, receipt, kind, readiness, binding and the complete
 original process chain must agree. Official Codex and Copilot integration can
@@ -82,6 +94,10 @@ remain healthy. Shared drain is needed only for the shared-instance topology.
 **Refresh recipes or helper paths during recovery.** This can use a different
 installation under the same claim and native Session. Recovery retains original
 metadata and fails if a required original dependency cannot be verified.
+
+**Trust parent PID links and verify each descendant only at shutdown.** A birth
+proof can faithfully identify the wrong descendant. Windows retains stale parent
+IDs, so shutdown identity checks alone cannot repair mistaken enrollment.
 
 ## Consequences
 

@@ -13,6 +13,25 @@ import { readToolStartRequest } from "./tool-launch-start.js";
 
 type Inventory = { pid: number; parentPid: number; group: number | null };
 type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
+const sameProcessIdentity = (current: ProcessProof, original: ProcessProof): boolean => current.pid === original.pid && current.parentPid === original.parentPid && current.startedAt === original.startedAt && current.commandHash === original.commandHash && current.processGroupId === original.processGroupId && current.birthToken === original.birthToken;
+const validWindowsBirth = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(value)) return false;
+  const seconds = Date.parse(`${value.slice(0, 19)}Z`);
+  return Number.isFinite(seconds) && new Date(seconds).toISOString().slice(0, 19) === value.slice(0, 19);
+};
+const assertWindowsParentBirth = (child: ProcessProof, parent: ProcessProof): void => {
+  // Compare canonical seven-digit timestamps directly; Date truncates their precision.
+  if (child.parentPid !== parent.pid || !validWindowsBirth(child.startedAt) || !validWindowsBirth(parent.startedAt) || child.startedAt <= parent.startedAt) throw new Error("The original Windows descendant has no strictly later birth than its original parent; process ownership remains unknown.");
+};
+const assertWindowsBirthChain = (proofs: readonly ProcessProof[]): void => {
+  const original = new Map(proofs.map(proof => [proof.pid, proof]));
+  if (!validWindowsBirth(proofs[0]!.startedAt)) throw new Error("The original Windows root has no complete birth proof; process ownership remains unknown.");
+  for (const proof of proofs.slice(1)) {
+    const parent = original.get(proof.parentPid);
+    if (parent === undefined) throw new Error("The original Windows process journal has no complete parent birth chain; process ownership remains unknown.");
+    assertWindowsParentBirth(proof, parent);
+  }
+};
 const windowsMetadataEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
 /** Windows PowerShell can exit successfully without redirected output when
  * detached. The original runner still owns its deadline, tree and close.
@@ -66,7 +85,9 @@ const parse = (value: unknown, nonce: string): ProcessRecord => {
     if (process.platform === "linux" && !validLinuxBirthToken(item.birthToken)) throw new Error("The original Linux Herdr process has no precise birth identity.");
     ids.add(item.pid);
   }
-  return row as unknown as ProcessRecord;
+  const record = row as unknown as ProcessRecord;
+  if (process.platform === "win32") assertWindowsBirthChain(record.proofs);
+  return record;
 };
 
 /** Process identities survive workspace removal. Retirement additionally fences native groups/jobs. */
@@ -75,6 +96,11 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
   const frozen = new Map<number, ProcessProof>();
   const read = async (): Promise<ProcessRecord | null> => { const value = await optionalOwnedJson(file); return value === null ? null : parse(value, manifest.nonce); };
   const save = async (proofs: ProcessProof[]): Promise<void> => { const row = parse({ nonce: manifest.nonce, proofs }, manifest.nonce); await replaceFileAtomically(file, JSON.stringify(row), 0o600); syncDurableDirectory(directory); };
+  const observeWindowsParent = async (proof: ProcessProof, operation: Operation): Promise<void> => {
+    operation.check();
+    const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+    if (!sameProcessIdentity(current, proof)) throw new Error("The original Windows descendant parent process identity changed; process ownership remains unknown.");
+  };
   const assertDeclaredLaunchProofs = async (record: ProcessRecord | null): Promise<void> => {
     const files = mappingFiles(manifestPath), intentValue = await optionalOwnedJson(files.intent), receiptValue = await optionalOwnedJson(files.receipt);
     const request = await readToolStartRequest(manifestPath, { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner });
@@ -97,7 +123,10 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     operation.check();
     const previous = await read(), proofs = new Map((previous?.proofs ?? []).map(proof => [proof.pid, proof]));
     // Receipt PIDs alone cannot establish the birth of a process found during cleanup.
-    if (freeze) await assertDeclaredLaunchProofs(previous);
+    if (freeze) {
+      await assertDeclaredLaunchProofs(previous);
+      if (process.platform === "win32" && previous === null) throw new Error("The original Windows cleanup root has no prepared process journal; process ownership remains unknown.");
+    }
     const freezeOriginal = async (proof: ProcessProof): Promise<void> => {
       if (!freeze || process.platform === "win32" || frozen.has(proof.pid)) return;
       const state = await inspectProcessProof(proof);
@@ -108,6 +137,9 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
       for (const id of pids) {
         operation.check();
         if (proofs.has(id)) continue;
+        // Only preparation can supply the first root. Further foreground IDs
+        // need the same parent and birth checks as inventory discoveries.
+        if (process.platform === "win32" && proofs.size !== 0) continue;
         // An unknown vanished helper cannot establish that its descendants exited.
         const proof = await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
         proofs.set(id, proof); await save([...proofs.values()]);
@@ -122,12 +154,18 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
         const rows = await inventory(environment, operation), ids = new Set(proofs.keys()), groups = new Set([...proofs.values()].map(proof => proof.processGroupId).filter(group => group !== null));
         let changed = true;
         while (changed) { changed = false; for (const row of rows) if (!ids.has(row.pid) && (ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) { ids.add(row.pid); changed = true; } }
+        if (process.platform === "win32" && pids.some(id => !ids.has(id))) throw new Error("The original Windows foreground process has no complete original parent chain; process ownership remains unknown.");
         const unseen = rows.filter(row => ids.has(row.pid) && !proofs.has(row.pid));
         if (unseen.length === 0) return [...proofs.keys()];
-        for (const row of unseen) {
+        while (unseen.length > 0) {
           if (proofs.size >= 1000) throw new Error("The original Herdr process tree exceeds its supported ownership bound.");
+          const index = process.platform === "win32" ? unseen.findIndex(row => proofs.has(row.parentPid)) : 0;
+          if (index < 0) throw new Error("The original Windows descendant has no registered parent birth proof; process ownership remains unknown.");
+          const row = unseen.splice(index, 1)[0]!, parent = process.platform === "win32" ? proofs.get(row.parentPid)! : undefined;
+          if (parent !== undefined) await observeWindowsParent(parent, operation);
           const proof = await captureProcessProof(row.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
           if (proof.parentPid !== row.parentPid || proof.processGroupId !== row.group) throw new Error("The original Herdr descendant changed during identity registration.");
+          if (parent !== undefined) { assertWindowsParentBirth(proof, parent); await observeWindowsParent(parent, operation); }
           proofs.set(proof.pid, proof); await save([...proofs.values()]); await freezeOriginal(proof);
         }
       }
@@ -189,15 +227,17 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     const observe = async (proof: ProcessProof, role: string): Promise<ProcessProof> => {
       operation.check();
       const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
-      if (current.parentPid !== proof.parentPid || current.startedAt !== proof.startedAt || current.commandHash !== proof.commandHash || current.processGroupId !== proof.processGroupId || current.birthToken !== proof.birthToken) throw new Error(`The original ${role} process identity changed; input remains closed.`);
+      if (!sameProcessIdentity(current, proof)) throw new Error(`The original ${role} process identity changed; input remains closed.`);
       return current;
     };
     await observe(shell, "shell");
     if (input.receipt === undefined) return;
     const receipt = parseToolReceipt(input.receipt, manifest);
     const capture = async (id: number, role: string, parent: ProcessProof): Promise<ProcessProof> => {
+      if (process.platform === "win32") await observe(parent, "parent");
       const previous = proofs.get(id), proof = previous === undefined ? await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs())))) : await observe(previous, role);
       if (proof.parentPid !== parent.pid) throw new Error(`The original ${role} has no continuous original helper and shell parent chain.`);
+      if (process.platform === "win32") assertWindowsParentBirth(proof, parent);
       await observe(parent, "parent");
       if (previous === undefined) { proofs.set(id, proof); await save([...proofs.values()]); }
       return proof;
