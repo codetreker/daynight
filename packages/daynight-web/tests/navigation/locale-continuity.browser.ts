@@ -185,7 +185,7 @@ test('graph fullscreen, task fullscreen, menus and confirmations yield Escape on
 test('short mobile drawer and account menu retain focus and the graph fullscreen fits resized viewports', async ({ page }) => {
   await install(page); await page.goto(`/projects/${projectId}`);
   await expect(page.getByRole('heading', { name: graph.project.name, exact: true })).toBeVisible();
-  await expect(page.locator('.stats .stat')).toHaveCount(6);
+  await expect(page.locator('.stats .stat')).toHaveCount(7);
   const sidebar = page.locator('.sidebar'), workspace = page.locator('.workspace');
   for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
     await page.setViewportSize(viewport); await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
