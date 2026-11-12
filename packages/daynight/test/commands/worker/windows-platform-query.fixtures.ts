@@ -4,12 +4,12 @@ import { performance } from "node:perf_hooks";
 import type { Operation } from "../../../src/api/operation.js";
 import type { HerdrCommand, HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 type Stage = "external-script" | "processes" | "console";
-type Checkpoint = "entry" | "cim-complete" | "projection-complete" | "type-complete" | "attach-complete" | "json-complete" | "assembly-complete" | "wmi-get-returned" | "envelope-complete";
+type Checkpoint = "entry" | "cim-complete" | "projection-complete" | "type-complete" | "attach-complete" | "json-complete" | "assembly-complete" | "wmi-get-returned" | "envelope-complete" | "members-complete";
 /** Diagnostics never supply OS evidence. Retain only a complete allowlisted line,
  * with bounded storage even when stderr contains an unterminated private value.
  */
 export const createWindowsQueryCheckpointObserver = (stage: Stage, checkpoint: (value: Checkpoint) => void): ((chunk: Buffer) => void) => {
-  const allowed: readonly Checkpoint[] = stage === "processes" ? ["entry", "cim-complete", "assembly-complete", "wmi-get-returned", "projection-complete", "json-complete", "envelope-complete"] : stage === "console" ? ["entry", "type-complete", "attach-complete", "json-complete"] : [];
+  const allowed: readonly Checkpoint[] = stage === "processes" ? ["entry", "cim-complete", "assembly-complete", "wmi-get-returned", "projection-complete", "json-complete", "envelope-complete"] : stage === "console" ? ["entry", "type-complete", "attach-complete", "members-complete", "json-complete", "envelope-complete"] : [];
   let line = "", discarded = false;
   return chunk => {
     for (const byte of chunk) {
@@ -110,6 +110,94 @@ export const decodeWindowsProcessQuery = (stdout: string, pids: readonly number[
     throw new Error(`The independent Windows process proof is incomplete (stdoutBytes=${Buffer.byteLength(stdout)}).`);
   }
 };
+/** Emits the original console P/Invoke signatures entirely in the query process.
+ * No compiler, assembly file, module auto-loading, or extra process supplies it.
+ * https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.typebuilder.definepinvokemethod
+ */
+export const windowsConsoleQuery = (pid: number): string => {
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 0xffff_ffff) throw new Error("The independent console query requires an original uint32 PID.");
+  return `$ErrorActionPreference='Stop';
+[Console]::Error.WriteLine('DAYNIGHT_QUERY:entry'); [Console]::Error.Flush();
+$assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('DaynightIndependentConsole'),[Reflection.Emit.AssemblyBuilderAccess]::Run);
+$typeBuilder=$assembly.DefineDynamicModule('Console').DefineType('NativeConsole',[Reflection.TypeAttributes]::Public);
+$methodAttributes=[Reflection.MethodAttributes]::Public -bor [Reflection.MethodAttributes]::Static -bor [Reflection.MethodAttributes]::PinvokeImpl;
+$importType=[Runtime.InteropServices.DllImportAttribute]; $importConstructor=$importType.GetConstructor([type[]]@([string]));
+$importFields=[Reflection.FieldInfo[]]@($importType.GetField('EntryPoint'),$importType.GetField('SetLastError'),$importType.GetField('CallingConvention'),$importType.GetField('CharSet'),$importType.GetField('ExactSpelling'),$importType.GetField('PreserveSig'));
+function DefineNative([string]$name,[type]$returnType,[type[]]$parameters) {
+  $method=$typeBuilder.DefineMethod($name,$methodAttributes,$returnType,$parameters);
+  $values=[object[]]@($name,$true,[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::None,$false,$true);
+  $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($importConstructor,[object[]]@('kernel32.dll'),$importFields,$values));
+  $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig);
+  if($returnType -eq [bool]) {
+    $return=$method.DefineParameter(0,[Reflection.ParameterAttributes]::Retval,$null);
+    $return.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new([Runtime.InteropServices.MarshalAsAttribute].GetConstructor([type[]]@([Runtime.InteropServices.UnmanagedType])),[object[]]@([Runtime.InteropServices.UnmanagedType]::Bool)));
+  }
+  if($name -eq 'GetConsoleProcessList') { $null=$method.DefineParameter(1,[Reflection.ParameterAttributes]::Out,'ids') }
+}
+DefineNative 'FreeConsole' ([bool]) ([type[]]@());
+DefineNative 'AttachConsole' ([bool]) ([type[]]@([uint32]));
+DefineNative 'GetConsoleProcessList' ([uint32]) ([type[]]@([uint32[]],[uint32]));
+$native=$typeBuilder.CreateType();
+foreach($name in [string[]]@('FreeConsole','AttachConsole','GetConsoleProcessList')) {
+  $method=$native.GetMethod($name); $imports=$method.GetCustomAttributes($importType,$false);
+  if(!$method.IsPublic -or !$method.IsStatic -or ($method.Attributes -band [Reflection.MethodAttributes]::PinvokeImpl) -eq 0 -or $imports.Length -ne 1) { throw 'The independent console import is incomplete.' }
+  $import=$imports[0];
+  if($import.Value -cne 'kernel32.dll' -or $import.EntryPoint -cne $name -or !$import.SetLastError -or !$import.PreserveSig -or $import.CallingConvention -ne [Runtime.InteropServices.CallingConvention]::Winapi -or $import.CharSet -ne [Runtime.InteropServices.CharSet]::None -or $import.ExactSpelling -or ($method.GetMethodImplementationFlags() -band [Reflection.MethodImplAttributes]::PreserveSig) -eq 0) { throw 'The independent console import metadata changed.' }
+  if($name -ne 'GetConsoleProcessList') {
+    $returns=$method.ReturnParameter.GetCustomAttributes([Runtime.InteropServices.MarshalAsAttribute],$false);
+    if($method.ReturnType -ne [bool] -or $returns.Length -ne 1 -or $returns[0].Value -ne [Runtime.InteropServices.UnmanagedType]::Bool) { throw 'The independent console BOOL metadata changed.' }
+  }
+}
+$free=$native.GetMethod('FreeConsole').GetParameters(); $attach=$native.GetMethod('AttachConsole').GetParameters(); $list=$native.GetMethod('GetConsoleProcessList'); $listParameters=$list.GetParameters();
+if($free.Length -ne 0 -or $attach.Length -ne 1 -or $attach[0].ParameterType -ne [uint32] -or $list.ReturnType -ne [uint32] -or $listParameters.Length -ne 2 -or $listParameters[0].ParameterType -ne [uint32[]] -or !$listParameters[0].IsOut -or $listParameters[0].IsIn -or $listParameters[1].ParameterType -ne [uint32]) { throw 'The independent console signature changed.' }
+[Console]::Error.WriteLine('DAYNIGHT_QUERY:type-complete'); [Console]::Error.Flush();
+$null=$native::FreeConsole(); $attached=$false; $detached=$false; $members=[Collections.Generic.List[string]]::new();
+try {
+  $attached=$native::AttachConsole(${pid});
+  $attachError=[Runtime.InteropServices.Marshal]::GetLastWin32Error();
+  [Console]::Error.WriteLine('DAYNIGHT_QUERY:attach-complete'); [Console]::Error.Flush();
+  if(!$attached) { throw 'The independent console attachment failed.' }
+  $ids=[uint32[]]::new(256); $count=$native::GetConsoleProcessList($ids,256);
+  if($count -eq 0 -or $count -gt 256) { throw 'The independent console member list is incomplete.' }
+  for($index=0; $index -lt $count; $index++) { $members.Add($ids[$index].ToString([Globalization.CultureInfo]::InvariantCulture)) }
+  [Console]::Error.WriteLine('DAYNIGHT_QUERY:members-complete'); [Console]::Error.Flush();
+} finally {
+  if($attached) {
+    $detached=$native::FreeConsole();
+    if(!$detached) { throw 'The independent console detach is unconfirmed.' }
+  }
+}
+$version=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PSVersionTable.PSVersion.ToString()));
+$errorCode=([long]$attachError -band 4294967295L).ToString([Globalization.CultureInfo]::InvariantCulture);
+$fields=[string[]]@('1',$errorCode,$count.ToString([Globalization.CultureInfo]::InvariantCulture),'1',[string]::Join(',',$members.ToArray()));
+[Console]::Error.WriteLine('DAYNIGHT_QUERY:envelope-complete'); [Console]::Error.Flush();
+[Console]::Out.Write([string]::Join([string][char]10,[string[]]@('DAYNIGHT_WINDOWS_CONSOLE_V1',$version,[string]::Join([string][char]9,$fields))));`;
+};
+export type WindowsConsoleQueryResult = { version: string; attached: true; errorCode: number; count: number; detached: true; processIds: number[] };
+export const decodeWindowsConsoleQuery = (stdout: string, pids: readonly number[], observations: WindowsQueryObservation[] = []): WindowsConsoleQueryResult => {
+  try {
+    validateWindowsProcessTargets(pids);
+    if (Buffer.byteLength(stdout) > 64 * 1024) throw new Error("Oversized independent console envelope.");
+    const lines = stdout.split("\n");
+    if (lines.length !== 3 || lines[0] !== "DAYNIGHT_WINDOWS_CONSOLE_V1") throw new Error("Incomplete independent console envelope.");
+    const version = decodeWindowsQueryField(lines[1]!);
+    if (!/^5\.1\.\d+\.\d+$/.test(version)) throw new Error("The independent console observer requires PS5.");
+    const fields = lines[2]!.split("\t");
+    if (fields.length !== 5) throw new Error("Incomplete independent console fields.");
+    const [attached, error, count, detached, members] = fields as [string, string, string, string, string];
+    const uint32 = (value: string) => /^(0|[1-9]\d*)$/.test(value) && Number(value) <= 0xffff_ffff;
+    if (attached !== "1" || detached !== "1" || !uint32(error) || !uint32(count) || Number(count) < 1 || Number(count) > 256) throw new Error("The independent console observation is incomplete.");
+    const values = members.split(",");
+    if (values.length !== Number(count) || values.some(value => !uint32(value) || Number(value) === 0)) throw new Error("The independent console member list is incomplete.");
+    const processIds = values.map(Number);
+    if (new Set(processIds).size !== processIds.length || !pids.every(pid => processIds.includes(pid))) throw new Error("The original processes do not share the observed console.");
+    return { version, attached: true, errorCode: Number(error), count: Number(count), detached: true, processIds };
+  } catch {
+    const observation = observations.at(-1);
+    if (observation?.stage === "console") observation.errorType = "InvalidWindowsConsole";
+    throw new Error(`The independent Windows console proof is incomplete (stdoutBytes=${Buffer.byteLength(stdout)}).`);
+  }
+};
 /** Observer execution belongs to the test harness. Native/daemon environments
  * remain inputs under test; provider and agent configuration is never copied.
  */
@@ -128,7 +216,8 @@ export const prepareWindowsObserverEnvironment = async (root: string, harness: N
     const entry = await lstat(target);
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("The Windows observer requires ordinary task-owned directories.");
   }
-  // Only the selected system PS5's built-in modules may supply these queries.
+  // Supplies the selected system PS5 module path; PowerShell may expand the
+  // effective path with other installation locations during startup.
   // https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath?view=powershell-5.1
   return { ...environment, HOME: home, USERPROFILE: home, APPDATA: roaming, LOCALAPPDATA: local, TEMP: temporary, TMP: temporary,
     PSModulePath: path.win32.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") };

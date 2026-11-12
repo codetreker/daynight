@@ -17,7 +17,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
-import { decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery, windowsProcessQuery, decodeWindowsProcessQuery } from "./windows-platform-query.fixtures.js";
+import { decodeWindowsExternalScript, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery, windowsProcessQuery, decodeWindowsProcessQuery, windowsConsoleQuery, decodeWindowsConsoleQuery } from "./windows-platform-query.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
@@ -196,8 +196,8 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       const script = windowsProcessQuery(processTargets);
       evidence.windowsProcesses = decodeWindowsProcessQuery(await runWindowsPlatformQuery("processes", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), processTargets, evidence.cleanup.windowsQueries);
       evidence.windowsRootCommand = mapping.windowsCommand;
-      const consoleScript = `[Console]::Error.WriteLine('DAYNIGHT_QUERY:entry'); [Console]::Error.Flush(); Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class NativeConsole { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint id); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); }'; [Console]::Error.WriteLine('DAYNIGHT_QUERY:type-complete'); [Console]::Error.Flush(); [NativeConsole]::FreeConsole() | Out-Null; $attached=[NativeConsole]::AttachConsole(${receipt.childPid}); $errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); [Console]::Error.WriteLine('DAYNIGHT_QUERY:attach-complete'); [Console]::Error.Flush(); $ids=New-Object uint[] 256; $count=if($attached){[NativeConsole]::GetConsoleProcessList($ids,256)}else{0}; $result=@{attached=$attached;errorCode=$errorCode;processIds=@($ids | Select-Object -First $count)}; [NativeConsole]::FreeConsole() | Out-Null; $json=$result | ConvertTo-Json -Compress; [Console]::Error.WriteLine('DAYNIGHT_QUERY:json-complete'); [Console]::Error.Flush(); $json`;
-      evidence.windowsConsole = decodeWindowsPlatformJson("console", await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), evidence.cleanup.windowsQueries);
+      const consoleScript = windowsConsoleQuery(receipt.childPid);
+      evidence.windowsConsole = decodeWindowsConsoleQuery(await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), processTargets, evidence.cleanup.windowsQueries);
     }
     evidence.launch = launch; evidence.herdrLaunch = herdrLaunch;
     const allProcesses = await inventory(), descendants = new Set([daemonPid!, before.shellPid, receipt.helperPid, receipt.childPid]);

@@ -72,6 +72,8 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程、legacy endpoint 和旧 attach。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
 
-Windows 的独立 WMI/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，模块路径限定系统 PowerShell 5 的模块。查询子进程非 detached，且不通过 `windowsHide` 设置 `CREATE_NO_WINDOW`；输入流处理保持不变。PowerShell 直接通过 .NET `System.Management` 读取 `root\cimv2` 的 `Win32_Process`，只接受原 shell/helper/native 三个 PID 各一条的完整记录。固定字段包含 PID、父 PID、完整 executable、command line、原始 DMTF 出生时间及对应 UTC ticks；解码器核验字段和时间一致性，再与独立 inventory 的同精度 token 比较。WMI 微秒精度的出生时间不替代原生 readiness 的 100ns 精度要求。查询对象、枚举器、结果集合与 searcher 全部释放后才输出结果；任一释放失败均保留失败。
+Windows 的独立 WMI/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，传入系统 PowerShell 5 的模块路径。Windows PowerShell 启动时可能扩展有效模块搜索路径；查询本体直接使用 .NET API，不依赖模块自动导入。查询子进程非 detached，且不通过 `windowsHide` 设置 `CREATE_NO_WINDOW`；输入流处理保持不变。PowerShell 直接通过 .NET `System.Management` 读取 `root\cimv2` 的 `Win32_Process`，只接受原 shell/helper/native 三个 PID 各一条的完整记录。固定字段包含 PID、父 PID、完整 executable、command line、原始 DMTF 出生时间及对应 UTC ticks；解码器核验字段和时间一致性，再与独立 inventory 的同精度 token 比较。WMI 微秒精度的出生时间不替代原生 readiness 的 100ns 精度要求。查询对象、枚举器、结果集合与 searcher 全部释放后才输出结果；任一释放失败均保留失败。
 
-独立查询继续受 10 秒预算和进程树及输出流关闭要求约束；关闭未知时保留目录并使独立清理检查失败。固定阶段标记只辅助定位查询停点，不能代替查询结果或关闭证明。console 保留 `AttachConsole`/`GetConsoleProcessList` 对原三个进程的共同控制台核验。ExternalScript 发现和官方 hook 探测仍使用被测环境，native 与 daemon 的环境不因观察器而改变。
+console 观察通过 `Reflection.Emit` 在原 PowerShell 进程中定义并核验 P/Invoke 元数据，再调用 `FreeConsole`、`AttachConsole` 和 `GetConsoleProcessList`，不启动编译器或生成程序集文件。声明保留 Winapi、`SetLastError`、`PreserveSig`、BOOL 返回值与输出数组语义；附加后立即读取错误码，最终脱离控制台成功后才输出固定 ASCII 结果。结果必须包含完整、无重复且不超出 256 项缓冲区的进程列表，并继续核验原 shell/helper/native 三个进程同在该控制台。动态程序集随观察器进程关闭而释放。
+
+独立查询继续受 10 秒预算和进程树及输出流关闭要求约束；关闭未知时保留目录并使独立清理检查失败。固定阶段标记只辅助定位查询停点，不能代替查询结果或关闭证明。ExternalScript 发现和官方 hook 探测仍使用被测环境，native 与 daemon 的环境不因观察器而改变。

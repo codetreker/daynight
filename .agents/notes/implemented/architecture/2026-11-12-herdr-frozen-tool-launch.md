@@ -113,7 +113,9 @@ recognition or changing upstream Herdr.
 
 Independent Windows WMI and console acceptance queries own their execution
 environment. They inherit explicit system variables, use private user and
-temporary directories under the test root, and load system PowerShell 5 modules.
+temporary directories under the test root, and provide the system PowerShell 5
+module path as input. PowerShell may expand that search path at startup; the
+queries use direct .NET APIs without module autoloading.
 Queries use non-detached children without `windowsHide`, which otherwise selects
 [`CREATE_NO_WINDOW` with redirected streams](https://github.com/nodejs/node/blob/e63cab040c09d43ceef8cb35508c40044614e906/deps/uv/src/win/process.c#L1033-L1051).
 This matches the successful harness inventory's console creation flag without
@@ -130,6 +132,15 @@ must be disposed before output is published. Original target PIDs, deadline,
 console APIs and close requirements remain unchanged. ExternalScript discovery
 and official hook checks retain the native environment; an observer cannot repair
 or replace that environment.
+
+Console observation defines its P/Invoke type with `Reflection.Emit` and checks
+the resulting metadata before calling `FreeConsole`, `AttachConsole` and
+`GetConsoleProcessList`. Winapi, `SetLastError`, `PreserveSig`, BOOL returns and
+the output array remain explicit. It publishes the complete bounded PID frame
+only after detaching from the target console. The observer creates no compiler
+child or assembly file; its dynamic assembly ends with the original PowerShell
+process. The original shell, helper and native PIDs must all appear in the same
+console result.
 
 ## Alternatives
 
@@ -191,6 +202,15 @@ deadline; projection and JSON serialization had not started. Direct
 `System.Management` retains an independent OS/WMI observation without that cmdlet
 dependency. This does not identify the internal cause of its stall or relax the
 deadline and required identity fields.
+
+**Compile the console interop type at query time.** The `Add-Type` query reached
+its entry checkpoint but did not return before the deadline. That interval
+includes module discovery, compilation and type loading; the internal cause
+remains unknown. Direct CodeDOM compilation would still create temporary files
+and a compiler child, including with `GenerateInMemory=true`, and could repeat
+the same compilation dependency. `Reflection.Emit` preserves the independent
+console APIs without those resources or a cmdlet/JSON dependency. Actual PS5
+execution must still establish that the emitted declarations behave correctly.
 
 ## Consequences
 

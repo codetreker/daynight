@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createOperation } from "../../../src/api/operation.js";
-import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsProcessQuery, decodeWindowsProcessQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
+import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsProcessQuery, decodeWindowsProcessQuery, windowsConsoleQuery, decodeWindowsConsoleQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
 
 const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
 
@@ -208,4 +208,37 @@ test.each([[401, 401, 403], [401, 402], [401, 402, -1], [401, 402, 4294967296], 
 
 test.each(["", wmiFrame().replace("DAYNIGHT_WINDOWS_WMI_V1", "private-header"), wmiFrame().replace(Buffer.from("5.1.26100.33648").toString("base64"), Buffer.from("7.4.0").toString("base64")), wmiFrame().replace(Buffer.from("C:\\task's 空间 📖\\native.exe").toString("base64"), "not-base64!")])("refuses an invalid WMI envelope or encoded field (%#)", output => {
   expect(() => decodeWindowsProcessQuery(output, [401, 402, 403])).toThrow("independent Windows process proof is incomplete");
+});
+
+
+const consoleFrame = (patch: Partial<{ version: string; attached: string; error: string; count: string; detached: string; members: string }> = {}) => {
+  const row = { version: "5.1.26100.33648", attached: "1", error: "0", count: "4", detached: "1", members: "401,402,403,499", ...patch };
+  return ["DAYNIGHT_WINDOWS_CONSOLE_V1", Buffer.from(row.version).toString("base64"), [row.attached, row.error, row.count, row.detached, row.members].join("\t")].join("\n");
+};
+
+test("decodes an original shared console including its extra observer without assuming exactly three members", () => {
+  expect(decodeWindowsConsoleQuery(consoleFrame({ error: "5" }), [401, 402, 403])).toEqual({ version: "5.1.26100.33648", attached: true, errorCode: 5, count: 4, detached: true, processIds: [401, 402, 403, 499] });
+  const members = Array.from({ length: 256 }, (_, index) => 401 + index);
+  expect(decodeWindowsConsoleQuery(consoleFrame({ count: "256", members: members.join(",") }), [401, 402, 403]).processIds).toEqual(members);
+});
+
+test.each([
+  { attached: "0" }, { detached: "0" }, { count: "0", members: "" }, { count: "257", members: Array.from({ length: 257 }, (_, index) => 401 + index).join(",") },
+  { count: "5" }, { members: "401,402,403,403" }, { members: "401,402,404,499" },
+  { members: "401,402,403,0" }, { members: "401,402,403,4294967296" }, { error: "-1" }, { error: "4294967296" },
+  { version: "7.5.4" }, { members: "401,402,403,private-console-value" },
+])("rejects an incomplete independent console proof without leaking its frame (%#)", patch => {
+  const observations: WindowsQueryObservation[] = [{ stage: "console", elapsedMs: 1, code: 0, killed: false, signal: null, stdoutBytes: 1, stderrBytes: 0, closed: true, cleanupConfirmed: true, errorType: null }];
+  let failure: unknown;
+  try { decodeWindowsConsoleQuery(consoleFrame(patch), [401, 402, 403], observations); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error); expect((failure as Error).message).not.toContain("private-console-value"); expect((failure as Error).cause).toBeUndefined();
+  expect(observations[0]).toMatchObject({ errorType: "InvalidWindowsConsole", closed: true, cleanupConfirmed: true });
+});
+
+test.each(["", consoleFrame().replace("DAYNIGHT_WINDOWS_CONSOLE_V1", "private-header"), consoleFrame()+"\n", consoleFrame().replace(/\t[^\t]+$/, ""), consoleFrame().replace(Buffer.from("5.1.26100.33648").toString("base64"), "not-base64!")])("rejects malformed or partial console frames (%#)", frame => {
+  expect(() => decodeWindowsConsoleQuery(frame, [401, 402, 403])).toThrow("independent Windows console proof is incomplete");
+});
+
+test.each([0, -1, 3.5, 4294967296])("refuses an unsafe original console target (%j)", pid => {
+  expect(() => windowsConsoleQuery(pid)).toThrow();
 });
