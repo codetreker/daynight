@@ -418,7 +418,10 @@ test('keeps Personal management links absent throughout project loading, failure
   const sidebar = page.locator('.sidebar nav');
   const absent = async () => {
     await expect(sidebar.locator('a[aria-label="Team members"], a[aria-label="Team settings"]')).toHaveCount(0);
-    await expect(sidebar.locator('.sidebar-projects + a')).toHaveAttribute('aria-label', 'Shared with me');
+    await expect(sidebar.locator('.sidebar-group').nth(0).locator('.sidebar-projects')).toHaveCount(1);
+    const myGroup = sidebar.locator('.sidebar-group').nth(1);
+    await expect(myGroup.locator('.nav-label')).toHaveText('My');
+    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'Shared with me');
   };
   try {
     await page.goto('/projects');
@@ -556,7 +559,7 @@ test.describe('Chinese narrow sidebar', () => {
     await page.goto('/projects'); await expect(heading(page, '个人')).toBeVisible();
     await put(page, alice, alpha);
     await page.goto(`/projects/${project}`); await page.reload();
-    const control = page.getByRole('button', { name: '切换 Team: Alpha', exact: true });
+    const control = page.getByRole('button', { name: '切换 Team: 团队, Alpha', exact: true });
     await expect(control).toBeVisible(); await control.click();
     await expect(page.locator('.team-options')).toBeVisible();
     await control.click();
