@@ -7,19 +7,34 @@
 .goal-edit-recovery p { margin: 0 0 .5rem; }
 .goal-detail-footer { display: flex; justify-content: flex-end; padding: .75rem 1.25rem; border-top: 1px solid var(--border, #e5e8ee); }
 .goal-detail-content:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-.goal-detail-overview, .goal-detail-description { padding: 1rem 1.25rem; overflow: auto; }
-.goal-detail-description > .task-description { overflow-wrap: anywhere; }
-.goal-detail-chain { border: 1px solid var(--border, #e5e8ee); border-radius: 8px; margin-bottom: .75rem; }
-.goal-detail-chain-header { display: flex; align-items: center; gap: .75rem; padding: .6rem .75rem; }
-.goal-detail-disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: .6rem; border: 0; background: transparent; text-align: left; cursor: pointer; color: inherit; }
-.goal-detail-disclosure > span:last-child { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
-.goal-detail-disclosure small { display: block; color: #737d8e; font-weight: 400; }
-.goal-detail-tasks { list-style: none; margin: 0; padding: 0; }
-.goal-detail-task { width: 100%; display: flex; align-items: center; gap: .65rem; padding: .75rem; border: 0; border-top: 1px solid var(--border, #e5e8ee); background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.goal-detail-task:hover { background: #f7f8fa; }
-.goal-detail-task-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.goal-detail-dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; flex: none; }
-@media (max-width: 600px) { .goal-detail-meta { gap: .5rem; } .goal-detail-task { flex-wrap: wrap; } .goal-detail-task-title { flex-basis: calc(100% - 1.5rem); } .goal-detail-chain-header { flex-wrap: wrap; } }
+.goal-detail-description { padding: 1.25rem; overflow: auto; overscroll-behavior: contain; }
+.goal-detail-description-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; align-items: start; gap: 1.75rem; min-width: 0; }
+.goal-detail-description-body { min-width: 0; overflow-wrap: anywhere; }
+.goal-detail-description-body > .task-description { padding: 0; }
+.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 1.25rem; color: #637087; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.goal-information-section + .goal-information-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+.goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: 13px; font-weight: 600; }
+.goal-information dl { margin: 0; }
+.goal-information dl > div + div { margin-top: .65rem; }
+.goal-information dt { color: #737d8e; }
+.goal-information dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.goal-information-dates dd { margin-top: .2rem; }
+.goal-information-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.goal-information-counts dd { flex: none; }
+.goal-information-progress { margin: 1rem 0 .5rem; }
+.goal-information-track { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: #edf0f5; }
+.goal-information-track i { display: block; height: 100%; }
+.goal-information-done { background: #78ac94; }
+.goal-information-cancelled { background: #c8bbd3; }
+.goal-information .goal-information-statuses { margin-top: .85rem; }
+.goal-information-loading, .goal-information-error p { margin: 0 0 .65rem; }
+.goal-information-error { margin-top: 1rem; color: #a05252; }
+.goal-information-error .button { font-size: inherit; }
+@media (max-width: 740px) {
+  .goal-detail-meta { gap: .5rem; }
+  .goal-detail-description-layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .goal-information { border-left: 0; border-top: 1px solid var(--line); padding: 1.25rem 0 0; }
+}
 /* The chain and Task portals must stack above their Goal owner. */
 .task-chain-backdrop-nested { z-index: 31; }
 body:has(.goal-detail-surface) > .task-detail-backdrop:has(.task-detail-dialog:not(.goal-detail-surface)) { z-index: 32; }

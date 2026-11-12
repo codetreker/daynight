@@ -24,8 +24,10 @@ Details. The project owner resolves the card's actual task ID through the curren
 ordinary-component index. An unparented multi-member destination opens its
 chain graph using the destination representative's graph-direction preference.
 An unparented standalone destination closes the original graph and opens the
-existing task reader; a destination with a readable Goal Parent opens that Goal
-and its task witness. Expand does not append external ancestry to the original
+existing task reader. A destination with a readable Goal Parent opens that Goal
+and the complete chain graph for a multi-member target, or its Task reader for a
+single member. Details remains a separate action that opens the target Task
+under its actual Goal. Expand does not append external ancestry to the original
 canvas. Ordinary member cards retain bounded direction expansion within the
 projection.
 

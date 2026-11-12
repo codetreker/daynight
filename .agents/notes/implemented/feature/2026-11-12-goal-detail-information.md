@@ -1,0 +1,55 @@
+# Agent Note: Goal Detail Information
+
+Status: implemented
+
+## Problem
+
+Goal readers need creation and modification times and a concise view of the work
+owned by the Goal. The project Goal list already exposes its child tasks and
+chains; repeating that list in detail splits task browsing across two owners and
+occupies space beside the Goal's description.
+
+## Decision
+
+Goal detail provides Description, Attachments and Discussion, with Description
+selected by default. `GoalInformation` sits beside the Markdown description on
+desktop and follows it on narrow screens. It reads the Goal's own timestamps
+from complete detail and its standalone, chain and progress counts from the
+existing Parent scope of the complete ordinary graph. Cancelled work remains
+distinct from successful completion. Missing graph data is a loading state;
+refresh failure retains displayed statistics and its retry action.
+
+Child rows and chain disclosures belong to the project Goal list. Goal detail
+retains controlled nested graph and Task reading owners for history restoration.
+Details selects a cross-Goal destination and its child Task together. External
+Expand selects that Goal and its complete chain graph for a multi-member target,
+or Task details for a single member. Standalone unparented chain expansion passes
+a transient project graph witness. These choices preserve each action's reading
+intent without a detail list or focus witness.
+Description, attachment and discussion panels retain their mounted state. The
+Goal frame registers its overlay before mounting graph and Task portals, so a
+combined Goal and child selection has the correct parent from its first render.
+The existing resource, draft, history and overlay admission still applies.
+
+This replaces the Task panel presentation adopted by the
+[Goal description tab decision](2026-11-12-goal-description-tab.md) and the
+[Goal Task entrance decision](../simplification/2026-11-12-goal-task-entrances.md).
+The [Goal browsing decision](2026-11-11-goal-browsing.md) continues to own complete
+graph classification and scoped list navigation. The
+[Goal requirements](../../../../docs/spec/daynight-goals.md) own the visible
+fields and the [Web design](../../../../docs/design/daynight-web.md) owns their
+composition and lifecycle.
+
+## Alternatives
+
+**Keep child tasks in a renamed Description panel.** This would remove the Task
+tab label while retaining the duplicate list and its expansion state in detail.
+The outer Goal list already provides those browsing controls.
+
+## Consequences
+
+The description has a stable information aside and task browsing has one visible
+list owner. Statistics require no new API or cache. Existing nested reading
+history remains useful, but cross-Goal navigation must supply the intended child
+or graph selection directly because detail no longer has a row to locate or
+focus. Details and graph expansion therefore use distinct navigation callbacks.

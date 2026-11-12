@@ -1,4 +1,5 @@
 import * as client from '../src/api/client';
+import { useResourceHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { saveDetail } from '../src/features/task-detail/detail-cache';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
@@ -514,10 +515,17 @@ describe('typed Goal routes', () => {
     const { [taskId]: _goalState, ...dependencyStates } = sync.dependencyStates;
     vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...sync, mode: query.epoch === sync.epoch ? 'delta' : 'snapshot', dependencyStates }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
-    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    let selectChild!: () => void;
+    const Workspace = () => {
+      const history = useResourceHistory(TEST_VIEWER_ID, projectId, taskId, true, scope);
+      selectChild = () => history.select({ goalChildren: { graphRootId: null, task: { id: otherId, navigation: { tab: 'overview', path: null } } }, externalGoal: null });
+      return <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />;
+    };
+    const view = render(<Workspace />, { taskCache: { scope } });
     try {
-      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
-      fireEvent.click(opener);
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const dialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
       fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
       const moved = { ...child, parentId: null, version: 2n, updatedAt: '2026-10-23T10:00:00Z' };
@@ -526,7 +534,7 @@ describe('typed Goal routes', () => {
       const { [taskId]: _goalUpdate, ...updatedStates } = update.dependencyStates;
       const ticket = await scope.beginSync(projectId, scope.signal);
       await act(async () => { await scope.applySync(ticket, { ...update, dependencyStates: updatedStates }, scope.signal); });
-      await waitFor(() => expect(opener.isConnected).toBe(false), { timeout: 10000 });
+      expect(document.querySelector('[data-goal-task-id]')).toBeNull();
       fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
       await waitFor(() => expect(screen.getByRole('heading', { name: goal.title })).toHaveFocus(), { timeout: 10000 });
       await moveHistory('back');
@@ -651,10 +659,17 @@ describe('typed Goal routes', () => {
     vi.spyOn(client, 'getTaskSync').mockImplementation(async (_projectId, query) => taskSyncReadFixture({ ...original, epoch,
       mode: query.epoch === epoch ? 'delta' : 'snapshot', dependencyStates }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
-    const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />, { taskCache: { scope } });
+    let selectChild!: () => void;
+    const Workspace = () => {
+      const history = useResourceHistory(TEST_VIEWER_ID, projectId, taskId, true, scope);
+      selectChild = () => history.select({ goalChildren: { graphRootId: null, task: { id: otherId, navigation: { tab: 'overview', path: null } } }, externalGoal: null });
+      return <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />;
+    };
+    const view = render(<Workspace />, { taskCache: { scope } });
     try {
-      const opener = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
-      fireEvent.click(opener);
+      await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const childDialog = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
       fireEvent.click(within(childDialog).getByRole('tab', { name: '附件' }));
       const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, scope.signal);
@@ -662,9 +677,9 @@ describe('typed Goal routes', () => {
       rememberTaskEpoch(projectId, replacement);
       await act(async () => { expect(await scope.observeHistory(fence, replacement, scope.signal)).toBe('retired'); });
       await screen.findByRole('heading', { name: goal.title }, { timeout: 10000 });
-      const reopened = await screen.findByRole('button', { name: /Goal child/ }, { timeout: 10000 });
       expect(screen.queryByRole('dialog', { name: child.title })).toBeNull();
-      fireEvent.click(reopened);
+      await screen.findByText('任务总数', { selector: 'dt' }, { timeout: 10000 });
+      act(selectChild);
       const current = await screen.findByRole('dialog', { name: child.title }, { timeout: 10000 });
       fireEvent.click(within(current).getByRole('tab', { name: '步骤' }));
       const addStep = await within(current).findByRole('button', { name: '添加步骤' }, { timeout: 10000 });
@@ -746,7 +761,8 @@ describe('typed Goal routes', () => {
     const view = render(<TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />);
     try {
       await screen.findByRole('heading', { name: goal.title });
-      expect(screen.getByRole('tab', { name: 'Task' })).toBeVisible();
+      expect(screen.getByRole('tab', { name: '描述' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.queryByRole('tab', { name: 'Task' })).toBeNull();
       expect(fixture.fetcher.mock.calls.some(([url]) => /\/(sessions|steps)(?:\?|$)/.test(url))).toBe(false);
     } finally { view.unmount(); }
   });

@@ -110,8 +110,8 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
-`tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|description|attachments|steps|discussion|session` 进入共享导航准入。Goal 的 `description` 选择描述页签，`overview` 仍选择默认 Task 页签；普通 Task 只接受自身支持的页签，`description` 回退概览。Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
+`tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 对普通 Task 默认为概览，对 Goal 默认为描述，已有附件路径
+默认为附件；显式 `tab=overview|description|attachments|steps|discussion|session` 进入共享导航准入。Goal 的 `description` 和 `overview` 均选择默认描述页签，详情只提供描述、附件和讨论；普通 Task 只接受自身支持的页签，`description` 回退概览。Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。
@@ -119,7 +119,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 独立外壳拥有任务关系、页签和附件选择的导航。显式交互通过 `navigate()` 请求准入后写入
 目标 URL，Back/Forward 由应用导航所有者在采用目标前决定草稿去留；相同 Task 的
 页签和附件往返保留主体。确认历史目标不再写历史，同一状态不重复生成条目。
-独立页以身份、项目和根资源绑定轻量阅读载荷，保存根 Goal 的图和子 Task，以及外部 Goal 对话框及其子层选择。URL 继续拥有根页签和文件；每个受控条目初始化时以 replace 保存选择，用户阅读变化以 push 提交，关闭经既有保护后以 replace 清除相应子层。遍历只应用已准入载荷，不重放用户操作。`TypedDetail` 在确认 Goal 类型后接入受控子层；`TaskDetailDialog` 透传页签与文件选择，项目页调用者也以项目阅读载荷控制详情及其子层。页面载荷只保存资源 ID、图根和阅读导航，不保存资源内容、权限、草稿或 DOM；焦点入口和阅读工作区仍由原组件持有。异常载荷显示导航错误，不用于打开其他资源。相同 Task 只有在资源、父宿主和呈现方式均保留时才视为同一草稿工作区。项目根 Task 的 `summary` 与 `direct` 入口可能在 `TaskDetailSurface` 和 `TypedDetail` 间替换草稿宿主；两者切换须先经过离开保护，即使 Task ID 相同。同一详情 hook 改变读取来源时重新建立该来源的 opening，切换前的正文不能满足新来源资格；未完成或未知写操作继续由会话核对，不重新提交。Goal 根详情及其子 Task 按实际资源和宿主判断，不仅因根来源变化认定离开；已验证的 direct Goal 在图暂缺时仍可保留原 typed owner。若已有图却不能确认目标为 Goal，来源切换先保护草稿。子 Task 首次准入后在本次挂载保持其读取来源，图暂缺或恢复不会切换宿主；尚未准入的子选择等待图后再确定来源。身份、权限或历史退休仍撤销旧资源。恢复项目摘要来源的详情时，图快照尚未提供资源类型则保持加载，不将该选择改作 direct 读取；本地摘要的 revision 0 不建立 Task 正文读取资格。类型确认为 Goal 后沿用 Goal 的 typed/direct 读取，明确的 direct 入口也不依赖项目图。已挂载的同一摘要详情在快照暂缺时保留已识别的类型和最近的摘要观察，以维持原阅读器；这些临时观察不写入历史，也不取代身份、权限和历史代次的原准入与撤销；退休后的旧图不能重新证明类型，普通缓存代次变化不退休阅读器。历史编号、取消恢复和未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
+独立页以身份、项目和根资源绑定轻量阅读载荷，保存根 Goal 的图和子 Task，以及外部 Goal 对话框及其子层选择。Goal 详情不提供子任务列表。跨 Goal 的 Details 跳转在一次阅读选择中同时指定目标 Goal、描述页签和 `GoalChildren.task`，直接打开对应 Task；链外 Expand 对多成员目标指定目标 Goal 及 `GoalChildren.graphRootId` 的完整分量代表，并将 `task` 清空，单成员目标仍打开 Task 详情。两种动作不依赖详情列表行或焦点 witness。来自独立详情的未归属多成员 Expand 通过项目地址的临时 `#chain={taskId}` 传递图 witness；项目 owner 在完整索引可用后清除 fragment，准入目标图并保留自己的列表状态，无效或已消失目标显示现有不可用提示。`#task={taskId}` 保留现有任务阅读／列表定位含义；fragment 不成为持久偏好或根详情分享格式。受控图和子 Task 的历史恢复继续使用原资源与宿主准入。URL 继续拥有根页签和文件；每个受控条目初始化时以 replace 保存选择，用户阅读变化以 push 提交，关闭经既有保护后以 replace 清除相应子层。遍历只应用已准入载荷，不重放用户操作。`TypedDetail` 在确认 Goal 类型后接入受控子层；`TaskDetailDialog` 透传页签与文件选择，项目页调用者也以项目阅读载荷控制详情及其子层。页面载荷只保存资源 ID、图根和阅读导航，不保存资源内容、权限、草稿或 DOM；焦点入口和阅读工作区仍由原组件持有。异常载荷显示导航错误，不用于打开其他资源。相同 Task 只有在资源、父宿主和呈现方式均保留时才视为同一草稿工作区。项目根 Task 的 `summary` 与 `direct` 入口可能在 `TaskDetailSurface` 和 `TypedDetail` 间替换草稿宿主；两者切换须先经过离开保护，即使 Task ID 相同。同一详情 hook 改变读取来源时重新建立该来源的 opening，切换前的正文不能满足新来源资格；未完成或未知写操作继续由会话核对，不重新提交。Goal 根详情及其子 Task 按实际资源和宿主判断，不仅因根来源变化认定离开；已验证的 direct Goal 在图暂缺时仍可保留原 typed owner。若已有图却不能确认目标为 Goal，来源切换先保护草稿。子 Task 首次准入后在本次挂载保持其读取来源，图暂缺或恢复不会切换宿主；尚未准入的子选择等待图后再确定来源。身份、权限或历史退休仍撤销旧资源。恢复项目摘要来源的详情时，图快照尚未提供资源类型则保持加载，不将该选择改作 direct 读取；本地摘要的 revision 0 不建立 Task 正文读取资格。类型确认为 Goal 后沿用 Goal 的 typed/direct 读取，明确的 direct 入口也不依赖项目图。已挂载的同一摘要详情在快照暂缺时保留已识别的类型和最近的摘要观察，以维持原阅读器；这些临时观察不写入历史，也不取代身份、权限和历史代次的原准入与撤销；退休后的旧图不能重新证明类型，普通缓存代次变化不退休阅读器。历史编号、取消恢复和未编号项限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
 弹窗通过标题栏“…”菜单中的新标签真实链接导出当前选择，附件
 预览的新标签入口也进入完整详情并定位该文件。两个窗口不交换任务对象、图快照、
 草稿或确认状态。

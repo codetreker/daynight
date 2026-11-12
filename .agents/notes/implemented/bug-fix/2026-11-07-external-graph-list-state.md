@@ -32,8 +32,10 @@ graph witness. It uses the destination representative's direction preference
 and initializes that graph's exploration and inspection while retaining the
 graph-dialog and fullscreen owners. An unparented standalone destination closes
 the graph and opens the existing task reader. A target with a readable Goal
-Parent opens that Goal and its task witness; an unavailable target or Parent
-uses the existing feedback. Navigation does not append external ancestry to
+Parent opens that Goal and its complete chain graph for a multi-member target,
+or its Task reader for a single member. Details selects the target Goal and Task
+reader separately from Expand. An unavailable target or Parent uses the existing
+feedback. Navigation does not append external ancestry to
 the source canvas.
 
 Status and assignee filters, page, list rows, child disclosure and scroll belong

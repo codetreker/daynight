@@ -23,7 +23,9 @@ by the [Goal Task entrance decision](../simplification/2026-11-12-goal-task-entr
 the shared form, session operation and APIs remain in place.
 
 Goal detail shares the compact status menu with Task detail and places it beside
-the assignee while retaining progress in the metadata row. The menu takes the
+the assignee. The [Goal detail information decision](2026-11-12-goal-detail-information.md)
+places progress in the description aside and removes duplicate task browsing
+from detail. The menu takes the
 Goal-specific four states and permits reopening cancelled Goals; ordinary Tasks
 retain their five states and cancelled lock. Goal terminal choices retain their
 confirmation and reviewed version, while nonterminal changes use the current

@@ -2092,14 +2092,22 @@ Escape does not navigate or close the window. Native PDF readers may not expose
 a controllable document: HTML keyboard proof does not establish PDF key behavior,
 and explicit exit/return controls remain available.
 
-`/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
+`/projects/{projectId}/tasks/{taskId}` defaults to Overview for ordinary Tasks and
+Description for Goals. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
 Attachments with that exact file selected.
 `tab=overview|description|attachments|steps|discussion|session` enters shared
-navigation. A Goal presents Description, Tasks, Attachments and Discussion in that
-order, with `overview` selecting the default Tasks panel. Description uses the
-Goal’s Markdown and attachment owner and shows the existing empty state when
-empty. Description and Tasks scroll independently; the four panels remain mounted
+navigation. A Goal presents Description, Attachments and Discussion in that
+order, with `description` and `overview` selecting Description. Its child tasks
+and scoped chains remain in the project Goal list. Description uses the Goal's
+Markdown and attachment owner and shows the existing empty state when empty.
+Its information aside displays the Goal's creation and modification times in the
+selected language and browser timezone, together with direct-child standalone,
+chain, total, done, cancelled and unfinished counts. Classification uses the
+complete ordinary graph before Parent projection; external edges do not merge
+chains. The description scroll owner contains both desktop columns, stacked on
+narrow screens. Unknown graph state is distinct from zero tasks, and a failed
+refresh retains displayed counts with retry. The three panels remain mounted
 across tab changes, refreshes and fullscreen transitions. Ordinary Tasks do not
 have a Description tab and fall back to Overview for `tab=description`; Session
 falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
@@ -2115,6 +2123,14 @@ upload selection synchronize the address and add history only for a new state.
 Back/Forward apply the address state without adding an entry. Goal graphs, child
 Task dialogs and external Goal dialogs on a standalone resource page also restore
 their reading selections with Back/Forward without changing the root URL.
+A cross-Goal Details destination selects its Goal and child Task together.
+External Expand selects the Goal and complete chain graph for a multi-member
+destination, or opens Task details for a single member. From a standalone reader,
+unparented chain Expand carries its witness through the project URL
+`#chain={taskId}`. The project consumes and clears that transient fragment once
+its complete index is available; `#task={taskId}` retains task reading and list
+location semantics. Invalid or missing targets use existing unavailable feedback.
+These fragments do not add persistent preferences or nested detail URL state.
 Closing a layer replaces the current selection after draft admission. Project-page
 sections, graph, details and their nested reading selections also participate in
 Back/Forward without changing the project URL. Traversal does not replay operations

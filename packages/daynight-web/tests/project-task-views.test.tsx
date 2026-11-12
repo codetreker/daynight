@@ -275,7 +275,11 @@ describe('project task views', () => {
     await openChain(rootId);
     fireEvent.click(screen.getByTestId(`external-${witness}`));
     const goalDialog = await screen.findByRole('dialog', { name: `任务 ${goal}` });
-    await waitFor(() => expect(goalDialog.querySelector(`[data-goal-task-id="${witness}"]`)).toHaveFocus());
+    const childDialog = await screen.findByRole('dialog', { name: `任务 ${witness}` });
+    expect(goalDialog.querySelector('[data-goal-task-id]')).toBeNull();
+    expect(goalDialog).toHaveAttribute('inert');
+    fireEvent.click(within(childDialog).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(within(goalDialog).getByRole('heading', { name: `任务 ${goal}` })).toHaveFocus());
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(screen.getByTestId(`external-${witness}`)).toHaveFocus());
     expect(previousTrigger).not.toHaveFocus();
@@ -296,8 +300,11 @@ describe('project task views', () => {
       mount(); await findTab('chains');
       fireEvent.click(await openChain(representative));
       const dialog = await screen.findByRole('dialog', { name: `任务 ${goal}` });
-      await waitFor(() => expect(dialog.querySelector(`[data-goal-task-id="${representative}"]`)).toHaveFocus());
-      expect(dialog.querySelector('.goal-detail-disclosure')).toHaveAttribute('aria-expanded', 'true');
+      const childDialog = await screen.findByRole('dialog', { name: `任务 ${representative}` });
+      expect(childDialog).toBeVisible();
+      expect(dialog.querySelector('[data-goal-task-id]')).toBeNull();
+      expect(dialog.querySelector('.goal-information')).toHaveTextContent('任务链数1');
+      expect(within(dialog).getByRole('tab', { name: '描述' })).toHaveAttribute('aria-selected', 'true');
     } finally {
       if (scroll === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
       else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
