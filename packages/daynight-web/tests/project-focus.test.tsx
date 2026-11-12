@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
-import { projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import { focusProjectList } from '../src/features/projects/project-list-focus';
 import type { RefObject } from 'react';
 
 const localeRender = createLocaleRender('zh-CN');
@@ -113,6 +114,17 @@ const expectModalReleased = () => {
 };
 
 describe('project dialog focus restoration', () => {
+  it('uses the visible Goal of a historical graph witness when there is no runtime opener', () => {
+    const goalId = '30000000-0000-0000-0000-000000000001';
+    const index = buildGraphIndex(graph([{ ...task(rootId, '原任务链'), parentId: goalId }]));
+    root.innerHTML = `<section id="project-goal-list" tabindex="-1"><div data-goal-id="${goalId}"><button class="goal-list-toggle">展开</button></div></section>`;
+    const toggle = root.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    expect(focusProjectList('goals', null, rootId, index)).toBe(true);
+    expect(toggle).toHaveFocus();
+    toggle.closest('[data-goal-id]')!.remove();
+    expect(focusProjectList('goals', null, rootId, index)).toBe(true);
+    expect(root.querySelector('#project-goal-list')).toHaveFocus();
+  });
   it('restores focus to the graph trigger on Back and opens the detail on Forward', async () => {
     graphRequest.mockResolvedValue(graph());
     const { trigger } = await openDialog();

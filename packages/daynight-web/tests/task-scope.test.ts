@@ -20,3 +20,46 @@ describe('task scope projection', () => {
     expect(projectTaskScope(index, 'empty').progress).toEqual({ total: 0, done: 0, cancelled: 0, unfinished: 0 });
   });
 });
+
+it('sorts Goal groups by scoped status and exact creation time while retaining complete graph classification', async () => {
+  const { goalListContents } = await import('../src/features/projects/goal-list-model');
+  const root = { ...task('root', 'outside', 'in_progress'), createdAt: '2026-10-20T12:00:00.000000001Z' };
+  const scoped = task('scoped', 'a', 'cancelled', ['root']);
+  const branch = task('branch', 'a', 'done', ['root']);
+  const chain2 = { ...task('chain2', 'a', 'todo'), createdAt: '2026-10-20T12:00:00.000000002Z' };
+  const chain2child = task('chain2child', 'outside', 'in_progress', ['chain2']);
+  const aloneOld = { ...task('alone-old', 'a', 'todo'), createdAt: '2026-10-20T12:00:00.000000001Z' };
+  const aloneNew = { ...task('alone-new', 'a', 'todo'), createdAt: '2026-10-20T12:00:00.000000002Z' };
+  const proposal = task('proposal', 'a', 'proposed');
+  const all = [root, scoped, branch, chain2, chain2child, aloneOld, aloneNew, proposal];
+  const graph: TaskGraph = { observedAt: time, project: { id: 'p', name: 'p', repoUrl: 'https://example.test/p', ownership: { teamId: 't', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }, tasks: all,
+    summary: { total: all.length, proposed: 1, todo: 3, inProgress: 2, done: 1, cancelled: 1, ready: 3, blocked: 0 } };
+  const index = buildGraphIndex(graph);
+  const result = goalListContents(projectTaskScope(index, 'a'), index);
+  expect(result.standaloneIds).toEqual(['alone-new', 'alone-old', 'proposal']);
+  expect(result.chains.map((chain) => chain.representativeId)).toEqual(['chain2', 'root']);
+  expect(result.chains[0]).toMatchObject({ memberIds: ['chain2'], progress: { total: 1, status: 'todo' } });
+  expect(result.chains[1]).toMatchObject({ memberIds: ['scoped', 'branch'], progress: { total: 2, done: 1, cancelled: 1, status: 'ended' } });
+});
+
+it('retains all five states and deduplicates a converging chain with external context', async () => {
+  const { goalListContents } = await import('../src/features/projects/goal-list-model');
+  const { compareTaskMembers } = await import('../src/features/projects/task-order');
+  const old = '2025-01-01T00:00:00.000000001Z';
+  const recent = '2025-01-01T00:00:00.000000002Z';
+  const all = [task('external', null, 'todo'), task('one', 'a', 'proposed'), task('two', 'a', 'todo'),
+    { ...task('join', 'a', 'in_progress', ['one', 'two', 'external']), externalDependsOn: ['external'] },
+    { ...task('done', 'a', 'done', ['join']), completedAt: old },
+    { ...task('cancelled', 'a', 'cancelled', ['join']), cancelledAt: recent }, task('alone', 'a', 'todo')];
+  const graph: TaskGraph = { observedAt: time, project: { id: 'p', name: 'p', repoUrl: 'https://example.test/p', ownership: { teamId: 't', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }, tasks: all,
+    summary: { total: all.length, proposed: 1, todo: 3, inProgress: 1, done: 1, cancelled: 1, ready: 3, blocked: 0 } };
+  const index = buildGraphIndex(graph);
+  const result = goalListContents(projectTaskScope(index, 'a'), index);
+  expect(result.standaloneIds).toEqual(['alone']);
+  expect(result.chains).toHaveLength(1);
+  const members = result.chains[0]!.memberIds;
+  expect(new Set(members)).toEqual(new Set(['one', 'two', 'join', 'done', 'cancelled']));
+  expect(members).toHaveLength(5);
+  expect(members.map(id => index.nodes.get(id)!).toSorted(compareTaskMembers).map(item => item.id)).toEqual(['join', 'two', 'one', 'cancelled', 'done']);
+  expect(result.chains[0]!.progress).toMatchObject({ total: 5, done: 1, cancelled: 1, status: 'in_progress' });
+});
