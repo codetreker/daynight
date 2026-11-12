@@ -27,12 +27,19 @@ earlier Node.js 22 patches cannot load its native binary. Source development and
 publication use Node.js 24 LTS and pnpm 11.28.6: development dependencies and directly executed TypeScript
 scripts have their own runtime requirements. pnpm settings, including
 `engineStrict`, `storeDir` and dependency build permissions, belong in
-`pnpm-workspace.yaml`. Runtime review also requires
+`pnpm-workspace.yaml`. Its exact `minimumReleaseAgeExclude` entry for
+`better-sqlite3@13.1.1` admits the inspected Windows WAL recovery fix before the
+ordinary release-age threshold; the Controller launch decision below owns the
+rationale. Runtime review also requires
 Git, authenticated GitHub CLI and Copilot CLI on PATH. The inspected
-`better-sqlite3` 13.0.3 Linux x64 prebuild requires `GLIBC_2.34` and
+`better-sqlite3` 13.1.1 Linux x64 prebuild requires `GLIBC_2.34` and
 `GLIBCXX_3.4.29`; these observed symbol requirements constrain older distributions
 and do not establish compatibility for other distributions, architectures or
-musl. Native validation must identify its actual operating system and architecture.
+musl. The dependency bundles SQLite 3.54.1, including Windows WAL recovery when
+an exited writer's shared-memory view remains mapped; the
+[Controller launch decision](../.agents/notes/implemented/bug-fix/2026-11-12-submitted-controller-launch.md)
+records the required native behavior. Native validation must identify its actual
+operating system and architecture.
 From the repository root:
 
 ```text
