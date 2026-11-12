@@ -134,7 +134,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
   });
   return { completionGoal: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z' });
-    details = [{ ...goal, status: 'done', completedAt: '2026-10-22T09:59:40Z' },
+    details = [{ ...goal, status: 'done', createdAt: '2026-10-22T09:58:00Z', updatedAt: '2026-10-22T09:59:40Z', completedAt: '2026-10-22T09:59:40Z' },
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), outside,
       { ...first, title: 'First task with a long title '.repeat(5), status: 'done', completedAt: '2026-10-22T09:59:10Z', dependsOn: [outsideId] },
       { ...second, status: 'done', completedAt: '2026-10-22T09:59:30Z', dependsOn: [firstId] }, single];
@@ -1745,6 +1745,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const check = async () => {
     const meta = surface.locator('.goal-detail-meta');
     await expect(meta.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+    await expect(surface.locator('.goal-information-dates time').nth(1)).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
     await expect(meta).toContainText(zh ? '完成时间' : 'Completion time');
     await expect(meta.locator('time')).toContainText('2026');
     await expect(meta.locator('time')).toContainText('40');
