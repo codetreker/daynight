@@ -1,7 +1,41 @@
 .task-organization-actions { display: inline-flex; gap: .5rem; flex-wrap: wrap; }
-.task-organization-dialog { width: min(32rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; background: var(--surface, white); border-radius: .75rem; }
-.task-organization-fields { display: grid; gap: 1rem; }
-.task-organization-fields label { display: grid; gap: .35rem; }
-.task-organization-fields input, .task-organization-fields textarea, .task-organization-fields select { width: 100%; min-width: 0; }
-.task-organization-fields textarea { min-height: 7rem; }
-.task-organization-fields fieldset { display: grid; gap: 1rem; border: 0; padding: 0; margin: 0; min-width: 0; }
+.task-organization-dialog {
+  width: min(32rem, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  min-width: 0; min-height: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid #e0e3ec; border-radius: 12px; color: var(--ink);
+  background: var(--surface, white); box-shadow: 0 18px 70px #17244735;
+}
+.task-organization-dialog > form { display: flex; flex-direction: column; min-height: 0; max-height: inherit; }
+.task-organization-dialog .dialog-header {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 15px;
+  flex: none; padding: 22px 25px 17px; border-bottom: 1px solid var(--line);
+}
+.task-organization-dialog .dialog-header h2 { grid-column: 1; grid-row: 1; min-width: 0; margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.task-organization-dialog .dialog-header > .account-refresh-notice[data-active="true"] { grid-column: 1 / -1; grid-row: 2; }
+.task-organization-dialog .close-button {
+  grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: none; color: #7a8598; font-size: 23px; line-height: 1;
+}
+.task-organization-dialog .close-button:hover:not(:disabled) { background: #f3f4f8; }
+.task-organization-dialog .dialog-body {
+  flex: 0 1 auto; min-width: 0; min-height: 0; padding: 23px 25px; overflow: auto;
+  overscroll-behavior: contain; color: #637087; font-size: 12px; overflow-wrap: anywhere;
+}
+.task-organization-dialog .dialog-body p { line-height: 1.9; }
+.task-organization-dialog .dialog-footer { display: flex; justify-content: flex-end; gap: 9px; flex-wrap: wrap; flex: none; padding: 17px 25px; border-top: 1px solid var(--line); }
+.task-organization-dialog .dialog-footer .button { white-space: normal; }
+.task-organization-fields { display: grid; gap: 16px; }
+.task-organization-fields fieldset { display: grid; gap: 16px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.task-organization-fields > label, .task-organization-fields fieldset label { display: grid; gap: 8px; min-width: 0; color: #4c5870; font-size: 12px; font-weight: 600; }
+.task-organization-fields > label > :is(input, textarea, select), .task-organization-fields fieldset label > :is(input, textarea, select) {
+  width: 100%; max-width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #dce0e8;
+  border-radius: 7px; background: #fff; color: inherit; font: inherit; font-size: 12px; font-weight: 400;
+}
+.task-organization-fields > label > textarea, .task-organization-fields fieldset label > textarea { min-height: 7rem; resize: vertical; }
+.task-organization-fields > label > :is(input, textarea, select):disabled, .task-organization-fields fieldset label > :is(input, textarea, select):disabled { color: #747d91; background: #f5f6f9; }
+.task-organization-fields > label > :is(input, textarea, select):focus-visible, .task-organization-fields fieldset label > :is(input, textarea, select):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+@media (max-width: 600px) {
+  .task-organization-dialog .dialog-header { padding: 18px 17px 14px; }
+  .task-organization-dialog .dialog-body { padding: 19px 17px; }
+  .task-organization-dialog .dialog-footer { padding: 14px 17px; }
+}
