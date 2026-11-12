@@ -278,13 +278,16 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
           const processes = await inventory(), descendants = new Set([daemonPid!, evidence.shellBefore?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"));
           for (let changed = true; changed;) { changed = false; for (const process of processes) if (descendants.has(process.parent) && !descendants.has(process.pid)) { descendants.add(process.pid); changed = true; } }
           for (const process of processes) if (descendants.has(process.pid) && !ownedProcessTokens.some(original => original.pid === process.pid && original.token === process.token)) ownedProcessTokens.push(process);
+          evidence.cleanup.processCapture = { stage: "before-stop", roots: [daemonPid, evidence.shellBefore?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"), processes: ownedProcessTokens.map(process => ({ pid: process.pid, parentPid: process.parent, startToken: process.token })) };
         } catch (error) { evidence.cleanup.captureError = errorText(error); }
       }
       if (mac && daemonPid) {
         try { originals = await mac.list({ rootPids: [daemonPid], sessionIds: [] }); daemonIdentity ??= await mac.capture(daemonPid, "daemon"); }
         catch (error) { evidence.cleanup.captureError = errorText(error); }
       }
-      try { if (binding) await adapter.tasks.stopAndClose(context, binding, operation(12_000)); evidence.cleanup.workspaceClosed = true; } catch (error) { evidence.cleanup.workspaceError = errorText(error); }
+      if (binding) {
+        try { await adapter.tasks.stopAndClose(context, binding, operation(12_000)); evidence.cleanup.workspaceClosed = true; } catch (error) { evidence.cleanup.workspaceError = errorText(error); }
+      } else evidence.cleanup.workspaceNotAttempted = "The original workspace binding was not confirmed.";
       try { evidence.cleanup.instance = await adapter.stopInstance(operation(12_000)); } catch (error) { evidence.cleanup.instanceError = errorText(error); }
       if (mac && daemonIdentity) {
         const remaining = await Promise.all(originals.map(async identity => ({ pid: identity.pid, observation: await mac.observe(identity) })));
@@ -298,7 +301,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
           const deadline = Date.now() + 5000;
           let alive: typeof ownedProcessTokens;
           do { const current = await inventory(); alive = ownedProcessTokens.filter(original => current.some(process => process.pid === original.pid && process.token === original.token)); if (alive.length) await delay(100); } while (alive.length && Date.now() < deadline);
-          evidence.cleanup.originalProcesses = ownedProcessTokens.map(original => ({ pid: original.pid, observation: alive.some(process => process.pid === original.pid) ? "running" : "exited" }));
+          evidence.cleanup.originalProcesses = ownedProcessTokens.map(original => ({ pid: original.pid, parentPid: original.parent, startToken: original.token, stage: "after-stop", observation: alive.some(process => process.pid === original.pid) ? "running" : "exited" }));
         } catch (error) { evidence.cleanup.processReadbackError = errorText(error); }
       }
       evidence.cleanup.apiClosed = await closedEndpoint(adapter.paths.apiEndpoint); evidence.cleanup.clientClosed = await closedEndpoint(adapter.paths.clientEndpoint);

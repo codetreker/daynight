@@ -233,7 +233,24 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     if (owned.length !== 1 || owned[0]!.workspace_id !== initial.workspaceId || panes.length !== 1 || tabs.length !== 1 || panes[0]!.pane_id === original.paneId || tabs[0]!.tab_id === intent.tabId) throw new HerdrAgentActionError("The original PowerShell layout replacement remains unknown; both pane responsibilities were retained.", "layout.apply", "unknown");
     const pane = panes[0]!, binding = { session, workspaceId: initial.workspaceId, paneId: text(pane.pane_id, "Prepared PowerShell pane"), terminalId: text(pane.terminal_id, "Prepared PowerShell terminal") };
     const exported = expectedResult(await options.rpc.request("layout.export", { tab_id: text(tabs[0]!.tab_id, "Prepared PowerShell tab") }, operation), "layout_export"), layout = object(exported.layout, "Prepared PowerShell layout"), root = object(layout.root, "Prepared PowerShell root");
-    if (layout.workspace_id !== initial.workspaceId || layout.tab_id !== tabs[0]!.tab_id || root.type !== "pane" || root.pane_id !== binding.paneId || root.cwd !== context.cwd || JSON.stringify(root.command) !== JSON.stringify(mapping.windowsCommand)) throw new HerdrAgentActionError("The observed PowerShell root does not match the original layout intent.", "layout.apply", "unknown");
+    const mismatches = [
+      ["workspace_id", layout.workspace_id === initial.workspaceId], ["tab_id", layout.tab_id === tabs[0]!.tab_id],
+      ["type", root.type === "pane"], ["pane_id", root.pane_id === binding.paneId],
+      ["cwd", root.cwd === context.cwd], ["command", JSON.stringify(root.command) === JSON.stringify(mapping.windowsCommand)],
+    ].filter(([, matches]) => !matches).map(([field]) => field);
+    if (mismatches.length !== 0) {
+      const boundedText = (value: unknown) => typeof value === "string" ? value.slice(0, 512) : null;
+      const boundedCommand = (value: unknown) => Array.isArray(value) ? value.slice(0, 16).map(boundedText) : null;
+      const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
+      const observedCommand = Array.isArray(root.command) ? root.command : null;
+      const differingIndices: number[] = [];
+      if (observedCommand !== null) for (let index = 0; index < Math.max(observedCommand.length, mapping.windowsCommand.length) && differingIndices.length < 16; index++) {
+        if (JSON.stringify(observedCommand[index]) !== JSON.stringify(mapping.windowsCommand[index])) differingIndices.push(index);
+      }
+      const commandSummary = { type: observedCommand === null ? root.command === null ? "null" : typeof root.command : "array", length: observedCommand?.length ?? null, sha256: digest(root.command), differingIndices, arguments: observedCommand?.slice(0, 16).map(value => ({ type: value === null ? "null" : typeof value, length: typeof value === "string" ? value.length : null, sha256: digest(value) })) ?? null };
+      const diagnostic = JSON.stringify({ mismatches, expected: { cwd: boundedText(context.cwd), command: boundedCommand(mapping.windowsCommand) }, observed: { cwd: boundedText(root.cwd), command: commandSummary } }).slice(0, 8192);
+      throw new HerdrAgentActionError("The observed PowerShell root does not match the original layout intent.", "layout.apply", "unknown", { cause: new Error(diagnostic) });
+    }
     while (await isExecuting(pid(intent.shellPid))) await wait(operation);
     const processes = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(processes.process_info, "PowerShell root process");
     if (info.pane_id !== binding.paneId) throw new Error("The prepared PowerShell process belongs to another pane.");

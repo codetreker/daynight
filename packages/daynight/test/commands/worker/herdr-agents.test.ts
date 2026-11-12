@@ -329,7 +329,10 @@ describe("native argument ownership", () => {
     expect(f.calls.filter(call => call.method === "workspace.create")).toHaveLength(1);
     expect(f.calls.some(call => call.method === "layout.apply")).toBe(false);
   });
-  it.each([false, true])("prepares one root PowerShell layout and reconciles an unknown response without replay (%s)", async (unknownResponse) => {
+  it.each([
+    { unknownResponse: false, mismatch: undefined }, { unknownResponse: true, mismatch: undefined },
+    ...["workspace_id", "tab_id", "type", "pane_id", "cwd", "command"].map(mismatch => ({ unknownResponse: true, mismatch })),
+  ])("prepares one root PowerShell layout without replay and diagnoses $mismatch ($unknownResponse)", async ({ unknownResponse, mismatch }) => {
     let mapping: HerdrToolLaunchMapping;
     const ready = vi.fn(async (_pid: number) => {});
     const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
@@ -347,10 +350,32 @@ describe("native argument ownership", () => {
         if (unknownResponse) throw new HerdrRpcError("layout response lost", { method, requestId: "layout", submission: "unknown" });
         return { type: "layout_apply", layout: {} };
       }
-      if (method === "layout.export") return { type: "layout_export", layout: { workspace_id: f.workspaces[0]!.workspace_id, tab_id: "prepared-tab", root: { type: "pane", pane_id: "prepared-pane", cwd: f.context.cwd, command } } };
+      if (method === "layout.export") {
+        const layout = { workspace_id: f.workspaces[0]!.workspace_id, tab_id: "prepared-tab", root: { type: "pane", pane_id: "prepared-pane", cwd: f.context.cwd, command, env: { PRIVATE_FIXTURE_VALUE: "must-never-appear-in-layout-diagnostics" } } };
+        if (mismatch === "workspace_id" || mismatch === "tab_id") layout[mismatch] = "different";
+        else if (mismatch !== undefined) Object.assign(layout.root, { [mismatch]: mismatch === "command" ? Array.from({ length: 50 }, () => `token-secret-must-not-leak${"x".repeat(8192)}`) : "different" });
+        return { type: "layout_export", layout };
+      }
       if (method === "pane.process_info" && params.pane_id === "prepared-pane") return { type: "pane_process_info", process_info: { pane_id: "prepared-pane", shell_pid: 101, foreground_process_group_id: 101, foreground_processes: [{ pid: 101 }] } };
       return undefined;
     });
+    if (mismatch !== undefined) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const error = await f.manager.prepareWorkspace(f.context, taskTitle, operation()).catch(error => error);
+        expect(error).toMatchObject({ submission: "unknown", cause: { message: expect.stringContaining(mismatch) } });
+        expect(error.cause.message).not.toContain("must-never-appear-in-layout-diagnostics");
+        expect(error.cause.message).not.toContain("token-secret-must-not-leak");
+        expect(error.cause.message.length).toBeLessThanOrEqual(8192);
+        if (mismatch === "command") {
+          const diagnostic = JSON.parse(error.cause.message);
+          expect(diagnostic.expected.command).toEqual(command);
+          expect(diagnostic.observed.command).toMatchObject({ type: "array", length: 50, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), differingIndices: Array.from({ length: 16 }, (_, index) => index) });
+        }
+      }
+      expect(ready).not.toHaveBeenCalled();
+      expect(f.calls.filter(call => call.method === "layout.apply")).toHaveLength(1);
+      return;
+    }
     const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     expect(binding).toMatchObject({ paneId: "prepared-pane", terminalId: "prepared-terminal" });
     expect(ready).toHaveBeenCalledWith(101, expect.anything());
