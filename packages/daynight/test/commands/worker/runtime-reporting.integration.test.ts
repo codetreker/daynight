@@ -11,6 +11,8 @@ import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
+import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
@@ -28,7 +30,23 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn() }));
+vi.mock("../../../src/commands/worker/configuration.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
+  return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
+    const manager = await actual.createWorkerConfigurationManager(...args);
+    mocks.createdConfiguration(manager);
+    return manager;
+  } };
+});
+vi.mock("../../../src/commands/worker/reporter.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/reporter.js")>();
+  return { ...actual, createWorkerReporter: (...args: Parameters<typeof actual.createWorkerReporter>) => {
+    const reporter = actual.createWorkerReporter(...args);
+    mocks.createdReporter(reporter);
+    return reporter;
+  } };
+});
 vi.mock("../../../src/platform/files.js", async original => {
   const actual = await original<typeof import("../../../src/platform/files.js")>();
   return { ...actual, replaceFileAtomicallyFromChunks: (...args: Parameters<typeof actual.replaceFileAtomicallyFromChunks>) =>
@@ -777,8 +795,9 @@ describe("worker runtime configuration reporting", () => {
     expect(order).toEqual(["report-aborted", "report-joined", "coordinator", "git", "web-store"]);
   });
 
-  it("retains the real instance lock through a confirmed report's late checkpoint writer past drain", async () => {
+  it.each([true, false])("retains the real instance lock through a confirmed report's late checkpoint writer past drain (project native valid: %s)", async projectNativeValid => {
     const f = await fixture(), writing = deferred<void>(), release = deferred<void>();
+    if (!projectNativeValid) target = { ...target, value: { ...target.value, agentControlMode: "web", projects: [{ projectId: uuid(1), nativeOverrides: { args: ["--search"] } }] } };
     const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(workerTelemetryTime));
@@ -804,13 +823,17 @@ describe("worker runtime configuration reporting", () => {
     void running.then(() => { finished = true; }, () => { finished = true; });
     try {
       await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.createdReporter).toHaveBeenCalledOnce());
+      const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+      const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
+      await manager.settle();
+      if (!projectNativeValid) expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, state: "error" }));
       await eventually(async () => {
-        const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string }; currentItems: { value: { state: string } }[] };
-        expect(cache.currentItems.every(item => item.value.state === "applied")).toBe(true);
+        const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } };
         expect(cache.authority.observationRevision).toBe(String(observationRevision));
       });
       baseline = (JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision;
-      await vi.advanceTimersByTimeAsync(30_000);
+      reporter.trigger();
       await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked" })));
       expect(mocks.coordinator.mock.calls[0]![0].configurationComplete()).toBe(false);
       await vi.advanceTimersByTimeAsync(5_000);
