@@ -22,7 +22,7 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 取消持续运行或调用 `shutdown` 时，先停止发现与续期调度，取消并等待已开始的管理工作，再独立停止每个 Bot。一个 Bot 的失败不能跳过其它 Bot 的停止；调用者收到汇总错误，无法确认的执行仍保留完整责任。退出不递交 cleanup prompt，不调用 StopTest，不以归档、删除 Bot、清理对话或删除普通 cwd 为前置条件。
 
-停止针对原 ticket 和进程出生身份，认证 IPC stop 回执仅表示请求结果；原 Controller 及原生进程树须经 OS 核验确已停止，并在同一 journal 保存匹配 fence 的停止证据。恢复子进程已经提交但 journal 仍为前代时，必须继续依据当前子进程的已持久出生证明尝试停止；前代 journal 不能证明当前代停止，缺失当前代完整停证仍报告失败。IPC 不可达、进程查询失败和停止超时都不等于已停止。ticket、journal、操作回执、原角色、原生身份及各代私有路径保留，供恢复和精确删除使用。
+停止针对原 ticket 和进程出生身份，认证 IPC stop 回执仅表示请求结果；原 Controller 及原生进程树须经 OS 核验确已停止，并在同一 journal 保存匹配 fence 的停止证据。恢复子进程已经提交但 journal 仍为前代时，必须继续依据当前子进程的已持久出生证明尝试停止；前代 journal 不能证明当前代停止，缺失当前代完整停证仍报告失败。Windows 的完整停止必须沿原 Job lease 确认成员清空，并确认终止前已固定的原 Controller/native 出生实例句柄全部 signaled；ESRCH、变化的退出码及空成员清单单独不构成完成证明。已核对出生身份的退出中实例只等待同一句柄，不放宽运行身份冲突或操作 PID 替代实例。原绝对 deadline、未知状态和主要/关闭错误保持。IPC 不可达、进程查询失败和停止超时都不等于已停止。ticket、journal、操作回执、原角色、原生身份及各代私有路径保留，供恢复和精确删除使用。
 
 重启先复用仍可认证观察的原 Controller，不为健康执行发新 generation。只有原 writer 完整停证和原 native ID 均存在时，才可分配直接下一代，保持 Bot、Session、testExecutionId、首次 registration、角色、配置和 native home，并恢复原 native Session。原 stopProof 与新 launch/Controller instance 身份在提交 grant 前持久保存。grant 响应未知后读取同一 Session：仍是精确前代时沿原停证申请同一目标；已是精确目标时续接该代；其它 fence 均拒绝。不得因未知响应继续递增 generation。
 

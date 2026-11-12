@@ -51,13 +51,16 @@ same native Session, role, configuration and operation journal; an unreachable
 Controller alone never authorizes replacement.
 
 Windows Job termination is asynchronous, so an empty member list does not prove
-that every retained original process has exited. The stop helper repeatedly
-checks the complete Controller/native identities and Job boundary. The original
-deadline limits starting another complete confirmation round and is never reset;
-an already started system probe retains its existing per-call timeout. This is
-not a strict total wall-clock bound. Exhausting the polling budget without full
-proof, an unknown query or a permission error retains failure and execution
-evidence.
+that every retained original process has exited. The stop helper pins known
+original Controller/native process handles before terminating the retained Job,
+then requires those birth-verified handles to signal and the same Job inventory
+to be empty. ESRCH and changed exit codes do not establish completed exit. The
+[exit completion decision](../bug-fix/2026-11-13-windows-controller-exit-completion.md) owns
+this distinction and the wait-only handling of an already-terminating original.
+All observations and waits use the original absolute deadline without resetting
+it. Started native calls finish before handle release, so the deadline cannot
+preempt kernel work. Timeout, unknown status, identity, unconfirmed permission,
+wait and release failures retain errors and execution evidence.
 
 Deletion runs under the same per-Bot serializer as launch and grant renewal.
 The persistent deletion observation blocks new execution actions, while process

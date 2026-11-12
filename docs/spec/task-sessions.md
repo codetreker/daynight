@@ -255,7 +255,7 @@ Task、独立 Test 和 Bot 的归档 ready 后，结束状态只在 Session 头�
 
 操作同时要求当前项目访问权、认证用户等于持久 Session owner，以及正确的 claim、执行代次和当前 turn/interaction。服务端在接纳、派发、原生调用授权及重连对账中重新检查原操作者的 owner 资格，不能由 Controller 或项目角色代替。已排队的非 owner 操作不得继续派发；Herdr 旧非 owner 租约与迟到控制 ACK 不得恢复控制。服务器接受命令不等于原生受理，原生受理不等于任务完成。高频事件独立于 Task version，断线后可从有界缓存补齐；缓存失效时必须从在线 Controller 重读，不假装仍有完整事件回放。
 
-清理前必须确认对应 backend 的真实原生进程停止；Web 正常终止还须确认归档 ready，再删除 worktree。网页关闭不能触发清理。任务完成遵循 Worker assignment 的运行约束和 claim-bound done，不以 native idle 替代验收。
+清理前必须确认对应 backend 的真实原生进程停止；Web Windows 完整停止须保留原 Job lease、在终止前固定已知原 Controller/native 出生实例的进程句柄，并在原期限内确认这些原句柄 signaled 和同一 Job 成员清空。ESRCH、退出码改变、空成员列表或缺失 Job 名称均不能单独证明完成；退出过渡、未知状态、身份冲突和句柄关闭失败保留责任。Web 正常终止还须确认归档 ready，再删除 worktree。网页关闭不能触发清理。任务完成遵循 Worker assignment 的运行约束和 claim-bound done，不以 native idle 替代验收。
 
 ## 验收
 

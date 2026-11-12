@@ -23,10 +23,14 @@ conflicting identity and unknown process facts remain errors. The
 [protocol design](../../../../docs/design/task-session-protocol.md) owns the
 identity, cancellation and recovery contracts.
 
-Bootstrap cancellation terminates the single original process with a bounded
-identity-checked operation. A committed generation still requires the separate
-full Controller and native process stop proof. Pre-writer exit retains the original
-intent and resources as blocked. The independent
+Bootstrap cancellation stops the single original process through a bounded,
+identity-checked operation. On Windows, one birth-verified original process
+handle covers identity, necessary termination and completion. If the original is
+already terminating, it waits on that handle without requiring an unavailable
+command line. The [exit completion decision](2026-11-13-windows-controller-exit-completion.md)
+owns the Windows signaled-handle rule for bootstrap and complete Job stopping.
+POSIX retains identity rechecks before each signal. A committed generation still
+requires the separate full Controller and native process stop proof. Pre-writer exit retains the original intent and resources as blocked. The independent
 [startup report decision](2026-11-05-session-startup-observations.md) continues
 to describe the public classification and its precedence.
 
@@ -49,7 +53,11 @@ an attributable original group; it cannot establish complete native stop.
 A Windows Job name can be reused after the original name or object disappears.
 The Controller retains its Job handle for its lifetime. An observer acquires a
 lease while an original member is verifiable and keeps that same handle through
-termination and complete stop confirmation. A missing name or unavailable lease
+termination and complete stop confirmation. Before active Job termination,
+known original Controller/native process handles are pinned by their recorded
+birth identities; complete stop waits for those handles to signal and confirms
+the retained Job inventory is empty. ESRCH and changed exit codes cannot supply
+that completion proof. A missing name or unavailable lease
 remains unknown. A versioned marker in the current snapshot binds the committed stop
 to the ticket and snapshot only after that confirmation; it permits later recovery
 without reopening a vanished name. Older records without the marker remain blocked.

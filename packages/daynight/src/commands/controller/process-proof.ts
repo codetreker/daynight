@@ -1,7 +1,7 @@
 import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { captureWindowsProcessProof } from "./windows-process-proof.js";
+import { captureWindowsProcessProof, inspectWindowsProcessProof, withWindowsProcessStopHandles } from "./windows-process-proof.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
@@ -29,12 +29,12 @@ export const captureControllerProcessProof = async (launchId: string): Promise<P
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
 const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
   validPid(proof.pid);
+  if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
   try { process.kill(proof.pid, 0); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw new Error("Process liveness could not be established.", { cause: error }); }
   let current: ProcessProof, zombie = false, exiting = false, status: string | null = null;
   try {
-    if (process.platform === "win32") current = await captureProcessProof(proof.pid, timeoutMs);
-    else { const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status; }
+    const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
   }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
   // A zombie's parent and command can change after the original parent exits.
@@ -45,9 +45,6 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
     // This state permits waiting only, not signaling on incomplete identity.
     if (exiting && current.parentPid === proof.parentPid) return "exiting";
   }
-  // The original birth still identifies a live Windows process. Conflicting
-  // command evidence cannot authorize releasing its resources as a reused PID.
-  if (process.platform === "win32" && current.startedAt === proof.startedAt && (current.commandHash !== proof.commandHash || current.processGroupId !== proof.processGroupId)) throw new Error("The original Windows process has inconsistent identity evidence; ownership remains unknown.");
   if (current.startedAt === proof.startedAt && current.commandHash === proof.commandHash && current.processGroupId === proof.processGroupId) return "running";
   onMismatch?.({ status, sameBirth: current.startedAt === proof.startedAt, sameParent: current.parentPid === proof.parentPid, sameGroup: current.processGroupId === proof.processGroupId, sameCommand: current.commandHash === proof.commandHash });
   return "replaced";
@@ -107,17 +104,11 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
     if (lease === undefined) throw new Error("The original Windows Job Object lease is unavailable; complete process-tree stop is unconfirmed.");
-    await bounded(deadline, () => inspectControllerJobLease(lease, controller, true, deadline));
-    remaining(deadline);
-    // Job termination is asynchronous. An empty inventory is insufficient until
-    // every retained original process identity also confirms it has stopped.
-    while (Date.now() < deadline) {
-      if (await confirmRetainedProcessesStopped(controller, native, deadline)) return;
-      const left = deadline - Date.now();
-      if (left <= 0) break;
-      await new Promise(resolve => setTimeout(resolve, Math.min(25, left)));
-    }
-    throw new Error("The original Windows Job Object did not stop completely.");
+    await withWindowsProcessStopHandles([controller, ...native], deadline, async () => {
+      await bounded(deadline, () => inspectControllerJobLease(lease, controller, true, deadline));
+      remaining(deadline);
+    });
+    return;
   }
   if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   const signal = async (value: NodeJS.Signals): Promise<boolean> => {

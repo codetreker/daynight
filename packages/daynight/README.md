@@ -2972,10 +2972,17 @@ bootstrap process within the cleanup deadline, then checks the journal. If the
 current generation was committed, complete Controller and native stop evidence
 is still required. A pre-writer exit retains the launch and its resources as
 blocked, without inventing a stopped generation or replaying input.
-Windows full-stop confirmation retains an authenticated Job handle; a missing
-Job name does not prove that its members exited. A versioned proof in the
-journal preserves a confirmed stop for later resume and archive. Older Windows
-records without that proof remain blocked when the original Job cannot be verified.
+Windows full-stop confirmation retains the original authenticated Job lease and
+pins the known original Controller/native process handles before Job termination.
+It returns only after those birth-verified handles are signaled and the same Job
+inventory is empty. ESRCH, changed exit codes and a missing Job name cannot
+replace that completion proof. A birth-verified bootstrap already terminating
+waits on the same handle within the original cleanup deadline. Unknown native
+state, identity conflicts, wait failures and handle-close errors retain failure
+and resource responsibility. The [process exit decision](../../.agents/notes/implemented/bug-fix/2026-11-13-windows-controller-exit-completion.md)
+owns the completion rule. A versioned proof in the journal preserves a confirmed
+stop for later resume and archive. Older Windows records without that proof
+remain blocked when the original Job cannot be verified.
 
 Web recovery counts and diagnostic pause reasons persist across worker restarts.
 Exhausted automatic recovery or the execution failure threshold pauses the
