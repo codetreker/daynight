@@ -44,6 +44,7 @@ services:
       - ${DAYNIGHT_DEV_CI_AUTH_ENV_FILE:?Use deployment/dev-ci/run.sh}
     environment:
       DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
+      DAYNIGHT_S2S_ALLOWED_ORIGIN: ${DAYNIGHT_S2S_ALLOWED_ORIGIN:-}
     volumes:
       - ${DAYNIGHT_DEV_CI_CONFIG_DIRECTORY:?Use deployment/dev-ci/run.sh}:/var/lib/daynight/config:ro
       - attachment-data:/var/lib/daynight/storage

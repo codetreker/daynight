@@ -8,6 +8,7 @@ import (
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/cors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
@@ -47,6 +48,9 @@ type Handler interface {
 }
 
 func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
+	if err := config.S2S.Validate(config.Server.AllowHTTPTestOrigin); err != nil {
+		return nil, err
+	}
 	if app.CredentialUsage == nil {
 		return nil, errors.New("credential usage recorder is unavailable")
 	}
@@ -119,7 +123,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
+	return &sessionApplication{Handler: cors.Wrap(attachmenthttp.PathGuard(mux, logger), mux, config.S2S.AllowedOrigin, logger, auth.CallbackPath()), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
 }
 
 type sessionApplication struct {

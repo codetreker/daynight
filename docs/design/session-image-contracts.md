@@ -437,7 +437,7 @@ Task base 为 `/api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}`
 
 原件读取在已授权 Session 短事务中复核资源引用：`message` 引用允许共享读取；`upload` 引用须匹配当前 actor、原 complete receipt 和 resourceId；`archive` 引用须匹配已发布 ready schema3 的 bundle 或 migration 身份及 manifest hash。准备中的归档引用和 `operation`、`unknown`、`native_resume` 保活引用不授予共享读取权。无合法引用返回 not found，避免暴露私有原件。文件读取完成后再次复核同一授权及删除屏障，已撤销的引用不能产生迟到成功响应。
 
-Cookie 写必须精确 Origin；PAT 沿既有认证，不增加 CORS/query token。Web 保留 `credentials:"same-origin"`、`redirect:"error"`、`assertResponsePrincipal` 和 `Daynight-User-ID` 核验；身份等待结束、真正 dispatch 后才计网络等待。`IndependentSessionReadDenied` 的已认证 409 resource_conflict 仍是删除/归属屏障。所有响应及错误为 private,no-store。
+Cookie 写必须精确主站 Origin；PAT 沿既有认证，不接受 query token。用户 REST 使用[统一精确 CORS](daynight-auth.md#用户-rest-的精确-cors)，原图片权限与生产者凭据要求保持。Web 保留 `credentials:"same-origin"`、`redirect:"error"`、`assertResponsePrincipal` 和 `Daynight-User-ID` 核验；身份等待结束、真正 dispatch 后才计网络等待。`IndependentSessionReadDenied` 的已认证 409 resource_conflict 仍是删除/归属屏障。所有响应及错误为 private,no-store。
 
 Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、upload、resource/引用；多资源按 UUID 排序。网络、文件、解码不持数据库锁。块 ACK、available 发布、异步恢复和 operation 授权提交前，短事务再次核对凭据、权限、target、删除屏障、原 revision/intent/fence。撤权先提交则停止推进；上传先提交的 bytes 仍可能存在，但后续读取受新权限约束。取消请求不能收回已经取得的 bytes 或证明回滚。
 

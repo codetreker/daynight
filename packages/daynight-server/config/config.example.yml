@@ -24,6 +24,9 @@ uniauth:
   callback_url: "https://daynight.example.com/auth/callback" # required
   allow_loopback_http: false
 
+s2s:
+  allowed_origin: ""
+
 mcp:
   allowed_origins: []
   temp_budget_bytes: 8589934592

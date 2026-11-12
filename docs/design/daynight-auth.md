@@ -194,6 +194,61 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 可能变化时，后续持久任务缓存据此核对实际响应与自身身份域，不能只凭先前 `/me`
 结果命名。[任务同步设计](daynight-task-sync.md)拥有缓存接入规则。
 
+## 用户 REST 的精确 CORS
+
+`s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` 配置一个应用浏览器的精确
+canonical HTTPS origin；host 小写、默认端口省略，无 userinfo、路径、query、fragment
+或通配符。隔离测试须启用 `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1`，且 HTTP 应用 origin 的 host 仅限
+literal localhost 或数值 loopback IP。空值关闭应用浏览器的 CORS，保留无
+Origin 的 REST 认证、内部签发能力和原 public refresh。配置在启动时加载并校验，修改后重启。
+
+HTTP 外层 CORS adapter 位于普通认证与 PathGuard 外，合法 Origin 的成功、401、403、
+409、路径拒绝、404 和 405 都带相同的浏览器可读头。它精确回显配置 Origin，合并
+`Vary: Origin`，不发送 `Access-Control-Allow-Credentials`。CORS 只允许浏览器读取响应；
+实际凭据、账号根操作、生产者资格和资源权限继续由原入口与 service/core 判断。
+Cookie 写请求仍只接受主站 Origin。
+
+预检通过实际 HTTP mux pattern 判断用户方法，不运行 handler；methodless Bot/Webhook
+dispatcher 及 Task search/Session HEAD 的明确拒绝使用窄 adapter 规则。合法 Origin、
+方法和请求头的 OPTIONS 无需凭据，
+返回 204，不认证、初始化用户或执行业务；额外合并 `Vary: Access-Control-Request-Method,
+Access-Control-Request-Headers`。GET、HEAD、POST、PUT、PATCH、DELETE 保留原路由能力，
+明确不支持 HEAD 的资源仍拒绝 HEAD。
+
+生产者边界按实际方法和路由区分。归档 POST/PUT 写入、上传准备以及生产者上传回执读取
+不属于用户 CORS；准备和上传状态即使使用 GET，仍沿原 upload admission 核验 PAT owner。
+这些生产者方法的 OPTIONS 无凭据返回 403，不发送 CORS 头，不认证或建立上传预留。
+归档根的用户状态读取、content 与文件字节读取，以及用户图片上传继续使用用户 CORS；
+原读取、写入和生产者凭据规则保持。Controller 和 Worker 生产通道不转换为用户能力。
+
+请求头名称按 HTTP 大小写规则匹配，业务头的值、多值拒绝、协商和容量规则仍由原 parser
+拥有。完整允许请求头为：
+
+```text
+Authorization, Content-Type, Accept, If-None-Match, X-Request-ID,
+Daynight-Worker-Protocol, Daynight-Worker-Configuration,
+Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Prompts, Daynight-Session-Protocol,
+X-Daynight-Startup-Version, Daynight-Browser-Client,
+Daynight-Session-Content-Revision, Daynight-Chunk-SHA256
+```
+
+完整暴露响应头为：
+
+```text
+Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag,
+Content-Disposition, Retry-After, Allow, WWW-Authenticate,
+Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Configuration
+```
+
+Content-Type、Content-Length、Cache-Control 本为 CORS safelisted response headers；
+分页和业务 version 仍使用原 JSON。S2S issuer 路径 `/api/v1/oauth/s2s/token` 不提供浏览器
+CORS；该路径的公开签发与 API token REST 准入并非本 CORS adapter 的能力。
+Public OAuth 与 MCP 保留各自原 CORS，静态资源与健康检查不受用户 REST CORS 影响。
+[决策记录](../../.agents/notes/implemented/architecture/2026-11-12-api-cors.md)拥有外层接入与
+真实路由复用的取舍。
+
 ## 登录方式发现
 
 公开 GET /api/v1/auth/providers 通过 SDK Providers(ctx, callbackURL) 读取
@@ -912,7 +967,7 @@ callback 的 returnPath，防止回调循环。
 
 | 配置 | 控制对象 |
 |---|---|
-| DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1 | 明确允许 HTTP 主站测试 origin，并按实际 scheme 选择 Cookie；命名域名不伪装为回环。 |
+| DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1 | 明确允许 HTTP 主站测试 origin，并按实际 scheme 选择 Cookie；同时允许 literal localhost/numeric-loopback 的 HTTP 应用 CORS origin。 |
 | DAYNIGHT_ALLOW_LOOPBACK_HTTP=1 | 仅允许 SDK gateway 为 literal localhost/numeric-loopback HTTP，其他 gateway 仍需 HTTPS。 |
 
 HTTPS 主站和回环 HTTP gateway 可以独立组合。普通运行不存在 auth-disable 分支。

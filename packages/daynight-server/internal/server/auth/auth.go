@@ -28,6 +28,8 @@ type Authentication struct {
 	callbackPath string
 }
 
+func (h *Authentication) CallbackPath() string { return h.callbackPath }
+
 func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*Authentication, error) {
 	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
 		return nil, errors.New("invalid credential usage observer")

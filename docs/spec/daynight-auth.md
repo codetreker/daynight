@@ -522,6 +522,27 @@ GET 都执行鉴权。会话失效返回明确的 401，不将登录 HTML 当成
 继续一次一个文件、bucket/path 和原预算。文件系统与 PG 非原子性保留 K1，普通
 IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的文件操作。
 
+## 应用浏览器读取用户 REST
+
+`s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` 可配置一个 canonical exact HTTPS
+origin，无 userinfo、路径、query、fragment 或通配符；HTTP 应用 origin 仅在
+`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` 时接受 literal localhost 或数值 loopback IP。
+非法配置启动失败，空值关闭应用浏览器 CORS，保留无 Origin REST、内部签发和原 public
+refresh。修改配置后重启。
+
+合法 Origin 可读取现有用户 REST 的正常、认证、业务、路径、404 和 405 响应及必要协议头。
+响应精确回显配置 Origin，合并 Vary，不允许跨源 Cookie 凭据。合法预检无凭据返回 204，
+按实际注册的用户方法及完整允许头表判断，不认证、初始化用户或执行业务。原明确不支持
+HEAD 的资源仍拒绝 HEAD。请求头匹配大小写不敏感，业务 parser 的取值、多值和容量规则保持。
+完整请求与响应头表由[鉴权设计](../design/daynight-auth.md#用户-rest-的精确-cors)维护。
+
+归档生产写入、上传准备和生产者上传回执读取不属于用户 CORS；它们的 OPTIONS 无凭据
+返回 403，不发送 CORS 头，不认证或预留上传。用户归档状态、content 和文件读取，以及
+用户图片上传保持用户 CORS。准备和生产者状态即使用 GET 仍需原 PAT owner upload admission。
+CORS 不授予身份或资源权限；主站 Cookie 写 Origin、账号根及生产者凭据要求保持。
+S2S issuer 不提供浏览器 CORS，Public OAuth/MCP 保留原独立 CORS，静态资源和健康检查不受影响。
+公开签发和 API token 的 REST 准入分别由其认证入口负责。
+
 ## 配置与运行边界
 
 下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
@@ -549,7 +570,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 
 | 开关 | 唯一作用 |
 |---|---|
-| `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` | 允许明确配置的 HTTP 主站测试 origin，按其实际 scheme 选择测试 Cookie。命名测试域名不会被当作 loopback。 |
+| `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` | 允许明确配置的 HTTP 主站测试 origin，按其实际 scheme 选择测试 Cookie；同时允许 literal localhost/numeric-loopback 的 HTTP 应用 CORS origin。 |
 | `DAYNIGHT_ALLOW_LOOPBACK_HTTP=1` | 启用 SDK gateway 的 literal localhost/numeric-loopback HTTP 例外；不允许普通命名 HTTP gateway。 |
 
 两个开关互不替代。HTTPS 主站可搭配显式允许的回环 HTTP gateway；HTTP 主站测试

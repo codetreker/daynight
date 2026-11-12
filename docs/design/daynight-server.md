@@ -496,8 +496,10 @@ request-local 故障的前置发布、版本确认和异常兜底见[认证设�
 `DAYNIGHT_UNIAUTH_APP_SECRET`、`DAYNIGHT_UNIAUTH_CALLBACK_URL`。公开 origin 与
 callback 必须同 origin；callback 无 query/fragment，使用规范的非根路径，并在
 创建登录事务前拒绝路由冲突和返回循环。仅该配置路径接收 callback，不保留旧路径
-别名。生产使用 HTTPS；`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` 仅控制主站受控 HTTP
-测试策略，`DAYNIGHT_ALLOW_LOOPBACK_HTTP` 单独传给 UniAuth SDK，允许字面量
+别名。生产使用 HTTPS；`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` 控制主站受控 HTTP
+测试策略及 literal localhost/numeric-loopback 应用 CORS HTTP 例外；
+`s2s.allowed_origin` 的精确配置与用户 REST 接入由[鉴权设计](daynight-auth.md#用户-rest-的精确-cors)拥有。
+`DAYNIGHT_ALLOW_LOOPBACK_HTTP` 单独传给 UniAuth SDK，允许字面量
 loopback gateway HTTP，两者不能互相替代。
 
 HTTP 默认监听 `127.0.0.1`。LocalStorage 在打开数据库和监听前准备可写根目录并

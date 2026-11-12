@@ -274,6 +274,27 @@ func TestLoggingProcessConfigurationFailureAndVerifyBoundary(t *testing.T) {
 	}
 }
 
+func TestLoggingProcessRejectsApplicationOriginBeforeStartup(t *testing.T) {
+	root := testStorageRoot(t)
+	server := startLoggingProcess(t, root, "server", map[string]string{"DAYNIGHT_S2S_ALLOWED_ORIGIN": "https://private-origin-marker.example/path"})
+	if err := server.wait(t); err == nil {
+		t.Fatal("invalid application Origin started the server")
+	}
+	file := loggingBytes(t, filepath.Join(root, "logs", "daynight-server.log"))
+	var event struct {
+		Component string `json:"component"`
+		Phase     string `json:"phase"`
+		Field     string `json:"field"`
+		Env       string `json:"env_name"`
+	}
+	if err := json.Unmarshal(file, &event); err != nil || event.Component != "configuration" || event.Phase != "validate" || !bytes.Contains(file, []byte("s2s.allowed_origin")) || !bytes.Contains(file, []byte("DAYNIGHT_S2S_ALLOWED_ORIGIN")) {
+		t.Fatalf("application Origin startup diagnostic: %s", file)
+	}
+	if bytes.Contains(file, []byte("private-origin-marker")) || !bytes.Equal(file, []byte(server.logs.String())) {
+		t.Fatal("application Origin diagnostic exposed the value or differed between sinks")
+	}
+}
+
 // failingStartupStderr cancels before reporting the first write error when
 // requested, modeling a signal racing with a logging failure.
 type failingStartupStderr struct {

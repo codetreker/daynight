@@ -9,6 +9,7 @@ import (
 	redisconfig "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis/config"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
+	corsconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/cors/config"
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
@@ -31,6 +32,7 @@ type mcpPatch struct {
 	Transfer transferconfig.Patch `yaml:",inline"`
 }
 type patch struct {
+	S2S          corsconfig.Patch                `yaml:"s2s"`
 	Server       serverconfig.Patch              `yaml:"server"`
 	Database     databaseconfig.Patch            `yaml:"database"`
 	Storage      storageconfig.Patch             `yaml:"storage"`
@@ -153,7 +155,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 			group string
 			apply func() error
 		}{
-			{"server", func() error { return p.Server.ApplyTo(&c.Server) }}, {"database", func() error { return p.Database.ApplyTo(&c.Database) }}, {"storage", func() error { return p.Storage.ApplyTo(&c.Storage) }},
+			{"s2s", func() error { return p.S2S.ApplyTo(&c.S2S) }}, {"server", func() error { return p.Server.ApplyTo(&c.Server) }}, {"database", func() error { return p.Database.ApplyTo(&c.Database) }}, {"storage", func() error { return p.Storage.ApplyTo(&c.Storage) }},
 			{"monitoring", func() error { return p.Monitoring.Redis.ApplyTo(&c.Monitoring.Redis) }}, {"monitoring", func() error { return p.Monitoring.Metrics.ApplyTo(&c.Monitoring.Metrics) }},
 			{"uniauth", func() error { return p.UniAuth.ApplyTo(&c.UniAuth) }}, {"mcp", func() error { return p.MCP.Origins.ApplyTo(&c.MCP.Origins) }}, {"mcp", func() error { return p.MCP.Transfer.ApplyTo(&c.MCP.Transfer) }},
 			{"oauth", func() error { return p.OAuth.ApplyTo(&c.OAuth) }}, {"webhook", func() error { return p.Webhook.ApplyTo(&c.Webhook) }}, {"task_sync", func() error { return p.TaskSync.ApplyTo(&c.TaskSync) }}, {"image_decoder", func() error { return p.ImageDecoder.ApplyTo(&c.ImageDecoder) }},
@@ -168,7 +170,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group string
 		apply func(func(string) (string, bool), func(string, string)) error
 	}{
-		{"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment},
+		{"s2s", c.S2S.ApplyEnvironment}, {"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment},
 	} {
 		mark := func(field, variable string) {
 			origins[item.group+"."+field] = configvalue.Origin{Source: "environment", EnvName: variable}
@@ -189,7 +191,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group    string
 		validate func() error
 	}{
-		{"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
+		{"s2s", func() error { return c.S2S.Validate(c.Server.AllowHTTPTestOrigin) }}, {"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
 	} {
 		if err = item.validate(); err != nil {
 			return Config{}, decorate(err, item.group, "validate", origins, configvalue.Origin{})

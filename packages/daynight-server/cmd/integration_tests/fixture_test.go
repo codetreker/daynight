@@ -286,6 +286,7 @@ func newFixture(t *testing.T) *fixture {
 		return writeResources()
 	})
 	configuration := map[string]any{
+		"s2s":       map[string]any{"allowed_origin": "https://client.example"},
 		"server":    map[string]any{"listen_address": address, "public_origin": origin, "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
 		"database":  map[string]any{"url": parsed.String()},
 		"storage":   map[string]any{"root": "attachments"},
