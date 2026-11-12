@@ -7,7 +7,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -43,22 +42,6 @@ func PutTaskProperty(t *testing.T, pool *pgxpool.Pool, taskID, name string, valu
 	t.Helper()
 	MustExec(t, pool, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)
  ON CONFLICT(task_id,name) DO UPDATE SET value=EXCLUDED.value`, taskID, name, string(value))
-}
-
-// Migration assertions normalize only the historical schema they own.
-func DecodeHistoricalProperties(data []byte) (model.TaskProperties, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	if _, exists := fields["worker"]; !exists {
-		fields["worker"] = json.RawMessage("null")
-	}
-	normalized, err := json.Marshal(fields)
-	if err != nil {
-		return nil, err
-	}
-	return migration026.DecodeLegacyProperties(normalized)
 }
 
 func CurrentTaskFacts(t *testing.T, pool *pgxpool.Pool) map[string]string {
