@@ -9,6 +9,7 @@ vi.mock("koffi", () => ({
 const handle = {}, pid = 4101, parentPid = 4000;
 const command = '"C:\\Program Files\\node.exe" "C:\\controller 📖.mjs" --role "a  b"';
 const fileTime = 134067744001234567n;
+let ControllerBootstrapReplacedError: typeof import("../../../src/commands/controller/bootstrap-error.js").ControllerBootstrapReplacedError;
 let stop: typeof import("../../../src/commands/controller/windows-process-proof.js").stopWindowsBootstrapProcess;
 let capture: typeof import("../../../src/commands/controller/windows-process-proof.js").captureWindowsProcessProof;
 const writePointer = (data: Buffer, offset: number, value: bigint) => f.pointerSize === 8 ? data.writeBigUInt64LE(value, offset) : data.writeUInt32LE(Number(value), offset);
@@ -43,6 +44,7 @@ beforeEach(async () => {
     return 0;
   });
   ({ captureWindowsProcessProof: capture, stopWindowsBootstrapProcess: stop } = await import("../../../src/commands/controller/windows-process-proof.js"));
+  ({ ControllerBootstrapReplacedError } = await import("../../../src/commands/controller/bootstrap-error.js"));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -169,6 +171,13 @@ describe("Windows bootstrap stop handle", () => {
   it("does not terminate a different instance", async () => {
     await expect(stop({ ...proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/identity mismatch/);
     expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledExactlyOnceWith(handle);
+  });
+  it("distinguishes a different birth from conflicting identity at the same birth", async () => {
+    const replaced = await stop({ ...proof, startedAt: "older" }, Date.now() + 5000).catch(error => error);
+    expect(replaced).toBeInstanceOf(ControllerBootstrapReplacedError); expect(f.terminate).not.toHaveBeenCalled();
+    const conflict = await stop({ ...proof, commandHash: "replacement" }, Date.now() + 5000).catch(error => error);
+    expect(conflict).toBeInstanceOf(Error); expect(conflict).not.toBeInstanceOf(ControllerBootstrapReplacedError);
+    expect(f.terminate).not.toHaveBeenCalled(); expect(f.close).toHaveBeenCalledTimes(2);
   });
   it("retains wait and close failures", async () => {
     f.wait.mockReset().mockReturnValue(258); f.close.mockReturnValue(0);

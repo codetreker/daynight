@@ -7,7 +7,7 @@ import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-p
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
 import { ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import type { reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, type reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
 
 afterEach(cleanupBotProcesses);
@@ -190,7 +190,8 @@ test("shutdown stops a persisted recovery child before reporting that its journa
   await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow("cancelled before child opens journal");
   expect(f.current().intent!.executionGeneration).toBe("2");
   f.deps.confirmStopped.mockResolvedValue(false);
-  f.deps.stopProcesses.mockClear();
+  f.deps.stopProcesses.mockClear(); f.deps.stopBootstrap.mockClear();
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof }));
   await expect(f.restart().shutdown(f.current(), f.signal)).rejects.toThrow(/before committing.*preceding-generation/);
   expect(f.deps.stopBootstrap).toHaveBeenCalledWith(nextProof, expect.any(Number));
   expect(f.deps.stopProcesses).not.toHaveBeenCalled();
@@ -473,8 +474,53 @@ test.each(["missing", "preceding-generation"] as const)("Bot cleanup retains pre
   const abort = new AbortController(); abort.abort(new Error("business cancelled"));
   f.deps.reconcileLaunch.mockImplementation(async ({ spawnProof }) => ({ kind: "pre-writer-exited", process: spawnProof, journal }));
   await expect(f.manager.shutdown(f.current(), abort.signal)).rejects.toThrow(/before committing/);
-  expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
+  expect(f.deps.stopBootstrap).not.toHaveBeenCalled();
   expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
   expect(f.executions.get(f.current())!.launchSubmission).toBe("unknown");
   expect(f.current().intent!.executionGeneration).toBe("1");
+});
+
+
+test("Bot cleanup uses committed proof after original exit without signaling a replacement PID", async () => {
+  const f = await recoveryFixture();
+  f.deps.reconcileLaunch.mockImplementation(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved() }));
+  f.deps.stopBootstrap.mockRejectedValue(new Error("replacement PID must not be signaled"));
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.deps.stopBootstrap).not.toHaveBeenCalled();
+  expect(f.deps.stopProcesses).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, expect.any(Number));
+  expect(f.deps.recordStopped).toHaveBeenCalledOnce();
+});
+
+
+test("Bot reclassifies a process replaced between observation and stop", async () => {
+  const f = await recoveryFixture();
+  const replacement = new ControllerBootstrapReplacedError("original instance exited");
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof }))
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved() }));
+  f.deps.stopBootstrap.mockRejectedValueOnce(replacement);
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.deps.reconcileLaunch).toHaveBeenCalledTimes(2);
+  expect(f.deps.stopProcesses).toHaveBeenCalledOnce(); expect(f.deps.recordStopped).toHaveBeenCalledOnce();
+});
+
+test("Bot preserves replacement and unknown classification errors without recording stopped", async () => {
+  const f = await recoveryFixture();
+  const replacement = new ControllerBootstrapReplacedError("original instance exited"), unknown = new Error("unknown process");
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof }))
+    .mockResolvedValueOnce({ kind: "unknown", cause: unknown });
+  f.deps.stopBootstrap.mockRejectedValueOnce(replacement);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error.cause).toBeInstanceOf(AggregateError); expect(error.cause.errors).toEqual([replacement, unknown]);
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled(); expect(f.deps.recordStopped).not.toHaveBeenCalled();
+});
+
+test("Bot preserves replacement when later full process stopping fails", async () => {
+  const f = await recoveryFixture();
+  const replacement = new ControllerBootstrapReplacedError("original instance exited"), failure = new Error("native stopping failed");
+  f.deps.reconcileLaunch.mockImplementationOnce(async ({ spawnProof }) => ({ kind: "running-unobserved", process: spawnProof }))
+    .mockImplementationOnce(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.saved() }));
+  f.deps.stopBootstrap.mockRejectedValueOnce(replacement); f.deps.stopProcesses.mockRejectedValueOnce(failure);
+  const error = await f.manager.shutdown(f.current(), f.signal).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([replacement, failure]);
+  expect(f.deps.recordStopped).not.toHaveBeenCalled();
 });

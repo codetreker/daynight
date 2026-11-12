@@ -13,7 +13,7 @@ import { parseControllerGrantResponse, parseRegistrationResponse } from "../../s
 import { writeControllerCredential } from "../worker/backends/session-api.js";
 import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { recordStoppedControllerGeneration } from "./lifecycle-store.js";
-import { reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "./launch-observation.js";
+import { ControllerBootstrapReplacedError, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "./launch-observation.js";
 import { captureProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { prepareControllerIpcEndpoint } from "./paths.js";
@@ -180,22 +180,33 @@ export const runIndependentController = async (input: IndependentControllerInput
       try {
         const deadline = Date.now() + 15_000;
         const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Test controller cleanup exceeded its deadline; execution evidence is retained."); return time; };
-        try { await requestController(ticket, { kind: "stop", deadline }, { timeoutMs: Math.min(2000, remaining()) }); } catch { /* Bootstrap termination below remains authoritative. */ }
-        await waitForExit(childExit, Math.min(2500, remaining()));
         if (!processProof) throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
-        await stopControllerBootstrap(processProof, deadline);
         const journal = path.join(directory, "journal.sqlite");
-        const observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline });
+        let replacement: ControllerBootstrapReplacedError | undefined;
+        let observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline });
         remaining();
-        if (observation.kind === "unknown") throw new Error("Test controller exit could not be classified; the original launch is retained.", { cause: observation.cause });
-        if (observation.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${observation.journal}); the original launch is blocked.`);
-        if (observation.kind !== "controller-exited") throw new Error("Test controller exit is not confirmed; the original launch is retained.");
+        if (observation.kind === "observed" || observation.kind === "running-unobserved") {
+          if (observation.kind === "observed") {
+            try { await requestController(ticket, { kind: "stop", deadline }, { timeoutMs: Math.min(2000, remaining()) }); } catch { /* Bootstrap termination below remains authoritative. */ }
+            await waitForExit(childExit, Math.min(2500, remaining()));
+          }
+          try { await stopControllerBootstrap(processProof, deadline); }
+          catch (error) { if (!(error instanceof ControllerBootstrapReplacedError)) throw error; replacement = error; }
+          try { observation = await reconcileSubmittedControllerLaunch({ journalFile: journal, ticket, spawnProof: processProof, signal: AbortSignal.timeout(remaining()), deadline }); remaining(); }
+          catch (error) { if (replacement) throw new AggregateError([replacement, error], "Test controller bootstrap replacement and launch classification failed.", { cause: error }); throw error; }
+        }
+        if (observation.kind === "unknown") throw new Error("Test controller exit could not be classified; the original launch is retained.", { cause: replacement ? new AggregateError([replacement, observation.cause], "Test controller bootstrap replacement and launch status are unconfirmed.") : observation.cause });
+        if (observation.kind === "pre-writer-exited") throw new Error(`Test controller exited before committing its generation (${observation.journal}); the original launch is blocked.`, { cause: replacement });
+        if (observation.kind !== "controller-exited") throw new Error("Test controller exit is not confirmed; the original launch is retained.", { cause: replacement });
         const snapshot = observation.snapshot;
-        if (!snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.");
-        await stopControllerProcesses(snapshot.controllerProcess, snapshot.nativeProcesses, deadline);
-        remaining();
-        const stopped = await recordStoppedControllerGeneration(journal, ticket);
-        remaining();
+        if (!snapshot.controllerProcess) throw new Error("Test controller journal lacks complete controller process proof; stopping is blocked.", { cause: replacement });
+        let stopped: Awaited<ReturnType<typeof recordStoppedControllerGeneration>>;
+        try {
+          await stopControllerProcesses(snapshot.controllerProcess, snapshot.nativeProcesses, deadline);
+          remaining();
+          stopped = await recordStoppedControllerGeneration(journal, ticket);
+          remaining();
+        } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Test controller bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };

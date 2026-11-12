@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
+export { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
 import { canonicalId } from "../../api/parse.js";
 import { sqliteDatabaseIsMissing, closeSqliteDatabase } from "../../platform/sqlite-access.js";
 import { inspectSqlite } from "../../platform/sqlite-format.js";
@@ -7,7 +9,7 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-tic
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import { parseStartupObservation } from "../../session/startup.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
-import { inspectBootstrapProcessProof, inspectProcessProof, type ProcessProof } from "./process-proof.js";
+import { inspectBootstrapProcessProof, type ProcessProof } from "./process-proof.js";
 import { WindowsProcessProofError, stopWindowsBootstrapProcess } from "./windows-process-proof.js";
 
 export type ControllerLaunchObservation =
@@ -70,11 +72,13 @@ export const reconcileSubmittedControllerLaunch = async (input: { journalFile: s
     if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
     ipcFailure = error;
   }
-  let state: Awaited<ReturnType<typeof inspectBootstrapProcessProof>>;
-  try { state = await inspectBootstrapProcessProof(input.spawnProof, timeout(5000)); check(); }
+  let state: Awaited<ReturnType<typeof inspectBootstrapProcessProof>>, mismatch: { sameBirth: boolean } | undefined;
+  try { state = await inspectBootstrapProcessProof(input.spawnProof, timeout(5000), evidence => { mismatch = evidence; }); check(); }
   catch (cause) { check(); return { kind: "unknown", cause: new AggregateError([ipcFailure, cause], "Controller IPC and process observation failed.", { cause }) }; }
   if (state === "running" || state === "exiting") return { kind: "running-unobserved", process: input.spawnProof };
-  if (state === "replaced") return { kind: "unknown", cause: new AggregateError([ipcFailure, new Error("Controller bootstrap process identity was replaced.")], "Controller IPC and process observation failed.", { cause: ipcFailure }) };
+  // A different creation time proves the original instance has exited. It
+  // permits journal observation but never an operation on the replacement.
+  if (state === "replaced" && mismatch?.sameBirth !== false) return { kind: "unknown", cause: new AggregateError([ipcFailure, new Error("Controller bootstrap process identity was replaced.")], "Controller IPC and process observation failed.", { cause: ipcFailure }) };
   try {
     const result = exitedJournal(input.journalFile, input.ticket, input.spawnProof, timeout(5000));
     check();
@@ -94,7 +98,11 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
       // ERROR_INVALID_PARAMETER means the PID may have disappeared before open.
       // Only a separate liveness check can establish that no process remains.
       if (!(error instanceof WindowsProcessProofError) || error.stage !== "open-process" || error.code !== 87 || Date.now() >= deadline) throw error;
-      if (await inspectProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now()))) === "stopped" && Date.now() < deadline) return;
+      let mismatch: { sameBirth: boolean } | undefined;
+      const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; });
+      if (Date.now() >= deadline) throw error;
+      if (state === "stopped") return;
+      if (state === "replaced" && mismatch?.sameBirth === false) throw new ControllerBootstrapReplacedError(undefined, { cause: error });
       throw error;
     }
   }
@@ -104,7 +112,11 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
     let mismatch: unknown;
     const state = await inspectBootstrapProcessProof(proof, Math.max(1, Math.min(5000, deadline - Date.now())), evidence => { mismatch = evidence; });
     remaining();
-    if (state === "replaced") throw new Error(`Controller bootstrap process identity was replaced (${JSON.stringify(mismatch)}).`);
+    if (state === "replaced") {
+      const message = `Controller bootstrap process identity ${mismatch !== undefined && (mismatch as { sameBirth: boolean }).sameBirth === false ? "was replaced" : "conflicts"} (${JSON.stringify(mismatch)}).`;
+      if (mismatch !== undefined && (mismatch as { sameBirth: boolean }).sameBirth === false) throw new ControllerBootstrapReplacedError(message);
+      throw new Error(message);
+    }
     return state;
   };
   const signal = async (value: NodeJS.Signals): Promise<"signaled" | "stopped" | "exiting"> => {

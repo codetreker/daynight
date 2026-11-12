@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
 import { performance } from "node:perf_hooks";
 import type { ProcessProof } from "./process-proof.js";
 
@@ -133,7 +134,8 @@ export const stopWindowsBootstrapProcess = async (proof: ProcessProof, deadline:
   try {
     checkDeadline();
     const observed = readHandleProof(api, handle, proof.pid, checkDeadline);
-    if (observed.startedAt !== proof.startedAt || observed.commandHash !== proof.commandHash || observed.parentPid !== proof.parentPid || observed.processGroupId !== proof.processGroupId) throw new Error("Windows bootstrap process identity mismatch.");
+    if (observed.startedAt !== proof.startedAt) throw new ControllerBootstrapReplacedError();
+    if (observed.commandHash !== proof.commandHash || observed.parentPid !== proof.parentPid || observed.processGroupId !== proof.processGroupId) throw new Error("Windows bootstrap process identity mismatch.");
     checkDeadline();
     if (!api.wait(handle, 0)) {
       api.terminate(handle);

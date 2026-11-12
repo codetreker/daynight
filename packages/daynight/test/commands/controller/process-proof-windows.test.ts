@@ -3,6 +3,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 const f = vi.hoisted(() => ({ native: vi.fn(), job: vi.fn() }));
 vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: f.native }));
 vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: vi.fn(), inspectControllerJob: f.job }));
+import * as localClient from "../../../src/commands/controller/local-client.js";
+import { reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
+import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import path from "node:path";
 import { confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -92,4 +96,22 @@ test("retains the complete Job boundary after original process identities stop",
   await vi.runAllTimersAsync();
   expect(await completion).toBe("stopped");
   expect(Date.now()).toBeGreaterThan(started);
+});
+
+
+test("classifies a different Windows process birth as the original's exit without signaling the replacement", async () => {
+  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  f.native.mockResolvedValue({ ...controller, startedAt: "replacement-birth" });
+  vi.spyOn(localClient, "requestController").mockRejectedValue(new localClient.ControllerIpcOutcomeUnknownError("IPC unavailable"));
+  const result = await reconcileSubmittedControllerLaunch({ journalFile: path.resolve(".tmp", "missing-original-journal", "journal.sqlite"), ticket: {} as ControllerLaunchTicket, spawnProof: controller, signal: new AbortController().signal });
+  expect(result).toEqual({ kind: "pre-writer-exited", process: controller, journal: "missing" });
+  expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+test("does not infer exit from conflicting Windows command evidence at the same birth", async () => {
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  f.native.mockResolvedValue({ ...controller, commandHash: createHash("sha256").update("conflicting command").digest("hex") });
+  vi.spyOn(localClient, "requestController").mockRejectedValue(new localClient.ControllerIpcOutcomeUnknownError("IPC unavailable"));
+  const result = await reconcileSubmittedControllerLaunch({ journalFile: path.resolve(".tmp", "missing-original-journal", "journal.sqlite"), ticket: {} as ControllerLaunchTicket, spawnProof: controller, signal: new AbortController().signal });
+  expect(result.kind).toBe("unknown");
 });

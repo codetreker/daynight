@@ -8,7 +8,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, it } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
-import { reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
+import { ControllerBootstrapReplacedError, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 
@@ -63,7 +63,7 @@ it("reads current and exact preceding generations with ticket and identity fence
 
 it.skipIf(process.platform === "win32")("uses TERM then KILL for a resistant original and refuses a replacement or expired deadline", async () => {
   const f = await fixture();
-  await expect(stopControllerBootstrap({ ...f.proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/replaced/);
+  await expect(stopControllerBootstrap({ ...f.proof, commandHash: "replacement" }, Date.now() + 5000)).rejects.toThrow(/identity/);
   await expect(stopControllerBootstrap(f.proof, Date.now() - 1)).rejects.toThrow(/deadline/);
   expect(await inspectProcessProof(f.proof)).toBe("running");
   f.child.kill("SIGKILL"); await once(f.child, "close");
@@ -124,4 +124,33 @@ it("interrupts an in-flight IPC observation with the original cancellation reaso
     await connected.promise; controller.abort(reason);
     await expect(observed).rejects.toBe(reason);
   } finally { for (const socket of sockets) socket.destroy(); server.close(); await once(server, "close"); }
+}, 20_000);
+
+it("classifies a changed birth without stopping the real live process at that PID", async () => {
+  const f = await fixture();
+  f.child.kill("SIGKILL"); await once(f.child, "close");
+  // POSIX birth timestamps have one-second precision. Ensure the second real
+  // process is distinguishable even when the fixture starts near a boundary.
+  const nextSecond = Math.floor(Date.now() / 1000) * 1000 + 1050;
+  if (Date.now() < nextSecond) await new Promise(resolve => setTimeout(resolve, nextSecond - Date.now()));
+  const replacement = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["ignore", "pipe", "ignore"] }); children.push(replacement);
+  await once(replacement.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
+  const current = await captureProcessProof(replacement.pid!);
+  expect(current.startedAt).not.toBe(f.proof.startedAt);
+  // Keep the original birth proof but use the live process's PID to model PID
+  // reuse without waiting for the OS to recycle a particular PID.
+  const original = { ...f.proof, pid: current.pid };
+  const observation = await reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: original, signal: new AbortController().signal });
+  expect(observation).toEqual({ kind: "pre-writer-exited", process: original, journal: "missing" });
+  await expect(stopControllerBootstrap(original, Date.now() + 15_000)).rejects.toBeInstanceOf(ControllerBootstrapReplacedError);
+  expect(await inspectProcessProof(current)).toBe("running");
+}, 35_000);
+
+it.skipIf(process.platform === "win32")("retains unknown for a same-birth POSIX identity conflict", async () => {
+  const f = await fixture(), conflicting = { ...f.proof, commandHash: "a".repeat(64) };
+  const observation = await reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: conflicting, signal: new AbortController().signal });
+  expect(observation.kind).toBe("unknown");
+  const failure = await stopControllerBootstrap(conflicting, Date.now() + 5000).catch(error => error);
+  expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(ControllerBootstrapReplacedError);
+  expect(await inspectProcessProof(f.proof)).toBe("running");
 }, 20_000);

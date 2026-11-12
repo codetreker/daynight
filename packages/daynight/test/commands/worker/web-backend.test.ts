@@ -552,6 +552,33 @@ it("finishes bootstrap stop and preserves a pre-writer launch when cleanup's cal
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
+it("reconciles an original exit when its PID is reused before bootstrap stop", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");
+  source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("IPC unavailable"));
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch)
+    .mockResolvedValueOnce({ kind: "running-unobserved", process: source.task.webExecution!.controllerProcess! })
+    .mockResolvedValueOnce({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: source.snapshot });
+  const stop = vi.spyOn(launchObservation, "stopControllerBootstrap").mockRejectedValue(new launchObservation.ControllerBootstrapReplacedError("original exited"));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  expect((await backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).complete).toBe(true);
+  expect(stop).toHaveBeenCalledOnce();
+  expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses);
+});
+
+it("retains PID replacement and missing committed proof together", async () => {
+  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");
+  source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("IPC unavailable"));
+  const replacement = new launchObservation.ControllerBootstrapReplacedError("original exited");
+  vi.spyOn(launchObservation, "stopControllerBootstrap").mockRejectedValue(replacement);
+  vi.mocked(launchObservation.reconcileSubmittedControllerLaunch)
+    .mockResolvedValueOnce({ kind: "running-unobserved", process: source.task.webExecution!.controllerProcess! })
+    .mockResolvedValueOnce({ kind: "controller-exited", process: source.task.webExecution!.controllerProcess!, snapshot: { ...source.snapshot, controllerProcess: null } });
+  source.saved.mockReturnValue({ ...source.snapshot, controllerProcess: null });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "shutdown", deadline: 10, immediateStop: true })).rejects.toMatchObject({ cause: { errors: [replacement, expect.objectContaining({ message: expect.stringContaining("process identity is missing") })] } });
+  expect(source.stopped).not.toHaveBeenCalled();
+});
+
 it("blocks all preparation and input across repeated paused advances", async () => {
   const f = await fixture();
   f.store.beginRecovery(f.identity, 2); f.store.beginRecovery(f.identity, 3);

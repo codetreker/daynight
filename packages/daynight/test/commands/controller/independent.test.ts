@@ -13,13 +13,14 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 250 ? 1 : milliseconds, value, options);
   } };
 });
+const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
 const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
-vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ stopControllerBootstrap: f.bootstrap, reconcileSubmittedControllerLaunch: f.reconcile }));
+vi.mock("../../../src/commands/controller/launch-observation.js", () => ({ ControllerBootstrapReplacedError: errors.ControllerBootstrapReplacedError, stopControllerBootstrap: f.bootstrap, reconcileSubmittedControllerLaunch: f.reconcile }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -86,8 +87,9 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null as number | null, signalCode: null as string | null, kill: vi.fn() });
   f.spawn.mockImplementation(() => { queueMicrotask(() => child.emit("spawn")); return child; });
   f.capture.mockResolvedValue(proof);
-  f.reconcile.mockImplementation(async ({ ticket, spawnProof, signal }) => {
+  f.reconcile.mockImplementation(async ({ ticket, spawnProof, signal, deadline }) => {
     if (f.bootstrap.mock.calls.length) return { kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() };
+    if (deadline !== undefined) return { kind: "observed", snapshot: {} };
     try { return { kind: "observed", snapshot: (await f.request(ticket, { kind: "observe" }, { timeoutMs: 2000, signal })).snapshot }; }
     catch (error) {
       const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
@@ -634,7 +636,7 @@ test.each(["missing", "preceding-generation"] as const)("pre-writer %s retains t
   const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: "do not replay" }, v.context).catch(error => error);
   expect(error).toBeInstanceOf(AggregateError);
   expect(error.errors.every((item: Error) => item.message.includes("before committing"))).toBe(true);
-  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.bootstrap).toHaveBeenCalledOnce();
+  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.bootstrap).not.toHaveBeenCalled();
   expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
   expect(f.request.mock.calls.some(([, action]) => action.kind === "submit_initial")).toBe(false);
   expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
@@ -646,5 +648,57 @@ test("terminal cancellation does not hide a simultaneous launch identity conflic
   const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
   expect(error).toBeInstanceOf(AggregateError);
   expect(error.errors).toContain(failure);
+  expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("independent cleanup uses committed proof after original exit without signaling a replacement PID", async () => {
+  const v = await setup(null);
+  f.reconcile.mockImplementation(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: f.snapshot() }));
+  f.bootstrap.mockRejectedValue(new Error("replacement PID must not be signaled"));
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow(/exited after committing/);
+  expect(f.bootstrap).not.toHaveBeenCalled();
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+});
+
+
+test("independent cleanup reclassifies replacement after a running observation", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "controller-exited", process: input.spawnProof, snapshot: f.snapshot() };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.bootstrap).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+});
+
+test("independent cleanup retains replacement and unknown causes without stopped proof", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited"), unknown = new Error("unknown process");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "unknown", cause: unknown };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error.cause).toBeInstanceOf(AggregateError); expect(error.cause.errors).toEqual([replacement, unknown]);
+  expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
+});
+
+test("independent cleanup preserves replacement when later full process stopping fails", async () => {
+  const v = await setup(null), original = f.reconcile.getMockImplementation()!;
+  const replacement = new errors.ControllerBootstrapReplacedError("original instance exited"), failure = new Error("native stopping failed");
+  f.reconcile.mockImplementation(async input => {
+    if (input.deadline && !f.bootstrap.mock.calls.length) return { kind: "running-unobserved", process: input.spawnProof };
+    if (input.deadline) return { kind: "controller-exited", process: input.spawnProof, snapshot: f.snapshot() };
+    return original(input);
+  });
+  f.bootstrap.mockRejectedValueOnce(replacement); f.stop.mockRejectedValueOnce(failure);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([replacement, failure]);
   expect(f.record).not.toHaveBeenCalled();
 });
