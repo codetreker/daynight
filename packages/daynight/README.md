@@ -2530,6 +2530,11 @@ They do not create another generation or send the assignment. A successful
 launch still requires durable native process identity before input admission;
 an unknown response or a crash cannot authorize another launch or replay.
 
+The full startup prompt states that the task has sufficient authorization for
+completion and instructs the agent not to ask again about procedural authorization,
+such as whether merging the PR is authorized. Task scope, independent pauses or
+revocations, and CI, review and merge gates still apply.
+
 Startup, macOS recovery or continuation, and periodic ping prompts share an
 autonomous execution policy. The agent checks the task, repository constraints
 and evidence, adjusts its approach, steps and task decisions, investigates failed

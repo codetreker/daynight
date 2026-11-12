@@ -8,10 +8,16 @@ A background Worker can encounter facts that invalidate its initial steps withou
 invalidating its assigned goal. Treating every information, decision, authority
 or action gap as a reason for human intervention interrupts delivery even when
 the agent can inspect the situation and continue within the confirmed scope.
-At the same time, changing a confirmed requirement or authorization to work
-around a conflict would exceed the assignment.
+Repeated requests for already granted procedural authorization can also interrupt
+delivery. At the same time, changing a confirmed requirement or authorization to
+work around a conflict would exceed the assignment.
 
 ## Decision
+
+The full startup prompt explicitly states sufficient authorization to complete
+the task and instructs the agent not to ask again about procedural authorization,
+including PR merge authorization. Task scope, independent pauses and revocations,
+and CI, review and merge gates continue to apply.
 
 The Worker's built-in startup, macOS continuation or recovery, and periodic
 ping inputs share an instruction to inspect task and repository constraints and
@@ -57,6 +63,8 @@ constraints.
 Equivalent instructions reach each automatic business-input path, so recovery or
 a ping does not restore the broader pause trigger. Agents must investigate and
 document material deviations and conflicts; prompt wording cannot itself prove
-that their judgment or evidence is correct. The existing property, claim and
+that their judgment or evidence is correct. The explicit authorization statement
+appears in newly assembled full startup inputs; existing fixed inputs and separate
+continuation and ping prompts are not rewritten. The existing property, claim and
 Worker lifecycle, scheduling, input delivery and custom prompt layers are not
 changed by this decision.
