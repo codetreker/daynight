@@ -101,7 +101,7 @@ test('does not navigate on a 404 while the committed delete receipt is delayed',
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/settings`);
   expect(state.writes).toBe(1);
   finish.resolve();
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect(page.locator('.project-list-information').filter({ has: page.getByText('Personal', { exact: true }) }).getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
   expect(state.writes).toBe(1); await check.other.close();
 });
 
@@ -127,7 +127,7 @@ test('keeps the narrow navigation and focus during foreground checks', async ({ 
   const state = await install(page); await page.goto('/projects');
   await page.getByRole('button', { name: 'Expand sidebar' }).click();
   const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
-  const link = drawer.getByRole('link', { name: 'My projects' });
+  const link = drawer.getByRole('link', { name: 'Projects' });
   await link.focus();
   const handle = await drawer.elementHandle();
   const box = await drawer.boundingBox();
@@ -240,7 +240,7 @@ test('discards a pending Team ID copy after leaving and returning to settings', 
   const state = await install(page); await start(page);
   await page.getByRole('button', { name: 'Copy Team ID' }).click();
   await expect.poll(() => clipboardCalls(page)).toEqual([teamId]);
-  await page.getByRole('link', { name: 'My projects', exact: true }).click();
+  await page.getByRole('link', { name: 'Projects', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Copy Team ID' })).toHaveCount(0);
   await resolveClipboard(page);
   await page.getByRole('link', { name: 'Team settings', exact: true }).click();

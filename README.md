@@ -42,7 +42,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   tasks across selected, prepared Projects, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
-- **Observe and configure your Workers.** Open My Workers alongside My projects
+- **Observe and configure your Workers.** Open My Workers alongside Projects
   to see the current account's recent Workers, online/offline state, resource and
   software observations, authorized task snapshots, and current monitoring summaries.
   Detail shows scheduling, capacity, activities and failure recovery. It keeps the last

@@ -162,7 +162,7 @@ for (const width of [1360, 390]) {
 test('desktop sidebar navigation protects edits', async ({ page }) => {
   await page.setViewportSize({ width: 1360, height: 900 }); await install(page); await open(page);
   await page.locator('#config-maxConcurrent').fill('6');
-  await page.getByRole('navigation').getByRole('link', { name: '我的项目', exact: true }).click();
+  await page.getByRole('navigation').getByRole('link', { name: '项目', exact: true }).click();
   await expect(dialog(page)).toBeVisible(); await page.keyboard.press('Escape'); await expect(page.locator('#config-maxConcurrent')).toBeFocused();
 });
 

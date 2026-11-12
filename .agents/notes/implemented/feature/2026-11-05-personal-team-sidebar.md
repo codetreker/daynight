@@ -28,6 +28,9 @@ The [browser Team preference decision](../../archived/feature/2026-11-04-browser
 records the rationale for the existing selection restoration, account isolation
 and retry behavior.
 
+The [sidebar scopes decision](../architecture/2026-11-12-sidebar-navigation-scopes.md)
+organizes this behavior within the current scope group.
+
 ## Alternatives
 
 **Use the displayed Team name to identify Personal.** Ordinary Teams may have

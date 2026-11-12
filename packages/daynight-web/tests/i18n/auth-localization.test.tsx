@@ -80,7 +80,7 @@ describe("authentication language changes", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(signal.aborted).toBe(false);
     await act(async () => pending.resolve(json(user)));
-    await screen.findByRole("heading", { name: "个人" });
+    await screen.findByText("个人", { selector: ".project-list-information .eyebrow" });
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.projects);
     expect(language()).toHaveValue("zh-CN");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);

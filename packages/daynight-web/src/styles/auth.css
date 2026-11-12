@@ -13,6 +13,9 @@
 
 .auth-shell .content { padding-bottom: 88px; }
 .auth-shell h1 { overflow-wrap: anywhere; }
+.auth-shell .project-list-heading .eyebrow { overflow-wrap: anywhere; }
+.auth-shell .crumb { max-width: 100%; }
+.auth-shell .crumb-team { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .auth-shell .crumb button { border: 0; background: none; padding: 0; color: #727d90; }
 .auth-shell .crumb button:hover { color: var(--indigo); }
 .auth-shell .project-card { min-height: 255px; }

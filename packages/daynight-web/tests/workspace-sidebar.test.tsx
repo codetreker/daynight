@@ -2,7 +2,8 @@ import { useRef } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectsProvider } from "../src/features/projects/ProjectsProvider";
-import { WorkspaceSidebar } from "../src/app/WorkspaceSidebar";
+import { WorkspaceSidebar } from "../src/app/sidebar/WorkspaceSidebar";
+import { parseAuthRoute, type AuthRoute } from "../src/app/router";
 import { useBodyScrollLock } from "../src/app/useBodyScrollLock";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
@@ -13,18 +14,21 @@ const render = createLocaleRender("en");
 type HarnessProps = {
   readonly collapsed?: boolean;
   readonly routeKey?: string;
-  readonly selectedTeamId?: string;
+  readonly selectedTeamId?: string | null;
+  readonly visibilityTeamId?: string | null;
+  readonly route?: AuthRoute;
+  readonly webhooksAvailable?: boolean;
   readonly blocked?: boolean;
   readonly initiallyInert?: boolean;
   readonly anotherLock?: boolean;
   readonly onToggle?: () => void;
   readonly onNavigate?: () => void;
 };
-const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
+const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", visibilityTeamId = selectedTeamId, route, webhooksAvailable = true, blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamSettingsActive={routeKey === "/members" || routeKey === "/settings"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId={selectedTeamId} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} route={route ?? (routeKey === "/" ? { kind: "projects" } : routeKey === "/members" || routeKey === "/settings" ? { kind: routeKey === "/members" ? "teamMembers" : "teamSettings", teamId: selectedTeamId ?? "" } : parseAuthRoute(routeKey))} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: selectedTeamId, visibilityTeamId }} webhooksAvailable={webhooksAvailable} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -38,6 +42,30 @@ const openDrawer = () => {
 
 describe("workspace sidebar", () => {
   beforeEach(() => { vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise(() => {}))); });
+  it("groups navigation by scope and gates the personal Webhooks entry", () => {
+    const view = render(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" />);
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    const groups = nav.querySelectorAll(".sidebar-group");
+    expect(groups).toHaveLength(3);
+    expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Projects", "Team settings"]);
+    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Shared with me", "My Workers", "Assistants"]);
+    expect(within(groups[2] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Webhooks", "Test Sessions"]);
+    expect(screen.getByRole("link", { name: "Webhooks" })).toHaveAttribute("href", "/webhooks?owner=personal");
+    view.rerender(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" webhooksAvailable={false} />);
+    expect(screen.queryByRole("link", { name: "Webhooks" })).toBeNull();
+  });
+
+  it("keeps unconfirmed Team links disabled while independent navigation remains available", () => {
+    render(<Harness selectedTeamId={null} visibilityTeamId={null} route={{ kind: "workers" }} />);
+    for (const name of ["Projects", "Team settings"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveAttribute("aria-disabled", "true");
+      expect(link).not.toHaveAttribute("href");
+      expect(link).not.toHaveAttribute("aria-current");
+    }
+    expect(screen.getByRole("link", { name: "My Workers" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("keeps icon navigation named and invokes only the desktop preference action", () => {
     const onToggle = vi.fn();
     render(<Harness collapsed onToggle={onToggle} />);
@@ -54,12 +82,12 @@ describe("workspace sidebar", () => {
   it.each(["/workers", "/workers/00000000-0000-4000-8000-000000000001"])("keeps Worker route %s active as a peer of project navigation", (routeKey) => {
     render(<Harness collapsed routeKey={routeKey} />);
     const workers = screen.getByRole("link", { name: "My Workers" });
-    const projects = screen.getByRole("link", { name: "My projects" });
+    const projects = screen.getByRole("link", { name: "Projects" });
     expect(workers).toHaveAttribute("href", "/workers");
     expect(workers).toHaveAttribute("title", "My Workers");
     expect(workers).toHaveAttribute("aria-current", "page");
     expect(projects).not.toHaveAttribute("aria-current");
-    expect(workers.parentElement).toBe(projects.parentElement);
+    expect(workers.closest(".sidebar-group")).not.toBe(projects.closest(".sidebar-group"));
     expect(workers.closest(".sidebar-projects")).toBeNull();
   });
 
@@ -113,10 +141,10 @@ describe("workspace sidebar", () => {
 
   it("updates accessible names in place when the interface language changes", () => {
     const view = render(<Harness collapsed />);
-    const projects = screen.getByRole("link", { name: "My projects" });
+    const projects = screen.getByRole("link", { name: "Projects" });
     const toggle = screen.getByRole("button", { name: "Expand sidebar" });
     view.setLocale("zh-CN");
-    expect(screen.getByRole("link", { name: "我的项目" })).toBe(projects);
+    expect(screen.getByRole("link", { name: "项目" })).toBe(projects);
     expect(screen.queryByRole("link", { name: "账户设置" })).toBeNull();
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBe(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -170,7 +198,7 @@ describe("workspace sidebar", () => {
     const onNavigate = vi.fn();
     render(<Harness onNavigate={onNavigate} />);
     const { drawer } = openDrawer();
-    const projects = within(drawer).getByRole("link", { name: "My projects" });
+    const projects = within(drawer).getByRole("link", { name: "Projects" });
     fireEvent.click(projects, { ctrlKey: true });
     expect(screen.getByRole("dialog")).toBe(drawer);
     expect(onNavigate).not.toHaveBeenCalled();

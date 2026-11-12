@@ -135,11 +135,11 @@ describe("sidebar integration with the authenticated workspace", () => {
     const link = await nav.findByRole("link", { name: "私有项目" });
     await screen.findByRole("heading", { name: "私有项目" });
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(1);
-    expect(nav.getByRole("link", { name: "我的项目" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getByRole("link", { name: "项目" })).toHaveAttribute("aria-current", "page");
     fireEvent.click(link);
     await screen.findByRole("link", { name: "项目成员" });
     expect(nav.getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
-    expect(nav.getByRole("link", { name: "我的项目" })).not.toHaveAttribute("aria-current");
+    expect(nav.getByRole("link", { name: "项目" })).not.toHaveAttribute("aria-current");
     fireEvent.click(screen.getByRole("link", { name: "项目成员" }));
     await screen.findByRole("heading", { name: "项目成员" });
     expect(nav.getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
@@ -1247,7 +1247,8 @@ describe("Team invitation handoff", () => {
     const open = screen.getByRole("link", { name: "打开 Team" });
     expect(open).toHaveAttribute("href", `/teams/${teamId}`);
     fireEvent.click(open);
-    await screen.findByRole("heading", { name: "协作团队" });
+    await screen.findByText("协作团队", { selector: ".project-list-information .eyebrow" });
+    expect(screen.getByRole("heading", { level: 1, name: "项目" })).toBeVisible();
     expect(window.location.pathname).toBe(`/teams/${teamId}`);
     await waitForState(() => expect(window.localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId));
   });

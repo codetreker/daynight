@@ -337,12 +337,12 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(defaultResponse(url))));
     mount();
     await act(async () => navigate("/login"));
-    await screen.findByRole("heading", { name: "Personal" });
+    await screen.findByText("Personal", { selector: ".project-list-information .eyebrow" });
     expect(window.location.pathname).toBe("/projects");
     await historyMove("back");
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
     await historyMove("forward");
-    await screen.findByRole("heading", { name: "Personal" });
+    await screen.findByText("Personal", { selector: ".project-list-information .eyebrow" });
   });
 
   it("retains invitation context after a failed callback reaches the explicit login page", async () => {
@@ -361,12 +361,12 @@ describe("public and authenticated entry ownership", () => {
   it("returns successful normal logout to the public homepage", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/auth/logout" ? new Response(null, { status: 204 }) : defaultResponse(url))));
     mount();
-    await screen.findByRole("heading", { name: "Personal" });
+    await screen.findByText("Personal", { selector: ".project-list-information .eyebrow" });
     fireEvent.click(screen.getByRole("button", { name: /^Account menu:/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Public product introduction" });
     expect(window.location.pathname).toBe("/");
-    expect(screen.queryByRole("heading", { name: "Personal" })).toBeNull();
+    expect(screen.queryByText("Personal", { selector: ".project-list-information .eyebrow" })).toBeNull();
   });
 
   it.each(["invitation", "device"])("keeps the %s target and temporary context while switching accounts", async (flow) => {

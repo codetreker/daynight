@@ -9,7 +9,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
-  await expect(page.getByRole("link", { name: "My projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Projects", exact: true })).toBeVisible();
 
   let output = "";
   let resolveAuthorization: (value: { uri: string; code: string }) => void = () => {};

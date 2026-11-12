@@ -5,7 +5,7 @@ const { number } = getFormats("zh-CN");
 
 export const workspace: WorkspaceMessages = {
   app: {
-    skipToContent: "跳到主要内容", workspaceNavigation: "工作空间导航", projectHome: "Daynight 项目首页", mainNavigation: "主导航", workspace: "工作空间", projects: "项目", projectTasks: "项目任务", localWorkspace: "本地工作空间", localWorkspaceDetail: "任务与依赖，一处看清", localLabel: "工作空间 · 本地", breadcrumb: "面包屑", notFound: "页面不存在", notFoundDetail: "请检查页面地址，或返回项目列表。", returnToProjects: "返回项目列表",
+    skipToContent: "跳到主要内容", workspaceNavigation: "工作空间导航", projectHome: "Daynight 项目首页", mainNavigation: "主导航", workspace: "工作空间", my: "我的", tools: "工具", projects: "项目", projectTasks: "项目任务", localWorkspace: "本地工作空间", localWorkspaceDetail: "任务与依赖，一处看清", localLabel: "工作空间 · 本地", breadcrumb: "面包屑", notFound: "页面不存在", notFoundDetail: "请检查页面地址，或返回项目列表。", returnToProjects: "返回项目列表",
     documentTitle: { task: "任务详情 · Daynight", attachment: "任务详情 · Daynight", projects: "项目 · Daynight", project: "项目任务 · Daynight", notFound: "页面不存在 · Daynight" },
   },
   projects: {

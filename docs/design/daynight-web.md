@@ -67,17 +67,13 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ### 工作空间导航
 
-`AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
-负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
-前者持有品牌、Team 选择、Team 范围的缩进项目列表、“与我共享”和“我的 Worker”入口，后者持有工作区说明及切换按钮。
-项目子项消费与项目列表页面相同的分页目录，直接复用导航 `follow` 的路由和修饰键处理。
-普通列表和链接提供层级语义；完整名称作为链接名称及 title，视觉文字允许省略。
-项目、成员及设置路由将 projectId 传给侧栏选中对应子项；Team 和共享列表按各自路由选中；`/workers` 及 Worker 详情共同激活 Worker 入口。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
-桌面折叠和手机竖条以 `display: none` 排除项目子项交互，展开桌面或手机覆盖导航时显示。
-sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。
-链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。
+`AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权。`app/sidebar/WorkspaceSidebar` 拥有折叠、抽屉、焦点和滚动生命周期；`WorkspaceNavigation` 根据 `AuthRoute` 组合当前范围、“我的”和“工具”三组固定入口；`SidebarProjectList` 消费现有 `useProjectList` 目录。`SidebarTeamContext` 分离 Personal ID、仅在 Team ready 时可生成链接的 ID 和仅用于可见性的 ID，未知范围保留禁用占位，已确认 Personal 隐藏团队设置。
 
-`TeamSelector` 在触发器所在侧栏内保留菜单 DOM，并使用 top-layer popover 脱离滚动裁剪；定位根据触发器、视口和菜单尺寸调整，菜单自身限制高度并滚动。保持 DOM 所属关系使手机抽屉的焦点隔离包含菜单；菜单先处理 Escape，创建时沿用抽屉与创建窗口的焦点交接。目录、分页和偏好仍由原有所有者管理，菜单的打开状态不依赖后台复核结果。详见[Team 切换菜单决策](../../.agents/notes/implemented/feature/2026-11-05-team-switcher-popover.md)。
+三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有切换按钮。项目子项使用与项目列表相同的分页目录和原生链接处理；共享路由及折叠竖条隐藏整棵项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
+
+sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)。
+
+`TeamSelector` 在名称上方显示已知团队类型，未知时保留空行；名称优先截断并保留箭头。触发器所在侧栏内保留菜单 DOM，并使用 top-layer popover 脱离滚动裁剪；定位根据触发器、视口和菜单尺寸调整，菜单自身限制高度并滚动。保持 DOM 所属关系使手机抽屉的焦点隔离包含菜单；菜单先处理 Escape，创建时沿用抽屉与创建窗口的焦点交接。目录、分页和偏好仍由原有所有者管理，菜单的打开状态不依赖后台复核结果。详见[Team 切换菜单决策](../../.agents/notes/implemented/feature/2026-11-05-team-switcher-popover.md)。
 
 顶栏头像和姓名触发 `AccountMenu`，其中“账户设置”沿用 `/account` 路由，分隔线后的“退出登录”使用危险动作样式和原生按钮。菜单接收工作空间已有的 `onSignOut`，选择退出时关闭菜单并调用该回调；身份清理、跨标签页通知、退出中及失败重试由文档账户 owner 管理，账户页的退出入口保持原有所有权。顶栏只保留菜单内退出入口，减少紧邻头像的误触机会，不另增退出确认窗口。
 触发器暴露本地化名称及展开状态。点击和 ArrowDown 打开时聚焦首项，ArrowUp 聚焦末项；菜单按 DOM 顺序处理方向键循环及 Home/End 首尾定位，Enter/Space 激活，Tab 离开后关闭。触发器再次点击、外部点击、Escape 和页面切换关闭菜单，Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长姓名和默认头像。入口取舍见[退出菜单决策](../../.agents/notes/implemented/bug-fix/2026-11-06-account-menu-sign-out.md)。
@@ -159,7 +155,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - `ProjectsPage` 的标题和副标题组成信息区，随后是创建和刷新操作；Shared 页面保持只有刷新。项目列表专属 `.project-list-heading` 允许换行，信息区使用 `flex: 1 1 240px`，操作组通过自动左外边距保持靠右。320、390 CSS px 下信息区占据内容宽度，操作组整体落到下一行；空间充足时左右并排，随实际内容宽度和侧栏宽度自适应。长名称在信息区内换行，既有字号、按钮、数据状态、请求和焦点顺序不变。取舍与几何验证边界见[标题换行决策](../../.agents/notes/implemented/bug-fix/2026-11-05-project-list-heading-wrap.md)。
 - `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
 - Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。认证 scope 内首次显示工作空间时，无论入口是项目、Worker、账户还是共享页面，都恢复记忆并以精确 `GET /teams/{id}` 验证；明确 Team 路由优先使用 URL 中的 ID。一次成功安装选择后，普通导航继续使用当前内存选择；`/projects` 默认入口保留重新读取记忆的语义。独立 Task、附件、邀请与授权入口延后恢复，直到显示工作空间。只有可信 404 清除对应记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx 或存储读取失败保留记忆并在工作空间提供重试；取消结果不能安装。写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
-- 普通 Team 范围的项目目录等待偏好 ready，避免恢复期间读取初始 Personal 范围；共享目录及明确资源的主体读取独立。侧栏的 Team 项目和设置链接在选择未就绪时不可导航到初始 Personal ID。`WorkspaceSidebar` 使用认证用户的 Personal Team ID 与可见性身份比较，确认 Personal 时不渲染 Team 设置入口；普通 Team 不受名称影响，使用所选 ID 生成唯一的设置链接，基本信息和成员分区都使其选中。此条件复用于桌面和窄屏导航，不改变直接地址的页面与权限。恢复与失败不改写明确 Project、Task 或附件地址，也不阻塞其主体。可见性取舍见[个人 Team 导航决策](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)。
+- 普通 Team 范围的项目目录等待偏好 ready，避免恢复期间读取初始 Personal 范围；共享目录及明确资源的主体读取独立。侧栏的 Team 项目和设置链接在选择未就绪时不可导航到初始 Personal ID。`WorkspaceNavigation` 使用认证用户的 Personal Team ID 与可见性身份比较，确认 Personal 时不渲染 Team 设置入口；普通 Team 不受名称影响，使用所选 ID 生成唯一的设置链接，基本信息和成员分区都使其选中。此条件复用于桌面和窄屏导航，不改变直接地址的页面与权限。恢复与失败不改写明确 Project、Task 或附件地址，也不阻塞其主体。可见性取舍见[个人 Team 导航决策](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)。
 - Team 偏好与读取依附认证身份生命周期；身份切换、取消及后续选择阻止旧请求安装结果或覆盖另一账号的键。同一 `routeKey` 的已确认目标在后台精确 GET 期间保持 ready；首次读取或目标改变仍等待加载。同一次导航的已验证身份可用于侧栏入口的可见性，但实际链接仍须等待所选 Team ready。恢复默认选择的读取在发布前重新核对存储及待保存选择，不能覆盖另一标签页的新选择。确认回执与读取按 Team 和 membership 的独立版本仲裁；可信拒绝隔离私有内容，待定、未知及已确认结果仍保留。明确 Project 与 Task 链接不通过默认 Team 重写。[浏览器 Team 偏好决策](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md)记录恢复和失效处理的取舍。
 - 顶层从隐藏或外部失焦恢复时，Team 资源按自身生命周期重读。账户信号先同步重读共享记录，Team 的恢复回调随后检查身份暂停与活动状态；sticky 等待刷新不派发，健康返回不重复 `/me`。活动设置分区重新读取 Team 或成员，成员确认成功且仍具管理权限后再重读邀请；待定操作与已显示表单继续归原 owner。
 - Team 目录的后台复核按当前已加载页数从第一页沿新游标连续读取，完整前缀成功后一次发布；相同条目与游标保留原引用。分页读取与复核由 generation 和认证 scope 仲裁，后发分页不会被旧复核覆盖。中断的首载或分页在准入恢复后继续，真实失败保留已有条目并提供重试；显式刷新和变更后的刷新仍读取目录。
@@ -621,7 +617,7 @@ generation、清理提示与等待状态，旧调用的成功、失败和结束�
 ```text
 packages/daynight-web/
   src/main.tsx                      浏览器入口
-  src/app/                          认证外壳、路由、WorkspaceSidebar、侧栏偏好与滚动锁
+  src/app/                          认证外壳、路由、sidebar 组件、侧栏偏好与滚动锁
   src/api/{types,client,parse}.ts    DTO、请求、运行时解析与错误
   src/i18n/                         语言目录、格式化器、生产根 Provider 与共享选择器
   src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、偏好 hooks、统计卡
