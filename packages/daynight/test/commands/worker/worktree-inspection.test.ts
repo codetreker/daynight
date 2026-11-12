@@ -61,9 +61,11 @@ it("keeps real linked-worktree metadata bound to relative pointers and the physi
     const repository = await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
     const admin = await realpath(git(binding.worktreePath, "rev-parse", "--absolute-git-dir"));
+    // Git strips a literal /.git suffix from the reverse pointer before canonicalizing its path.
+    // https://github.com/git-for-windows/git/blob/581291682ad5a238c08c93d1f5bd4518382a3230/worktree.c#L152-L167
     for (const [pointer, contents] of [
-      [path.join(binding.worktreePath, ".git"), `gitdir: ${path.relative(binding.worktreePath, admin)}\n`],
-      [path.join(admin, "gitdir"), `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`],
+      [path.join(binding.worktreePath, ".git"), `gitdir: ${path.relative(binding.worktreePath, admin).split(path.sep).join("/")}\n`],
+      [path.join(admin, "gitdir"), `${path.relative(admin, path.join(binding.worktreePath, ".git")).split(path.sep).join("/")}\n`],
     ] as const) {
       const original = await lstat(pointer, { bigint: true });
       // Git hides .git on Windows; opening the existing file avoids CREATE_ALWAYS's hidden-file refusal.
@@ -85,6 +87,9 @@ it("keeps real linked-worktree metadata bound to relative pointers and the physi
     expect(await realpath(git(f.repository, ...args, "rev-parse", "--path-format=absolute", "--git-common-dir"))).toBe(repository.commonDirectory);
     expect(git(f.repository, ...args, "config", "--get-all", "remote.origin.url")).toBe(f.project.repoUrl);
     expect(await f.adapter.verifyWorktree(f.project, f.owner, operation)).toEqual(binding);
+    const registrations = git(f.repository, "worktree", "list", "--porcelain", "-z")
+      .split("\0").filter(field => field.startsWith("worktree ")).map(field => field.slice(9));
+    expect(await Promise.all(registrations.map(target => realpath(target)))).toContain(await realpath(binding.worktreePath));
     await f.adapter.removeWorktree(f.project, f.owner, operation);
     await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(path.join(redirected, "keep"), "utf8")).toBe("unrelated\n");
