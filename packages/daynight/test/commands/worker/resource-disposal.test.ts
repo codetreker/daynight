@@ -1,13 +1,22 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertHerdrResourceBudget, assertHerdrDisposalTarget, removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
 import type { HerdrRetainedResource } from "../../../src/commands/worker/herdr/resource-types.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, unlink: vi.fn(actual.unlink) };
+});
+const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const resource = (n = 1): HerdrRetainedResource => ({ owner: { projectId: uuid(1), taskId: uuid(n + 10), claimId: uuid(n + 20), worktreeId: uuid(n + 30) }, sessionId: uuid(n + 40), stopped: true, stopEvidence: [{ recordId: uuid(70), executionGeneration: "1", binding: { instanceId: "instance", sessionId: "native", workspaceId: "workspace", paneId: "pane", terminalId: "terminal", nativeSessionId: null }, bootId: "boot", stoppedAt: "2026-11-04T00:00:00Z", method: "instances_exited", terminalStopped: true, processes: [] }], terminal: true, worktreePath: `/worktrees/${n}`, sourcePath: `/recordings/${n}`, sourceBytes: "100", state: "failed", error: "source_corrupt", nextAttemptAt: null, worktreeDeleted: false, disposition: null });
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.mocked(unlink).mockImplementation(actualFs.unlink);
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
 
 describe("Herdr retained resources", () => {
   it("blocks new acquisition at each independent resource budget and accepts the boundary below it", () => {
@@ -44,5 +53,22 @@ describe("Herdr retained resources", () => {
     await removeHerdrSourceDirectory(path.join(root, "recordings"), source);
     expect(await readFile(path.join(other, "keep"), "utf8")).toBe("keep");
     await expect(readFile(path.join(source, "frame.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rechecks the original recording source before each mutation", async () => {
+    const base = path.resolve("../../.tmp/resource-disposal-tests"); await mkdir(base, { recursive: true });
+    const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
+    const recordings = path.join(root, "recordings"), source = path.join(recordings, uuid(41)), moved = path.join(root, "moved");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "one"), "one"); await writeFile(path.join(source, "two"), "two");
+    vi.mocked(unlink).mockImplementation(async target => {
+      await actualFs.unlink(target);
+      await rename(recordings, moved);
+      await mkdir(recordings);
+      await rename(path.join(moved, uuid(41)), source);
+    });
+    await expect(removeHerdrSourceDirectory(recordings, source)).rejects.toThrow(/identity changed/);
+    expect(await readdir(source)).toHaveLength(1);
+    expect(vi.mocked(unlink)).toHaveBeenCalledOnce();
   });
 });

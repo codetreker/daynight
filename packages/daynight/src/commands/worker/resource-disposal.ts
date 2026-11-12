@@ -106,7 +106,7 @@ export const removeHerdrSourceDirectory = async (rootDirectory: string, sourceDi
       }
     };
     await inspect(source);
-    await removeWorktreeContents(source, id(target), local, verify);
+    await removeWorktreeContents({ target: source, expectedIdentity: id(target), operation: local, beforeMutation: verify });
     await verify();
     await rmdir(source);
   } finally { if (operation === undefined) local.dispose(); }

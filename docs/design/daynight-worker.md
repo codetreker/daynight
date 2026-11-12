@@ -260,11 +260,11 @@ Worker 的 clone、fetch、worktree add/remove 和临时 ref 清理使用 owned 
 
 仅在 backend 允许终态删除时，清理先确认原进程停止、workspace 关闭及必要归档，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。Worktree 目录和 Git 管理注册分别观察：目录消失即满足目录目标，原注册仍在时独立移除。中断留下的无指针空目录及未创建注册的空预留目录可通过非递归 rmdir 清除，非空且缺少归属证明的路径保留并报告。操作结果未知时再次观察资源，最终判定来自实际目录和注册的消失。分支和提交历史保留。
 
-`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留清单、gitdir、commondir 和 .git 内容。内容删除前再次完成归属检查，每次修改前用这些只读快照核验资源。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
+`worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留清单、gitdir、commondir 和 .git 内容。内容删除前后用这些只读快照核验资源；遍历期间不逐文件重读全组归属和 Git 元数据。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
 
 `remove-worktree-contents.ts` 逐层遍历普通目录，以非递归 unlink 删除文件和链接，以 rmdir 删除空目录。POSIX 目录通过 `O_NOFOLLOW | O_DIRECTORY` 打开，核对 bigint dev/ino、有效用户 uid、设备和 owner 读取/搜索权限；缺少 owner 写权限时，仅通过已验证的 FileHandle 补充 `0o200`。0555 因而成为 0755，而 0444 文件、文件硬链接和外部 symlink 目标不需要改权限。不可读、不可搜索、异所有者、跨设备目录和底层 I/O 错误直接保留；Windows 不执行 POSIX 权限恢复，使用普通目录身份检查和非递归删除。
 
-遍历期间保留祖先目录句柄，并在修改前后核对路径与句柄身份。目录权限修改因此绑定已打开的原 inode；观察到目录替换或归属变化立即失败。Node 没有可移植的 openat/unlinkat 接口，路径 unlink/rmdir 的最后一次核验与系统调用之间仍不是原子边界，故受管写入进程停止是必要前提，不能把此机制当作对恶意并发路径改写的隔离。选择与代价见[只读目录清理决策](../../.agents/notes/archived/bug-fix/2026-11-04-worker-readonly-directory-cleanup.md)。
+遍历在进入目录、必要的权限修改后及各条目操作前后核对当前目录的路径与句柄，不重查全部祖先。目录权限修改绑定已打开的原 inode；观察到当前目录替换或归属变化即失败。显式录屏源处置通过独立 guard 在每次修改前核对来源及其根目录身份。Node 没有可移植的 openat/unlinkat 接口，路径操作与核验之间不是原子边界，受管写入进程停止仍是必要前提；该机制不是针对恶意并发路径改写的隔离。选择与代价见[局部遍历决策](../../.agents/notes/implemented/simplification/2026-11-12-worktree-local-traversal.md)。
 
 每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 的停止证明、归档成功、worktree 删除保持独立：归档失败不得删除源，shutdown 跳过归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
 
