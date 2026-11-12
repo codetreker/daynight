@@ -277,11 +277,11 @@ export const maintainControllerTimeline = (options: {
     try { if (options.onMigration !== undefined) options.onMigration(event); else process.stderr.write(`${JSON.stringify(event)}\n`); }
     catch (cause) { warn("Controller timeline maintenance reporting failed.", cause); }
   };
-  let phase = "storage-admission";
+  let phase = "storage-admission", maintenanceOutcome: SqliteOutcome = "committed";
   try {
-    reservation.refresh();
     const totals = validateCommitted(db);
     if (!pending(db)) { reservation.settleNormalAdmission(); report(phase, "completed", { ...totals, pending: false }); return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false }; }
+    reservation.refresh();
     if (snapshot === null) throw new Error("Controller timeline cleanup has no original execution.");
     phase = "legacy-timeline-retirement"; report(phase, "started", { ...totals });
     const sources = retirementSources(request.journalFile, snapshot.sessionId);
@@ -305,12 +305,15 @@ export const maintainControllerTimeline = (options: {
     phase = "storage-admission"; report(phase, "started");
     try { runSqliteImmediate(db, () => { db.prepare("UPDATE execution SET legacy_timeline_cleanup_pending=0 WHERE id=1 AND legacy_timeline_cleanup_pending=1").run(); }); }
     catch (cause) {
+      maintenanceOutcome = sqliteTransactionOutcome(cause);
+      const uncertainClear = (failure: unknown): SqliteAccessError => new SqliteAccessError("cleanup-failed", { database: controllerTimelineFormat.name, file: request.journalFile, phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 }, { cause: failure, outcome: maintenanceOutcome, connectionClosed: !db.open });
       // The actual marker is observed before another caller can decide whether
       // retirement or settlement remains; an unknown COMMIT is never replayed.
-      if (sqliteTransactionOutcome(cause) === "unknown" && db.open && !db.inTransaction) {
-        try { validateCommitted(db); pending(db); }
-        catch (readback) { throw new AggregateError([cause, readback], "Controller timeline cleanup commit outcome and readback are uncertain.", { cause }); }
+      if (maintenanceOutcome === "unknown" && db.open && !db.inTransaction) {
+        try { maintenanceOutcome = pending(db) ? "rolled-back" : "committed"; validateCommitted(db); }
+        catch (readback) { throw uncertainClear(new AggregateError([cause, readback], "Controller timeline cleanup commit outcome and readback are uncertain.", { cause })); }
       }
+      if (maintenanceOutcome === "unknown") throw uncertainClear(cause);
       throw cause;
     }
     validateCommitted(db);
@@ -322,7 +325,7 @@ export const maintainControllerTimeline = (options: {
     let pendingObservation: boolean | string = "unknown";
     try { if (db.open && !db.inTransaction) pendingObservation = pending(db); }
     catch (observation) { warn("Controller timeline failure marker observation failed.", observation); }
-    report(phase, "failed", { pending: pendingObservation, ...(cause instanceof TimelineReaderBusyError ? { checkpointBusy: cause.busy, logFrames: cause.logFrames, checkpointedFrames: cause.checkpointedFrames } : {}) }, cause instanceof SqliteAccessError ? cause.outcome : "committed", cause);
+    report(phase, "failed", { pending: pendingObservation, ...(cause instanceof TimelineReaderBusyError ? { checkpointBusy: cause.busy, logFrames: cause.logFrames, checkpointedFrames: cause.checkpointedFrames } : {}) }, cause instanceof SqliteAccessError ? cause.outcome : maintenanceOutcome, cause);
     if (cause instanceof TimelineReaderBusyError) return { kind: "waiting", reason: "reader_busy", cause };
     if (isControllerStorageCapacityError(cause)) return { kind: "waiting", reason: "physical_capacity", cause };
     throw cause;
@@ -364,10 +367,13 @@ export const prepareControllerTimelineStorage = (request: ControllerStorageReque
     });
     outcome = "committed";
     reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(request.mode === "upgrade-only" ? {} : { executionId: request.ticket.executionId }) });
-    reservation.refresh();
     validateCommitted(db);
-    result = request.mode === "upgrade-only" ? { kind: "prepared", snapshot, legacyTimelineCleanupPending: pending(db) } : maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
-  } catch (cause) { failure = cause; if (outcome !== "committed") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
+    if (request.mode === "upgrade-only") {
+      const cleanupPending = pending(db);
+      if (cleanupPending) reservation.refresh(); else reservation.settleNormalAdmission();
+      result = { kind: "prepared", snapshot, legacyTimelineCleanupPending: cleanupPending };
+    } else result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
+  } catch (cause) { failure = cause; if (outcome !== "committed" || cause instanceof SqliteAccessError && cause.outcome === "unknown") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
   if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
   catch (close) { throw new SqliteAccessError("cleanup-failed", { database: format.name, file: request.journalFile, phase: "timeline-preparation-close" }, { cause: failure === undefined ? close : new AggregateError([failure, close], "Controller timeline preparation and close failed."), outcome, connectionClosed: !db.open }); }
   if (failure !== undefined) {

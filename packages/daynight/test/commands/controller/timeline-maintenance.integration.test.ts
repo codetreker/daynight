@@ -11,8 +11,11 @@ import { openPendingContent } from "../../../src/commands/controller/pending-con
 import { type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { sessionBinding, type TimelineEntry } from "../../../src/session/protocol.js";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
-import { ControllerMediaBudgetError } from "../../../src/commands/controller/media/budget-ledger.js";
+import { ControllerMediaBudgetError, openMediaBudgetLedger } from "../../../src/commands/controller/media/budget-ledger.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
+import { assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
+import type { SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
 
 vi.mock("node:fs", async importOriginal => { const original = await importOriginal<typeof import("node:fs")>(); return { ...original, unlinkSync: vi.fn(original.unlinkSync), fsyncSync: vi.fn(original.fsyncSync), rmdirSync: vi.fn(original.rmdirSync) }; });
 
@@ -168,6 +171,40 @@ test("a settlement refusal leaves the actual cleared marker and sufficient alloc
   } finally { db.close(); f.permit.release(); }
 });
 
+test.each(["maintenance", "preparation", "upgrade-only"] as const)("completed cleanup uses ordinary admission without an unused compaction peak through %s", entry => {
+  const f = fixture(), db = upgrade(f);
+  try {
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
+    expect(marker(db)).toBe(0);
+    const space = fs.statfsSync(f.root, { bigint: true });
+    vi.spyOn(fs, "statfsSync").mockReturnValue({ ...space, bsize: 1n, bavail: 536870913n });
+    expect(() => assertControllerStorageCapacity(f.file, db, f.root, f.ticket.executionId)).not.toThrow();
+    const result = entry === "maintenance"
+      ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
+      : prepareControllerTimelineStorage(entry === "preparation" ? f.request : { journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {});
+    expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(charge(f)).toBe(136 * 1048576);
+  } finally { db.close(); f.permit.release(); }
+});
+
+test.each(["maintenance", "preparation"] as const)("completed cleanup retains its allocation when actual old metadata fails ordinary admission through %s", entry => {
+  const f = fixture(), db = upgrade(f);
+  try {
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
+    const ledger = openMediaBudgetLedger(f.root, f.ticket.executionId);
+    try { ledger.reserve(400 * 1048576); } finally { ledger.close(); }
+    fs.writeFileSync(f.old, "retained source", { mode: 0o600 }); fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
+    const before = charge(f), retainedBytes = controllerMetadataBudget(f.file, db).bytes();
+    expect(retainedBytes).toBeGreaterThan(CONTROLLER_METADATA_BYTES);
+    const result = entry === "maintenance"
+      ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
+      : prepareControllerTimelineStorage(f.request, f.permit, () => {});
+    expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
+    expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(true);
+    expect(charge(f)).toBe(before); expect(charge(f)).toBeGreaterThan(retainedBytes);
+  } finally { db.close(); f.permit.release(); }
+});
+
 test("upgrade-only preserves stopping evidence while exact stopped maintenance refuses it", () => {
   const f = fixture(), db = new Database(f.file);
   try {
@@ -227,16 +264,55 @@ test("reporter and failure-marker observation errors retain the actual operation
 
 test("unknown cleanup COMMIT with a failed readback preserves both errors and does not settle", () => {
   const f = fixture(), db = upgrade(f), exec = db.exec.bind(db), prepare = db.prepare.bind(db); let committed = false;
+  const events: SqliteMigrationEvent[] = [];
   try {
     vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     vi.spyOn(db, "exec").mockImplementation(source => { const result = exec(source); if (source === "COMMIT") { committed = true; throw new Error("actual unknown commit"); } return result; });
     vi.spyOn(db, "prepare").mockImplementation(source => { if (committed && source.startsWith("SELECT legacy_timeline_cleanup_pending")) throw new Error("marker readback failure"); return prepare(source); });
     let failure: unknown;
-    try { maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} }); } catch (cause) { failure = cause; }
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors.map(error => error.message)).toEqual(["actual unknown commit", "marker readback failure"]);
+    try { maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event); } }); } catch (cause) { failure = cause; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect(failure).toMatchObject({ outcome: "unknown", context: { phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 } });
+    expect(((failure as Error).cause as AggregateError).errors.map(error => error.message)).toEqual(["actual unknown commit", "marker readback failure"]);
+    expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", outcome: "unknown", storage: { pending: "unknown" } });
     vi.restoreAllMocks(); expect(marker(db)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, db).bytes());
   } finally { db.close(); f.permit.release(); }
+});
+
+test("preparation close failure retains an unknown cleanup marker outcome after its readback fails", () => {
+  const f = fixture(), db = upgrade(f); db.close();
+  const exec = Database.prototype.exec, prepare = Database.prototype.prepare, close = Database.prototype.close;
+  let committed = false;
+  try {
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, source: string) {
+      const clearing = this.name === f.file && source === "COMMIT" && (prepare.call(this, "SELECT legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1") as Database.Statement<[], { pending: number }>).get()!.pending === 0;
+      const value = exec.call(this, source);
+      if (clearing) { committed = true; throw new Error("actual unknown marker commit"); }
+      return value;
+    });
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
+      if (committed && this.name === f.file && source.startsWith("SELECT legacy_timeline_cleanup_pending")) throw new Error("actual marker readback failure");
+      return prepare.call(this, source);
+    });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+      const value = close.call(this);
+      if (committed && this.name === f.file && !this.readonly) throw new Error("actual preparation close failure");
+      return value;
+    });
+    let failure: unknown;
+    try { prepareControllerTimelineStorage(f.request, f.permit, () => {}); } catch (cause) { failure = cause; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "unknown", connectionClosed: true, context: { phase: "timeline-preparation-close" } });
+    const causes = ((failure as Error).cause as AggregateError).errors;
+    expect(causes[0]).toMatchObject({ outcome: "unknown", context: { phase: "timeline-cleanup-marker" } });
+    expect(causes[1]).toMatchObject({ kind: "cleanup-failed", outcome: "unknown" });
+    vi.restoreAllMocks();
+    const actual = new Database(f.file);
+    try { expect(actual.pragma("user_version", { simple: true })).toBe(10); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
+    finally { actual.close(); }
+    expect(prepareControllerTimelineStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+  } finally { vi.restoreAllMocks(); f.permit.release(); }
 });
 
 test("actual occupation verification failure cannot clear pending or lower its reservation", () => {
