@@ -1070,6 +1070,10 @@ test('standalone Goal restores the external Goal dialog and its reading selectio
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.goForward(); await expect(external.locator('.attachment-file-selected')).toContainText('notes.txt');
+  await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
+  await page.reload();
+  await expect(external).toHaveCount(0);
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
 });
 
 for (const attachmentBacked of [false, true]) test(`a moved external Goal child follows its latest parent and protects both drafts with attachment path ${attachmentBacked}`, async ({ page }) => {
