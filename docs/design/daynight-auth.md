@@ -360,6 +360,24 @@ revision，确认旧 revision 不会抹掉期间新增的故障。采样器不�
 可导致样本丢失。正常 drain 封闭接纳并强制待处理事件到期，等待 worker 和 consumer 退出；
 已退出但存在未落库样本时保留原因和数量并报告完成事实。超时不另起工作，后续调用继续等待
 同一工作。writer 返回不证明 pgx 内部异步资源已释放，连接池关闭由 persistence 负责。
+
+生产 App 从同一个 `Persistence.Transactions` 显式构造唯一 recorder，保存在
+`Application.CredentialUsage`，由 `App.Start` 启动。记录器的工作 context 不随 root 取消，
+已准入请求在 HTTP grace 期间仍可接纳事件；强制取消通过 `App.CancelWork` 传递。
+HTTP 与 relay 完成后，`App.Drain` 先确认现有 producer 停止，再 seal 并等待 recorder。
+外层错误的 `Drained()` 只表达整个应用的完成事实，不能由 joined 子错误推导。
+记录失败但整体已退出时，`App.Close` 继续释放依赖并保留原 cause；只有实际全部关闭后，
+返回错误才声明 `Closed()`。Runtime 保存历史错误，依据整体完成事实继续关闭，后续调用不重启
+已完成的工作。原 `persistenceClosed` channel 等待同一次 pool 关闭，超时重试不会另起关闭。
+
+HTTP `RequestLogging` 在 request ID 后建立固定 collector。协议入口可调用
+`httpx.PublishCredentialUsageFaults`，在返回成功身份或进入长处理前发布安全故障；无故障时
+不输出额外日志。发布复制 revision，在 logger 确认成功后才 acknowledge；发布期间新增故障
+仍待确认，日志失败也保留原版本。故障字段位于请求日志的 `credential_usage` 子对象，保留
+subject/user、phase/error_code、source、原始 request/event 时间、固定类别计数及 revision，
+不输出原始错误、请求正文、URL 或秘密。normal、panic 和 abort 出口补发尚未确认版本；
+panic/abort 保持原中止语义，abort 另有安全请求日志。真实认证和续期事件的接入由各协议
+成功边界负责，单独启用 recorder 不产生认证事件。
 [记录器决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-recorder.md)
 记录其取舍。
 

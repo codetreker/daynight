@@ -62,16 +62,30 @@ func (a *App) assembleWebhooks(db store.Transactions, enabled bool, logger *slog
 	return nil
 }
 
-// Start starts the webhook workers after all application dependencies are assembled.
+// Start starts the application workers after all dependencies are assembled.
 // A root cancellation stops claims immediately; in-flight work is canceled by
 // CancelWork after the HTTP and Session drain has begun.
 func (a *App) Start(root context.Context) error {
+	<-a.drainLock
+	defer func() { a.drainLock <- struct{}{} }()
+	if a.drained {
+		return errors.New("application already drained")
+	}
 	w := a.webhookRuntime
-	if w == nil {
+	if w == nil && a.CredentialUsage == nil {
 		return nil
 	}
 	if root == nil || root.Err() != nil {
-		return errors.New("invalid webhook runtime context")
+		return errors.New("invalid application runtime context")
+	}
+	if a.CredentialUsage != nil {
+		if err := a.CredentialUsage.Start(context.WithoutCancel(root)); err != nil {
+			return err
+		}
+		a.usageStarted = true
+	}
+	if w == nil {
+		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -143,6 +157,9 @@ func (a *App) StopClaims() {
 
 // CancelWork cancels outstanding attempts and maintenance after claims stop.
 func (a *App) CancelWork() {
+	if a.CredentialUsage != nil {
+		a.CredentialUsage.CancelWork()
+	}
 	if w := a.webhookRuntime; w != nil {
 		w.mu.Lock()
 		cancel := w.cancel
@@ -154,8 +171,50 @@ func (a *App) CancelWork() {
 	a.Engine.CancelWork()
 }
 
-// Drain waits for all webhook work and the Session engine before dependencies close.
+// Drain seals the recorder only after transport callers have stopped using the
+// application. An error's Drained result describes every application producer.
 func (a *App) Drain(ctx context.Context) error {
+	select {
+	case <-a.drainLock:
+		defer func() { a.drainLock <- struct{}{} }()
+	case <-ctx.Done():
+		return appDrainError{cause: ctx.Err()}
+	}
+	if a.drained {
+		return a.drainResult(nil, true)
+	}
+	if err := a.drainProducers(ctx); err != nil {
+		return a.drainResult(err, false)
+	}
+	if a.CredentialUsage != nil && a.usageStarted {
+		if err := a.CredentialUsage.Drain(ctx); err != nil {
+			if complete, ok := err.(interface{ Drained() bool }); !ok || !complete.Drained() {
+				return a.drainResult(err, false)
+			}
+			a.drainErr = errors.Join(a.drainErr, err)
+		}
+	}
+	a.drained = true
+	return a.drainResult(nil, true)
+}
+
+type appDrainError struct {
+	cause   error
+	drained bool
+}
+
+func (e appDrainError) Error() string { return e.cause.Error() }
+func (e appDrainError) Unwrap() error { return e.cause }
+func (e appDrainError) Drained() bool { return e.drained }
+
+func (a *App) drainResult(err error, complete bool) error {
+	if cause := errors.Join(a.drainErr, err); cause != nil {
+		return appDrainError{cause: cause, drained: complete}
+	}
+	return nil
+}
+
+func (a *App) drainProducers(ctx context.Context) error {
 	if w := a.webhookRuntime; w != nil {
 		a.StopClaims()
 		w.mu.Lock()
@@ -185,7 +244,23 @@ func (a *App) Drain(ctx context.Context) error {
 			}
 		}
 	}
-	return a.Engine.Stop(ctx)
+	if err := a.Engine.Stop(ctx); err != nil {
+		return err
+	}
+	if a.oauthMaintenance != nil {
+		if err := a.oauthMaintenance.Stop(ctx); err != nil {
+			return err
+		}
+	}
+	if a.PrivateContent != nil {
+		if err := a.PrivateContent.Close(ctx); err != nil {
+			return err
+		}
+	}
+	if a.WorkerReadOnly != nil {
+		a.WorkerReadOnly.Close()
+	}
+	return nil
 }
 
 func validateWebhookStartup(ctx context.Context, db store.Transactions) error {
