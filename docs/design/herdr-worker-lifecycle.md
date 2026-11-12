@@ -31,7 +31,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；requested、observed 或 unknown 不能返回 not_submitted。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
 
-只有本次明确成功取得的新 claim，或同次人工 resume 经精确读回确认的新 grant，能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
+只有本次明确成功取得的新 claim 能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 
 ## 启动与首次输入
 
@@ -78,7 +78,7 @@ journal 无法落盘时只依据已有证明尝试受控停止，并报告结果
 
 ## 调度、退出与人工接入
 
-Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源；人工 resume 在申请新 claim 前拒绝尚未完成的 Herdr archive/worktree 责任，不能先授予一个无法执行的新 claim。
+Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源，尚未完成的 Herdr archive/worktree 责任阻止同一 Worker 申请新 claim。
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 

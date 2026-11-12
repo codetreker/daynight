@@ -44,10 +44,6 @@ type WithdrawWorker struct {
 	Version int64
 	ClaimID string
 }
-type ResumeWorker struct {
-	ClaimWorker
-	PreviousClaimID string
-}
 
 func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error) {
 	if input.AgentControlMode == "" {
@@ -101,20 +97,6 @@ func ClaimAdmission(current model.Task, userID string, descriptor WorkerDescript
 		return err
 	}
 	return FreshWorkerExecution(worker, descriptor)
-}
-
-func ReleasedWorker(current model.Task, previousID string) (*model.WorkerClaim, error) {
-	if err := WorkerReady(current); err != nil {
-		return nil, err
-	}
-	worker, err := taskproperty.Worker(current.Properties)
-	if err != nil {
-		return nil, err
-	}
-	if worker == nil || worker.State != model.WorkerReleased || worker.ClaimID != previousID {
-		return nil, ClaimConflict()
-	}
-	return worker, nil
 }
 
 func FreshWorkerExecution(worker *model.WorkerClaim, descriptor WorkerDescriptor) error {
@@ -275,7 +257,6 @@ func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {
 }
 
 // ClaimParentAdmission rechecks the parent inside the Project write scope.
-// A released execution resumes through its separate continuation path.
 func ClaimParentAdmission(ctx context.Context, dao store.TaskWriteDAO, current model.Task) error {
 	if current.ParentID == nil {
 		return nil

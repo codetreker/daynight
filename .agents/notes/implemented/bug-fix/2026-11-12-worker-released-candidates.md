@@ -28,5 +28,6 @@ service ordering and competition without resolving retained local resources.
 
 The original Worker can compete after its local responsibilities end; other
 Workers need not wait for that local barrier. Release still retains the released
-record and the explicit resume protocol remains available. Ordinary eligibility
-and the existing resource fences continue to apply.
+record. Ordinary eligibility and the existing resource fences continue to apply.
+The later [resume retirement decision](../simplification/2026-11-12-retire-worker-resume.md)
+removes the separate manual protocol.

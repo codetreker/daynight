@@ -28,7 +28,6 @@ func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentica
 	}{
 		{"release", handler.releaseWorker},
 		{"withdraw", handler.withdrawWorker},
-		{"resume", handler.resumeWorker},
 	} {
 		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(operation.handler))
 		mux.HandleFunc(path+"/"+operation.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
@@ -97,10 +96,6 @@ func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request
 
 func (h *taskHandler) withdrawWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "withdraw", []string{"version", "claimId"}, withdrawWorkerInput, h.tasks.WithdrawWorker)
-}
-
-func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
 }
 
 func workerDescriptorInput(fields map[string]json.RawMessage) (taskcore.WorkerDescriptor, error) {
@@ -265,16 +260,4 @@ func withdrawWorkerInput(fields map[string]json.RawMessage) (taskcore.WithdrawWo
 	}
 	claimID, err := httpx.RequiredString(fields, "claimId")
 	return taskcore.WithdrawWorker{Version: version, ClaimID: claimID}, err
-}
-
-func resumeWorkerInput(fields map[string]json.RawMessage) (taskcore.ResumeWorker, error) {
-	input, err := claimWorkerInput(fields)
-	if err != nil {
-		return taskcore.ResumeWorker{}, err
-	}
-	previous, err := httpx.RequiredString(fields, "previousClaimId")
-	if err != nil {
-		return taskcore.ResumeWorker{}, err
-	}
-	return taskcore.ResumeWorker{ClaimWorker: input, PreviousClaimID: previous}, nil
 }

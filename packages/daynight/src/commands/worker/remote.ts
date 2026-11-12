@@ -5,7 +5,7 @@ import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId, ProtocolError } from "../../api/parse.js";
-import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WorkerReport, WorkerReportReceipt } from "../../api/types.js";
+import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, WorkerReport, WorkerReportReceipt } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -33,7 +33,6 @@ export type WorkerRemote = {
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
-  resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void, onFailure?: (projectId: string, error: unknown) => void): Promise<WorkerInventory>;
@@ -124,7 +123,6 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       if (verifiedUserId() !== originalUserId && access.effectiveRole !== "admin") throw new Error("Source management requires its original owner or a current project administrator.");
     },
     release: (projectId, taskId, input, signal) => request(signal, (api) => api.releaseWorkerClaim(projectId, taskId, input)),
-    resume: (projectId, taskId, input, signal) => request(signal, (api) => api.resumeWorkerTask(projectId, taskId, input)),
     project: (projectId, signal) => request(signal, api => api.getProject(projectId)),
     resolveProject: async (repository, signal) => {
       const expected = repositoryIdentity(repository.repoUrl);

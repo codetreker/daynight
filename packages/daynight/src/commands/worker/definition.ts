@@ -5,7 +5,7 @@ const claim: CommandOption = { names: ["--claim-id"], description: "Identify the
 const project: CommandOption = { names: ["--project"], description: "Identify the task's project explicitly", value: { name: "project-id", kind: "text" } };
 const version: CommandOption = { names: ["--if-version"], description: "Use exactly this observed task version", value: { name: "version", kind: "text" }, required: true };
 const task = [{ name: "task-id", description: "Task UUID" }];
-const controlDetails = "Stop worker run first. The command takes the same exclusive instance lock and manages one original claim synchronously. Stop its agent and close its workspace, submit the version-bound remote operation, then delete its worktree after ownership ends. Cleanup waits at most 10 minutes per attempt. An unknown remote result is read back without replaying the write; reconcile an interrupted result before restarting the runner.";
+const controlDetails = "Stop worker run first. The command takes the same exclusive instance lock and manages one original claim synchronously. Stop its agent and close its workspace, submit the version-bound remote operation, then delete its worktree after ownership ends. Cleanup waits at most 10 minutes per attempt. An unknown remote result is not replayed; reconcile an interrupted result before restarting the runner.";
 
 export const workerDefinition: CommandDefinition = {
   name: "worker",
@@ -83,12 +83,7 @@ export const workerDefinition: CommandDefinition = {
     arguments: task,
     options: [claim, version, project, help],
     details: `${controlDetails}\nReleased tasks remain eligible for ordinary automatic acquisition.`,
-  }, {
-    name: "resume",
-    description: "Start a released task as a fresh execution on this worker",
-    arguments: task,
-    options: [claim, version, project, help],
-    details: "Stop worker run first. --claim-id identifies the previous released claim. The original owner or a project admin may explicitly resume a ready task, including the manual permission/platform exception. Use a fresh claim, worktree identity and native conversation with this worker's current effective configuration. The source worktree and native history are not required. The exact --if-version is never replaced; uncertain writes are reconciled without replay.",
+
   }],
   options: [help],
   details: "Run daynight worker <command> --help for command usage.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).",

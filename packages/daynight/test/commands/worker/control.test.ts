@@ -9,18 +9,16 @@ import type { Task, WorkerClaim } from "../../../src/api/types.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import type { WorkerControlRequest } from "../../../src/commands/worker/control.js";
 import type { WorkerInputWait } from "../../../src/commands/worker/coordinator.js";
-import type { WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
-import type { ExecutionConfiguration, ResourceOwner } from "../../../src/commands/worker/types.js";
+import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
 const owner = uuid(1), projectId = uuid(2), taskId = uuid(3), claimId = uuid(4), workerId = uuid(5), worktreeId = uuid(6);
 const time = "2026-10-27T00:00:00Z";
 const machine = { id: uuid(7), name: "source" };
-const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 0 };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
 const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
@@ -36,10 +34,7 @@ const fixture = (local = true) => {
   if (local) store.activateTask(store.registerPending({ ...identity, agent: "copilot" }));
   let observed = remoteTask();
   const order: string[] = [];
-  const events: WorkerEvent[] = [];
   const coordinator = {
-    assertCanAcquire: vi.fn(),
-    registerClaim: vi.fn((granted: Task) => { const grantedClaim = readWorkerClaim(granted.properties)!; expect(store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: grantedClaim.claimId })?.status).toBe("pending"); }),
     advanceRetry: vi.fn(async (): Promise<WorkerInputWait | void> => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
     completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); const worker = readWorkerClaim(observed.properties); expect(worker?.claimId !== claimId || worker.state !== "active").toBe(true); store.completeTask(identity); }),
@@ -47,12 +42,11 @@ const fixture = (local = true) => {
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
-    resume: vi.fn(async (_projectId, _taskId, input) => { const { version: _version, previousClaimId: _previousClaim, ...grant } = input; order.push("resume"); observed = remoteTask({ ...claim, ...grant, agentControlMode: input.agentControlMode ?? "herdr", userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     report: vi.fn(), readMonitoring: vi.fn(), writeMonitoring: vi.fn(), configuration: vi.fn(), reportConfiguration: vi.fn(), project: vi.fn(), resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
-  const options = { store, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine, repositories: [{ project, configuration }], signal: new AbortController().signal, coordinator, emit: (event: WorkerEvent) => { events.push(event); order.push(event.kind); } };
+  const options = { store, remote, serverOrigin: origin, workerId, signal: new AbortController().signal, coordinator };
   const submit = (request: WorkerControlRequest) => submitWorkerControl({ ...options, request });
-  return { store, project, identity, resourceOwner, remote, options, submit, coordinator, events, order, observe: (task: Task) => { observed = task; }, current: () => store.getTask(identity)! };
+  return { store, project, identity, resourceOwner, remote, options, submit, coordinator, order, observe: (task: Task) => { observed = task; }, current: () => store.getTask(identity)! };
 };
 const release = { kind: "release", taskId, claimId, version: 8n } as const;
 afterEach(() => {
@@ -111,30 +105,29 @@ describe("synchronous worker source management", () => {
     expect(f.current().status).toBe("active");
   });
 
-  it.each([release])("recovers a lost $kind response by one GET without replaying the write", async (request) => {
+  it("preserves an unconfirmed release error without reading again, replaying, or completing the source", async () => {
     const f = fixture();
-    const original = vi.mocked(f.remote.release).getMockImplementation()!;
-    vi.mocked(f.remote.release).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Response lost"); });
-    expect((await f.submit(request)).task?.status).toBe("done");
-    expect(f.remote.readTask).toHaveBeenCalledTimes(2);
-    expect(f.remote.release).toHaveBeenCalledOnce();
-    expect(f.coordinator.completeSource).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the original source when an unknown submission cannot be confirmed", async () => {
-    const f = fixture(); const lost = new Error("Response lost");
+    const lost = new ApiError({ operation: "worker.release" }, "response", { cause: new Error("Response lost"), outcomeUnconfirmed: true });
     vi.mocked(f.remote.release).mockRejectedValueOnce(lost);
-    await expect(f.submit(release)).rejects.toMatchObject({ cause: lost, message: expect.stringContaining("before restarting worker run") });
-    expect(f.remote.release).toHaveBeenCalledOnce(); expect(f.remote.readTask).toHaveBeenCalledTimes(2);
+    await expect(f.submit(release)).rejects.toBe(lost);
+    expect(lost.outcomeUnconfirmed).toBe(true);
+    expect(f.remote.release).toHaveBeenCalledOnce(); expect(f.remote.readTask).toHaveBeenCalledOnce();
     expect(f.coordinator.completeSource).not.toHaveBeenCalled(); expect(f.current().status).toBe("active");
   });
 
-  it("preserves both original mutation and reconciliation errors", async () => {
-    const f = fixture(); const lost = new Error("Response lost"), unavailable = new Error("GET unavailable");
-    vi.mocked(f.remote.release).mockRejectedValueOnce(lost);
-    vi.mocked(f.remote.readTask).mockResolvedValueOnce(remoteTask()).mockRejectedValueOnce(unavailable);
-    await expect(f.submit(release)).rejects.toMatchObject({ errors: [lost, unavailable] });
-    expect(f.coordinator.completeSource).not.toHaveBeenCalled(); expect(f.current().status).toBe("active");
+  it("propagates cancellation after dispatch without replay or completion", async () => {
+    const f = fixture(); const controller = new AbortController();
+    const failure = new ApiError({ operation: "worker.release" }, "request", { cause: new Error("Cancelled"), outcomeUnconfirmed: true });
+    vi.mocked(f.remote.release).mockImplementationOnce(async () => { controller.abort(); throw failure; });
+    await expect(submitWorkerControl({ ...f.options, request: release, signal: controller.signal })).rejects.toBe(failure);
+    expect(f.remote.readTask).toHaveBeenCalledOnce(); expect(f.remote.release).toHaveBeenCalledOnce();
+    expect(f.coordinator.completeSource).not.toHaveBeenCalled();
+  });
+
+  it("requires a local unfinished source even when a project is specified", async () => {
+    const f = fixture(false);
+    await expect(f.submit({ ...release, projectId })).rejects.toThrow("original unfinished local execution");
+    expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
   });
 
   it("retains the source if stopping fails and exposes post-success deletion failure for later run cleanup", async () => {
@@ -143,7 +136,7 @@ describe("synchronous worker source management", () => {
     await expect(f.submit(release)).rejects.toBe(stop);
     expect(f.remote.release).not.toHaveBeenCalled();
     const deletion = new Error("Worktree deletion failed"); f.coordinator.completeSource.mockRejectedValueOnce(deletion);
-    await expect(f.submit(release)).rejects.toBe(deletion);
+    await expect(f.submit(release)).rejects.toMatchObject({ cause: deletion, message: expect.stringContaining("Release was confirmed") });
     expect(f.remote.release).toHaveBeenCalledOnce(); expect(f.current().status).toBe("active");
   });
 
@@ -158,7 +151,7 @@ describe("synchronous worker source management", () => {
     const result = await f.submit({ kind: "retry", taskId, claimId });
     expect(f.coordinator.advanceRetry).toHaveBeenCalledExactlyOnceWith(f.identity);
     expect(result.task).toMatchObject({ ...f.identity, status: "active", agent: "copilot", sessionId: uuid(40) });
-    expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
+    expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
     expect(f.store.listTasks()).toHaveLength(1);
   });
 
@@ -190,63 +183,5 @@ describe("synchronous worker source management", () => {
     expect(f.coordinator.cleanupSource).toHaveBeenCalledOnce(); expect(f.remote.release).not.toHaveBeenCalled();
     await expect(submitWorkerControl({ ...f.options, request: release, signal: AbortSignal.abort(cancelled) })).rejects.toBe(cancelled);
     expect(f.remote.release).not.toHaveBeenCalled(); expect(f.coordinator.completeSource).not.toHaveBeenCalled();
-  });
-});
-
-describe("worker explicit resume grants", () => {
-  it("rejects retained archive responsibility before submitting a fresh resume claim", async () => {
-    const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
-    const failure = new Error("Original worktree remains reserved until archive finalization");
-    f.coordinator.assertCanAcquire.mockImplementation(() => { throw failure; });
-    await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toBe(failure);
-    expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
-    expect(f.coordinator.assertCanAcquire).toHaveBeenCalledExactlyOnceWith({ projectId, taskId });
-  });
-
-  it("uses fresh printed identities and current agent settings without inheriting old native history", async () => {
-    const f = fixture(); f.store.setSessionId(f.identity, uuid(50)); f.store.completeTask(f.identity);
-    f.observe(remoteTask({ ...claim, state: "released", nativeSessionId: uuid(50) }));
-    const original = vi.mocked(f.remote.resume).getMockImplementation()!;
-    vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => {
-      const input = args[2];
-      expect(input.claimId).not.toBe(claimId); expect(input.worktreeId).not.toBe(worktreeId);
-      expect(input).toMatchObject({ previousClaimId: claimId, version: 8n, workerId, agent: "codex" });
-      expect(f.events[0]!.message).toContain(input.claimId); expect(f.events[0]!.message).toContain(input.worktreeId);
-      expect(f.store.listTasks()).toHaveLength(1);
-      return original(...args);
-    });
-    const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
-    expect(vi.mocked(f.remote.resume).mock.calls[0]![2]).not.toHaveProperty("agentControlMode");
-    expect(result.task).toMatchObject({ projectId, taskId, status: "pending", agent: "codex", sessionId: null });
-    expect(f.coordinator.registerClaim).toHaveBeenCalledOnce();
-    expect(readWorkerClaim(f.coordinator.registerClaim.mock.calls[0]![0].properties)?.claimId).toBe(result.task?.claimId);
-    expect(f.current()).toMatchObject({ status: "done", sessionId: uuid(50), agent: "copilot" });
-    expect(f.store.listTasks()).toHaveLength(2); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
-  });
-
-  it("recovers a granted resume after response loss without a second write", async () => {
-    const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
-    const original = vi.mocked(f.remote.resume).getMockImplementation()!;
-    vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Resume response lost"); });
-    const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
-    expect(result.task?.status).toBe("pending"); expect(f.remote.resume).toHaveBeenCalledOnce(); expect(f.remote.readTask).toHaveBeenCalledTimes(2);
-    expect(f.coordinator.registerClaim).toHaveBeenCalledOnce();
-  });
-
-  it("keeps unknown resume unregistered and refuses a grant for another principal", async () => {
-    const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
-    const original = vi.mocked(f.remote.resume).getMockImplementation()!;
-    vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { const granted = await original(...args); const other = { ...granted, properties: { ...granted.properties, worker: { ...readWorkerClaim(granted.properties)!, userId: uuid(90) } } }; f.observe(other); return other; });
-    await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toThrow("result is unknown");
-    expect(f.store.listTasks()).toEqual([]); expect(f.remote.resume).toHaveBeenCalledOnce();
-    expect(f.coordinator.registerClaim).not.toHaveBeenCalled();
-  });
-
-  it("rejects stale versions and wrong released claims before issuing new grants", async () => {
-    const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }, 9n));
-    await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toThrow("explicit task version");
-    f.observe(remoteTask({ ...claim, state: "released", claimId: uuid(80) }));
-    await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toThrow("exact released previous claim");
-    expect(f.remote.resume).not.toHaveBeenCalled();
   });
 });

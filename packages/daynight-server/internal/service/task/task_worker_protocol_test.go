@@ -188,19 +188,12 @@ func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testin
 				err := fixture.Tasks.Delete(fixture.Context, principal, released.ProjectID, released.ID, taskcore.DeleteTask{Version: released.Version})
 				requireFault(t, err, "invalid_transition")
 			})
-			for _, next := range []taskcore.WorkerDescriptor{descriptor, workerDescriptor()} {
-				if next.ClaimID == descriptor.ClaimID {
-					_, err = tasks.ResumeWorker(ctx, principal, released.ProjectID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-					requireFault(t, err, "invalid_transition")
-					continue
-				}
-				t.Run("resume", func(t *testing.T) {
-					fixture := workerMockWrite(t, released, principal)
-					fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
-					_, err := fixture.Tasks.ResumeWorker(fixture.Context, principal, released.ProjectID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-					requireFault(t, err, "invalid_transition")
-				})
-			}
+			t.Run("reclaim", func(t *testing.T) {
+				fixture := workerMockWrite(t, released, principal)
+				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
+				_, err := fixture.Tasks.ClaimWorker(fixture.Context, principal, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()})
+				requireFault(t, err, "invalid_transition")
+			})
 		})
 	}
 }

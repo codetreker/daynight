@@ -148,7 +148,6 @@ daynight worker repo remove [--project <project-id>]
 daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
-daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -962,8 +961,8 @@ checked before same-state handling: current same-state keeps
 version, update time and timing unchanged; actual changes increment once.
 Actual cancellation records required nullable `cancelledAt`, preserves existing
 execution times and materials, and satisfies dependencies without deleting edges.
-Active ownership must first be released; cancelled tasks cannot resume or withdraw
-back to todo.
+Active ownership must first be released; cancelled tasks cannot be claimed or
+withdrawn back to todo.
 
 Entering in_progress or done requires all direct prerequisites, ordinary and
 external, to be done or cancelled. Reopening done requires no direct in-progress or done
@@ -2450,9 +2449,8 @@ existing executions retain their recovery and cleanup authority. New candidates
 combine assignedTo=me, ready, automatic permission and actual platform before
 server pagination; the claim transaction rechecks the assignee against the
 authenticated user ID. Unassigned tasks and tasks assigned to another account
-are ineligible for automatic acquisition. Explicit manual resume retains its
-original execution-owner/admin rules. Still-owned local active tasks are queued for fresh target
-observation and recovery before global Git discovery, so a sibling checkout's
+are ineligible for automatic acquisition. Still-owned local active tasks are
+queued for fresh target observation and recovery before global Git discovery, so a sibling checkout's
 filesystem error does not block an already-reserved task. New pending startup
 and new claims still require complete global resource discovery. Failed or
 partial reads are errors, not an empty inventory. Resources from unqueried or
@@ -2473,9 +2471,8 @@ A candidate with retained same-task resources is skipped before remote claim.
 An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
 request. A late grant can remain pending while local active slots are full. On
-macOS, only a grant confirmed in its original acquisition or manual resume
-operation can register fresh launch provenance. An inventory-recovered claim
-without that durable record remains unknown; empty remote summaries cannot
+macOS, only a grant confirmed in its original acquisition can register fresh
+launch provenance. An inventory-recovered claim without that durable record remains unknown; empty remote summaries cannot
 authorize another launch.
 
 Each reconciliation round acquires at most one new task across all configured
@@ -3029,9 +3026,9 @@ the supported behavior and verification boundary.
 
 ## Worker manual management
 
-Stop `daynight worker run` before retry, release, resume or resource management.
+Stop `daynight worker run` before retry, release or resource management.
 Each command acquires the same instance lock; an occupied lock returns an
-instruction to stop the runner. Retry, release and resume synchronously handle
+instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue. Resource disposal
 persists its explicit decision so an interrupted deletion can resume against
 the original identity.
@@ -3139,27 +3136,19 @@ daynight worker release <task-id> --claim-id <claim-id> --if-version <version> \
   --project <project-id>
 ```
 
-Release returns the task to todo and clears its execution interval. Eligible
-released tasks participate in ordinary automatic acquisition. Explicit resume
-also remains available:
-
-```bash
-daynight worker resume <task-id> --claim-id <released-claim-id> --if-version <version> \
-  --project <project-id>
-```
-
-Resume requires the previous released claim, ready task and original owner/admin.
+Release returns the task to todo, clears its execution interval and retains the
+released record. Eligible tasks participate in ordinary automatic acquisition,
+with the usual assignee, permission, platform, dependency and Goal checks.
 Remote Worker control reads the caller's current `/projects/{id}/access`
 projection for administrator authority and verifies its project/principal binding;
 member profile reads retain their separate directory responsibility. Grant
 versions preserve the full positive int64 range.
-An original Herdr archive/worktree reservation rejects resume before a remote
-claim is submitted. Otherwise it preserves the explicit manual
-permission/platform exception, obtains fresh
-claim/worktree identities with current settings, and registers pending with a
-NULL native session ID. On macOS, the confirmed new grant also records fresh
-launch provenance; any retained old worktree still blocks replacement until its
-cleanup conditions are met. Start run to execute an eligible pending claim.
+
+Release submits one remote request after confirming the source has stopped. A
+valid response confirms release; a lost or invalid response remains unknown and
+is neither replayed nor inferred from a later Task read. Source completion runs
+only after a valid response. If completion fails, release remains confirmed and
+the original resources need cleanup by a later run.
 
 Web task details show the current claiming user, machine, agent and phase. The
 original owner or a project admin can confirm **Force withdraw** for active or

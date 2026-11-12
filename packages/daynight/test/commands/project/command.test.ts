@@ -52,7 +52,6 @@ const fixture = (projects: readonly Project[] = []) => {
     completeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     withdrawWorkerClaim: async () => { throw new Error("Unused worker API method"); },
-    resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     createTask: unavailable, getTask: unavailable, listTasks: unavailable, searchTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, deleteTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
     putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable, webhookRequest: unavailable,
   };
