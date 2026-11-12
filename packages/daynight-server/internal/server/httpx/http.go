@@ -251,7 +251,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "unsupported_mode":
 			status = http.StatusBadRequest
-		case "content_changed", "history_pending", "execution_changed":
+		case "claim_held", "claim_lost", "task_paused", "content_changed", "history_pending", "execution_changed":
 			status = http.StatusConflict
 		case "content_unavailable":
 			status = http.StatusBadGateway
@@ -276,6 +276,10 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
+			var claim *model.AssistantTaskClaimError
+			if errors.As(err, &claim) {
+				response.Details = &api.ErrorDetails{HolderBotID: claim.Claim.HolderBotID, ClaimGeneration: &claim.Claim.Generation, LeaseUntil: claim.Claim.LeaseUntil}
+			}
 			if len(fault.TaskIDs) > 0 {
 				response.Details = &api.ErrorDetails{TaskIDs: fault.TaskIDs}
 			}
