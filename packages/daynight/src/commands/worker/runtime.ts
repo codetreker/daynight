@@ -43,7 +43,8 @@ import { createMonitoringSender } from "./monitoring/sender.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
-import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "./diagnostics.js";
+import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticSinkEvent } from "./diagnostics.js";
+import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
 import { hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
@@ -267,6 +268,17 @@ export const runWorker = async (options: {
   const observeMonitoring = (action: (observer: NonNullable<typeof monitoring>) => void): void => {
     if (monitoring !== undefined) try { action(monitoring); } catch { /* Monitoring cannot change worker execution. */ }
   };
+  let diagnosticSinkFailure: string | undefined;
+  const observeDiagnosticSink = (event: WorkerDiagnosticSinkEvent): void => observeMonitoring(m => {
+    if (event.state === "recovered") {
+      if (diagnosticSinkFailure !== undefined) m.recover(diagnosticSinkFailure);
+      diagnosticSinkFailure = undefined;
+    } else {
+      diagnosticSinkFailure ??= randomUUID();
+      m.fail({ operationId: diagnosticSinkFailure, component: "runtime", phase: `diagnostics-${event.phase}`, scope: { kind: "worker" }, error: event.error,
+        retryState: event.nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt: event.nextAttemptAt });
+    }
+  });
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
   const failures: unknown[] = [];
@@ -280,8 +292,8 @@ export const runWorker = async (options: {
     monitoring = createMonitoringObserver({ onDirty: () => monitoringSender?.markDirty() });
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
-    for (const directory of [paths.temporaryDirectory, paths.logsDirectory]) await mkdir(directory, { recursive: true, mode: 0o700 });
-    diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
+    await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
+    diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken], onSinkState: observeDiagnosticSink });
     const emit = diagnostics.emit;
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const invalidateUnavailable = (projectId?: string): void => {
@@ -432,9 +444,28 @@ export const runWorker = async (options: {
     let effectiveSignature = "";
     const reconcileWake = createReconcileWake();
     let scheduleInitialRemovals: (() => void) | undefined;
+    let configurationStorageFailure: string | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
       ...toolRuntime.configurationOptions, applyNative: nativeApplication.apply,
+      onStorageState: event => {
+        const observedAt = new Date().toISOString();
+        observeMonitoring(m => {
+          if (event.kind === "recovered") {
+            if (configurationStorageFailure !== undefined) m.recover(configurationStorageFailure);
+            configurationStorageFailure = undefined;
+          } else {
+            configurationStorageFailure ??= randomUUID();
+            m.fail({ operationId: configurationStorageFailure, component: "configuration", phase: `cache-${event.phase}`, scope: { kind: "worker" }, error: event.error,
+              retryState: event.nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt: event.nextAttemptAt });
+            m.setAdmission("partial", [{ code: "configuration-unavailable", scope: { kind: "worker" }, observedAt, nextAttemptAt: event.nextAttemptAt }]);
+          }
+        });
+        emit({ kind: `worker-configuration-storage-${event.kind}`, component: "configuration", phase: `cache-${event.phase}`,
+          message: JSON.stringify({ file: paths.configurationFile, recordIds: event.recordIds, attempts: event.attempts, nextAttemptAt: event.nextAttemptAt }),
+          ...(event.error === undefined ? {} : { error: event.error }) });
+        if (event.kind === "recovered") { reporter?.trigger(); reconcileWake.request(); }
+      },
       onNativeApplication: event => {
         const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
         const key = projectId === null ? "native" : `project/${projectId}`;
@@ -534,7 +565,7 @@ export const runWorker = async (options: {
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
       onInvalidDesired: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
-    await configuration.receive(resource.desired, resource.observationRevision);
+    await configuration.receive(resource.desired, resource.observationRevision, signal);
     let bootstrap: WorkerCloudValue | null = null;
     if (resource.desired === null) {
       try { bootstrap = await parseWorkerCloudBootstrap(local.source, paths, resolveProject, signal); }
@@ -549,7 +580,7 @@ export const runWorker = async (options: {
     let observedToolProof = proofSignature();
     const refreshToolProofs = (): Promise<void> | undefined => {
       const current = proofSignature(); if (current === observedToolProof) return;
-      observedToolProof = current; return manager.refreshToolSelections();
+      observedToolProof = current; return manager.refreshToolSelections(signal);
     };
     modelDiscovery = createWorkerModelDiscovery({
       prepare: async (provider, operation) => { if (provider === "codex" || provider === "copilot") await toolRuntime.manager.prepare(provider, "web", operation); },
@@ -756,7 +787,7 @@ export const runWorker = async (options: {
         for (const project of getStore().listProjects()) {
           signal.throwIfAborted();
           if (initialRemovalsRegistered.has(project.projectId)) continue;
-          await manager.ensureProjectRemoval(project.projectId);
+          await manager.ensureProjectRemoval(project.projectId, signal);
           initialRemovalsRegistered.add(project.projectId);
         }
         initialRemovalsComplete = true;
@@ -767,6 +798,7 @@ export const runWorker = async (options: {
       return job;
     };
     bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
+      canAdmitNewExecution: () => { const effective = manager.current().effective; return manager.isReady() && effective.native !== null && effective.recoveryLimit !== null; },
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
@@ -796,10 +828,11 @@ export const runWorker = async (options: {
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
         prompts: currentPromptSource,
+        waitReady: operation => manager.waitReady(operation.signal),
         prepare: async operation => {
           if (!reconcileReport && manager.current().synchronized) return;
           const actual = await readCloudConfiguration(operation.signal, operation);
-          await manager.receive(actual.desired, actual.observationRevision);
+          await manager.receive(actual.desired, actual.observationRevision, operation.signal);
           if (actual.desired !== null) bootstrap = null;
           reconcileReport = false;
         },
@@ -820,8 +853,8 @@ export const runWorker = async (options: {
             throw error;
           }
         },
-        accept: async (sent, receipt) => {
-          await manager.acknowledge(sent, receipt);
+        accept: async (sent, receipt, operation) => {
+          await manager.acknowledge(sent, receipt, operation.signal);
           if (receipt.desired !== null) bootstrap = null;
           // Report projections cannot advertise later upgrades; rediscover each missing capability.
           if (receipt.desired?.value.agentControlMode === undefined || receipt.desired?.value.toolPaths === undefined) reconcileReport = true;
@@ -867,7 +900,7 @@ export const runWorker = async (options: {
           },
           configurationComplete: () => {
             const desired = manager.current().desired;
-            return (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
+            return manager.isReady() && (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
           requestReconcile: reconcileWake.request,
@@ -897,7 +930,7 @@ export const runWorker = async (options: {
           finally { operation.dispose(); }
           applicationSignal.throwIfAborted();
           prepared.set(projectId, await admitRepository(binding, applicationSignal));
-          if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId);
+          if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId, applicationSignal);
         } finally { reservations.delete(projectId); }
         const failure = preparationFailures.get(projectId);
         if (failure !== undefined && revision !== undefined && !applicationSignal.aborted) failure.successRevision = revision;
@@ -987,11 +1020,13 @@ export const runWorker = async (options: {
   } finally {
     observeMonitoring(m => { m.setLifecycle("stopping"); m.setPhase("stopping"); });
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    configuration?.beginDrain();
+    const reporterStopped = reporter?.stop().catch(error => { failures.push(error); });
     readOnly?.close();
     modelDiscovery?.close();
     await Promise.allSettled([...localMappingJobs.values()]);
     await renewal;
-    try { await reporter?.stop(); } catch (error) { failures.push(error); }
+    try { await reporterStopped; } catch (error) { failures.push(error); }
     promptSource?.close();
     try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
     try { await configuration?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
@@ -1018,7 +1053,7 @@ export const runWorker = async (options: {
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
-    try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
+    try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
     cancellation.dispose();
   }
@@ -1041,6 +1076,7 @@ export const runWorkerControl = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let actualHerdr: WorkerHerdrAdapter | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
+  let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let controlResource: WorkerCloudResource | undefined;
   const failures: unknown[] = [];
@@ -1066,6 +1102,13 @@ export const runWorkerControl = async (options: {
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths, readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...legacyHerdrToolSelections(store)] });
     const toolRuntime = tools;
+    const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
+      ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply,
+      onStorageState: event => diagnostics!.emit({ kind: `worker-configuration-storage-${event.kind}`, component: "configuration", phase: `cache-${event.phase}`,
+        message: JSON.stringify({ file: paths.configurationFile, recordIds: event.recordIds, attempts: event.attempts, nextAttemptAt: event.nextAttemptAt }),
+        ...(event.error === undefined ? {} : { error: event.error }) }),
+    }).then(manager => { configurationManager = manager; return manager; });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
@@ -1097,9 +1140,9 @@ export const runWorkerControl = async (options: {
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
-        configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply });
-        await configurationManager.receive(resource.desired, resource.observationRevision);
-        await configurationManager.settle();
+        configurationManager = await initializeConfiguration();
+        await configurationManager.receive(resource.desired, resource.observationRevision, signal);
+        await configurationManager.settle(signal);
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
         const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local);
@@ -1125,6 +1168,10 @@ export const runWorkerControl = async (options: {
       retryPromptSource.beginCycle();
       const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
       try {
+        if (configurationInitialization !== undefined) {
+          const manager = await waitForConfigurationOperation(configurationInitialization, operation.signal);
+          await manager.waitReady(operation.signal);
+        }
         const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => configurationManager?.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
         const sample = await telemetry.collect(operation);
         const cleanupFailure = sample.issues.find(issue => hasUnconfirmedHerdrCommandCleanup(issue.error));
@@ -1132,6 +1179,12 @@ export const runWorkerControl = async (options: {
         let bootstrap: WorkerCloudValue | null = null;
         const outcome = await syncWorkerConfigurationOnce({ operation, report: () => ({ ...sample.telemetry, taskInventory: null }), configuration: {
           prompts: retryPromptSource,
+          waitReady: async current => {
+            if (configurationInitialization !== undefined) {
+              const manager = await waitForConfigurationOperation(configurationInitialization, current.signal);
+              await manager.waitReady(current.signal);
+            }
+          },
           prepare: async current => {
             if (configurationManager === undefined) {
               let resource = controlResource;
@@ -1142,14 +1195,14 @@ export const runWorkerControl = async (options: {
                   resource = { desired: null, observationRevision: "0", observation: null };
                 }
               }
-              configurationManager = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths, ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply });
-              await configurationManager.receive(resource.desired, resource.observationRevision);
+              configurationManager = await waitForConfigurationOperation(initializeConfiguration(), current.signal);
+              await configurationManager.receive(resource.desired, resource.observationRevision, current.signal);
               if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, current.signal);
             }
           },
           capture: report => configurationManager!.report(bootstrap, report),
           send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
-          accept: async (captured, receipt) => { await configurationManager!.acknowledge(captured, receipt); },
+          accept: async (captured, receipt, current) => { await configurationManager!.acknowledge(captured, receipt, current.signal); },
         } });
         if (outcome.promptError || retryPromptSource.current(projectId) === null) diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization is unavailable; new input remains waiting." });
       } catch (error) {
@@ -1195,7 +1248,10 @@ export const runWorkerControl = async (options: {
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
   } catch (error) { failures.push(error); }
   finally {
+    if (!signal.aborted) cancellation.controller.abort(new Error("Worker management is closing."));
+    configurationManager?.beginDrain();
     controlPromptSource?.close();
+    try { await configurationInitialization; } catch (error) { if (!isWorkerCancellation(error, signal) && !failures.includes(error)) failures.push(error); }
     try { await configurationManager?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
@@ -1204,7 +1260,7 @@ export const runWorkerControl = async (options: {
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
-    try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
+    try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
     cancellation.dispose();
   }
@@ -1268,8 +1324,8 @@ export const runWorkerResources = async (options: {
         if (outcome.effectErrors.length > 0) {
           try {
             const diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, secrets: [serverToken] });
-            diagnostics.emit({ kind: "cleanup-effect-error", identity: request, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) });
-            await diagnostics.flush();
+            try { diagnostics.emit({ kind: "cleanup-effect-error", identity: request, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); }
+            finally { await diagnostics.close(); }
           } catch (error) { diagnosticFailure = error; }
         }
       }, options.signal === undefined ? {} : { signal: options.signal });

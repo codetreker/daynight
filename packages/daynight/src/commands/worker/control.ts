@@ -5,6 +5,13 @@ import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, LocalTask, ResourceOwner } from "./types.js";
 
+const inputWaitingDescription: Record<WorkerInputWait["reason"], string> = {
+  storage_maintenance: "Controller storage maintenance",
+  configuration_pending: "Worker configuration readiness",
+  prompt_unknown: "prompt synchronization",
+  prompt_too_large: "a prompt within the native input limit",
+};
+
 export type WorkerControlRequest =
   | { kind: "retry"; taskId: string; projectId?: string; claimId: string }
   | { kind: "release"; taskId: string; projectId?: string; claimId: string; version: bigint };
@@ -43,7 +50,7 @@ export const submitWorkerControl = async (options: {
     if (source.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
     signal.throwIfAborted();
     const result = await coordinator.advanceRetry(identity);
-    if (result?.kind === "waiting_input") return { task: store.getTask(identity), message: `Recovery input was not submitted for claim ${request.claimId}; waiting for ${result.reason === "storage_maintenance" ? "Controller storage maintenance" : result.reason === "prompt_unknown" ? "prompt synchronization" : "a prompt within the native input limit"}.` };
+    if (result?.kind === "waiting_input") return { task: store.getTask(identity), message: `Recovery input was not submitted for claim ${request.claimId}; waiting for ${inputWaitingDescription[result.reason]}.` };
     return { task: store.getTask(identity), message: `One recovery attempt completed for claim ${request.claimId}; worker run will connect its actual resources.` };
   }
   exactVersion();

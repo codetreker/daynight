@@ -250,7 +250,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       }
       return lease;
     } };
-    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, selectToolLaunch, jobLeases,
+    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
       ...(tools === undefined ? {} : { toolObservationFor: tools.toolObservationFor }), dependencies: { prepareEnvironment, stopProcesses } });
   };
   const botProcess = create();
@@ -704,7 +704,7 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
   });
   const paths = { ...resolveWorkerPaths(f.home), databaseFile: path.join(f.home, "worker.sqlite") };
   const makeHost = () => createWorkerBotHost({ homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd, paths, owner: f.owner,
-    serverToken: parentToken, selectToolLaunch: f.selectToolLaunch, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
+    serverToken: parentToken, canAdmitNewExecution: () => true, selectToolLaunch: f.selectToolLaunch, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
     recoveryLimit: () => 3, pollIntervalMs: () => 50, emit: event => { if (event.kind === "bot-unavailable") errors.push(event.message); } });
   let host = makeHost(), cancellation = new AbortController(), running = host.run(cancellation.signal);
   void running.catch(error => errors.push(String(error)));

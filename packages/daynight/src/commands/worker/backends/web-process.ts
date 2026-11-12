@@ -1,3 +1,4 @@
+import { assertConfigurationAdmission } from "../configuration-admission.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -51,7 +52,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       || readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite")) !== null) throw missingSelection(task);
     return task;
   };
-  const prepareExistingSelection = async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+  const prepareExistingSelection = async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<void> => {
     let task = current(input);
     checkTicket(task, ticket);
     // Reattachment and cleanup keep the original process proof; only a new spawn needs this binding.
@@ -62,11 +63,12 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       selected = task.configuration!.toolLaunch ?? await options.selectToolLaunch?.(task.configuration!.agent as "codex" | "copilot", signal);
       if (selected === undefined) throw missingSelection(task);
       signal.throwIfAborted();
-      await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(task); });
+      await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(task); assertConfigurationAdmission(canAdmitNewExecution); });
     }
     if (task.configuration!.toolLaunch === undefined) {
       assertUnsubmitted(task);
       const observation = options.toolObservationFor?.(selected);
+      assertConfigurationAdmission(canAdmitNewExecution);
       options.store.freezeToolLaunch(task, selected, options.now(), { sidecarLaunchId: ticket.launchId, ...(observation === undefined ? {} : { observation }) });
     } else if (task.configuration!.toolLaunch.selectionKey !== selected.selectionKey) throw new Error("The original Web ticket tool selection differs from its frozen configuration.");
   };
@@ -85,13 +87,13 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       : await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses));
   };
   const methods = {
-    prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
+    prepare: async (input: LocalTask, prompt: string | (() => string), signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<ControllerLaunchTicket> => {
       let task = current(input); let execution = task.webExecution!;
-      if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); await prepareExistingSelection(task, ticket, signal); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
+      if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); await prepareExistingSelection(task, ticket, signal, canAdmitNewExecution); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
       try {
         const existing = await readLaunchTicket(options.homeDirectory, execution.launchId);
         if (existing.executionId !== execution.executionId || existing.claimId !== task.claimId || existing.executionGeneration !== execution.executionGeneration || existing.controllerInstanceId !== execution.controllerInstanceId || existing.initialOperationId !== execution.initialOperationId || existing.sessionId !== execution.sessionId || existing.initialPrompt !== execution.initialPrompt) throw new Error("An existing launch ticket does not match the durable execution intent.");
-        await prepareExistingSelection(task, existing, signal);
+        await prepareExistingSelection(task, existing, signal, canAdmitNewExecution);
         options.store.updateWebExecution(task, { ticketPath: controllerTicketPath(options.homeDirectory, execution.launchId), nativeHome: existing.nativeHome }, options.now()); return existing;
       } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
       if (task.resources.worktree === null || task.configuration === null || task.userId === null) throw new Error("Controller launch requires its original worktree, provider and owner.");
@@ -101,9 +103,11 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         if (selected === undefined) throw missingSelection(task);
         signal.throwIfAborted(); assertUnsubmitted(task);
         const observation = options.toolObservationFor?.(selected);
+        assertConfigurationAdmission(canAdmitNewExecution);
         task = options.store.freezeToolLaunch(task, selected, options.now(), observation === undefined ? {} : { observation });
         execution = task.webExecution!;
       }
+      assertConfigurationAdmission(canAdmitNewExecution);
       if (execution.sessionId === null) { const registered = await options.sessionApi.register(task, execution, signal); task = options.store.updateWebExecution(task, { sessionId: registered.sessionId }, options.now()); execution = task.webExecution!; }
       const directory = controllerExecutionDirectory(options.homeDirectory, execution.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
       const credentialFile = path.join(directory, "credential.json");
@@ -123,13 +127,14 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         if (error instanceof LaunchTicketLimitError) throw new PromptInputLimitError("web_ticket", error.actualBytes, error.maxBytes);
         throw error;
       }
+      assertConfigurationAdmission(canAdmitNewExecution);
       // Freeze only the same complete ticket that passed both existing size checks.
       if (execution.initialPrompt === null) task = options.store.updateWebExecution(task, { initialPrompt }, options.now());
       const ticketPath = await writeLaunchTicket(options.homeDirectory, ticket);
       options.store.updateWebExecution(task, { ticketPath, initialPrompt }, options.now());
       return ticket;
     },
-    launch: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+    launch: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<void> => {
       let task = current(input); if (task.webExecution!.launchSubmission !== "not-submitted") return;
       checkTicket(task, ticket);
       if (ticket.provider !== "claude") {
@@ -144,7 +149,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         await launchControllerProcess({
           homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, signal,
           env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
-          onSubmitting: () => { submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
+          onSubmitting: () => { assertConfigurationAdmission(canAdmitNewExecution); submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
           onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
           onObserved: async snapshot => {
             if (process.platform === "win32") {

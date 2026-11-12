@@ -23,7 +23,7 @@ const fixture = async () => {
   let configuration: ExecutionConfiguration | null = null;
   const options = { homeDirectory: home, packageDirectory: home, workingDirectory: home, paths,
     owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" },
-    serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", configuration: () => configuration,
+    serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", configuration: () => configuration, canAdmitNewExecution: () => true,
     pollIntervalMs: () => 60_000, recoveryLimit: () => 3, emit: () => {} };
   const sample = { assistantHost: { protocolVersion: 1, defaultProvider: "codex" }, issues: [] };
   const collect = vi.fn(async () => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });

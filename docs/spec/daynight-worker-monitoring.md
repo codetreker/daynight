@@ -146,6 +146,8 @@ PUT 完整 JSON 及规范化正文各最多 256 KiB。activities/reservations/cu
 
 观测器保留完整准入计数，详情按阻塞/异常优先、首次观测时间、稳定 ID 排序截取。所有时间、质量、完整计数均独立于被截取的明细。达到编码预算时，先按既有顺序裁减活动和容量责任；在移除完整异常前，按 Go JSON 编码体积从大到小、稳定顺序将相对路径转为 `unavailable/limit-exceeded` 并标记 partial，重新计量。单字段超限也显式标 partial；内存记录不受快照裁减影响。Server 在权限过滤和名称补充后按真实 Go JSON escaping 再执行响应预算，在包含 worktree 与 labels-omitted 占位的完整准入基础上保留精确容量与无名称故障摘要，逐项加入标签/普通活动，超限明确 labelsOmitted/detailCoverage=partial。
 
+配置存储与诊断文件的运行期 I/O 故障使用既有故障观察和重试字段，恢复只退休对应故障。监控帧不替代本机存储 readiness、执行资格或原资源证明；当前成功值、较新的监控帧以及日志缺项均不授权清理或重放未确认操作。
+
 ## 诊断内容准入
 
 保留现有 JSON 结构。`StructuredCause.type` 必须为 `operation`，`code` 必须为下表之一，`cause` 必须与对应英文原文完全一致；`causeTruncated` 必须为 `false`。这些句子是完整的分类摘要，不是截取后的原始异常。`currentFailures[].error` 和 `delivery.lastFailure.error` 共用此表。每项分类只能在对应事实确有证据时使用；未能可靠分类时使用 `unknown`，不从错误文本猜测。

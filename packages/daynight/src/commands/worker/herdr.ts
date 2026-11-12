@@ -94,6 +94,8 @@ export type WorkerHerdrLifecycle = {
   assertCanAdvance(context: HerdrExecutionContext): void;
   /** Missing or uncertain original evidence cannot authorize checkout recreation. */
   hasStarted?(owner: HerdrExecutionOwner): boolean;
+  /** A submitted or uncertain native launch remains under its original execution ownership. */
+  hasSubmittedExecution?(owner: HerdrExecutionOwner): boolean;
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;
   pendingInitialPrompt?(owner: HerdrExecutionOwner): string | null;
   responsibilities(): HerdrExecutionOwner[];

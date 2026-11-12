@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "../../../src/commands/worker/configuration-admission.js";
 import { ExecutionSourceConflictError, type TerminalCleanupContext } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createHash } from "node:crypto";
@@ -204,6 +205,8 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
         launch: async (_context, _binding, request, active) => {
           await request.beforeStart?.(active);
+          assertConfigurationAdmission(request.canAdmitNewExecution);
+          request.onSubmitting?.();
           if (beforeLaunchRetry) { events.push("native-busy-attempt"); beforeLaunchRetry(); await request.beforeStart?.(active); }
           expect(read().runs.at(-1)?.phase).toBe("launch_requested"); events.push("native-launch"); launches.push(request.resumeSessionId ? { resumeSessionId: request.resumeSessionId } : {}); state.launched = true; state.nativeVisible = request.resumeSessionId !== undefined || settings.nativeAtLaunch; return observation(); },
         start: async () => { throw new Error("Direct start would bypass durable admission"); },
@@ -276,6 +279,34 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("waits before first native preparation after configuration readiness changes during claim verification", async () => {
+    const f = fixture(); f.register();
+    let complete = true;
+    const current = f.api.current.bind(f.api);
+    vi.spyOn(f.api, "current").mockImplementation(async (...args) => { const result = await current(...args); complete = false; return result; });
+    await expect(f.facade.tasks.prepareWorkspace(f.context, "Task", operation(), { canAdmitNewExecution: () => complete })).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.read()).toMatchObject({ preparation: null, runs: [] });
+    expect(f.events).not.toContain("daemon-launch");
+    expect(f.facade.lifecycle!.hasSubmittedExecution!(f.context)).toBe(false);
+  });
+
+  it("keeps the original prepared run unsubmitted when readiness changes during prompt preparation", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    let complete = true;
+    await expect(f.facade.tasks.start(f.context, binding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment",
+      canAdmitNewExecution: () => complete,
+      preparePromptSource: async () => { await Promise.resolve(); complete = false; },
+    }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.read().runs[0]).toMatchObject({ phase: "prepared", nativeLaunch: "not_submitted" });
+    expect(f.launches).toEqual([]);
+    expect(f.inputs).toEqual([]);
+    complete = true;
+    await f.start(binding);
+    expect(f.launches).toHaveLength(1);
+    expect(f.facade.lifecycle!.hasSubmittedExecution!(f.context)).toBe(true);
+  });
+
   it("only permits checkout preparation when the original lifecycle proves it has not started", async () => {
     const f = fixture();
     expect(f.facade.lifecycle!.hasStarted!(f.context)).toBe(true);
@@ -296,7 +327,7 @@ describe("durable Herdr facade with real SQLite", () => {
     const preparePrompt = vi.fn((recovery: boolean) => recovery
       ? "Continue the original assigned task under its existing authorization.\n\n----- begin user prompt -----\nlatest\n----- end user prompt -----"
       : "unexpected original assignment");
-    await f.facade.tasks.start(f.context, next, { configuration: { agent: "codex", model: null, args: [] }, prompt: "stale assignment", preparePrompt }, operation());
+    await f.facade.tasks.start(f.context, next, { configuration: { agent: "codex", model: null, args: [] }, prompt: "stale assignment", preparePrompt, canAdmitNewExecution: () => false }, operation());
     expect(preparePrompt).toHaveBeenCalledWith(true);
     expect(f.inputs.filter(value => value.initial)).toEqual([{ initial: true, body: "Original managed assignment" }]);
     expect(f.inputs.filter(value => !value.initial)).toEqual([{ initial: false, body: expect.stringContaining("latest") }]);

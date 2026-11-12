@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/configuration-admission.js";
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
@@ -296,6 +297,21 @@ describe("direct task resource management", () => {
     f.screen.text = `${screen}\n› Any custom current composer`;
     await f.manager.submitInitialPrompt(f.context, binding, "initial", operation());
     expect(f.prompts).toEqual(["initial"]);
+  });
+
+  it("rechecks new-launch readiness after awaited shell verification before dispatch", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let complete = true;
+    const submitting = vi.fn();
+    await expect(f.manager.launch(f.context, binding, {
+      configuration, canAdmitNewExecution: () => complete, onSubmitting: submitting,
+      beforeStart: async () => { await Promise.resolve(); complete = false; },
+    }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(submitting).not.toHaveBeenCalled();
+    complete = true;
+    await f.manager.launch(f.context, binding, { configuration, canAdmitNewExecution: () => complete, onSubmitting: submitting }, operation());
+    expect(submitting).toHaveBeenCalledOnce();
   });
 
   it("returns a launched process before its first input or native SessionStart", async () => {

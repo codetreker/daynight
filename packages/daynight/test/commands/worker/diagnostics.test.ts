@@ -1,12 +1,24 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
-import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "../../../src/commands/worker/diagnostics.js";
+import { afterEach, expect, it, vi } from "vitest";
+import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticFiles, type WorkerDiagnosticSinkEvent } from "../../../src/commands/worker/diagnostics.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const directories: string[] = [];
-afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
+const sinks: Awaited<ReturnType<typeof createWorkerDiagnostics>>[] = [];
+const expectedCloseErrors = new Set<unknown>();
+const releaseGates: (() => void)[] = [];
+afterEach(async () => {
+  for (const release of releaseGates.splice(0)) release();
+  const results = await Promise.allSettled(sinks.splice(0).map(sink => sink.close()));
+  try {
+    for (const result of results) if (result.status === "rejected" && !expectedCloseErrors.has(result.reason)) throw result.reason;
+  } finally {
+    expectedCloseErrors.clear(); vi.restoreAllMocks(); vi.useRealTimers();
+    for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("writes ordered JSONL and foreground errors without leaking credentials through cause chains", async () => {
   const root = path.resolve("../../.tmp/worker-diagnostic-tests");
@@ -109,4 +121,338 @@ it("retains a claim-scoped cause without inventing a missing local task", async 
   const record = JSON.parse(await readFile(logger.filename, "utf8"));
   expect(record).toMatchObject({ ...identity, ...metadata, error: { message: "observation", cause: { message: "original" } } });
   expect(record).not.toHaveProperty("agent");
+});
+
+
+const realFiles: WorkerDiagnosticFiles = {
+  ensureDirectory: async directory => { await mkdir(directory, { recursive: true, mode: 0o700 }); },
+  createSegment: async filename => { await appendFile(filename, "", { flag: "ax", mode: 0o600 }); },
+  appendRecord: async (filename, record) => { await appendFile(filename, record, { mode: 0o600 }); },
+};
+const sinkFixture = async (options: Omit<Parameters<typeof createWorkerDiagnostics>[0], "paths" | "workerId" | "platform"> & { useDefaultStderr?: boolean } = {}, setup?: (logsDirectory: string) => Promise<void>) => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "sink-")); directories.push(home);
+  const paths = resolveWorkerPaths(home), stderr: string[] = [], events: WorkerDiagnosticSinkEvent[] = [], output: string[] = [];
+  await setup?.(paths.logsDirectory);
+  const { useDefaultStderr = false, ...diagnosticOptions } = options;
+  const sink = await createWorkerDiagnostics({
+    paths, workerId: "00112233-4455-4677-8899-aabbccddeeff", platform: "linux",
+    log: text => { output.push(text); }, ...(useDefaultStderr ? {} : { stderr: (text: string) => { stderr.push(text); } }),
+    ...diagnosticOptions, onSinkState: event => { events.push(event); options.onSinkState?.(event); },
+  });
+  sinks.push(sink);
+  return { sink, paths, stderr, events, output };
+};
+const records = async (filename: string): Promise<Record<string, any>[]> => (await readFile(filename, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+const gate = () => {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  releaseGates.push(release);
+  return { promise, release };
+};
+
+it("recovers a failed log directory without treating an undispatched record as an unknown append", async () => {
+  let clock = Date.UTC(2030, 0, 1);
+  const f = await sinkFixture({ now: () => clock }, async directory => {
+    await mkdir(path.dirname(directory), { recursive: true });
+    await writeFile(directory, "A file occupies the log directory.");
+  });
+  const original = f.sink.filename;
+  expect(f.events).toHaveLength(1);
+  expect(f.events[0]).toMatchObject({ state: "blocked", phase: "directory", unknownAppends: 0, omittedRecords: 0 });
+  f.sink.emit({ kind: "before-recovery", message: "Not dispatched." });
+  await f.sink.flush();
+  await rm(f.paths.logsDirectory);
+  clock += 4_999; await f.sink.flush();
+  expect(f.events).toHaveLength(1);
+  clock++;
+  await f.sink.flush();
+  expect(f.events[1]).toMatchObject({ state: "recovered", omittedRecords: 1, unknownAppends: 0, previousFilename: original });
+  const recovered = await records(f.sink.filename);
+  expect(recovered).toHaveLength(1);
+  expect(recovered[0]).toMatchObject({ kind: "diagnostic-sink-recovered", sink: { omittedRecords: 1, unknownAppends: 0, previousFilename: original, filename: f.sink.filename } });
+  expect(f.stderr.join("")).toContain("diagnostic-sink-blocked");
+  expect(await readdir(f.paths.logsDirectory)).toEqual([path.basename(f.sink.filename)]);
+});
+
+it("retains a partial append and recovers automatically in an independent valid JSONL segment", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.UTC(2030, 0, 1));
+  const secret = "sink-secret-credential", failure = Object.assign(new Error("EIO " + secret), { code: "EIO" });
+  const recovered = gate();
+  let appends = 0;
+  const f = await sinkFixture({ secrets: [secret], files: {
+    ...realFiles,
+    appendRecord: async (filename, line) => {
+      appends++;
+      if (appends === 1) { await appendFile(filename, Buffer.from(line).subarray(0, 23)); throw failure; }
+      await realFiles.appendRecord(filename, line);
+    },
+  }, onSinkState: event => { if (event.state === "recovered") recovered.release(); } });
+  const original = f.sink.filename;
+  f.sink.emit({ kind: "unknown-record", message: "This record must not be replayed." });
+  f.sink.emit({ kind: "queued-record", message: "Not dispatched after the append failed." });
+  await f.sink.flush();
+  f.sink.emit({ kind: "blocked-record", message: "Omitted while blocked." });
+  const partial = await readFile(original);
+  expect(partial.byteLength).toBe(23);
+  expect(partial.at(-1)).not.toBe(10);
+  expect(f.events[0]?.error).toBe(failure);
+  expect(f.events[0]).toMatchObject({ state: "blocked", phase: "append", unknownAppends: 1 });
+  await vi.advanceTimersByTimeAsync(4_999);
+  expect(appends).toBe(1);
+  await vi.advanceTimersByTimeAsync(1);
+  await recovered.promise;
+  await f.sink.flush();
+  expect(f.sink.filename).not.toBe(original);
+  const values = await records(f.sink.filename);
+  expect(values).toHaveLength(1);
+  expect(values[0]).toMatchObject({ kind: "diagnostic-sink-recovered", sink: { previousFilename: original, unknownAppends: 1, omittedRecords: 2 } });
+  expect(f.stderr.join("")).not.toContain(secret);
+  expect(f.stderr.join("")).toContain("[redacted]");
+  f.sink.emit({ kind: "after-recovery", message: "Log path=" + f.sink.filename });
+  await f.sink.flush();
+  expect((await records(f.sink.filename)).map(record => record.kind)).toEqual(["diagnostic-sink-recovered", "after-recovery"]);
+  expect(f.output.at(-1)).toContain(f.sink.filename);
+  expect(await readFile(original)).toEqual(partial);
+});
+
+it("does not replay an unknown recovery summary and caps repeated retries at sixty seconds", async () => {
+  let clock = Date.UTC(2030, 0, 1), appends = 0;
+  const failure = Object.assign(new Error("Append outcome is unknown."), { code: "EIO" });
+  const f = await sinkFixture({ now: () => clock, files: {
+    ...realFiles, appendRecord: async (filename, line) => {
+      appends++;
+      await appendFile(filename, Buffer.from(line).subarray(0, 17));
+      throw failure;
+    },
+  } });
+  const original = f.sink.filename;
+  f.sink.emit({ kind: "first", message: "May be partial." });
+  await f.sink.flush();
+  const delays = [5_000, 10_000, 20_000, 40_000, 60_000, 60_000];
+  for (const [index, delay] of delays.entries()) {
+    expect(f.events.at(-1)?.nextAttemptAt).toBe(new Date(clock + delay).toISOString());
+    clock += delay - 1;
+    await f.sink.flush(); expect(appends).toBe(index + 1);
+    clock++;
+    await f.sink.flush(); expect(appends).toBe(index + 2);
+  }
+  expect(f.events.at(-1)).toMatchObject({ state: "blocked", phase: "append", previousFilename: original, unknownAppends: 7, omittedRecords: 0 });
+  const filenames = await readdir(f.paths.logsDirectory);
+  expect(filenames).toHaveLength(7);
+  for (const filename of filenames) expect((await readFile(path.join(f.paths.logsDirectory, filename))).byteLength).toBe(17);
+  const before = appends;
+  await f.sink.close();
+  clock += 1_000_000; await f.sink.flush();
+  expect(appends).toBe(before);
+  expect(f.stderr.at(-1)).toContain("diagnostic-sink-unavailable-at-close");
+});
+
+it("bounds queued records, accounts for omissions, and joins an outstanding append during close", async () => {
+  const blocked = gate();
+  let active = 0, maximum = 0, appends = 0;
+  const submitted: string[] = [];
+  const f = await sinkFixture({ files: {
+    ...realFiles, appendRecord: async (_filename, line) => {
+      active++; maximum = Math.max(maximum, active);
+      try {
+        if (++appends === 1) await blocked.promise;
+        submitted.push(line);
+      } finally { active--; }
+    },
+  } });
+  const total = 1_000;
+  for (let index = 0; index < total; index++) f.sink.emit({ kind: "record", message: String(index) });
+  let closed = false;
+  const closing = f.sink.close().then(() => { closed = true; });
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  expect(active).toBe(1);
+  blocked.release();
+  await closing;
+  expect(maximum).toBe(1);
+  const values = submitted.map(line => JSON.parse(line)), written = values.filter(record => record.kind === "record");
+  expect(written.length).toBeGreaterThan(0);
+  expect(written.length).toBeLessThan(total);
+  expect(values.at(-1)).toMatchObject({ kind: "diagnostic-sink-records-omitted", sink: { unknownAppends: 0, omittedRecords: total - written.length } });
+  expect(() => f.sink.emit({ kind: "late", message: "Closed." })).toThrow("closed");
+});
+
+it("starts each run in a new segment without appending after an earlier partial tail", async () => {
+  const first = await sinkFixture();
+  first.sink.emit({ kind: "first", message: "Complete." });
+  await first.sink.close();
+  await appendFile(first.sink.filename, '{"unfinished"');
+  const previous = await readFile(first.sink.filename);
+  const next = await createWorkerDiagnostics({ paths: first.paths, workerId: "worker", platform: "linux" });
+  sinks.push(next);
+  next.emit({ kind: "next-run", message: "Independent." });
+  await next.flush();
+  expect(next.filename).not.toBe(first.sink.filename);
+  expect(await readFile(first.sink.filename)).toEqual(previous);
+  expect((await records(next.filename)).map(record => record.kind)).toEqual(["next-run"]);
+});
+
+it("retains formatter failures as independent fatal errors without retrying file IO", async () => {
+  const f = await sinkFixture();
+  const failure = new RangeError("Diagnostic serialization exhausted its text budget.");
+  const stringify = vi.spyOn(JSON, "stringify").mockImplementationOnce(() => { throw failure; });
+  try { expect(() => f.sink.emit({ kind: "format", message: "Valid input." })).not.toThrow(); }
+  finally { stringify.mockRestore(); }
+  expectedCloseErrors.add(failure);
+  await expect(f.sink.flush()).rejects.toBe(failure);
+  expect(f.events).toEqual([]);
+  expect(f.stderr).toEqual([]);
+  expect(await readFile(f.sink.filename, "utf8")).toBe("");
+});
+
+it("retains a stderr failure and the original file error instead of retrying them as storage", async () => {
+  let clock = Date.UTC(2030, 0, 1), appends = 0;
+  const original = Object.assign(new Error("File unavailable."), { code: "EIO" }), stderrFailure = new Error("stderr unavailable.");
+  const f = await sinkFixture({ now: () => clock, stderr: async () => { throw stderrFailure; }, files: {
+    ...realFiles, appendRecord: async () => { appends++; throw original; },
+  } });
+  f.sink.emit({ kind: "first", message: "Unconfirmed." });
+  const failure = await f.sink.flush().then(() => { throw new Error("Expected a fatal stderr failure."); }, error => error);
+  expectedCloseErrors.add(failure);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.cause).toBe(original);
+  expect(failure.errors).toEqual([original, stderrFailure]);
+  clock += 100_000;
+  await expect(f.sink.flush()).rejects.toBe(failure);
+  expect(appends).toBe(1);
+  expect(f.events).toHaveLength(1);
+});
+
+
+it("recovers after an unknown recovery-summary append without reusing its bytes or corrupting older segments", async () => {
+  let clock = Date.UTC(2030, 0, 1), appends = 0;
+  const f = await sinkFixture({ now: () => clock, files: {
+    ...realFiles, appendRecord: async (filename, line) => {
+      if (++appends <= 2) {
+        await appendFile(filename, Buffer.from(line).subarray(0, 19));
+        throw Object.assign(new Error("Unknown append."), { code: "EIO" });
+      }
+      await realFiles.appendRecord(filename, line);
+    },
+  } });
+  const first = f.sink.filename;
+  f.sink.emit({ kind: "original-record", message: "Never replay." });
+  await f.sink.flush();
+  clock += 5_000; await f.sink.flush();
+  const failedRecovery = f.sink.filename;
+  const firstBytes = await readFile(first), recoveryBytes = await readFile(failedRecovery);
+  expect(f.events.at(-1)).toMatchObject({ state: "blocked", unknownAppends: 2 });
+  clock += 10_000; await f.sink.flush();
+  expect(f.sink.filename).not.toBe(first);
+  expect(f.sink.filename).not.toBe(failedRecovery);
+  const complete = await records(f.sink.filename);
+  expect(complete).toHaveLength(1);
+  expect(complete[0]).toMatchObject({ kind: "diagnostic-sink-recovered", sink: { previousFilename: first, filename: f.sink.filename, unknownAppends: 2, omittedRecords: 0 } });
+  expect(await readFile(first)).toEqual(firstBytes);
+  expect(await readFile(failedRecovery)).toEqual(recoveryBytes);
+  expect(firstBytes.byteLength).toBe(19);
+  expect(recoveryBytes.byteLength).toBe(19);
+});
+
+it("joins the default stderr callback and later error event before closing its listener", async () => {
+  const original = Object.assign(new Error("File unavailable."), { code: "EIO" }), outputFailure = Object.assign(new Error("Pipe closed."), { code: "EPIPE" });
+  let callback!: (error?: Error | null) => void, reported = "";
+  const listenersBefore = process.stderr.listenerCount("error");
+  const write = vi.spyOn(process.stderr, "write").mockImplementation(((...args: unknown[]): boolean => {
+    reported = String(args[0]);
+    callback = args[1] as (error?: Error | null) => void;
+    return false;
+  }) as typeof process.stderr.write);
+  const f = await sinkFixture({ useDefaultStderr: true, files: {
+    ...realFiles, appendRecord: async () => { throw original; },
+  } });
+  try {
+    f.sink.emit({ kind: "record", message: "Unknown." });
+    await vi.waitFor(() => { expect(callback).toBeTypeOf("function"); });
+    let completed = false;
+    const flush = f.sink.flush().then(() => { completed = true; return undefined; }, error => { completed = true; return error; });
+    callback(outputFailure);
+    await Promise.resolve(); expect(completed).toBe(false);
+    expect(process.stderr.listenerCount("error")).toBe(listenersBefore + 1);
+    process.stderr.emit("error", outputFailure);
+    const failure = await flush;
+    expectedCloseErrors.add(failure);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.cause).toBe(original);
+    expect(failure.errors).toEqual([original, outputFailure]);
+    expect(reported).toContain("diagnostic-sink-blocked");
+    await expect(f.sink.close()).rejects.toBe(failure);
+    expect(process.stderr.listenerCount("error")).toBe(listenersBefore);
+  } finally {
+    write.mockRestore();
+    if (callback !== undefined && process.stderr.listenerCount("error") > listenersBefore) process.stderr.emit("error", outputFailure);
+  }
+});
+
+
+it("keeps a real append handle owned until its delayed write and close complete", async () => {
+  vi.useFakeTimers();
+  const entered = gate(), release = gate();
+  let released = false;
+  const f = await sinkFixture({ files: {
+    ...realFiles, appendRecord: async (filename, line) => {
+      const handle = await open(filename, "a", 0o600);
+      entered.release();
+      try { await release.promise; await handle.writeFile(line); }
+      finally { await handle.close(); released = true; }
+    },
+  } });
+  f.sink.emit({ kind: "held-write", message: "Written once." });
+  await entered.promise;
+  let completed = false;
+  const closing = f.sink.close().then(() => { completed = true; });
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(completed).toBe(false);
+  expect(released).toBe(false);
+  expect(await readFile(f.sink.filename, "utf8")).toBe("");
+  release.release();
+  await closing;
+  expect(released).toBe(true);
+  expect((await records(f.sink.filename)).map(record => record.kind)).toEqual(["held-write"]);
+});
+
+
+it("rejects invalid filesystem arguments instead of classifying them as a recoverable directory outage", async () => {
+  const failure = new TypeError("Invalid diagnostic directory.");
+  await expect(sinkFixture({ files: {
+    ...realFiles, ensureDirectory: async () => { throw failure; },
+  } })).rejects.toBe(failure);
+});
+
+it("propagates an unexpected append implementation error without disguising it as failed file IO", async () => {
+  const failure = new Error("The append implementation failed before dispatch.");
+  const f = await sinkFixture({ files: {
+    ...realFiles, appendRecord: async () => { throw failure; },
+  } });
+  f.sink.emit({ kind: "record", message: "Not written." });
+  expectedCloseErrors.add(failure);
+  await expect(f.sink.flush()).rejects.toBe(failure);
+  expect(f.events).toEqual([]);
+  expect(f.stderr).toEqual([]);
+});
+
+
+it("retains the known file failure when formatting its diagnostic also fails", async () => {
+  const ioFailure = Object.assign(new Error("File unavailable."), { code: "EIO" }), formatFailure = new RangeError("Diagnostic formatting failed.");
+  const f = await sinkFixture({ files: {
+    ...realFiles, appendRecord: async () => { throw ioFailure; },
+  } });
+  f.sink.emit({ kind: "record", message: "Unknown append." });
+  const stringify = vi.spyOn(JSON, "stringify").mockImplementationOnce(() => { throw formatFailure; });
+  let failure: unknown;
+  try { failure = await f.sink.flush().then(() => { throw new Error("Expected a formatting failure."); }, error => error); }
+  finally { stringify.mockRestore(); }
+  expectedCloseErrors.add(failure);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure).toMatchObject({ cause: ioFailure, errors: [ioFailure, formatFailure] });
+  expect(f.events[0]).toMatchObject({ state: "blocked", unknownAppends: 1, error: ioFailure });
+  expect(f.stderr).toEqual([]);
 });

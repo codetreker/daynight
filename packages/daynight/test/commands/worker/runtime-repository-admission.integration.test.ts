@@ -31,7 +31,7 @@ vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecut
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: mocks.launcher }));
 vi.mock("../../../src/commands/worker/backends/session-api.js", () => ({ createWorkerSessionApi: () => ({ verifySupport: mocks.verify, verifyUnregistered: vi.fn(async () => {}) }) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
-vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
+vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({ ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const serverOrigin = "https://daynight.example";

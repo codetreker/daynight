@@ -1,3 +1,4 @@
+import { assertConfigurationAdmission } from "../configuration-admission.js";
 import { ExecutionSourceConflictError } from "../execution-stop.js";
 import type { CleanupTarget, StopObservation, TerminalCleanupContext } from "../execution-stop.js";
 import path from "node:path";
@@ -714,7 +715,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       }
       return result;
     },
-    prepareWorkspace: (context, title, operation) => serialize(context, async () => {
+    prepareWorkspace: (context, title, operation, input) => serialize(context, async () => {
       await verifyClaim(context, operation);
       let record = need(context);
       if (record.runs.length === 0) {
@@ -736,6 +737,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (record.runs.length > 0) assertHerdrRecovery({ phase: current(record).phase, nativeSessionId: current(record).run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) });
       if (record.preparation !== null) throw new Error("A previous Herdr preparation is unconfirmed; no replacement daemon may start.");
       if (!recording.canPrepareRun(record)) throw new Error("The retained recording budget cannot register another native run.");
+      if (record.runs.length === 0) assertConfigurationAdmission(input?.canAdmitNewExecution);
       const instanceId = randomUUID(), instanceDirectory = herdrRunDirectory(options.paths.herdrDirectory, instanceId);
       // Validate the native socket budget before persisting a preparation that could launch.
       resolveHerdrInstancePaths({ herdrDirectory: instanceDirectory, logsDirectory: path.join(instanceDirectory, "logs") });
@@ -773,14 +775,17 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await beforeStart(operation);
       await publish(context, operation);
       await prepareRecording(context, operation);
+      const originallySubmitted = record.runs.some(value => value.nativeLaunch !== "not_submitted");
+      const canAdmitNewExecution = () => originallySubmitted || (input.canAdmitNewExecution?.() ?? true);
       const recovery = record.initialAssignment !== "pending";
       const existing = recovery ? null : record.initialPrompt;
       if (existing === null) await input.preparePromptSource?.(operation);
       const prompt = existing ?? input.preparePrompt?.(recovery) ?? (recovery ? "Continue the original assigned task under its existing authorization." : input.prompt);
       input.onPromptPrepared?.(prompt, recovery);
-      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = prompt; });
+      assertConfigurationAdmission(canAdmitNewExecution);
+      record = update(context, draft => { if (draft.initialAssignment === "pending") draft.initialPrompt = prompt; });
       const manager = adapter(record).tasks;
-      const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
+      const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, canAdmitNewExecution, onSubmitting: () => { update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; }); }, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
       if (info.shellPid !== run.processes.find(p => p.role === "shell")?.pid) throw new Error("The original shell changed while launching the native agent.");
       const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));
@@ -908,6 +913,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         const record = store.get(owner);
         if (record === null || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) return true;
         return record.preparation !== null || record.runs.length > 0;
+      },
+      hasSubmittedExecution: owner => {
+        const record = store.get(owner);
+        if (record === null || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) return true;
+        return record.runs.some(run => run.nativeLaunch !== "not_submitted");
       },
       assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,

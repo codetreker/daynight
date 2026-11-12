@@ -2314,6 +2314,61 @@ describe("worker cancellation classification", () => {
   });
 });
 
+it("retains a granted claim without freezing native intent when readiness changes during acquisition", async () => {
+  const f = await fixture(); let complete = true;
+  const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
+  vi.mocked(f.remote.claim).mockImplementation(async (...args) => { const granted = await claim(...args); complete = false; return granted; });
+  const coordinator = createWorkerCoordinator({ ...f.options, configurationComplete: () => complete });
+  await coordinator.tick();
+  const local = f.store.listTasks()[0]!;
+  expect(local).toBeDefined();
+  expect(f.store.getNativeConfiguration(local)).toBeNull();
+  expect(f.tasks.start).not.toHaveBeenCalled();
+});
+
+it("waits before freezing a new native configuration after awaited preparation", async () => {
+  const f = await fixture(); const candidate = f.candidates[0]!; f.candidates.splice(0);
+  const granted = f.grant(candidate, { claimId: uuid(991), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(992) });
+  const active = f.store.activateTask(f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(991), agent: "codex" }));
+  let complete = true;
+  const freeze = vi.spyOn(f.store, "freezeNativeConfiguration");
+  const coordinator = createWorkerCoordinator({ ...f.options, configurationComplete: () => complete,
+    freezeConfiguration: async value => { await Promise.resolve(); complete = false; return value; } });
+  expect(await coordinator.advanceRetry(active)).toEqual({ kind: "waiting_input", reason: "configuration_pending" });
+  expect(freeze).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+});
+
+it("waits before registering a new Web execution after awaited configuration preparation", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(); const webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { ...configuration, agentControlMode: "web" as const, args: [] };
+  let complete = true, preparations = 0;
+  const register = vi.spyOn(webStore, "register"), advance = vi.fn(async record => record);
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config,
+    configurationComplete: () => complete, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    freezeConfiguration: async value => { await Promise.resolve(); if (++preparations === 2) complete = false; return value; },
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(complete).toBe(false));
+    expect(register).not.toHaveBeenCalled(); expect(advance).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+it("keeps a proven live legacy conversation input and stop operable while new admission is blocked", async () => {
+  const f = await fixture(); f.blockStartupInput();
+  await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  const active = f.store.listTasks()[0]!, pane = f.resources.get(active.claimId)!.panes[0]!;
+  expect(active.sessionId).toBeNull();
+  pane.status = "idle"; pane.interactiveReady = true;
+  const restarted = createWorkerCoordinator({ ...f.options, configurationComplete: () => false });
+  await restarted.advanceRetry(active);
+  expect(f.tasks.start).toHaveBeenCalledOnce();
+  expect(f.tasks.submitPrompt).toHaveBeenCalled();
+  await restarted.shutdown();
+  expect(f.tasks.stopAndClose).toHaveBeenCalled();
+});
+
 it("routes Web claims without Herdr, freezes launch settings, and keeps interaction state out of task summary", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(); const webStore = openWebExecutionStore(createMemoryDatabase());

@@ -18,7 +18,9 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 ## 启动与授权
 
-`createBotProcess` 按 Bot 串行化启动、续期、停止和删除。首次预检先验证参数及目标配置环境，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。
+`createBotProcess` 按 Bot 串行化启动、续期、停止和删除。Host 将独立 `canAdmitNewExecution()` 传给 runtime/process，Worker 依据 manager 存储 readiness 与已生效 native/recovery 配置实现它；`configuration()` 仍只用于能力和配置采样。首次预检先验证参数及目标配置环境，在每个 awaited preparation 后以及持久 intent、初次 register 与 launch submission 前重查门禁，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。
+
+`BotAdmissionBlockedError` 表示新执行仍需等待，发现循环不将它报告为环境启动失败。已冻结但从未派发的初次 launch 仍检查门禁；已经提交、未知提交或带有原 native identity 的恢复继续核对原 ticket、journal 和 frozen configuration，不因为新的准入状态创建空白替代执行或撤销输入/停止权限。准备资源释放与未知清理沿原 handle 归属处理。
 
 `bots/session-api.ts` 用 Worker 正常 PAT 调用 Bot register/grant/report 和 deletion-complete；响应必须携带相同账号，字节数与请求时间有界。注册传递首次 `botVersion`，之后的 grant/report 使用当前观察版本。HTTP 客户端不自动重复 POST；运行时先 GET 原 Bot，再核对或继续原请求。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
 

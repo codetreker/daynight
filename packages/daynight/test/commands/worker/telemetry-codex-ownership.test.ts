@@ -172,7 +172,7 @@ describe("production Bot host Codex ownership", () => {
     const paths = resolveWorkerPaths(path.resolve("fixture-home"));
     const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
       owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},
-      configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), pollIntervalMs: () => 1000, recoveryLimit: () => 3 });
+      configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), canAdmitNewExecution: () => true, pollIntervalMs: () => 1000, recoveryLimit: () => 3 });
     hosts.push(host);
     return createWorkerTelemetryCollector({ paths, homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd,
       machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: host });

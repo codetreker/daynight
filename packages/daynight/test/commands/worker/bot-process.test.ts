@@ -147,6 +147,18 @@ test("shutdown retains Bot artifacts and restart resumes the original native ses
   expect(f.grant.mock.calls.at(-1)).toHaveLength(3);
 });
 
+test("closed new admission preserves shutdown and recovery of the original native conversation", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.setAdmission(false);
+  await f.manager.shutdown(f.current(), f.signal);
+  expect(f.saved()).toMatchObject({ nativeStopped: true, nativeSessionId: id(9) });
+  await expect(f.restart().advance(f.current(), f.signal)).resolves.toMatchObject({ lifecycle: "ready", nativeSessionId: id(9) });
+  expect(f.current().intent).toMatchObject({ executionId: original.executionId, nativeSessionId: id(9), executionGeneration: "2" });
+  expect(f.getTicket()).toMatchObject({ resumeNativeSessionId: id(9), executionGeneration: "2", initialInput: "none" });
+  expect(f.register).toHaveBeenCalledOnce();
+  expect(f.launch).toHaveBeenCalledTimes(2);
+});
+
 test("IPC loss with a live writer cannot grant or launch a new generation", async () => {
   const f = await recoveryFixture(); f.observe.mockRejectedValue(new Error("unreachable"));
   await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/stop|running|unreachable/i);

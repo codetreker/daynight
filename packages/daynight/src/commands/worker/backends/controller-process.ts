@@ -76,7 +76,9 @@ export const launchControllerProcess = async (options: {
   const log = await open(path.join(directory, "controller.log"), "a", 0o600);
   try {
     signal.throwIfAborted();
-    await options.onSubmitting();
+    // Synchronous admission checks and submission records must be kept in the same turn as spawn.
+    const submission = options.onSubmitting();
+    if (submission !== undefined) await submission;
     signal.throwIfAborted();
     let child: ChildProcess;
     try {

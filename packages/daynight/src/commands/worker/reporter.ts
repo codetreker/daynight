@@ -53,10 +53,11 @@ const copyInventory = (inventory: WorkerTaskInventory): WorkerTaskInventory => O
 });
 
 export type WorkerConfigurationExchange = {
+  waitReady?(operation: Operation): Promise<void>;
   prepare?(operation: Operation): Promise<void>;
   capture(report: WorkerReport): WorkerCloudReport;
   send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
-  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
+  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt, operation: Operation): Promise<void>;
   prompts?: WorkerPromptSource;
 };
 
@@ -65,6 +66,7 @@ export const syncWorkerConfigurationOnce = async (options: {
 }): Promise<{ more: boolean; promptError: boolean; stopCatchup: boolean }> => {
   const { configuration, operation } = options;
   try {
+    await configuration.waitReady?.(operation);
     await configuration.prepare?.(operation);
     operation.check();
     const report = options.report();
@@ -73,7 +75,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     const source = configuration.prompts;
     const promptCapture = source?.captureBatch() ?? null;
     const receipt = await configuration.send(report, sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []);
-    await configuration.accept(captured, receipt.configuration);
+    await configuration.accept(captured, receipt.configuration, operation);
     if (source === undefined) return { more: false, promptError: false, stopCatchup: false };
     if (receipt.prompts === undefined || !receipt.prompts.ok) {
       source.failCycle();
@@ -163,6 +165,7 @@ export const createWorkerReporter = (options: {
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
     let phase = "collect";
     try {
+      await options.configuration?.waitReady?.(operation);
       const sample = await options.collect(operation);
       for (const issue of sample.issues) {
         if (hasHerdrCommandCleanupFailure(issue.error)) {

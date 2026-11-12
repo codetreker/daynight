@@ -2,7 +2,7 @@ import type { ArchiveProbeResult } from "../../../src/commands/controller/archiv
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { ApiError } from "../../../src/api/client.js";
@@ -17,6 +17,7 @@ import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herd
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
@@ -27,7 +28,12 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn() }));
+vi.mock("../../../src/platform/files.js", async original => {
+  const actual = await original<typeof import("../../../src/platform/files.js")>();
+  return { ...actual, replaceFileAtomicallyFromChunks: (...args: Parameters<typeof actual.replaceFileAtomicallyFromChunks>) =>
+    mocks.cachePersist.getMockImplementation() ? mocks.cachePersist(...args) : actual.replaceFileAtomicallyFromChunks(...args) };
+});
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
@@ -49,7 +55,7 @@ vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebEx
 vi.mock("../../../src/commands/worker/backends/web.js", async original => ({ ...await original<object>(), createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
-vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }) }));
+vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const remoteUrl = "https://git.example/team/repo.git";
@@ -98,6 +104,7 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.cachePersist.mockReset();
   mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
@@ -768,6 +775,65 @@ describe("worker runtime configuration reporting", () => {
     expect(shutdown).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(mocks.webClose).not.toHaveBeenCalled();
     joined.resolve(); await running;
     expect(order).toEqual(["report-aborted", "report-joined", "coordinator", "git", "web-store"]);
+  });
+
+  it("retains the real instance lock through a confirmed report's late checkpoint writer past drain", async () => {
+    const f = await fixture(), writing = deferred<void>(), release = deferred<void>();
+    const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(new Date(workerTelemetryTime));
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    let baseline: string | undefined, receiptRevision: string | undefined, failed = false, finished = false;
+    const ioFailure = Object.assign(new Error("Configuration file is busy."), { code: "EBUSY", syscall: "open" });
+    mocks.cachePersist.mockImplementation(async (file: string, chunks: Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array>, mode?: number) => {
+      if (file !== f.paths.configurationFile || baseline === undefined) return files.replaceFileAtomicallyFromChunks(file, chunks, mode);
+      const pieces: string[] = [];
+      for await (const piece of chunks) { if (typeof piece !== "string") throw new TypeError("The cache codec must produce string chunks."); pieces.push(piece); }
+      const text = pieces.join(""), cache = JSON.parse(text) as { authority: { observationRevision: string } };
+      if (cache.authority.observationRevision === baseline) return files.replaceFileAtomicallyFromChunks(file, [text], mode);
+      receiptRevision = cache.authority.observationRevision;
+      if (!failed) { failed = true; throw ioFailure; }
+      // The first yielded chunk is written before the iterator holds the real open replacement handle.
+      await files.replaceFileAtomicallyFromChunks(file, (async function* () {
+        yield text;
+        writing.resolve();
+        await release.promise;
+      })(), mode);
+    });
+    const running = start(f);
+    void running.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      await eventually(async () => {
+        const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string }; currentItems: { value: { state: string } }[] };
+        expect(cache.currentItems.every(item => item.value.state === "applied")).toBe(true);
+        expect(cache.authority.observationRevision).toBe(String(observationRevision));
+      });
+      baseline = (JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked" })));
+      expect(mocks.coordinator.mock.calls[0]![0].configurationComplete()).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await writing.promise;
+      expect(receiptRevision).toBe(String(observationRevision));
+      f.signal.abort();
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(finished).toBe(false);
+      expect(shutdown).not.toHaveBeenCalled();
+      const competing = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(competing).toBeNull(); } finally { await competing?.release(); }
+      expect((JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision).toBe(baseline);
+      release.resolve();
+      await running;
+      expect(finished).toBe(true);
+      expect((JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision).toBe(receiptRevision);
+      const next = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(next).not.toBeNull(); } finally { await next?.release(); }
+    } finally {
+      release.resolve(); f.signal.abort();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.allSettled([running]);
+    }
   });
 
   it("preserves reporter cleanup uncertainty as the runtime result while completing resource teardown", async () => {
