@@ -330,12 +330,18 @@ describe("native argument ownership", () => {
     expect(f.calls.some(call => call.method === "layout.apply")).toBe(false);
   });
   it.each([
-    { unknownResponse: false, mismatch: undefined }, { unknownResponse: true, mismatch: undefined },
-    ...["workspace_id", "tab_id", "type", "pane_id", "cwd", "command"].map(mismatch => ({ unknownResponse: true, mismatch })),
-  ])("prepares one root PowerShell layout without replay and diagnoses $mismatch ($unknownResponse)", async ({ unknownResponse, mismatch }) => {
+    { unknownResponse: false, mismatch: undefined, cwdVariant: "exact" }, { unknownResponse: true, mismatch: undefined, cwdVariant: "exact" },
+    ...["workspace_id", "tab_id", "type", "pane_id", "cwd", "command"].map(mismatch => ({ unknownResponse: true, mismatch, cwdVariant: "exact" })),
+    ...["trailing", "different", "relative", "missing"].map(cwdVariant => ({ unknownResponse: true, mismatch: cwdVariant === "trailing" ? undefined : "cwd", cwdVariant })),
+  ])("prepares one root PowerShell layout without replay and diagnoses $mismatch ($unknownResponse, $cwdVariant)", async ({ unknownResponse, mismatch, cwdVariant }) => {
     let mapping: HerdrToolLaunchMapping;
     const ready = vi.fn(async (_pid: number) => {});
     const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
+    let observedCwd = f.context.cwd;
+    if (cwdVariant === "trailing") observedCwd += path.sep;
+    if (cwdVariant === "different") { observedCwd = path.join(f.context.cwd, "different-directory"); await mkdir(observedCwd); }
+    if (cwdVariant === "relative") observedCwd = path.relative(process.cwd(), f.context.cwd);
+    if (cwdVariant === "missing") observedCwd = path.join(f.context.cwd, "missing-directory");
     const command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-NoLogo", "-NoExit", "-File", "C:\\owned\\bootstrap.ps1"];
     mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, windowsCommand: command, verifyReady: ready, readReceipt: async () => null, verifyReceipt: async () => { throw new Error("not launched"); } };
     f.executing.add(100);
@@ -351,9 +357,9 @@ describe("native argument ownership", () => {
         return { type: "layout_apply", layout: {} };
       }
       if (method === "layout.export") {
-        const layout = { workspace_id: f.workspaces[0]!.workspace_id, tab_id: "prepared-tab", root: { type: "pane", pane_id: "prepared-pane", cwd: f.context.cwd, command, env: { PRIVATE_FIXTURE_VALUE: "must-never-appear-in-layout-diagnostics" } } };
+        const layout = { workspace_id: f.workspaces[0]!.workspace_id, tab_id: "prepared-tab", root: { type: "pane", pane_id: "prepared-pane", cwd: observedCwd, command, env: { PRIVATE_FIXTURE_VALUE: "must-never-appear-in-layout-diagnostics" } } };
         if (mismatch === "workspace_id" || mismatch === "tab_id") layout[mismatch] = "different";
-        else if (mismatch !== undefined) Object.assign(layout.root, { [mismatch]: mismatch === "command" ? Array.from({ length: 50 }, () => `token-secret-must-not-leak${"x".repeat(8192)}`) : "different" });
+        else if (mismatch !== undefined && cwdVariant === "exact") Object.assign(layout.root, { [mismatch]: mismatch === "command" ? Array.from({ length: 50 }, () => `token-secret-must-not-leak${"x".repeat(8192)}`) : "different" });
         return { type: "layout_export", layout };
       }
       if (method === "pane.process_info" && params.pane_id === "prepared-pane") return { type: "pane_process_info", process_info: { pane_id: "prepared-pane", shell_pid: 101, foreground_process_group_id: 101, foreground_processes: [{ pid: 101 }] } };

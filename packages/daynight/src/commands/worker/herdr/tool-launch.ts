@@ -11,10 +11,9 @@ import { replaceFileAtomically } from "../../../platform/files.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { canonicalResourceOwner, resourceOwnerKey, sameResourceOwner } from "../resource-owner.js";
 import type { HerdrExecutionOwner } from "./agents.js";
-import { runHerdrCommand } from "./command.js";
 import { assertOwnedDirectory, launchArgvDigest, mappingFiles, optionalOwnedJson, parseToolReceipt, publishOwnedFile, publishOwnedJson, readToolManifest, toolManifestEnvironment } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
-import { createMappingProcessLifecycle } from "./tool-launch-lifecycle.js";
+import { createMappingProcessLifecycle, runWindowsToolMetadataCommand } from "./tool-launch-lifecycle.js";
 
 export type { HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
 export type HerdrToolLaunchMapping = {
@@ -182,7 +181,7 @@ const createMapping = async (input: {
         if (value !== null) {
           const row = value as Record<string, unknown>;
           if (row.nonce !== manifest.nonce || row.pid !== shellPid || typeof row.executable !== "string" || row.executable.toLowerCase() !== windowsCommand[0]!.toLowerCase() || typeof row.startToken !== "string" || !/^\d+$/.test(row.startToken)) throw new Error("The original PowerShell readiness does not match the owned root pane.");
-          const result = await runHerdrCommand({ file: windowsCommand[0]!, args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", `$p=Get-Process -Id ${shellPid} -ErrorAction Stop; @{executable=$p.Path;startToken=$p.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json -Compress`], environment: input.nativeEnvironment }, active);
+          const result = await runWindowsToolMetadataCommand({ file: windowsCommand[0]!, args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", `$p=Get-Process -Id ${shellPid} -ErrorAction Stop; @{executable=$p.Path;startToken=$p.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json -Compress`], environment: input.nativeEnvironment }, active);
           const observed = JSON.parse(result.stdout) as Record<string, unknown>;
           if (observed.executable !== row.executable || observed.startToken !== row.startToken) throw new Error("The original PowerShell root process identity changed.");
           return;

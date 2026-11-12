@@ -5,7 +5,7 @@ import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { inspectControllerJob } from "../../controller/windows-job.js";
-import { runHerdrCommand, type HerdrCommand } from "./command.js";
+import { runHerdrCommand, spawnHerdrProcess, type HerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
@@ -13,13 +13,21 @@ import { readToolStartRequest } from "./tool-launch-start.js";
 
 type Inventory = { pid: number; parentPid: number; group: number | null };
 type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
+const windowsMetadataEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
+/** Windows PowerShell can exit successfully without redirected output when
+ * detached. The original runner still owns its deadline, tree and close.
+ */
+export const runWindowsToolMetadataCommand = (command: HerdrCommand, operation: Operation) => runHerdrCommand(
+  { ...command, environment: windowsMetadataEnvironment(command.environment) }, operation,
+  (file, args, options) => spawnHerdrProcess(file, args, { ...options, detached: false }),
+);
 export const windowsMappingProcessInventoryCommand = (environment: NodeJS.ProcessEnv): HerdrCommand => {
   const root = environment.SystemRoot ?? environment.SYSTEMROOT;
   if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required to inspect the original Herdr process tree.");
   // An intermediate Node process inherits PowerShell 7 module paths unchanged.
   // PS5 must reconstruct its own paths before loading its system CIM/JSON modules.
   // https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath#starting-windows-powershell-from-powershell-7
-  const metadataEnvironment = Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
+  const metadataEnvironment = windowsMetadataEnvironment(environment);
   return { file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::Out.Write((ConvertTo-Json -InputObject @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | Select-Object ProcessId,ParentProcessId) -Compress))"], environment: metadataEnvironment };
 };
 export const parseWindowsMappingProcessInventory = (stdout: string, stderr = ""): Inventory[] => {
@@ -36,7 +44,7 @@ export const parseWindowsMappingProcessInventory = (stdout: string, stderr = "")
 };
 const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
   if (process.platform === "win32") {
-    const result = await runHerdrCommand(windowsMappingProcessInventoryCommand(environment), operation);
+    const result = await runWindowsToolMetadataCommand(windowsMappingProcessInventoryCommand(environment), operation);
     return parseWindowsMappingProcessInventory(result.stdout, result.stderr);
   }
   const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);

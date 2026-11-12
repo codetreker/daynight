@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
@@ -12,17 +12,20 @@ import { advanceToolStartRequest, reserveToolStartRequest } from "../../../src/c
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import { parseWindowsMappingProcessInventory, windowsMappingProcessInventoryCommand } from "../../../src/commands/worker/herdr/tool-launch-lifecycle.js";
 import { hasUnconfirmedHerdrCommandCleanup, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import * as commands from "../../../src/commands/worker/herdr/command.js";
+import * as processProofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 
 const roots: string[] = [], operations: Operation[] = [];
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 const operation = (): Operation => { const value = createOperation({ limits: { totalMs: 10_000 } }); operations.push(value); return value; };
 const owner = { projectId: "00000000-0000-4000-8000-000000000001", taskId: "00000000-0000-4000-8000-000000000002", claimId: "00000000-0000-4000-8000-000000000003", worktreeId: "00000000-0000-4000-8000-000000000004" };
 const childEntry = path.resolve(import.meta.dirname, "../../../dist/commands/worker/herdr/tool-launch-child.js");
-const fixture = async () => {
+const fixture = async (platform?: NodeJS.Platform) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-tools/mapping-tests");
   await mkdir(scratch, { recursive: true });
   const directory = await mkdtemp(path.join(scratch, "owner ' $; 中文-")); roots.push(directory);
   const launch = await resolveToolLaunch({ tool: "codex", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: process.env, cwd: directory }, operation());
-  const input = { directory, owner, launch, nativeEnvironment: { ...process.env, PATH: "/native/path", CODEX_HOME: "/native/home" }, childEntry };
+  const input = { directory, owner, launch, nativeEnvironment: { ...process.env, ...(platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" } : {}), PATH: "/native/path", CODEX_HOME: "/native/home" }, childEntry, ...(platform === undefined ? {} : { platform }) };
   const mapping = await createToolLaunchMapping(input, operation());
   if (mapping === null) throw new Error("A new mapping was not created.");
   return { directory, launch, input, mapping };
@@ -99,9 +102,27 @@ const windowsInventoryDiagnostics = async (environment: NodeJS.ProcessEnv) => {
   await probe("execFile-encoded-inventory", () => direct(args(command.args.at(-1)!, true)), true);
   return results;
 };
-afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { Object.defineProperty(process, "platform", platformDescriptor); vi.restoreAllMocks(); operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+
+const windowsProof = (pid: number, parentPid: number, startedAt: string): processProofs.MappingProcessProof => ({ pid, parentPid, processGroupId: null, startedAt, commandHash: "a".repeat(64) });
 
 describe("owned Herdr launch mapping", () => {
+  it.each(["inventory", "readiness"] as const)("keeps Windows %s metadata attached while the owned command runner joins its output", async consumer => {
+    const f = await fixture("win32"), shell = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z");
+    const output = consumer === "inventory" ? JSON.stringify([{ ProcessId: 501, ParentProcessId: 1 }]) : JSON.stringify({ executable: f.mapping.windowsCommand![0], startToken: "123456789" });
+    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(options.detached === false ? output : "")})`], options));
+    const runner = commands.runHerdrCommand;
+    vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => runner(command, active, provided ?? start, options));
+    if (consumer === "readiness") await writeFile(path.join(path.dirname(f.mapping.manifestPath), "shell-ready.json"), JSON.stringify({ nonce: f.mapping.nonce, pid: shell.pid, executable: f.mapping.windowsCommand![0], startToken: "123456789" }), { mode: 0o600 });
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+    vi.spyOn(processProofs, "captureMappingProcessProof").mockResolvedValue(shell);
+    vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
+    if (consumer === "inventory") expect(await f.mapping.captureProcesses([shell.pid], operation())).toEqual([shell.pid]);
+    else await f.mapping.verifyReady(shell.pid, operation());
+    expect(start).toHaveBeenCalledOnce();
+    expect(start.mock.calls[0]![2]).toMatchObject({ detached: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  });
+
   it("isolates system PowerShell metadata queries from inherited module paths without changing the native environment", () => {
     const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules", pSmOdUlEpAtH: "C:\\OtherModules", PATH: "/frozen/native/path", CODEX_HOME: "/native/home" };
     const command = windowsMappingProcessInventoryCommand(environment);

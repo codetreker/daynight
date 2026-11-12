@@ -233,10 +233,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     if (owned.length !== 1 || owned[0]!.workspace_id !== initial.workspaceId || panes.length !== 1 || tabs.length !== 1 || panes[0]!.pane_id === original.paneId || tabs[0]!.tab_id === intent.tabId) throw new HerdrAgentActionError("The original PowerShell layout replacement remains unknown; both pane responsibilities were retained.", "layout.apply", "unknown");
     const pane = panes[0]!, binding = { session, workspaceId: initial.workspaceId, paneId: text(pane.pane_id, "Prepared PowerShell pane"), terminalId: text(pane.terminal_id, "Prepared PowerShell terminal") };
     const exported = expectedResult(await options.rpc.request("layout.export", { tab_id: text(tabs[0]!.tab_id, "Prepared PowerShell tab") }, operation), "layout_export"), layout = object(exported.layout, "Prepared PowerShell layout"), root = object(layout.root, "Prepared PowerShell root");
+    const sameCwd = typeof root.cwd === "string" && path.isAbsolute(root.cwd) && path.isAbsolute(context.cwd)
+      ? await Promise.all([realpath(root.cwd), realpath(context.cwd)]).then(([actual, expected]) => path.normalize(actual) === path.normalize(expected), () => false)
+      : false;
     const mismatches = [
       ["workspace_id", layout.workspace_id === initial.workspaceId], ["tab_id", layout.tab_id === tabs[0]!.tab_id],
       ["type", root.type === "pane"], ["pane_id", root.pane_id === binding.paneId],
-      ["cwd", root.cwd === context.cwd], ["command", JSON.stringify(root.command) === JSON.stringify(mapping.windowsCommand)],
+      ["cwd", sameCwd], ["command", JSON.stringify(root.command) === JSON.stringify(mapping.windowsCommand)],
     ].filter(([, matches]) => !matches).map(([field]) => field);
     if (mismatches.length !== 0) {
       const boundedText = (value: unknown) => typeof value === "string" ? value.slice(0, 512) : null;
