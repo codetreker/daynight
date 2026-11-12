@@ -110,10 +110,8 @@ func (s *Identity) PatchUser(ctx context.Context, dao store.IdentityDAO, userID 
 func (s *Identity) LockProfileCredential(ctx context.Context, dao store.IdentityDAO, family store.CredentialFamilyDAO, p model.Principal, resource string, now time.Time) error {
 	var err error
 	switch p.Kind {
-	case model.SessionCredential:
-		err = dao.LockSession(ctx, p, now)
-	case model.PATCredential:
-		_, err = dao.LockActivePAT(ctx, p.UserID, p.CredentialID, now)
+	case model.SessionCredential, model.PATCredential:
+		err = dao.LockProfileCredential(ctx, p, now)
 	case model.OAuthCredential:
 		origin, parseErr := url.Parse(resource)
 		if parseErr != nil || origin.Path != "/api/v1" || !oauth.ValidAPIOrigin(origin.Scheme+"://"+origin.Host) || origin.RawQuery != "" || origin.Fragment != "" || origin.User != nil {

@@ -83,19 +83,12 @@ func (d *profileDAO) PatchUser(ctx context.Context, id string, p model.UserProfi
 	}
 	return d.actual, d.err
 }
-func (d *profileDAO) LockSession(ctx context.Context, p model.Principal, now time.Time) error {
+func (d *profileDAO) LockProfileCredential(ctx context.Context, p model.Principal, now time.Time) error {
 	d.calls++
 	if ctx != d.t.Context() || p != d.principal || now != d.now {
-		d.t.Fatal("session binding lost")
+		d.t.Fatal("native profile credential binding lost")
 	}
 	return d.err
-}
-func (d *profileDAO) LockActivePAT(ctx context.Context, user, id string, now time.Time) (model.PersonalAccessToken, error) {
-	d.calls++
-	if ctx != d.t.Context() || user != d.principal.UserID || id != d.principal.CredentialID || now != d.now {
-		d.t.Fatal("PAT binding lost")
-	}
-	return model.PersonalAccessToken{}, d.err
 }
 
 type profileFamily struct {

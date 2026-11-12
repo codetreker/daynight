@@ -46,3 +46,26 @@ func (s *scope) PatchUser(ctx context.Context, userID string, patch model.UserPr
 	user, err := scanUser(s.tx.QueryRow(ctx, `UPDATE users SET `+strings.Join(assignments, ",")+` WHERE id=$1 RETURNING `+userFields, args...))
 	return user, pg.AuthQueryError("patch user", err)
 }
+
+// LockProfileCredential allows sibling readers to authorize while the profile
+// waits for the user row; credential mutations remain excluded until completion.
+func (s *scope) LockProfileCredential(ctx context.Context, principal model.Principal, now time.Time) error {
+	if principal.Kind != model.SessionCredential && principal.Kind != model.PATCredential {
+		return model.ErrNotFound
+	}
+	credential, err := pg.ThreadCredential(ctx, s.tx, principal, " FOR SHARE")
+	if err != nil {
+		return err
+	}
+	if credential.ExpiresAt == nil {
+		return nil
+	}
+	var valid bool
+	if err := s.tx.QueryRow(ctx, `SELECT $1::timestamptz>GREATEST($2::timestamptz,clock_timestamp())`, credential.ExpiresAt, now).Scan(&valid); err != nil {
+		return pg.AuthQueryError("recheck profile credential expiry", err)
+	}
+	if !valid {
+		return model.ErrNotFound
+	}
+	return nil
+}

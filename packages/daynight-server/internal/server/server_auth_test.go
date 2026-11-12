@@ -79,6 +79,10 @@ func (s httpAuthenticationScope) CredentialFamilyDAO() store.CredentialFamilyDAO
 	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
 	panic("unreachable")
 }
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
 func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
 	panic("unreachable")

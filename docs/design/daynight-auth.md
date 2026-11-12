@@ -280,7 +280,10 @@ UPDATE 的自然 user 行锁串行化并发写入；不预读全量资料回写�
 `identity.NewScope(tx,family)` 保持 oauth→identity 依赖方向，OAuth owner-session 检查传入其自身 DAO。
 内部 API principal 使用固定 API resource/scope/client tuple 执行原 `LockAccess`。resource 取自启动配置的
 可信 callback URL 的 scheme/host，加 `/api/v1`；scope/client 使用既有固定 API profile，拒绝无效配置。
-原生凭据使用原 IdentityDAO 检查。读取实际完整用户、校验 Personal Team 与 profile 1 MiB/本人 response 2 MiB 编码容量后，
+原生凭据使用 `IdentityDAO.LockProfileCredential`，对 Session/PAT 取得与其他凭据读者兼容的 `FOR SHARE` 锁，
+排除撤销和到期时间写入，并在取锁后按新鲜数据库时间与调用时钟复核有限期限。资料更新可能等待 user 行；
+共享凭据锁允许已持 user 锁的 TestSession 重试继续读取原始 PAT，避免两个同账号 PAT 构成 user/PAT 锁环。
+PAT 管理的 `LockActivePAT` 和既有 Session 管理检查保持各自原锁语义。读取实际完整用户、校验 Personal Team 与 profile 1 MiB/本人 response 2 MiB 编码容量后，
 以新鲜时间再次复核凭据，覆盖 user 行等待期间的到期；任何失败均回滚资料更新。
 
 成功仅在确认提交后返回 `200` 与原 `api.User`，保留所有 nullable 字段、完整 personalTeam、

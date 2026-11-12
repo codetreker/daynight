@@ -129,6 +129,10 @@ func (d httpRejectedIdentityDAO) UpsertUser(context.Context, model.User, time.Ti
 	unexpectedHTTPCall(d.t, "IdentityDAO.UpsertUser")
 	panic("unreachable")
 }
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
 func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
 	panic("unreachable")

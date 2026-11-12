@@ -676,6 +676,10 @@ func (s *unexpectedIdentityDAO) UpsertUser(context.Context, model.User, time.Tim
 	s.reject("UpsertUser")
 	panic("unreachable")
 }
+func (s *unexpectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	s.reject("LockProfileCredential")
+	panic("unreachable")
+}
 func (s *unexpectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
 	s.reject("EnsureUser")
 	panic("unreachable")

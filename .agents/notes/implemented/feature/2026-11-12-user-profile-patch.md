@@ -27,8 +27,11 @@ PATCH /api/v1/me carries field presence separately from nullable string values.
 The DAO updates only submitted profile columns and updated_at; its natural row
 lock serializes writers without overwriting omitted fields. The strict identity
 transaction validates the complete profile and Personal Team and rechecks the
-credential with fresh time after the user-row wait. Native credentials retain
-IdentityDAO checks. The injected same-transaction family DAO checks the fixed API
+credential with fresh time after the user-row wait. Native credentials use
+a dedicated IdentityDAO reader check using FOR SHARE. This admits sibling
+credential readers while excluding revocation and expiry writes. Finite expiry
+is rechecked after acquiring the credential lock against database and application
+time. The injected same-transaction family DAO checks the fixed API
 tuple for internal API principals, preserving the existing oauth-to-identity
 implementation dependency direction. Public OAuth admission keeps its existing
 scope.
@@ -53,6 +56,13 @@ SQL preserves each field's update intent without requiring a new CAS version.
 **Reuse the device operation runner.** That runner can commit useful device
 writes alongside domain refusals. Profile and account initialization require
 complete rollback on those failures, so they use strict completion handling.
+
+**Reuse the PAT management UPDATE lock.** A profile write can hold PAT B while
+waiting for its user row. A TestSession registration retry under PAT A can hold
+that user row while checking the original PAT B with a shared lock. An exclusive
+PAT lock closes that cycle and lets PostgreSQL abort a valid request. Profile
+admission therefore uses a shared native reader capability; PAT management keeps
+its existing exclusive lock.
 
 ## Consequences
 

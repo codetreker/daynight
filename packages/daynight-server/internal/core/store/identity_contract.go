@@ -34,6 +34,8 @@ type IdentityDAO interface {
 	// EnsureUser preserves an existing profile; inserted describes this transaction, not its commit.
 	EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error)
 	PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error)
+	// LockProfileCredential shares native credential reads while excluding revocation and expiry writes.
+	LockProfileCredential(context.Context, model.Principal, time.Time) error
 	InsertSession(context.Context, model.Session) error
 	Authenticate(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
 	IdentityUser(context.Context, string) (model.User, PersonalTeamFacts, error)

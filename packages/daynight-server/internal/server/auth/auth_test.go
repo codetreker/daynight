@@ -906,6 +906,10 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	}
 }
 
+func (d httpRejectedIdentityDAO) LockProfileCredential(context.Context, model.Principal, time.Time) error {
+	unexpectedHTTPCall(d.t, "IdentityDAO.LockProfileCredential")
+	panic("unreachable")
+}
 func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
 	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
 	return model.User{}, false, nil
