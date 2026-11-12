@@ -75,6 +75,9 @@ func TestDecodeObjectContract(t *testing.T) {
 				if !errors.As(err, &fault) || fault.Code != "invalid_input" {
 					t.Fatalf("err=%v", err)
 				}
+				if tc.name == "invalid utf8" && fault.Message != "request body must be valid UTF-8" {
+					t.Fatalf("invalid UTF-8 diagnostic: %q", fault.Message)
+				}
 			}
 		})
 	}

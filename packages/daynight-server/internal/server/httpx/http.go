@@ -47,7 +47,7 @@ func DecodeObjectLimitWithTimeout(w http.ResponseWriter, request *http.Request, 
 		return nil, err
 	}
 	if !utf8.Valid(body) {
-		return nil, InvalidInput("request body must be valid JSON within the 1 MiB limit")
+		return nil, InvalidInput("request body must be valid UTF-8")
 	}
 	fields, err := jsonobject.Decode(body, "request body", allowed...)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	monitoring "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 )
@@ -117,7 +118,11 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	if configurationAware {
 		allowed = append(allowed, "configuration")
 	}
-	fields, err := httpx.DecodeObject(w, request, allowed...)
+	limit := int64(transport.MaxRESTJSONBodyBytes)
+	if configurationAware {
+		limit = transport.MaxWorkerConfigurationReportBytes
+	}
+	fields, err := httpx.DecodeObjectLimit(w, request, limit, allowed...)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "validate", err)
 		return

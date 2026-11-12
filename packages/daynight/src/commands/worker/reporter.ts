@@ -24,6 +24,7 @@ const describeFailure = (error: unknown, seen = new Set<unknown>(), depth = 0): 
   seen.add(error);
   const category = error instanceof AggregateError ? "aggregate"
     : error instanceof OperationError ? `operation_${error.kind}`
+    : error instanceof ApiError && error.operation === "worker.configuration.report" && error.status === 413 ? `configuration_report_capacity_413${error.outcomeUnconfirmed ? "_outcome_unconfirmed" : ""}`
     : error instanceof ApiError ? `http_${error.phase}${error.status === undefined ? "" : `_${error.status}`}`
     : error instanceof ProtocolError ? "protocol"
     : error instanceof TypeError ? "type"

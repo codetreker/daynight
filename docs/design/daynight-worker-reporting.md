@@ -102,7 +102,7 @@ owner 在等待前登记后续调用，join 前一链后检查取消和原始清
 
 collector 通过可选快照输入接收工具管理器的 ToolPathTelemetry，不在普通心跳内解析路径、哈希文件或执行另一份探测。actual、candidate 和 activeSelections 共用该管理器的事实；接入时 Codex/Copilot 的旧 versions 来自指定上下文的同一 actual。Herdr 的旧 versions 继续只读已归属运行实例，不能把新准入 CLI 版本当作已运行 daemon 版本。默认未接入时省略扩展，旧 versions 继续原严格形状，不能把 bare 版本文本补成已验证路径。工具报告合同由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
 
-API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩展；能力绑定 origin 和 principal，旧服务按原报告结构发送。工具投影先按 selectionKey 固定排序和完整组裁减，再执行 256 KiB 子预算及原 1 MiB 请求预算。不足时明确 report_budget_exceeded 和集合不完整，不截断路径、不删除普通心跳的必需字段。prepareWorkerReport 返回本地预算结果，ApiClient 的可选预算回调在实际请求准备时接收同一结果，回调失败不能改变报告提交或结果。连完整目标降级也无法容纳时省略可选工具观察，保留稳定错误码和 omitted 标志。无能力、未检查、目标错误和运行集合未知是不同事实；工具错误不得携带完整命令、环境或私有 cause。
+API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩展；能力绑定 origin 和 principal，旧服务按原报告结构发送。工具投影先按 selectionKey 固定排序和完整组裁减，再执行 256 KiB 子预算及所选请求预算（配置报告 9 MiB，普通报告 1 MiB）。`prepareWorkerReport` 和 `workerReportBody` 按选定预算计量实际 UTF-8 JSON，`runtimeConfiguration` 同样按该预算整体省略；必需清单和配置结果不截断，编码超限在请求派发前失败。Operation 默认总量保持不变。不足时明确 report_budget_exceeded 和集合不完整，不截断路径、不删除普通心跳的必需字段。prepareWorkerReport 返回本地预算结果，ApiClient 的可选预算回调在实际请求准备时接收同一结果，回调失败不能改变报告提交或结果。连完整目标降级也无法容纳时省略可选工具观察，保留稳定错误码和 omitted 标志。无能力、未检查、目标错误和运行集合未知是不同事实；工具错误不得携带完整命令、环境或私有 cause。
 
 ## 失败与可观察性
 
