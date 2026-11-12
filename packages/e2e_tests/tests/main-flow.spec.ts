@@ -7,6 +7,7 @@ import { verifyCompletionFlow } from "./completion-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
+type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
   test.setTimeout(240_000);
@@ -37,10 +38,42 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     expect((await login.finished).exitCode).toBe(0);
   } finally { await login.stop(); }
 
+  const initialTokens = await page.request.get(`${topology.baseURL}/api/v1/me/tokens`);
+  expect(initialTokens.status()).toBe(200);
+  const issued = (await initialTokens.json() as { items: Token[] }).items;
+  expect(issued).toHaveLength(1);
+  const cliToken = issued[0]!;
+  expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
+
   const name = `Product E2E ${randomUUID()}`;
   const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);
   const projectId = project.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(projectId).toBeDefined();
+  await expect.poll(async () => {
+    const response = await page.request.get(`${topology.baseURL}/api/v1/me/tokens`);
+    expect(response.status()).toBe(200);
+    return (await response.json() as { items: Token[] }).items.find(token => token.id === cliToken.id)?.lastUsedAt;
+  }, { timeout: 60_000, intervals: [1_000] }).toEqual(expect.any(String));
+
+  await page.goto(`${topology.baseURL}/account`);
+  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v1/me/tokens") && response.request().method() === "GET");
+  await page.getByRole("button", { name: "Access credentials", exact: true }).click();
+  const tokenResponse = await tokenList;
+  expect(tokenResponse.status()).toBe(200);
+  const shownToken = (await tokenResponse.json() as { items: Token[] }).items.find(token => token.id === cliToken.id);
+  expect(shownToken).toMatchObject({ id: cliToken.id, name: cliToken.name, lastUsedAt: expect.any(String) });
+  const row = page.locator(".token-row").filter({ has: page.getByText(cliToken.name, { exact: true }) });
+  await expect(row).toHaveCount(1);
+  const summary = row.locator("details.credential-last-use > summary");
+  await expect(summary).toContainText("Last used: About");
+  await expect(summary.locator("time")).toHaveAttribute("datetime", shownToken!.lastUsedAt!);
+  const fullTime = await page.evaluate(value => new Intl.DateTimeFormat("en", {
+    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(new Date(value)), shownToken!.lastUsedAt!);
+  await expect(summary).toHaveAttribute("title", `Recorded time (approximate): ${fullTime}`);
+  await summary.click();
+  await expect(row.locator(".full-time")).toHaveText(`Recorded time (approximate): ${fullTime}`);
+
   const emptySync = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === "GET");
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
   expect((await emptySync).status()).toBe(200);

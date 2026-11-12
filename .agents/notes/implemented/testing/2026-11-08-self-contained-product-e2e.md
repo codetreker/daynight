@@ -16,6 +16,10 @@ deployment, remote credentials or a live upstream identity provider.
 current checkout's CLI, production Web and full Go Server, and the unmodified
 UniAuth production command and Console at a fixed source revision. Normal
 sequential browser and CLI journeys exercise the complete product entry points.
+The normal journey also reads the device-issued CLI PAT by its actual identity
+in the browser account list after a successful CLI request. It checks the
+recorded approximate and full local time across the assembled system; detailed
+credential lifecycle and failure cases remain with their owning module tests.
 
 Every run owns an internal database network, a private ingress bridge, a
 PostgreSQL instance and data volume, an application container, private
