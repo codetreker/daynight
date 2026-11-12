@@ -403,11 +403,11 @@ export const runWorker = async (options: {
     };
     const sharedHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>) => selectionHerdr ??= createSharedWorkerHerdr({ paths: platform === "macos" ? { ...paths, herdrDirectory: path.join(paths.herdrDirectory, "p"), logsDirectory: path.join(paths.herdrDirectory, "p", "logs") } : paths,
       homeDirectory: options.homeDirectory, ...environment, selectionVerifier, readExecutionConfiguration,
-      hasResponsibilities: () => platform !== "macos" && getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr"),
+      hasResponsibilities: () => platform !== "macos" && (getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") || getStore().listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr")),
     });
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
       admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),
-      closeHerdr: async operation => { if (selectionHerdr !== undefined && (platform === "macos" || !getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr"))) await selectionHerdr.stopInstance(operation); },
+      closeHerdr: async operation => { if (selectionHerdr !== undefined && (platform === "macos" || !getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") && !getStore().listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr"))) await selectionHerdr.stopInstance(operation); },
       readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? herdr?.lifecycle?.activeToolSelections?.() ?? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? [], ...bots?.activeToolSelections() ?? []] });
     const toolRuntime = tools;
     let fallback: Awaited<ReturnType<typeof validateWorkerConfigurationSource>> | null = null;
@@ -861,7 +861,14 @@ export const runWorker = async (options: {
         const environment = await nativeApplication.prepareEnvironment();
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
-        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration, store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+        coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration,
+          reserveClaimTools: async (reservation, signal) => {
+            if (platform === "macos") { currentStore.reserveClaimTools(reservation); return; }
+            const operation = createOperation({ signal, limits: { totalMs: 15_000 } });
+            try { await sharedHerdr(environment).reserveSelection(reservation.nativeConfiguration.herdrLaunch!, () => { currentStore.reserveClaimTools(reservation); }, operation); }
+            finally { operation.dispose(); }
+          },
+          store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
           monitoring: observer,
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
@@ -1077,7 +1084,7 @@ export const runWorkerControl = async (options: {
     };
     const sharedHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>> | {}) => selectionHerdr ??= createSharedWorkerHerdr({ paths: platform === "macos" ? { ...paths, herdrDirectory: path.join(paths.herdrDirectory, "p"), logsDirectory: path.join(paths.herdrDirectory, "p", "logs") } : paths,
       homeDirectory: options.homeDirectory, ...environment, selectionVerifier, readExecutionConfiguration,
-      hasResponsibilities: () => platform !== "macos" && store!.listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr"),
+      hasResponsibilities: () => platform !== "macos" && (store!.listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") || store!.listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr")),
     });
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
       admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),

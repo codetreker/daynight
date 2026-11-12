@@ -179,6 +179,23 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 
+it("upgrades version 15 without inventing claim reservations or changing frozen recipes", () => {
+  const db = memory(), steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+  for (const step of steps.filter(step => step.version <= 15)) db.exec(step.sql);
+  db.pragma("user_version = 15");
+  const { project } = identityFixture(), tools = recordedHerdrTools();
+  const configuration = JSON.stringify({ agent: "codex", model: "original", args: ["--original"], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation });
+  db.prepare("INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)").run(project);
+  db.prepare("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode) VALUES (@projectId, @taskId, @claimId, 'active', 'codex', NULL, 'herdr')").run(claim);
+  db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claim, configuration });
+  const upgraded = open(db);
+  expect(upgraded.listClaimToolReservations()).toEqual([]);
+  expect(upgraded.getTask(claim)?.status).toBe("active");
+  expect(upgraded.getNativeConfiguration(claim)).toEqual(JSON.parse(configuration));
+  expect(db.prepare("SELECT configuration FROM claim_native_configurations").get()).toEqual({ configuration });
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
+});
+
 it("fences an open worker connection before writing a subsequently changed format", () => {
   const { database: db, store, register } = fixture(); register(); db.pragma(`user_version = ${currentSqliteVersion(workerStoreFormat) + 1}`);
   expect(() => store.activateTask(claim)).toThrow("unsupported-version");

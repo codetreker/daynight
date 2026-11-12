@@ -79,7 +79,10 @@ $stream = [IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::W
 try { $bytes=[Text.Encoding]::UTF8.GetBytes($ready); $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
 [IO.File]::Move($temporary,(Join-Path $directory 'shell-ready.json'))
 `;
-const sameManifest = (left: HerdrToolLaunchManifest, right: HerdrToolLaunchManifest): boolean => sameResourceOwner(left.owner, right.owner) && left.launch.selectionKey === right.launch.selectionKey && left.nodeExecutable === right.nodeExecutable && left.childEntry === right.childEntry && left.platform === right.platform;
+const sameManifest = (left: HerdrToolLaunchManifest, right: HerdrToolLaunchManifest): boolean =>
+  sameResourceOwner(left.owner, right.owner) && left.launch.selectionKey === right.launch.selectionKey && left.platform === right.platform &&
+  // POSIX anchors the runtime in its controlled shell; Windows owns it in this manifest.
+  (left.platform === "win32" || left.nodeExecutable === right.nodeExecutable && left.childEntry === right.childEntry);
 
 /** Reconnect reads the original manifest. It never fills a missing historical selection. */
 const createMapping = async (input: {
@@ -102,7 +105,7 @@ const createMapping = async (input: {
   try { index = await optionalOwnedJson(indexFile) as { generation: string } | null; }
   catch (cause) { throw new Error("The original Herdr tool manifest cannot be inspected.", { cause }); }
   if (index !== null && (Object.keys(index).join() !== "generation" || typeof index.generation !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(index.generation))) throw new Error("The original Herdr mapping generation index is invalid.");
-  if (index === null && input.existingOnly) return null;
+  if (index === null && input.existingOnly) throw new Error("The original Herdr mapping generation index is missing; process ownership remains unknown.");
   let directory = path.join(registry, index?.generation ?? randomUUID());
   let manifestPath = path.join(directory, "manifest.json");
   if (index !== null && !input.existingOnly) {

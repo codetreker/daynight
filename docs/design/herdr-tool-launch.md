@@ -8,7 +8,7 @@
 
 recipe 的文件范围由共享解析器拥有。新的 Codex Node 入口冻结 loader、Worker Node 和解析器实际记录的文件，不静态推断 loader 动态选择的 native；原记录中的 runtime、manifest 和命令参数仍逐项核验，不能按新解析格式删减旧证明。实际启动后的 native、完整父子链与官方 Session 由本机制的进程证明和 integration 确认，不能把该运行时证明称为动态 native 文件已在启动前冻结。
 
-`HerdrInstanceManager` 将 daemon、版本查询和 attach client 绑定到同一 Herdr launch。实例握手确认实际 version/protocol，不能把当前目标路径与旧实例版本拼在一起。实例元数据还保留受控 shell 使用的原 Node 与 helper 入口，重连不能把后来安装的 helper 当成旧实例的启动代码。`worker attach` 只读原实例记录并核验原 launch；文件缺失或变化时明确失败，不使用新 client。
+`HerdrInstanceManager` 将 daemon、版本查询和 attach client 绑定到同一 Herdr launch。实例握手确认实际 version/protocol，不能把当前目标路径与旧实例版本拼在一起。POSIX 实例元数据保留受控 shell 使用的原 Node 与 helper 入口；Windows 从经 owner、selectionKey 和平台校验的原 mapping manifest 恢复这两个路径，保持与实际 ExternalScript 相同的来源。重连不能把后来安装的 helper 当成旧实例的启动代码；只有已退休映射的新 generation 使用当前 runtime。`worker attach` 只读原实例记录并核验原 launch；文件缺失或变化时明确失败，不使用新 client。
 
 macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选择新 Herdr，旧执行仍使用自己的实例；原 claim 恢复创建下一代 run 时仍使用原冻结选择。Linux/Windows 使用共享私有实例，其切换需要先清空旧责任，不能用独占实例的准入规则代替。
 
@@ -16,7 +16,7 @@ macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选
 
 ## 每执行映射
 
-`herdr/tool-launch.ts` 在实例私有目录的 `tool-launch/` 下维护 owner 与 selectionKey 对应的 generation。manifest 保存 canonical owner、随机 nonce、冻结 Agent launch、native 原 PATH、Node/helper 绝对路径与平台。当前 generation 索引只指向完整发布的 manifest；旧 generation 仅在全部原进程确认停止并写入 retirement 证明后才能替换。重连只读原 manifest，缺失、损坏、错 owner 或改变选择均拒绝。
+`herdr/tool-launch.ts` 在实例私有目录的 `tool-launch/` 下维护 owner 与 selectionKey 对应的 generation。manifest 保存 canonical owner、随机 nonce、冻结 Agent launch、native 原 PATH、Node/helper 绝对路径与平台。当前 generation 索引只指向完整发布的 manifest；旧 generation 仅在全部原进程确认停止并写入 retirement 证明后才能替换。重连只读原索引和 manifest，缺失、损坏、错 owner 或改变选择均拒绝。有冻结 launch 的执行不能因索引丢失被解释为 legacy，输入和停止不能跳过原映射证明。
 
 `tool-launch-protocol.ts` 通过有界普通文件读取、独占临时文件、同步及 create-only 发布保存证据；POSIX 同时要求 owner-only 权限。manifest、启动 intent、receipt、初始输入 intent 和进程 journal 分别承担自己的事实，不能用某个文件存在推断其它步骤完成。
 
@@ -66,9 +66,13 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 `shared-instance-store.ts` 在 `tool-instance.json` 保存 current launch、握手观察、原 daemon proof、阶段和 pending launch。文件严格校验、原子替换、同步并读回。Worker 实例锁和 adapter 串行队列共同拥有转换；配置目标本身没有停止或替换原实例的权限。
 
+冻结 Herdr 的认领请求在发送前另存 SQLite `claim_tool_reservations`，绑定原 Project、Task、claimId、worktreeId、Worker、精确候选版本与完整冻结配置。Linux/Windows 在共享实例的同一串行队列中重新核对原选择仍就绪、daemon 仍存活，再同步提交这份记录；目标切换将其计入旧责任，不能利用请求尚未返回、pending 尚未登记的间隙替换原 daemon。该记录不是已授予 claim 或运行资源，不提前登记 pending、创建 worktree 或启动 Agent。
+
+匹配的实际 grant 在一个 SQLite 事务内写入 pending 和原冻结配置，并移除请求预留。未知响应不重发；重启后先对账该记录，再处理已有执行。原 active claim 即使已暂停或撤权仍转移责任，执行准入另行核验。仅明确未发送、原 POST 的可信拒绝，或原 Task 的更新版本证明原请求不再能成为 active claim，才可解除预留；同版本、读取失败和清单缺席本身不能证明未授予。同 claim 的身份矛盾保留记录并报告。此机制的取舍见[认领工具预留决策](../../.agents/notes/implemented/architecture/2026-11-12-herdr-claim-tool-reservations.md)。
+
 `shared.ts` 的新目标准入依序核验候选、保留切换 intent、停止原实例、确认 API/client 两个 endpoint 关闭及原 daemon 和全部 mapping 进程树停止，再核验并启动新 launch。已验证的文件 recipe 不能证明 daemon 仍存活；新 Herdr 准入仍重入实例检查。运行循环只在配置选择 Herdr 时定期刷新该候选，并唤醒对账，使无旧 claim 的空闲实例退出后也能按同一规则恢复，纯 Web 不因此启动 Herdr。spawn 前保存 starting，取得原 daemon proof 后才接受实际握手并提交 ready/applied。旧执行、未确认 probe、启动/停止未知和遗留 native 都使新目标保持 pending；原执行的 RPC 和健康 Web 执行继续可用。首次迁移旧非受控实例也遵守这些规则，缺原 daemon 身份不能用 RPC 回执冒充完整停止证明。
 
-原 claim 的 `ensureExecution` 只读该 claim 的冻结配置，要求与 journal 的 current selectionKey 相同。原 daemon 仍活时重连；只有原 daemon、两个 endpoint 和全部旧 native 树均已确认关闭，才可用同一冻结 launch 重启。该入口不允许把新目标 B 变成旧 claim A 的恢复工具。协调器在调用前重新读取任务，核对 active claim、Worker、worktree、模式、Agent、许可和暂停状态；普通清理仅重连，不因清理启动新 daemon。
+原 claim 的 `ensureExecution` 只读该 claim 的冻结配置，要求与 journal 的 current selectionKey 相同。原 daemon 仍活时重连；只有原 daemon、两个 endpoint 和全部旧 native 树均已确认关闭，才可用同一冻结 launch 重启。该入口不允许把新目标 B 变成旧 claim A 的恢复工具。协调器在调用前重新读取任务，核对 active claim、Worker、worktree、模式、Agent、许可和暂停状态；已授予的本机 pending 与 active 执行均可恢复原 daemon，但 Agent 启动仍由后续容量和项目准入决定。普通清理仅重连，不因清理启动新 daemon。
 
 ## 观察与验证边界
 

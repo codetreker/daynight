@@ -14,7 +14,8 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
-import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
+import { createToolLaunchMapping, type HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { mappingFiles } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
@@ -190,6 +191,38 @@ const mappedFixture = async () => {
 };
 
 describe("native argument ownership", () => {
+  it("keeps recovered frozen input and stop closed when the original mapping index is missing", async () => {
+    const f = await fixture("copilot"), binding = await launch(f);
+    const toolLaunch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: process.env, cwd: f.context.cwd }, operation());
+    const input = { directory: f.context.cwd, owner: f.context, launch: toolLaunch, nativeEnvironment: process.env };
+    const mapping = (await createToolLaunchMapping(input, operation()))!;
+    const original = await readFile(mapping.manifestPath, "utf8"), index = path.join(path.dirname(path.dirname(mapping.manifestPath)), "index.json");
+    await rm(index);
+    const toolMapping = vi.fn(async (_context: HerdrExecutionContext, active: Operation, existingOnly?: boolean) => createToolLaunchMapping({ ...input, ...(existingOnly === undefined ? {} : { existingOnly }) }, active));
+    const recovered = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping, processExecuting: async id => f.executing.has(id) });
+    await expect(recovered.submitPrompt(f.context, binding, "must stay closed", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", cause: { message: expect.stringContaining("generation index is missing") } });
+    expect(f.prompts).toEqual(["initial"]);
+    await expect(recovered.stopAndClose(f.context, binding, operation())).rejects.toThrow("generation index is missing");
+    expect(f.calls.filter(call => call.method === "workspace.close")).toEqual([]);
+    expect(f.workspaces).toHaveLength(1);
+    expect(toolMapping).toHaveBeenCalledTimes(2);
+    expect(toolMapping.mock.calls.every(([, , existingOnly]) => existingOnly === true)).toBe(true);
+    expect(await readFile(mapping.manifestPath, "utf8")).toBe(original);
+    await expect(readFile(index)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retains existing legacy input and stop when no historical tool recipe supplies a mapping", async () => {
+    const f = await fixture("copilot"), binding = await launch(f);
+    const toolMapping = vi.fn(async () => null);
+    const recovered = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping, processExecuting: async id => f.executing.has(id) });
+    await expect(recovered.submitPrompt(f.context, binding, "legacy input", operation())).resolves.toMatchObject({ submission: "submitted" });
+    await recovered.stopAndClose(f.context, binding, operation());
+    expect(f.prompts).toEqual(["initial", "legacy input"]);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === "workspace.close")).toHaveLength(1);
+    expect(f.workspaces).toEqual([]);
+  });
+
   it.each(["unknown", "acknowledged"] as const)("persists a mapped launch reservation before RPC and never replays it after %s", async outcome => {
     const f = await mappedFixture(), file = mappingFiles(f.mapping.manifestPath).nativeStart;
     f.hook(async (method, params) => {

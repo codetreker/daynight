@@ -34,6 +34,11 @@ channel. Node, helper and native processes must remain attributable to the
 original shell. Shutdown keeps responsibility for native descendants after their
 helper exits.
 
+Missing mapping indexes for frozen executions reject recovery instead of
+selecting legacy behavior. Windows reopens the original validated manifest's
+Node/helper paths; POSIX also checks the retained shell runtime. An installation
+change cannot replace the helper in an existing generation.
+
 Windows metadata inspection uses the repository's native process inspection
 pattern. One held process handle supplies the root executable path and creation
 time, with liveness checked before and after the observation. The readiness token
@@ -114,6 +119,10 @@ macOS retains per-run daemons. Linux and Windows retain shared daemons with a
 durable switch journal and serialized admission. A new target waits for all old
 responsibilities and both endpoints to close. Original-claim recovery may recreate
 only its original frozen daemon after every old process tree is confirmed stopped.
+The [claim tool reservation](2026-11-12-herdr-claim-tool-reservations.md) also
+retains that selection while a claim request is outstanding and transfers it to
+the actual grant atomically. Authorized pending claims can restore the daemon
+without bypassing Agent capacity admission.
 Attach uses the original Herdr client recipe. Legacy endpoints remain usable for
 existing operations, while missing historical recipes cannot authorize new spawn.
 

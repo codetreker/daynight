@@ -47,7 +47,7 @@ const probe = (endpoint: string, operation: Operation): Promise<boolean> => new 
 });
 
 /** Keep the shared daemon's process owner separate from mutable Worker targets. */
-export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & { prepareSelection: HerdrToolAdmission; ensureExecution(context: HerdrExecutionContext, operation: Operation): Promise<HerdrInstanceReady>; activeToolSelections(): ActiveToolSelection[] } => {
+export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & { prepareSelection: HerdrToolAdmission; reserveSelection(launch: ResolvedToolLaunch, persist: () => void, operation: Operation): Promise<void>; ensureExecution(context: HerdrExecutionContext, operation: Operation): Promise<HerdrInstanceReady>; activeToolSelections(): ActiveToolSelection[] } => {
   const { hasResponsibilities, instanceFactory = createWorkerHerdr, captureProcess = captureProcessProof, inspectProcess = inspectProcessProof, inspectEndpoints, confirmMappingsStopped, ...base } = options;
   const adapters = new Map<string, WorkerHerdrAdapter>();
   let tail = Promise.resolve(), startup: { selectionKey: string; operation: Operation } | null = null;
@@ -214,6 +214,17 @@ export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & 
       return { state: "applied", ...read()!.current!.observation! };
     } catch { operation.check(); return pending("cleanup_unconfirmed"); }
   });
+  const reserveSelection = (input: ResolvedToolLaunch, persist: () => void, operation: Operation): Promise<void> => serialized(operation, async () => {
+    const launch = parseResolvedToolLaunch(input, { tool: "herdr", context: "herdr" });
+    await verifyToolLaunch(launch, operation);
+    const record = read();
+    if (record?.pending !== null || record.current?.phase !== "ready" || record.current.launch?.selectionKey !== launch.selectionKey) throw new Error("The shared Herdr selection changed before claim reservation.");
+    if (await inspect(record.current, operation) !== "running") throw new Error("The original shared daemon stopped before claim reservation.");
+    operation.check();
+    // The synchronous durable write becomes a responsibility before releasing
+    // the same mutex used to replace this daemon. No claim has been sent yet.
+    persist();
+  });
   const tasks = new Proxy({} as WorkerHerdrAdapter["tasks"], { get: (_target, key) => {
     const manager = original().tasks, value = Reflect.get(manager, key) as unknown;
     return typeof value === "function" ? value.bind(manager) : value;
@@ -236,7 +247,7 @@ export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & 
     });
   };
   return {
-    paths, tasks, prepareSelection, ensureExecution,
+    paths, tasks, prepareSelection, reserveSelection, ensureExecution,
     get attachment() { return original().attachment; },
     createShellStartup: () => original().createShellStartup(),
     // Only admission owns spawning. Repeated coordinator ensures reconnect to the retained owner.

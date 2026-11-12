@@ -607,7 +607,54 @@ describe("owned Herdr launch mapping", () => {
     expect(recovered?.nonce).toBe(f.mapping.nonce);
     expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(before);
     expect(before).not.toContain("CODEX_HOME");
-    expect(await createToolLaunchMapping({ ...f.input, directory: path.join(f.directory, "absent"), existingOnly: true }, operation())).toBeNull();
+  });
+
+  it.each(["absent", "deleted"] as const)("refuses to recover a frozen launch when its mapping index is %s without recreating evidence", async state => {
+    const f = await fixture(), original = await readFile(f.mapping.manifestPath, "utf8");
+    const directory = state === "absent" ? path.join(f.directory, "absent") : f.directory;
+    const index = path.join(path.dirname(path.dirname(f.mapping.manifestPath)), "index.json");
+    if (state === "deleted") await rm(index);
+    await expect(createToolLaunchMapping({ ...f.input, directory, existingOnly: true }, operation())).rejects.toThrow("generation index is missing");
+    expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(original);
+    await expect(readFile(state === "absent" ? path.join(directory, "tool-launch") : index)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([true, false])("retains the original Windows helper runtime in an existing generation (existingOnly=%s)", async existingOnly => {
+    const f = await fixture("win32"), original = await readFile(f.mapping.manifestPath, "utf8");
+    const recovered = await createToolLaunchMapping({ ...f.input, nodeExecutable: path.join(f.directory, "replacement-node"), childEntry: path.join(f.directory, "replacement-helper.js"), existingOnly }, operation());
+    expect(recovered?.manifestPath).toBe(f.mapping.manifestPath);
+    expect(await readToolManifest(recovered!.manifestPath)).toMatchObject({ nodeExecutable: process.execPath, childEntry });
+    expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(original);
+  });
+
+  it("uses the current Windows helper runtime only after the original generation is retired", async () => {
+    const f = await fixture("win32"), original = await readToolManifest(f.mapping.manifestPath), before = await readFile(f.mapping.manifestPath, "utf8");
+    await writeFile(path.join(path.dirname(f.mapping.manifestPath), "retired.json"), JSON.stringify({ nonce: original.nonce, selectionKey: original.launch.selectionKey, owner: original.owner }), { mode: 0o600 });
+    const runtime = { nodeExecutable: path.join(f.directory, "replacement-node"), childEntry: path.join(f.directory, "replacement-helper.js") };
+    const next = (await createToolLaunchMapping({ ...f.input, ...runtime }, operation()))!;
+    expect(next.manifestPath).not.toBe(f.mapping.manifestPath);
+    expect(next.nonce).not.toBe(original.nonce);
+    expect(await readToolManifest(next.manifestPath)).toMatchObject(runtime);
+    expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(before);
+  });
+
+  it.each(["darwin", "linux"] as const)("requires the original controlled shell runtime on %s", async platform => {
+    const f = await fixture(platform), original = await readFile(f.mapping.manifestPath, "utf8");
+    await expect(createToolLaunchMapping({ ...f.input, nodeExecutable: path.join(f.directory, "replacement-node"), childEntry: path.join(f.directory, "replacement-helper.js"), existingOnly: true }, operation())).rejects.toThrow("frozen execution selection");
+    expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(original);
+  });
+
+  it.each(["owner", "recipe", "platform", "runtime", "script"] as const)("rejects a changed Windows mapping %s before retaining its historical runtime", async changed => {
+    const f = await fixture("win32"), manifest = await readToolManifest(f.mapping.manifestPath);
+    if (changed === "owner") manifest.owner = { ...manifest.owner, claimId: "00000000-0000-4000-8000-000000000005" };
+    if (changed === "recipe") manifest.launch = { ...manifest.launch, selectionKey: "b".repeat(64) };
+    if (changed === "platform") manifest.platform = "darwin";
+    if (changed === "runtime") manifest.childEntry = "relative-helper.js";
+    const original = JSON.stringify(manifest);
+    await writeFile(f.mapping.manifestPath, original, { mode: 0o600 });
+    if (changed === "script") await writeFile(path.join(path.dirname(f.mapping.manifestPath), "codex.ps1"), "changed script", { mode: 0o600 });
+    await expect(createToolLaunchMapping({ ...f.input, nodeExecutable: path.join(f.directory, "replacement-node"), childEntry: path.join(f.directory, "replacement-helper.js"), existingOnly: true }, operation())).rejects.toThrow();
+    expect(await readFile(f.mapping.manifestPath, "utf8")).toBe(original);
   });
 
   it("starts exactly the frozen command, records original argv, and removes mapping environment from the child", async () => {

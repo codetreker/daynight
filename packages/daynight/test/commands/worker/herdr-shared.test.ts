@@ -202,6 +202,37 @@ test("serializes concurrent target admission without overlapping startup ownersh
   expect(f.events.indexOf(`stop:${f.a.selectionKey}`)).toBeLessThan(f.events.indexOf(`ensure:${f.b.selectionKey}`));
 });
 
+test("reserves the frozen selection before a queued target can replace its daemon", async () => {
+  const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation());
+  let persisted = false;
+  const reserve = shared.reserveSelection(f.a, () => { persisted = true; f.settings.responsibilities = true; }, operation());
+  const replace = shared.prepareSelection(f.b, operation());
+  const results = await Promise.allSettled([reserve, replace]);
+  expect(results).toEqual([{ status: "fulfilled", value: undefined }, { status: "fulfilled", value: { state: "pending", reason: "active_instance" } }]);
+  expect(persisted).toBe(true);
+  expect(f.stateFor(f.a.selectionKey).stops).toBe(0); expect(f.stateFor(f.b.selectionKey).ensures).toBe(0);
+  f.settings.responsibilities = false;
+  await expect(shared.prepareSelection(f.b, operation())).resolves.toMatchObject({ state: "applied" });
+});
+
+test("refuses an obsolete frozen selection when another target won admission before reservation", async () => {
+  const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation());
+  const replace = shared.prepareSelection(f.b, operation());
+  let persisted = false;
+  const reserve = shared.reserveSelection(f.a, () => { persisted = true; }, operation());
+  const results = await Promise.allSettled([replace, reserve]);
+  expect(results[0]!.status).toBe("fulfilled");
+  expect(results[1]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/selection.*changed/i) }) });
+  expect(persisted).toBe(false); expect(readHerdrSharedInstance(f.paths)?.current?.launch).toEqual(f.b);
+});
+
+test("does not publish a reservation when the original daemon has stopped", async () => {
+  const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation()); f.stateFor(f.a.selectionKey).running = false;
+  let persisted = false;
+  await expect(shared.reserveSelection(f.a, () => { persisted = true; }, operation())).rejects.toThrow(/daemon/i);
+  expect(persisted).toBe(false);
+});
+
 test("reconnects a ready journal after restart using the daemon handshake rather than a new launch", async () => {
   const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation()); f.settings.version = "0.9.11";
   await expect(f.build().prepareSelection(f.a, operation())).resolves.toMatchObject({ state: "applied", version: "0.9.11" });

@@ -16,6 +16,7 @@ import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
+import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
@@ -33,7 +34,7 @@ import type { WorkerPromptTuple } from "./prompt-source.js";
 import type { ExecutionAdvance } from "./execution.js";
 import { isUnavailableProject } from "./remote.js";
 import type { WorkerRemote } from "./remote.js";
-import type { WorkerStore } from "./store.js";
+import type { ClaimToolReservation, WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
@@ -45,6 +46,7 @@ export type WorkerRepositoryAssignment = { project: WorkerProject; configuration
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" };
 export type WorkerCoordinatorOptions = {
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
+  reserveClaimTools?: (reservation: ClaimToolReservation, signal: AbortSignal) => Promise<void>;
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
   webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
@@ -378,7 +380,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const failures: unknown[] = [error];
       for (const source of sources) {
         const owner = remoteOwner(source), local = options.store.getTask(owner);
-        if (local === null || local.status !== "active" || local.agentControlMode === "web" || !canAdvance(local) || options.store.getNativeConfiguration(local)?.herdrLaunch === undefined) continue;
+        if (local === null || local.status === "done" || local.agentControlMode === "web" || !canAdvance(local) || options.store.getNativeConfiguration(local)?.herdrLaunch === undefined) continue;
         if (!await mayRestoreHerdr(local, owner, signal ?? normalSignal)) continue;
         try {
           await workerOperation(operation => options.herdr.ensureExecution!(executionContext({ task: local, owner, project: projectFor(local) }), operation), signal);
@@ -526,8 +528,32 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       observe(m => m.fail({ operationId, component: "inventory", phase: "inventory", scope: { kind: "project", projectId }, error }));
     });
     const invalidated = (id: string): boolean => (projectInvalidations.get(id) ?? 0) !== (initialInvalidations.get(id) ?? 0);
+    const observedTasks = [...observation.tasks];
+    for (const reservation of options.store.listClaimToolReservations()) {
+      if (invalidated(reservation.projectId)) continue;
+      const granted = observedTasks.find(task => task.projectId === reservation.projectId && task.id === reservation.taskId && readWorkerClaim(task.properties)?.claimId === reservation.claimId);
+      if (granted !== undefined) { options.store.acceptClaimToolReservation(granted, options.workerId); continue; }
+      if (!observation.coveredProjectIds.includes(reservation.projectId)) continue;
+      try {
+        // An absent inventory row cannot fence a request still committing at
+        // its original version. Reconcile that Task without replaying the POST.
+        const fresh = await options.remote.readTask(reservation.projectId, reservation.taskId, signal);
+        if (invalidated(reservation.projectId)) continue;
+        if (fresh.projectId !== reservation.projectId || fresh.id !== reservation.taskId) throw new Error("Claim reservation reconciliation returned another task.");
+        const claim = readWorkerClaim(fresh.properties);
+        if (claim?.claimId === reservation.claimId && (claim.workerId !== reservation.workerId || claim.worktreeId !== reservation.worktreeId || claim.agent !== reservation.nativeConfiguration.agent || claim.agentControlMode !== reservation.agentControlMode)) throw new Error("The original claim request has conflicting ownership evidence.");
+        if (claim?.claimId === reservation.claimId && claim.state === "active") {
+          options.store.acceptClaimToolReservation(fresh, options.workerId);
+          const index = observedTasks.findIndex(task => task.projectId === fresh.projectId && task.id === fresh.id);
+          if (index < 0) observedTasks.push(fresh); else observedTasks[index] = fresh;
+        } else if (fresh.version > reservation.version) options.store.releaseClaimToolReservation(reservation);
+      } catch (error) {
+        if (isWorkerCancellation(error, signal)) throw error;
+        options.emit({ kind: "warning", message: `The original claim request for ${reservation.projectId}/${reservation.taskId}/${reservation.claimId} remains unconfirmed; its frozen tools are retained.`, error });
+      }
+    }
     const result = new Map<string, Task>();
-    for (const task of observation.tasks) {
+    for (const task of observedTasks) {
       if (invalidated(task.projectId)) continue;
       const owner = remoteOwner(task);
       observe(m => {
@@ -1599,13 +1625,32 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
           const frozenConfiguration = options.freezeConfiguration === undefined ? currentRepository.configuration : await options.freezeConfiguration(currentRepository.configuration, normalSignal);
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
-          const claimId = randomUUID();
+          const claimId = randomUUID(), worktreeId = randomUUID();
+          const reservation: ClaimToolReservation | undefined = (frozenConfiguration.agentControlMode ?? "herdr") === "herdr" && frozenConfiguration.herdrLaunch !== undefined
+            ? { projectId: candidate.projectId, taskId: candidate.id, claimId, worktreeId, workerId: options.workerId, version: candidate.version, agentControlMode: "herdr", nativeConfiguration: frozenConfiguration } : undefined;
+          if (reservation !== undefined) {
+            if (options.platform !== "macos" && options.reserveClaimTools === undefined) throw new Error("Shared Herdr claim reservation is unavailable.");
+            if (options.reserveClaimTools !== undefined) await options.reserveClaimTools(reservation, normalSignal);
+            else options.store.reserveClaimTools(reservation);
+            if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved() || normalSignal.aborted) {
+              options.store.releaseClaimToolReservation(reservation); normalSignal.throwIfAborted(); continue;
+            }
+          }
           reconciliationPhase = "claim-request";
           observe(m => m.setPhase("claim-request"));
           try {
-            const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
+            let granted: Task;
+            try { granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId }, normalSignal); }
+            catch (error) {
+              if (reservation !== undefined && error instanceof ApiError && !error.outcomeUnconfirmed && error.confirmedMutationId === undefined
+                && (error.confirmedRefusal || error.phase === "prepare" || error.phase === "request")) options.store.releaseClaimToolReservation(reservation);
+              throw error;
+            }
             const owner = remoteOwner(granted);
-            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration });
+            const local = reservation === undefined
+              ? options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration })
+              : options.store.acceptClaimToolReservation(granted, options.workerId);
+            if (local === null) throw new Error("The granted claim has no original frozen tool reservation.");
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
@@ -1642,6 +1687,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    if (options.store.listClaimToolReservations().some(reservation => reservation.projectId === target.projectId && reservation.taskId === target.taskId)) throw new Error("The original claim request remains unconfirmed; its frozen selection is reserved.");
     reconcileNeverStarted();
     const retained = responsibilities();
     assertHerdrResourceBudget(lifecycle()?.archive?.resources() ?? [], options.availableDiskBytes?.() ?? 1073741824n);
