@@ -41,13 +41,14 @@ const fixture = () => {
   const archive = createHerdrRecordingArchive({ directory: path.join(paths.workerDirectory, "archives"), api: {} as HerdrArchiveApi });
   const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("Disposal cannot collect a new recording."); }, publishStopped: async () => {}, ...remote });
   mocks.durable.mockReturnValue({ lifecycle: { archive: resource, close: vi.fn() } });
-  const removeWorktree = vi.fn(async () => { rmSync(cwd, { force: true, recursive: true }); });
+  const removeWorktree = vi.fn(async () => { rmSync(cwd, { force: true, recursive: true }); return { kind: "absent" as const, effectErrors: [] as unknown[] }; });
   const binding = { repositoryPath: localPath, commonDirectory: path.join(localPath, ".git"), worktreePath: cwd, branch: `daynight/${doc.owner.taskId}` };
   const findWorktree = vi.fn(async (): Promise<typeof binding | null> => null);
   const retireWorktreeManifest = vi.fn(async () => {});
-  mocks.git.mockReturnValue({ prepareRepository: async () => {}, resolveWorktreeBinding: async () => binding, removeWorktree, findWorktree, retireWorktreeManifest, dispose: async () => {} });
+  const disposeGit = vi.fn(async () => {});
+  mocks.git.mockReturnValue({ prepareRepository: async () => {}, resolveWorktreeBinding: async () => binding, removeWorktree, findWorktree, retireWorktreeManifest, dispose: disposeGit });
   const request = { kind: "dispose" as const, projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId, sessionId: doc.sessionId, operationId: "00000000-0000-4000-8000-000000000099", confirmed: true as const };
-  return { homeDirectory, request, resource, readTask, removeWorktree, findWorktree, retireWorktreeManifest, cwd, binding, active: () => { active = true; } };
+  return { homeDirectory, request, resource, readTask, removeWorktree, findWorktree, retireWorktreeManifest, disposeGit, cwd, binding, active: () => { active = true; } };
 };
 
 describe.skipIf(process.platform !== "darwin")("retained-resource runtime authorization", () => {
@@ -68,6 +69,22 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     const f = fixture(); f.active();
     await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} })).rejects.toThrow("original claim is still active");
     expect(f.readTask).toHaveBeenCalledOnce(); expect(f.removeWorktree).not.toHaveBeenCalled(); expect(f.resource.resources()[0]!.disposition).toBeNull();
+  });
+  it("retains diagnostic and metadata retirement failures together after disposal", async () => {
+    const f = fixture(), diagnosticPath = resolveWorkerPaths(f.homeDirectory).logsDirectory, retirement = new Error("metadata retirement failed"), teardown = new Error("Git disposal failed");
+    writeFileSync(diagnosticPath, "not a directory");
+    f.removeWorktree.mockImplementationOnce(async () => { rmSync(f.cwd, { force: true, recursive: true }); return { kind: "absent", effectErrors: [new Error("effect failed")] }; });
+    f.retireWorktreeManifest.mockRejectedValueOnce(retirement);
+    f.disposeGit.mockRejectedValueOnce(teardown);
+    const error = await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} }).catch(value => value);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.cause).toBeInstanceOf(AggregateError);
+    expect(error.cause.cause).toBe(retirement);
+    expect(error.cause.errors).toContain(retirement);
+    expect(error.cause.errors).toHaveLength(2);
+    expect(error.errors).toContain(teardown);
+    expect(error.errors).toHaveLength(2);
+    expect(f.resource.resources()[0]?.disposition?.completed).toBe(true);
   });
   it("does not remove a later checkout when retrying a completed disposal", async () => {
     const f = fixture(), request = { ...f.request, action: "delete" as const };

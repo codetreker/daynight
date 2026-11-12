@@ -27,5 +27,5 @@ export type HerdrArchiveResources = {
   cleaned(owner: ResourceOwner): void;
   retry(target: HerdrResourceTarget, operation: Operation): Promise<HerdrRetainedResource>;
   /** The owner persists the choice before deleting; the callback preserves Git deletion checks. */
-  dispose(request: HerdrDisposalRequest, operation: Operation, removeWorktree: () => Promise<void>): Promise<HerdrRetainedResource>;
+  dispose(request: HerdrDisposalRequest, operation: Operation, removeWorktree: () => Promise<void>, options?: { signal?: AbortSignal }): Promise<HerdrRetainedResource>;
 };

@@ -621,11 +621,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         } else {
           if (task.resources.worktree !== null && !await sameWorktreeLocation(task.resources.worktree.worktreePath, binding.worktreePath)) throw new Error("The original Web worktree differs from its manifest.");
           if (task.resources.worktree === null) task = options.store.bindWorktree(task, { ...binding, repositoryPath: task.repositoryPath }, options.now());
-          await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-          if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+          const outcome = await options.git.removeWorktree(project, task, { signal });
+          if (outcome.effectErrors.length > 0) {
+            try { options.emit({ kind: "cleanup-effect-error", task, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); } catch { /* Diagnostics do not change resource settlement. */ }
+          }
         }
+        signal.throwIfAborted();
         success(task, { kind: "cleanup", phase: "worktree-removal" });
+        signal.throwIfAborted();
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
+        signal.throwIfAborted();
         waiting.delete(task.claimId); rejected.delete(task.claimId);
         return { task, complete: true };
       } catch (error) {

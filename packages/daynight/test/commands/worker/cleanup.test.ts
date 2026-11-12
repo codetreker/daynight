@@ -11,7 +11,7 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
-import type { Operation } from "../../../src/api/operation.js";
+import { createOperation, type Operation } from "../../../src/api/operation.js";
 import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const wait = vi.hoisted(() => vi.fn(async (_milliseconds: number, _value?: unknown, options?: { signal?: AbortSignal }) => { options?.signal?.throwIfAborted(); }));
@@ -42,7 +42,7 @@ const fixture = () => {
   const listResources = vi.fn<WorkerHerdrAdapter["tasks"]["listResources"]>(async () => current);
   const submitPrompt = vi.fn<WorkerHerdrAdapter["tasks"]["submitPrompt"]>(async () => ({ submission: "submitted" as const, observation: observation("idle") }));
   const stopAndClose = vi.fn<WorkerHerdrAdapter["tasks"]["stopAndClose"]>(async () => { order.push("stop-close"); current = []; });
-  const removeWorktree = vi.fn<WorkerGitManager["removeWorktree"]>(async () => { expect(current).toEqual([]); order.push("delete"); worktree = false; });
+  const removeWorktree = vi.fn<WorkerGitManager["removeWorktree"]>(async () => { expect(current).toEqual([]); order.push("delete"); worktree = false; return { kind: "absent", effectErrors: [] }; });
   const originalWorktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` };
   const findWorktree = vi.fn(async () => worktree ? originalWorktree : null);
   const resolveWorktreeBinding = vi.fn(async () => originalWorktree);
@@ -72,16 +72,22 @@ describe("cleanup from resource observations", () => {
     expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
   });
 
-  it("reports progress only after resource absence is confirmed", async () => {
-    const f = fixture();
+  it("reports effect errors and settles after Git confirms absence", async () => {
+    const f = fixture(), error = new Error("effect failed after removal");
     const observe = vi.fn(); f.deps.observePhase = observe;
-    f.removeWorktree.mockImplementationOnce(async () => {});
-    await expect(f.advance()).rejects.toThrow("worktree resources still exist");
-    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "agent-stop" }, true, undefined);
-    expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, false, undefined);
-    expect(observe).not.toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+    f.removeWorktree.mockResolvedValueOnce({ kind: "absent", effectErrors: [error] });
     await f.advance();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-effect-error", identity: f.owner, component: "cleanup", phase: "worktree-removal", error: expect.objectContaining({ cause: error }) }));
     expect(observe).toHaveBeenCalledWith(f.owner, { kind: "cleanup", phase: "worktree-removal" }, true, undefined);
+    expect(f.findWorktree).not.toHaveBeenCalled();
+  });
+
+  it("retains settlement when cancellation arrives in the effect diagnostic", async () => {
+    const f = fixture(), controller = new AbortController(), cancelled = new Error("shutdown");
+    f.removeWorktree.mockResolvedValueOnce({ kind: "absent", effectErrors: [new Error("effect failed")] });
+    f.deps.emit = event => { f.events.push(event); if (event.kind === "cleanup-effect-error") controller.abort(cancelled); };
+    await expect(f.advance(true, controller.signal)).rejects.toMatchObject({ stage: "worktree-removal" });
+    expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
   });
 
   it("stops a migrated original pane using its unchanged aliased cwd", async () => {
@@ -134,7 +140,7 @@ describe("cleanup from resource observations", () => {
     expect(f.submitPrompt).toHaveBeenCalledOnce();
     expect(f.listResources.mock.calls.length).toBeGreaterThanOrEqual(3);
     expect(f.order).toEqual(["stop-close", "delete"]);
-    expect(f.findWorktree).toHaveBeenCalledOnce();
+    expect(f.findWorktree).not.toHaveBeenCalled();
     expect(wait).toHaveBeenCalledWith(1000, undefined, {});
     expect(f.store.getCleanupSchedule(f.owner)).not.toHaveProperty("submitted");
     expect(f.store.getCleanupSchedule(f.owner)).not.toHaveProperty("notified");
@@ -224,9 +230,11 @@ describe("cleanup from resource observations", () => {
     expect(f.removeWorktree).not.toHaveBeenCalled();
   });
 
-  it("refuses completion when Git acknowledges removal but the worktree remains", async () => {
-    const f = fixture(); f.removeWorktree.mockImplementationOnce(async () => {});
-    await expect(f.advance()).rejects.toThrow("worktree resources still exist");
+  it("retains responsibility when Git cannot confirm resource absence", async () => {
+    const f = fixture(), error = new Error("worktree resources still exist");
+    f.removeWorktree.mockRejectedValueOnce(error);
+    await expect(f.advance()).rejects.toMatchObject({ cause: error });
+    expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
   });
 
   it("observes a reappearing original resource after a previous successful cleanup", async () => {
@@ -272,8 +280,8 @@ describe("cleanup operation budgets", () => {
     });
     const remove = f.removeWorktree.getMockImplementation()!;
     f.removeWorktree.mockImplementationOnce(async (...args) => {
-      expect(args[2].limits).toMatchObject({ totalMs: 300_000, requestMs: 300_000 });
-      await waitForCleanup(args[2], 240_000); f.clock(721_000); await remove(...args);
+      expect(args[2]).toEqual({});
+      await new Promise<void>(resolve => setTimeout(resolve, 240_000)); f.clock(721_000); return remove(...args);
     });
     const completion = f.advance();
     await vi.advanceTimersByTimeAsync(0);
@@ -285,13 +293,16 @@ describe("cleanup operation budgets", () => {
     await advanceTime(240_000);
     expect(await completion).toBeUndefined();
     expect(f.order).toEqual(["stop-close", "delete"]);
-    expect(f.findWorktree).toHaveBeenCalledOnce();
+    expect(f.findWorktree).not.toHaveBeenCalled();
   });
 
   it("retains cleanup responsibility at the five-minute deletion deadline and retries from the existing attempt", async () => {
     const f = fixture();
     const advanceTime = cleanupClock();
-    f.removeWorktree.mockImplementationOnce(async (_project, _owner, operation) => waitForCleanup(operation, 300_001));
+    f.removeWorktree.mockImplementationOnce(async (_project, _owner, options) => {
+      const operation = createOperation({ ...options, limits: { totalMs: 300_000, requestMs: 300_000 } });
+      try { await waitForCleanup(operation, 300_001); return { kind: "absent", effectErrors: [] }; } finally { operation.dispose(); }
+    });
     const result = f.advance().catch(error => error);
     await vi.advanceTimersByTimeAsync(0);
     await advanceTime(299_999);
@@ -303,7 +314,7 @@ describe("cleanup operation budgets", () => {
     expect(f.store.getCleanupSchedule(f.owner)?.deadline).toBe(601_000);
     expect(await f.advance()).toBeUndefined();
     expect(f.submitPrompt).toHaveBeenCalledOnce();
-    expect(f.findWorktree).toHaveBeenCalledOnce();
+    expect(f.findWorktree).not.toHaveBeenCalled();
     expect(f.order).toEqual(["stop-close", "delete"]);
   });
 
