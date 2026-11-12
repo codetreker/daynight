@@ -113,9 +113,9 @@ describe('Session fullscreen inside task details', () => {
     expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   });
 
-  it.each(['released', 'completed'])('reads the retained %s claim archive after returning to todo', async state => {
+  it('reads the retained completed claim archive after returning to todo', async () => {
     const snapshot = initial();
-    const worker = { claimId: snapshot.claimId, state, userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' };
+    const worker = { claimId: snapshot.claimId, state: 'completed', userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' };
     const detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { properties: { worker }, status: 'todo' });
     vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     const current = vi.fn(async () => ({ status: 'registered' as const, session: snapshot }));

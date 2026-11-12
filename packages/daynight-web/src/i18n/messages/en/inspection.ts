@@ -53,7 +53,7 @@ export const inspection: InspectionMessages = {
   },
   claim: {
     controls: "Task settings and claim",
-    active: "Claimed by", released: "Released claim", machine: "Machine", agent: "Agent",
+    active: "Claimed by", machine: "Machine", agent: "Agent",
     phase: { preparing: "Preparing", executing: "Executing", verifying: "Verifying", completing: "Completing", waiting: "Waiting", paused: "Paused" },
     membersLoading: "Loading claim owner details…", membersError: "Claim owner details could not be loaded.", retryMembers: "Retry member details", formerMember: "Former project member",
     membersProtocolError: "The claim owner response cannot be read by this page. The page and service versions may be incompatible.",

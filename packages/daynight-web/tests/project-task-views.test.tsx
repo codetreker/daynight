@@ -384,7 +384,7 @@ describe('project task views', () => {
     expect(header).toHaveAccessibleName(/自动执行中/);
     expect(graphRequest).toHaveBeenCalledTimes(1);
     expect(getTask).not.toHaveBeenCalled();
-    workerClaims.set(child, { ...claim, state: 'released' });
+    workerClaims.delete(child);
     graphRequest.mockResolvedValue(snapshot());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(header).not.toHaveAccessibleName(/自动执行中/));

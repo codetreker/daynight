@@ -122,4 +122,69 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(refreshedHit).toContainText(task.id);
   await refreshedHit.click();
   await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
+
+  // These API registrations exercise the assembled service without starting a
+  // Worker process. Resource stopping and archival are owned by their modules.
+  const taskRoot = `/api/v1/projects/${projectId}/tasks/${referenceId}`;
+  const headers = { "Daynight-Worker-Protocol": "2", Origin: topology.baseURL };
+  const patch = await page.request.patch(taskRoot, { headers, data: { version: reference.version, allowAgents: true } });
+  expect(patch.status(), await patch.text()).toBe(200);
+  const ready = await patch.json() as Task;
+  const workerId = randomUUID(), firstClaimId = randomUUID(), firstWorktreeId = randomUUID();
+  const claim = async (version: number, claimId: string, worktreeId: string, machine: string) => {
+    const response = await page.request.post(`${taskRoot}/worker-claim`, { headers, data: {
+      version, claimId, workerId, worktreeId, machine: { id: randomUUID(), name: machine },
+      platform: "linux", agent: "codex", agentControlMode: "web",
+    } });
+    expect(response.status(), await response.text()).toBe(200);
+    return await response.json() as Task & { properties: { worker: { claimId: string; worktreeId: string } } };
+  };
+  const register = async (claimId: string, worktreeId: string) => {
+    const response = await page.request.post(`${taskRoot}/sessions`, { headers, data: {
+      protocol: "daynight.session.v1", registrationId: randomUUID(), claimId, workerId, worktreeId,
+      provider: "codex", controllerId: randomUUID(), controllerInstanceId: randomUUID(),
+    } });
+    expect(response.status(), await response.text()).toBe(200);
+    return (await response.json() as { session: { sessionId: string; claimId: string } }).session;
+  };
+  const first = await claim(ready.version, firstClaimId, firstWorktreeId, "Original E2E worker");
+  expect(first.properties.worker).toMatchObject({ claimId: firstClaimId, worktreeId: firstWorktreeId });
+  const firstSession = await register(firstClaimId, firstWorktreeId);
+  expect(firstSession.claimId).toBe(firstClaimId);
+  const release = await page.request.post(`${taskRoot}/worker-claim/release`, { headers, data: {
+    version: first.version, claimId: firstClaimId, stoppedConfirmed: true,
+  } });
+  expect(release.status(), await release.text()).toBe(200);
+  const released = await release.json() as Task & { properties: Record<string, unknown> };
+  expect(released.status).toBe("todo");
+  expect(released.properties).not.toHaveProperty("worker");
+  expect(released.properties).not.toHaveProperty("sessionStartup");
+  const releasedRead = JSON.parse((await cli(["task", "show", referenceId!, "--project", projectId!, "--json"])).stdout) as Task & { properties: Record<string, unknown> };
+  expect(releasedRead).toMatchObject({ id: referenceId, status: "todo", version: released.version });
+  expect(releasedRead.properties).not.toHaveProperty("worker");
+
+  await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${referenceId}?tab=attachments`);
+  await expect(page.getByRole("heading", { name: referenceTitle, exact: true })).toBeVisible();
+  await expect(page.getByText("Original E2E worker", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Force withdraw", exact: true })).toHaveCount(0);
+  await expect(page.locator(".managed-session-list li button")).toHaveCount(1);
+
+  const secondClaimId = randomUUID(), secondWorktreeId = randomUUID();
+  const second = await claim(released.version, secondClaimId, secondWorktreeId, "New E2E worker");
+  expect(second.properties.worker).toMatchObject({ claimId: secondClaimId, worktreeId: secondWorktreeId });
+  const secondSession = await register(secondClaimId, secondWorktreeId);
+  expect(secondSession.claimId).toBe(secondClaimId);
+  expect(secondSession.sessionId).not.toBe(firstSession.sessionId);
+  const directory = JSON.parse((await cli(["task", "session", "list", referenceId!, "--project", projectId!, "--json"])).stdout) as { items: { sessionId: string; claimId: string; currentBinding: boolean }[] };
+  expect(directory.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sessionId: firstSession.sessionId, claimId: firstClaimId, currentBinding: false }),
+    expect.objectContaining({ sessionId: secondSession.sessionId, claimId: secondClaimId, currentBinding: true }),
+  ]));
+  for (const [session, currentBinding] of [[firstSession, false], [secondSession, true]] as const) {
+    const inspection = JSON.parse((await cli(["task", "session", "show", referenceId!, session.sessionId, "--project", projectId!, "--json"])).stdout) as { sessionId: string; currentBinding: boolean; fence: { claimId: string } };
+    expect(inspection).toMatchObject({ sessionId: session.sessionId, currentBinding, fence: { claimId: session.claimId } });
+  }
+  await page.reload();
+  await expect(page.getByText("New E2E worker", { exact: true })).toBeVisible();
+  await expect(page.getByText("Original E2E worker", { exact: true })).toHaveCount(0);
 });

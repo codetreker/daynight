@@ -54,7 +54,6 @@ export type InspectionMessages = {
   readonly claim: {
     readonly controls: string;
     readonly active: string;
-    readonly released: string;
     readonly machine: string;
     readonly agent: string;
     readonly phase: Readonly<Record<WorkerPhase, string>>;

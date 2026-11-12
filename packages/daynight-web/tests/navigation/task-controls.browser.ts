@@ -587,7 +587,7 @@ test('cancellation conflict requires a newly reviewed version and does not repla
   await expect(status).toHaveText('Cancelled'); expect(writes).toHaveLength(2);
 });
 
-test('active cancellation requires a fresh released record before submission', async ({ page }) => {
+test('active cancellation requires a fresh record without a claim before submission', async ({ page }) => {
   const claim = { claimId: previousId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
   let update!: (changes: Partial<TaskDetail>) => void;
   const writes = await install(page, true, false, false, false, false, undefined, { properties: { worker: claim }, allowAgents: true }, { exposeUpdate: value => { update = value; } });
@@ -596,7 +596,7 @@ test('active cancellation requires a fresh released record before submission', a
   await cancelled.focus(); await expect(dialog.locator('.task-control-tip-bubble')).toContainText('Release the active Worker execution');
   await page.keyboard.press('Enter'); expect(writes).toEqual([]); await page.keyboard.press('Escape'); await expect(dialog.getByRole('menu')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Close task details', exact: true }).click();
-  update({ status: 'todo', version: 6n, ready: true, allowAgents: false, startedAt: null, completedAt: null, properties: { worker: { ...claim, state: 'released' } } });
+  update({ status: 'todo', version: 6n, ready: true, allowAgents: false, startedAt: null, completedAt: null, properties: {} });
   dialog = await openDialog(page); await expect(dialog.locator('.task-status-trigger')).toHaveText('To do'); await expect(dialog.locator('.task-status-trigger')).toBeEnabled();
   await dialog.locator('.task-status-trigger').click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();

@@ -14,9 +14,9 @@ const machine = 'Machine-'.repeat(24) + 'complete';
 const description = Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n');
 const content = '# Claim reader\n\n' + 'The attachment remains readable.\n\n'.repeat(60);
 
-async function install(page: Page, state: 'active' | 'released') {
-  const worker = { claimId: id(2), state, userId: TEST_VIEWER_ID, workerId: id(4), machine: { id: id(5), name: machine }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
-  const task = detailFixture(projectId, taskId, { title: 'Claim reading allocation', description, version: 5n, status: state === 'active' ? 'in_progress' : 'todo', ready: state !== 'active', startedAt: time, allowAgents: true, assignedTo: TEST_VIEWER_ID, properties: { worker } });
+async function install(page: Page) {
+  const worker = { claimId: id(2), state: 'active', userId: TEST_VIEWER_ID, workerId: id(4), machine: { id: id(5), name: machine }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
+  const task = detailFixture(projectId, taskId, { title: 'Claim reading allocation', description, version: 5n, status: 'in_progress', ready: false, startedAt: time, allowAgents: true, assignedTo: TEST_VIEWER_ID, properties: { worker } });
   const graph = graphFixture([task]), access = directAccessFixture(projectId, TEST_VIEWER_ID, 'admin');
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
@@ -46,9 +46,9 @@ async function install(page: Page, state: 'active' | 'released') {
   return writes;
 }
 
-for (const state of ['active', 'released'] as const) for (const mode of ['dialog', 'page'] as const) {
-  test(`${state} claim retains readable content at 320x240 in ${mode}`, async ({ page }) => {
-    const writes = await install(page, state);
+for (const mode of ['dialog', 'page'] as const) {
+  test(`active claim retains readable content at 320x240 in ${mode}`, async ({ page }) => {
+    const writes = await install(page);
     if (mode === 'page') await page.goto(`/projects/${projectId}/tasks/${taskId}`);
     else {
       await page.goto(`/projects/${projectId}`);

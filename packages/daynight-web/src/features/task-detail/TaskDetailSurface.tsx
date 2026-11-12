@@ -138,7 +138,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const sessionScope = useRef(readingIdentity);
   if (sessionScope.current !== readingIdentity) { sessionScope.current = readingIdentity; hasSession.current = false; }
   if (detail !== null) hasSession.current = worker !== undefined || !sessionRecords.confirmedEmpty || sessionRecords.error !== null || sessionRecords.denied;
-  const currentClaim = worker !== undefined && worker.state !== 'completed' ? worker : null;
+  const currentClaim = worker?.state === 'active' ? worker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
   const access = useProjectAccess(projectId);

@@ -23,7 +23,7 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 10 typed 摘要及独立人员内容、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 11 typed 摘要及独立人员内容、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
 摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
@@ -373,7 +373,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 ### 认领归属与强制撤回
 
-详情弹窗、独立页及全屏通过共享 TaskDetailSurface 显示 worker 的当前归属。Active 显示认领用户名称或账号、机器、agent 和阶段；completed 历史不表示当前被认领；现有读端仍能显示旧 released 数据，服务端迁移后不再产生该状态。`ProjectMembersProvider` 共享 `ProjectParticipant` 资料，继承与本地快照必须同时匹配 projectId 和当前 `TaskCacheScope`；切换账号或项目后的首次渲染即隐藏旧资料，取消的旧请求不能回填。资料只按 claim 的 userId 查找，不以负责人或当前登录人替代。成功读取但缺席的用户显示真实 userId 和原成员标记；存在但姓名、邮箱均为空的参与者显示 userId，不标为原成员。
+详情弹窗、独立页及全屏通过共享 TaskDetailSurface 显示 worker 的当前归属。Active 显示认领用户名称或账号、机器、agent 和阶段；completed 历史不表示当前被认领；无 worker 时不显示当前归属，历史仍可读取。`ProjectMembersProvider` 共享 `ProjectParticipant` 资料，继承与本地快照必须同时匹配 projectId 和当前 `TaskCacheScope`；切换账号或项目后的首次渲染即隐藏旧资料，取消的旧请求不能回填。资料只按 claim 的 userId 查找，不以负责人或当前登录人替代。成功读取但缺席的用户显示真实 userId 和原成员标记；存在但姓名、邮箱均为空的参与者显示 userId，不标为原成员。
 
 成员加载与错误只描述资料，不代表撤回权限失败。网络和服务错误保留显式资料重试；解析失败说明当前页面无法读取响应、页面与服务版本可能不兼容，在错误携带请求 ID 时保留它，并使用既有独立任务 URL 提供新标签页入口。新文档通过服务端 `no-store` 的 HTML 入口加载当前资产，原标签页不刷新，草稿留在原页并提示关闭前复制；新页仍失败时提示反馈问题。重试不会自动刷新页面，也不保证修复 DTO 版本不兼容。已经运行的旧脚本不能收到这项提示，需要从已有任务菜单在新标签页打开任务；不引入双 DTO 解码或通用版本迁移器。行为取舍见[认领资料恢复决策](../../.agents/notes/archived/bug-fix/2026-11-04-claim-profile-recovery.md)。
 

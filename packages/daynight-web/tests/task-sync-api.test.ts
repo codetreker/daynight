@@ -258,3 +258,15 @@ it("requires cancellation time and rejects invalid status/time combinations", ()
   }
   expect(parseTaskSummary({ ...task, status: "cancelled", cancelledAt: time, completedAt: time })).toMatchObject({ status: "cancelled", cancelledAt: time, completedAt: time });
 });
+
+it("strictly reads active, completed and absent Worker ownership in summaries", () => {
+  const worker = { claimId: taskId, state: "active", userId, workerId: projectId, machine: { id: epoch, name: "host" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: epoch, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
+  const active = { ...task, status: "in_progress", properties: { worker } };
+  expect(parseTaskSummary(active).properties.worker).toEqual(worker);
+  expect(parseTaskSummary({ ...task, properties: { worker: { ...worker, state: "completed" } } }).properties.worker).toMatchObject({ state: "completed" });
+  expect(parseTaskSummary(task).properties.worker).toBeUndefined();
+  for (const state of ["released", "unknown"]) {
+    expect(() => parseTaskSummary({ ...task, properties: { worker: { ...worker, state } } })).toThrow("invalid response");
+  }
+  expect(() => parseTaskSummary({ ...task, properties: { worker } })).toThrow("invalid response");
+});
