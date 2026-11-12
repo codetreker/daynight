@@ -332,7 +332,7 @@ describe("native argument ownership", () => {
   });
 
   it.each(["aggregate", "wrapped", "access", "stage", "domain", "other", "non-windows"] as const)("does not retry a %s failure after initial input", async kind => {
-    const f = await mappedFixture(); setPlatform(kind === "non-windows" ? "linux" : "win32");
+    const f = await mappedFixture(); setPlatform("win32");
     const terminating = new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
     const failure = kind === "aggregate" ? new AggregateError([terminating, new Error("CloseHandle failed")], "close failed", { cause: terminating })
       : kind === "wrapped" ? new Error("wrapped failure", { cause: terminating })
@@ -341,7 +341,7 @@ describe("native argument ownership", () => {
       : kind === "domain" ? new WindowsProcessProofError("command-line", 0xc000010a | 0, "Win32")
       : kind === "other" ? new Error("changed native birth") : terminating;
     let confirmations = 0;
-    f.mapping.verifyProcesses = async () => { if (f.prompts.length) { confirmations++; throw failure; } };
+    f.mapping.verifyProcesses = async () => { if (f.prompts.length) { confirmations++; if (kind === "non-windows") setPlatform("linux"); throw failure; } };
     await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ promptSubmission: "submitted", cause: failure });
     expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
   });
