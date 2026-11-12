@@ -1,12 +1,14 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
-import { decodeWorkerCloudJsonSource, parseWorkerCloudDesired, parseWorkerCloudItem, parseWorkerCloudReceipt, parseWorkerCloudRevision, parseWorkerCloudValue } from "../../api/worker-configuration.js";
+import { parseWorkerCloudDesired, parseWorkerCloudItem, parseWorkerCloudReceipt, parseWorkerCloudRevision, parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import { canonicalId } from "../../api/parse.js";
 import { ProtocolError } from "../../api/validation.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode } from "../../api/types.js";
 import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
-import { replaceFileAtomically } from "../../platform/files.js";
+import { replaceFileAtomicallyFromChunks } from "../../platform/files.js";
+import { configurationJsonChunks, parseConfigurationJson } from "./configuration-json.js";
 import { parseLocalToolPaths, type Tool, type ToolPathChoice, type ToolPaths } from "../../platform/tool-path-choice.js";
 
 export type WorkerConfigurationIdentity = { readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
@@ -55,7 +57,7 @@ export type WorkerConfigurationManagerOptions = {
   readonly onCapacity?: (revision: string) => void;
   readonly onInvalidDesired?: (revision: string) => void;
   readonly now?: () => number;
-  readonly persist?: (file: string, contents: string) => Promise<void>;
+  readonly persist?: (file: string, chunks: () => Iterable<string>) => Promise<void>;
 };
 type StoredItem = { readonly value: WorkerCloudItem; readonly attempts: number; readonly failureId: number | null; readonly started: boolean };
 type NativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
@@ -67,7 +69,7 @@ const parseDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesi
 const retryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
 class WorkerConfigurationCapacityError extends RangeError {}
 const keyOf = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
-const equal = (first: unknown, second: unknown): boolean => JSON.stringify(first) === JSON.stringify(second);
+const equal = (first: unknown, second: unknown): boolean => isDeepStrictEqual(first, second);
 const freeze = <T>(value: T): T => {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     for (const item of Object.values(value)) freeze(item);
@@ -83,8 +85,9 @@ const counter = (value: unknown, minimum: number): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new TypeError("Worker configuration cache has an invalid counter.");
   return value;
 };
-const parseCache = (source: string, identity: WorkerConfigurationIdentity): { cache: Cache; migrated: boolean } => {
-  const raw = decodeWorkerCloudJsonSource(source) as Record<string, unknown>;
+const parseCache = (source: unknown, identity: WorkerConfigurationIdentity): { cache: Cache; migrated: boolean } => {
+  if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
+  const raw = source as Record<string, unknown>;
   const data = exactObject(raw, ["schemaVersion", "identity", "desired", "observationRevision", "nextFailureId", "items", ...(raw.schemaVersion === 3 || raw.schemaVersion === 4 ? ["nativeModes"] : [])]);
   const scope = exactObject(data.identity, ["serverOrigin", "userId", "workerId"]);
   if (data.schemaVersion !== 1 && data.schemaVersion !== 2 && data.schemaVersion !== 3 && data.schemaVersion !== 4 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
@@ -249,9 +252,15 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     mode !== undefined && typeof value === "object" && value !== null && equal(proofFor(current, value, mode), proof);
   const intendedMode = (current: Cache): AgentControlMode => current.desired?.value.agentControlMode ?? localMode;
   const projectMode = (current: Cache): AgentControlMode | undefined => current.desired?.value.agentControlMode == null ? localMode : current.nativeModes["native:"];
-  const now = options.now ?? Date.now, persist = options.persist ?? ((file, contents) => replaceFileAtomically(file, contents, 0o600));
+  const now = options.now ?? Date.now, persist = options.persist ?? ((file, chunks) => replaceFileAtomicallyFromChunks(file, chunks(), 0o600));
   let cache: Cache, migrated = false;
-  try { ({ cache, migrated } = parseCache(await readFile(options.file, "utf8"), options.identity)); }
+  try {
+    const handle = await open(options.file, "r");
+    try {
+      const stream = handle.createReadStream({ autoClose: false, highWaterMark: 16_384, signal: options.signal });
+      ({ cache, migrated } = parseCache(await parseConfigurationJson(stream), options.identity));
+    } finally { await handle.close(); }
+  }
   catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     cache = { schemaVersion: 4, nativeModes: {}, identity: { ...options.identity }, desired: null, observationRevision: "0", nextFailureId: 1, items: [] };
@@ -259,7 +268,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   cache = freeze(cache);
   await mkdir(path.dirname(options.file), { recursive: true, mode: 0o700 });
   options.signal.throwIfAborted();
-  if (migrated) await persist(options.file, `${JSON.stringify(cache)}\n`);
+  if (migrated) await persist(options.file, () => configurationJsonChunks(cache));
   options.signal.throwIfAborted();
   let validatedNative = new Map<string, NativeProof>();
   let synchronized = false, published = snapshot(cache, false, validatedNative, localMode, localTools, proofFor), stopped = false, queued = false;
@@ -317,8 +326,9 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       }
       if (next !== cache) {
         // All transitions calculate from this queue's current state; rename alone cannot prevent stale snapshots.
-        await persist(options.file, `${JSON.stringify(next)}\n`);
-        cache = freeze(next);
+        const frozen = freeze(next);
+        await persist(options.file, () => configurationJsonChunks(frozen));
+        cache = frozen;
       }
       if (changedMode) for (const [key, job] of jobs) if (key.startsWith("projectNative:")) job.controller.abort(new Error("Worker control mode changed."));
       for (const job of jobs.values()) if (job.proof !== null && !equal(job.preparing ? job.proof.tools.map(({ tool, choice }) => ({ tool, choice })) : job.proof.tools, job.preparing ? proofFor(cache, job.proof.native, job.proof.mode).tools.map(({ tool, choice }) => ({ tool, choice })) : proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));

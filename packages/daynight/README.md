@@ -2294,8 +2294,8 @@ The Worker stores its target, successful per-item values, errors and observation
 acknowledgments in `worker/configuration.json`, scoped to the service origin,
 authenticated user and Worker ID. One serialized commit owner merges receives,
 application results and acknowledgments, atomically persists the latest state,
-then publishes an immutable effective view. The cache uses schema version 3;
-versions 1 and 2 are explicitly migrated while preserving removals, retries,
+then publishes an immutable effective view. The cache uses schema version 4;
+versions 1, 2 and 3 are explicitly migrated while preserving removals, retries,
 failures, unadopted mode and observation identity. Version 1 also retains its
 platform-preference migration. Native history records its validation mode and
 must be revalidated in a new process. The negotiated observation limit is 1026,
@@ -2309,6 +2309,11 @@ mode. Migrated version 1/2 history has no recorded mode and must instead be
 validated under the local compatibility mode; that mode is not historical proof.
 Unvalidated history remains unavailable while the target is being checked;
 values already validated in this runtime remain usable during later updates.
+Cache reads and atomic writes process JSON in chunks using the pinned
+`@discoveryjs/json-ext` dependency, with a cache-specific strict syntax guard.
+Total file size is not limited by one JSON string, although individual tokens
+and the retained domain objects still consume memory. Historical structurally
+valid values are read without applying newer per-item limits.
 Atomic file replacement alone does not permit an older application result to
 overwrite a newer target.
 

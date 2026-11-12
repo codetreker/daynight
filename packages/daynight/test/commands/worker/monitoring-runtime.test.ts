@@ -358,11 +358,11 @@ describe("worker runtime monitoring isolation", () => {
     });
     const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
     let held = false;
-    mocks.persist.mockImplementation(async (file: string, contents: string) => {
-      const state = JSON.parse(contents) as { items: { value: { key: { kind: string; projectId?: string }; state: string } }[] };
+    mocks.persist.mockImplementation(async (file: string, chunks: () => Iterable<string>) => {
+      const state = JSON.parse([...chunks()].join("")) as { items: { value: { key: { kind: string; projectId?: string }; state: string } }[] };
       const projectState = (id: string): string | undefined => state.items.find(item => item.value.key.kind === "projectPreparation" && item.value.key.projectId === id)?.value.state;
       if (!held && projectState(uuid(1)) === "applying" && projectState(uuid(2)) === "applied") { held = true; secondPersisting.resolve(); await persistRelease.promise; }
-      await files.replaceFileAtomically(file, contents, 0o600);
+      await files.replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
     });
     const running = start(f);
     try {

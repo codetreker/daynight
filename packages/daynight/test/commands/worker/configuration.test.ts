@@ -61,6 +61,30 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("recreates the frozen checkpoint iterator and joins an active writer before stop", async () => {
+    const entered = deferred(), release = deferred();
+    let first = true, stopped = false;
+    const { manager } = await fixture({ persist: async (file, chunks) => {
+      if (first) {
+        first = false;
+        const initial = [...chunks()].join("");
+        expect([...chunks()].join("")).toBe(initial);
+        entered.resolve();
+        await release.promise;
+      }
+      await replaceFileAtomically(file, [...chunks()].join(""), 0o600);
+    } });
+    const receive = manager.receive(desired("1", "original", false));
+    await entered.promise;
+    const stopping = manager.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release.resolve();
+    await receive;
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("publishes local targets until complete cloud adoption and retains explicit auto", async () => {
     const localToolPaths: ToolPaths = { codex: { kind: "path", path: "/local/codex" }, copilot: { kind: "path", path: "/local/copilot" }, herdr: { kind: "auto" } };
     const { manager } = await fixture({ localToolPaths });
@@ -75,6 +99,58 @@ describe("Worker cloud configuration application", () => {
     await manager.receive({ ...original, revision: "3", value: { ...original.value, toolPaths: cloud } }); await manager.settle();
     expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "3", choices: cloud });
     expect(manager.report()).toMatchObject({ toolPathsBootstrap: localToolPaths });
+  });
+
+  it("reads and upgrades a real checkpoint within a bounded JSON operation budget", async () => {
+    const first = await fixture();
+    const target = desired("1", "original", false);
+    await first.manager.receive({ ...target, value: { ...target.value, native: { ...target.value.native, args: Array<string>(100).fill("x".repeat(4096)) } } });
+    await first.manager.settle();
+    await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 3;
+    await writeFile(first.file, JSON.stringify({ items: saved.items, nativeModes: saved.nativeModes, identity: saved.identity, desired: saved.desired, nextFailureId: saved.nextFailureId, observationRevision: saved.observationRevision, schemaVersion: 3 }));
+    const originalParse = JSON.parse, originalStringify = JSON.stringify;
+    try {
+      JSON.parse = ((source: string, ...args: unknown[]) => {
+        if (source.length > 65_536) throw new RangeError("parse text budget exceeded");
+        return Reflect.apply(originalParse, JSON, [source, ...args]);
+      }) as typeof JSON.parse;
+      JSON.stringify = ((input: unknown, ...args: unknown[]) => {
+        const result = Reflect.apply(originalStringify, JSON, [input, ...args]) as string | undefined;
+        if (result !== undefined && result.length > 65_536) throw new RangeError("stringify text budget exceeded");
+        return result;
+      }) as typeof JSON.stringify;
+      const options = { file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} };
+      const migrated = await createWorkerConfigurationManager(options);
+      expect(migrated.current().desired?.value.native.args).toHaveLength(100);
+      await migrated.stop();
+      const reopened = await createWorkerConfigurationManager(options);
+      expect(reopened.current().desired?.value.native.args[99]).toBe("x".repeat(4096));
+      await reopened.stop();
+    } finally {
+      JSON.parse = originalParse;
+      JSON.stringify = originalStringify;
+    }
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(4);
+  });
+
+  it("migrates a structurally valid historical native value larger than the current item limit", async () => {
+    const first = await fixture();
+    await first.manager.receive(desired("1", "original", false));
+    await first.manager.settle();
+    await first.manager.stop();
+    const saved = JSON.parse(await readFile(first.file, "utf8"));
+    saved.schemaVersion = 3;
+    const native = saved.items.find((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "native");
+    native.value.appliedValue.args = Array<string>(2050).fill("x".repeat(4096));
+    await writeFile(first.file, JSON.stringify(saved));
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
+    expect(actual.args).toHaveLength(2050);
+    expect(actual.args[2049]).toBe("x".repeat(4096));
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(4);
   });
 
   it("migrates schema 3 without dropping native modes or unacknowledged failures", async () => {
@@ -241,7 +317,8 @@ describe("Worker cloud configuration application", () => {
 
   it("does not publish either part of a mode change when its combined cache write fails", async () => {
     const disk = new Error("mode commit failed"), initial = desired("1", "original", false);
-    const { manager, file } = await fixture({ persist: async (file, contents) => {
+    const { manager, file } = await fixture({ persist: async (file, chunks) => {
+      const contents = [...chunks()].join("");
       const cache = JSON.parse(contents);
       if (cache.nativeModes["native:"] === "web") throw disk;
       await replaceFileAtomically(file, contents, 0o600);
@@ -693,7 +770,8 @@ describe("Worker cloud configuration application", () => {
   it("serializes a paused application write with a newer target without losing either transition", async () => {
     const application = deferred(), writeEntered = deferred(), releaseWrite = deferred();
     let pause = true;
-    const { manager, file, wait } = await fixture({ applyNative: async native => { if (native.model === "original") await application.promise; }, persist: async (file, contents) => {
+    const { manager, file, wait } = await fixture({ applyNative: async native => { if (native.model === "original") await application.promise; }, persist: async (file, chunks) => {
+      const contents = [...chunks()].join("");
       const cache = JSON.parse(contents);
       if (pause && cache.items.some((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "native" && entry.value.state === "applied")) { pause = false; writeEntered.resolve(); await releaseWrite.promise; }
       await replaceFileAtomically(file, contents, 0o600);
@@ -1026,7 +1104,8 @@ describe("Worker cloud configuration application", () => {
 
   it("does not publish reselected project proof when its result cannot be persisted", async () => {
     const disk = new Error("project proof commit failed"), published: WorkerConfigurationSnapshot[] = [];
-    const { manager } = await fixture({ onChange: snapshot => { published.push(snapshot); }, persist: async (file, contents) => {
+    const { manager } = await fixture({ onChange: snapshot => { published.push(snapshot); }, persist: async (file, chunks) => {
+      const contents = [...chunks()].join("");
       const cache = JSON.parse(contents);
       if (cache.desired?.revision === "3" && cache.items.some((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "projectNative" && entry.value.state === "applied")) throw disk;
       await replaceFileAtomically(file, contents, 0o600);
@@ -1237,7 +1316,8 @@ describe("Worker cloud configuration application", () => {
   it("propagates persistence failure and never publishes an uncommitted success", async () => {
     const storageError = new Error("disk write rejected"), errors: unknown[] = [], nativeEvents: string[] = [];
     let rejectWrites = false;
-    const { manager, wait } = await fixture({ onError: error => { errors.push(error); }, onNativeApplication: event => { if (event.key.kind === "native") nativeEvents.push(event.kind); }, applyNative: async () => { rejectWrites = true; }, persist: async (file, contents) => {
+    const { manager, wait } = await fixture({ onError: error => { errors.push(error); }, onNativeApplication: event => { if (event.key.kind === "native") nativeEvents.push(event.kind); }, applyNative: async () => { rejectWrites = true; }, persist: async (file, chunks) => {
+      const contents = [...chunks()].join("");
       const cache = JSON.parse(contents);
       if (rejectWrites && cache.items.some((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "native" && entry.value.state === "applied")) throw storageError;
       await replaceFileAtomically(file, contents, 0o600);
