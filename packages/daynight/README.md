@@ -2313,8 +2313,11 @@ One serialized commit owner merges target receives, application outcomes and
 acknowledgments from the last durable state. It freezes the next state and
 recreates its chunk iterator for atomic persistence before publishing the
 immutable effective view. Native qualification belongs to this process and its
-record identity, mode and relevant tool selections. A new runtime checks the
-current target first; only a failed target permits validation of compatible
+record identity, mode and relevant tool selections. Matching proof follows the
+previous current or retained record supplying an inherited value when a target
+changes, independently of that value's historical source. Proof expires with its record owner; a mode change revokes every project
+proof before inheritance. Historical source references grant no qualification.
+A new runtime checks the current target first; only a failed target permits validation of compatible
 historical settings. Migrated version 1/2 history has no recorded mode and is
 revalidated under the local compatibility mode; that mode is not historical proof.
 Cached `applied` text grants no execution qualification. Result publication checks

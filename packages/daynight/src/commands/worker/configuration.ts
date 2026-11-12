@@ -12,7 +12,7 @@ import { parseLocalToolPaths, type Tool, type ToolPaths } from "../../platform/t
 import { configurationCacheChunks, createConfigurationCache, readConfigurationCache } from "./configuration-cache.js";
 import { configurationCapabilities as capabilities, configurationKey as keyOf, configurationRetryDelays as retryDelays, configurationSupportsMode as supportsMode, freezeConfiguration as freeze, parseConfigurationDesired as parseDesired, sameConfigurationValue as equal } from "./configuration-model.js";
 import type { ConfigurationProjection, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity, WorkerConfigurationSnapshot, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
-import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval as hasUnfinishedRemoval, configurationSnapshot as snapshot, configurationTarget as target, configurationToolTargets as toolTargets, findConfigurationRecord as findRecord, findCurrentConfigurationItem as findItem, projectConfigurationReport, pruneConfigurationRetained, replaceConfigurationRecord as replaceItem, transitionConfigurationDesired as desiredTransition } from "./configuration-state.js";
+import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval as hasUnfinishedRemoval, configurationInheritanceSources, configurationSnapshot as snapshot, configurationTarget as target, configurationToolTargets as toolTargets, findConfigurationRecord as findRecord, findCurrentConfigurationItem as findItem, projectConfigurationReport, pruneConfigurationRetained, replaceConfigurationRecord as replaceItem, transitionConfigurationDesired as desiredTransition } from "./configuration-state.js";
 
 export type { WorkerConfigurationIdentity, WorkerConfigurationSnapshot, WorkerConfigurationToolTargets } from "./configuration-model.js";
 export { resolveWorkerCloudProjectNative } from "./configuration-state.js";
@@ -140,13 +140,14 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       let next = update(cache);
       const changedMode = nativeMode(cache, { kind: "native" }) !== nativeMode(next, { kind: "native" }) && supportsMode(next.authority.desired) && next.authority.desired?.value.agentControlMode != null;
       const nextValidatedNative = new Map(validatedNative);
-      if (changedMode) for (const item of allConfigurationItems(next)) if (item.value.key.kind === "projectNative") nextValidatedNative.delete(item.recordId);
-      const previousCurrent = new Map(cache.currentItems.map(item => [keyOf(item.value.key), item]));
+      if (changedMode) for (const item of allConfigurationItems(cache)) if (item.value.key.kind === "projectNative") nextValidatedNative.delete(item.recordId);
+      const inherited = configurationInheritanceSources(cache);
       for (const item of next.currentItems) {
         if (item.value.key.kind !== "native" && item.value.key.kind !== "projectNative") continue;
         if (nextValidatedNative.has(item.recordId)) continue;
-        const sourceId = item.actualSource?.kind === "observed" ? item.actualSource.recordId : previousCurrent.get(keyOf(item.value.key))?.recordId;
-        const prior = sourceId === undefined ? undefined : validatedNative.get(sourceId);
+        // Validation belongs to the record checked in this process, independently of the actual value's historical source.
+        const previousId = inherited.get(keyOf(item.value.key))?.recordId;
+        const prior = previousId === undefined ? undefined : nextValidatedNative.get(previousId);
         if (prior !== undefined && item.nativeMode === prior.mode && equal(item.value.appliedValue, prior.native) && (item.value.key.kind === "native" || equal(proofFor(next, prior.native, prior.mode), prior) && projectMode(next) === prior.mode)) nextValidatedNative.set(item.recordId, prior);
       }
       if (proof !== undefined && proof.accepted()) {
@@ -159,7 +160,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         if ((key.kind === "native" || key.kind === "projectNative") && item.value.state === "applied" && target(next, key) !== null && !matchesProof(next, item.value.appliedValue, item.nativeMode, nextValidatedNative.get(item.recordId))) next = replaceItem(next, { ...item, value: { ...item.value, state: "pending" } });
       }
       next = pruneConfigurationRetained(next, runningIds());
-      const proofOwners = new Set(allConfigurationItems(next).flatMap(item => [item.recordId, ...(item.actualSource?.kind === "observed" ? [item.actualSource.recordId] : [])]));
+      const proofOwners = new Set(allConfigurationItems(next).map(item => item.recordId));
       for (const id of nextValidatedNative.keys()) if (!proofOwners.has(id)) nextValidatedNative.delete(id);
       if (next !== cache) {
         const frozen = freeze(next);

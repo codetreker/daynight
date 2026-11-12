@@ -1112,6 +1112,30 @@ describe("Worker cloud configuration application", () => {
     expect(applyNative).toHaveBeenCalledTimes(2);
   });
 
+  it("revokes historical project proof across a mode roundtrip when revalidation fails", async () => {
+    let rejectProject = false;
+    const published: WorkerConfigurationSnapshot[] = [];
+    const { manager, file } = await fixture({ now: () => Date.parse("2026-11-10T00:00:00Z"), onChange: snapshot => { published.push(snapshot); }, applyNative: async native => {
+      if (rejectProject && native.model === "project") throw new TypeError("project unavailable");
+    } });
+    await manager.configureProjectAdapters({ prepare: async () => {} });
+    const original = desired(), initial: WorkerCloudDesired = { ...original, value: { ...original.value, agentControlMode: "herdr", projects: [{ projectId, nativeOverrides: { model: "project" } }] } };
+    await manager.receive(initial); await manager.settle();
+    const first: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
+    const source = first.currentItems.find(entry => entry.value.key.kind === "projectNative")!.actualSource;
+    expect(manager.current().effective.projects[0]).toMatchObject({ ready: true, native: { model: "project" } });
+    rejectProject = true;
+    await manager.receive({ ...initial, revision: "2", value: { ...initial.value, agentControlMode: "web" } }); await manager.settle();
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "web", projects: [{ ready: true, native: null }] });
+    await manager.receive({ ...initial, revision: "3" }); await manager.settle();
+    expect(item(manager.current(), "projectNative")?.state).toBe("error");
+    expect(manager.current().effective).toMatchObject({ agentControlMode: "herdr", projects: [{ ready: true, native: null }] });
+    expect(published.filter(snapshot => snapshot.desired?.revision === "3").every(snapshot => snapshot.effective.projects[0]?.native === null)).toBe(true);
+    const saved: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
+    expect(saved.currentItems.find(entry => entry.value.key.kind === "projectNative")!.actualSource).toEqual(source);
+    expect([...saved.currentItems, ...saved.retainedItems].some(entry => entry.recordId === first.currentItems.find(entry => entry.value.key.kind === "projectNative")!.recordId)).toBe(false);
+  });
+
   it("preserves failure history and retry deadlines while revalidating a reselected project", async () => {
     let failProject = true, projectCalls = 0, now = Date.parse("2026-11-10T00:00:00Z");
     const published: WorkerConfigurationSnapshot[] = [];
@@ -1280,6 +1304,45 @@ describe("Worker cloud configuration application", () => {
     expect(checked).toEqual(["new-invalid", "previous-good"]);
     expect(reopened.current().effective.native?.model).toBe("previous-good");
     expect(item(reopened.current(), "native")).toMatchObject({ state: "error", targetRevision: "2", appliedValue: { model: "previous-good" } });
+  });
+
+  it("carries current-process historical validation to a new target after restart", async () => {
+    const first = await fixture({ applyNative: async native => { if (native.model === "invalid") throw new TypeError("current target unavailable"); } });
+    await first.manager.configureProjectAdapters({ prepare: async () => {} });
+    await first.manager.receive(desired("1", "previous-good")); await first.manager.settle();
+    await first.manager.receive(desired("2", "invalid")); await first.manager.settle();
+    await first.manager.stop();
+    const saved: WorkerConfigurationCache = JSON.parse(await readFile(first.file, "utf8"));
+    const entered = deferred(), release = deferred(), checked: string[] = [], published: WorkerConfigurationSnapshot[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, now: () => Date.parse("2026-11-10T00:00:00Z"), onChange: snapshot => { published.push(snapshot); }, applyNative: async native => {
+      checked.push(native.model!);
+      if (native.model === "next-invalid") { entered.resolve(); await release.promise; }
+      if (native.model !== "previous-good") throw new TypeError("current target unavailable");
+    } });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.configureProjectAdapters({ prepare: async () => {} });
+    await reopened.receive(desired("2", "invalid")); await reopened.settle();
+    expect(checked.toSorted()).toEqual(["invalid", "invalid", "previous-good", "previous-good"]);
+    expect(reopened.current().effective).toMatchObject({ native: { model: "previous-good" }, projects: [{ ready: true, native: { model: "previous-good" } }] });
+    try {
+      await reopened.receive(desired("3", "next-invalid")); await entered.promise;
+      expect(reopened.current().effective).toMatchObject({ native: { model: "previous-good" }, projects: [{ ready: true, native: { model: "previous-good" } }] });
+    } finally { release.resolve(); await reopened.settle(); }
+    expect(published.filter(snapshot => snapshot.desired?.revision === "3").every(snapshot => snapshot.effective.native?.model === "previous-good" && snapshot.effective.projects[0]?.native?.model === "previous-good")).toBe(true);
+    expect(checked.toSorted()).toEqual(["invalid", "invalid", "next-invalid", "next-invalid", "previous-good", "previous-good"]);
+    const continued: WorkerConfigurationCache = JSON.parse(await readFile(first.file, "utf8"));
+    for (const kind of ["native", "projectNative"] as const) {
+      const before = saved.currentItems.find(entry => entry.value.key.kind === kind)!;
+      const after = continued.currentItems.find(entry => entry.value.key.kind === kind)!;
+      expect(after.actualSource).toEqual(before.actualSource);
+      expect(after.recordId).not.toBe(before.recordId);
+      expect(after.value).toMatchObject({ state: "error", targetRevision: "3", appliedValue: { model: "previous-good" } });
+    }
+    await reopened.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    await reopened.receive(desired("4", "next-invalid", false)); await reopened.settle();
+    await reopened.receive(desired("5", "next-invalid")); await reopened.settle();
+    expect(reopened.current().effective.projects[0]).toMatchObject({ ready: true, native: { model: "previous-good" } });
+    expect(checked.filter(model => model === "previous-good")).toHaveLength(2);
   });
 
   it("keeps an already validated live tuple available while applying the current target", async () => {

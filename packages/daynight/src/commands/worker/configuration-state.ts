@@ -9,6 +9,12 @@ import { configurationCapabilities, configurationKey, configurationSupportsMode,
 import type { ConfigurationProjection, ConfigurationProjectionOptions, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationSnapshot, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
 
 export const allConfigurationItems = (cache: WorkerConfigurationCache): readonly TrackedConfigurationItem[] => [...cache.currentItems, ...cache.retainedItems];
+export const configurationInheritanceSources = (cache: WorkerConfigurationCache): ReadonlyMap<string, TrackedConfigurationItem> => {
+  const sources = new Map<string, TrackedConfigurationItem>();
+  for (const item of cache.retainedItems) if (item.value.appliedValue !== null) sources.set(configurationKey(item.value.key), item);
+  for (const item of cache.currentItems) sources.set(configurationKey(item.value.key), item);
+  return sources;
+};
 export const findCurrentConfigurationItem = (cache: WorkerConfigurationCache, key: WorkerCloudItemKey): TrackedConfigurationItem | undefined => cache.currentItems.find(item => configurationKey(item.value.key) === configurationKey(key));
 export const findConfigurationRecord = (cache: WorkerConfigurationCache, recordId: string): TrackedConfigurationItem | undefined => cache.currentItems.find(item => item.recordId === recordId) ?? cache.retainedItems.find(item => item.recordId === recordId);
 export const replaceConfigurationRecord = (cache: WorkerConfigurationCache, item: TrackedConfigurationItem): WorkerConfigurationCache => {
@@ -84,9 +90,7 @@ export const transitionConfigurationDesired = (
   const selected = new Set(desired.value.projects.map(project => project.projectId));
   const removals = new Set([...previousSelected].filter(projectId => !selected.has(projectId)));
   const previousItems = allConfigurationItems(cache);
-  const previousByKey = new Map(cache.currentItems.map(item => [configurationKey(item.value.key), item]));
-  const retainedActual = new Map<string, TrackedConfigurationItem>();
-  for (const item of cache.retainedItems) if (item.value.appliedValue !== null) retainedActual.set(configurationKey(item.value.key), item);
+  const inherited = configurationInheritanceSources(cache);
   const blockers = new Map<string, TrackedConfigurationItem>();
   for (const item of previousItems) if (item.value.key.kind === "projectRemoval") {
     const projectId = item.value.key.projectId;
@@ -96,7 +100,7 @@ export const transitionConfigurationDesired = (
   const currentItems: TrackedConfigurationItem[] = [];
   const desiredMode = desired.value.agentControlMode == null ? localMode : desired.value.agentControlMode;
   const add = (key: WorkerCloudItemKey, reset = false): void => {
-    const previous = previousByKey.get(configurationKey(key)) ?? retainedActual.get(configurationKey(key));
+    const previous = inherited.get(configurationKey(key));
     const appliedValue = reset ? null : previous?.value.appliedValue ?? null;
     const native = key.kind === "native" || key.kind === "projectNative";
     const unchanged = key.kind !== "projectRemoval" && previous?.value.state === "applied" && appliedValue !== null && sameConfigurationValue(appliedValue, configurationTarget(next, key)) && (!native || previous.nativeMode === desiredMode && (key.kind !== "native" || cache.authority.desired?.value.agentControlMode === desired.value.agentControlMode));
