@@ -28,11 +28,11 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 显式值必须是 Worker 所在平台的绝对文件路径，每项最多 4096 个 UTF-8 字节，必须是合法 Unicode，且不含 NUL 或其它控制字符。Windows 路径必须带盘符或完整 UNC share，不能依赖当前盘符。路径中的合法空格、Unicode 和标点逐字保留，不 trim、不规范化、不展开 `~` 或环境变量、不拆分参数、不执行 shell。整个字符串作为一个文件路径，原生参数继续由既有参数配置拥有；文件存在性、可执行性、入口格式和解释器属于工具解析器的检查。
 
-本地配置识别和共享解析器是独立的基础能力。云端配置通过独立工具能力协商交换三态目标和逐项首次导入，合同由[配置协议](daynight-worker-configuration.md#工具路径三态)拥有。当前 Task、Bot、Herdr 运行入口和版本/能力探测尚未消费 `toolPaths`；保存或解析成功不得报告为路径已应用，不改变既有执行的工具选择。独立 Controller、Claude 和 Agent 内部 CLI aliases 保持各自既有配置归属。
+本地配置识别和共享解析器是独立的基础能力。云端配置通过独立工具能力协商交换三态目标和逐项首次导入，合同由[配置协议](daynight-worker-configuration.md#工具路径三态)拥有。Web Task、Bot、版本与能力探测消费已验证的工具选择；保存目标不代表已经应用。Herdr 的显式目标尚未接入实例映射，必须明确拒绝；全部自动时保留既有行为。独立 Controller、Claude 和 Agent 内部 CLI aliases 保持各自既有配置归属。
 
-共享解析器必须只解析给定选择，显式路径失败不回退其它安装。自动 Codex、Herdr 从捕获的 Worker PATH 查找；自动 Copilot 的 Web 上下文选择随包 native，Herdr 上下文从捕获的 PATH 查找。Herdr 工具仅接受 Herdr 上下文。Node 脚本固定使用 Worker Node，不能因入口位于 nvm 目录便切换解释器。已知 npm shim 必须完整静态识别后解包，未知包装器明确拒绝；官方 loader 必须覆盖其实际选择的 native 身份，不能只记录 loader 内容。
+共享解析器只解析给定选择，显式路径失败不回退其它安装。自动 Codex、Herdr 从捕获的 Worker PATH 查找；自动 Copilot 的 Web 上下文选择随包 native，Herdr 上下文从捕获的 PATH 查找。Herdr 工具仅接受 Herdr 上下文。Node 脚本固定使用 Worker Node，不能因入口位于 nvm 目录便切换解释器。npm shim 从有界快照提取 Node 目标，不执行 shell 文本；注释和无害格式变化不得仅因内容未登记而拒绝。Codex JavaScript loader 作为普通 Node 入口运行，由 loader 选择 native，不按发行摘要或固定 native 布局准入。
 
-解析结果必须保留入口、真实路径、最终工具程序、解释器、结构化命令和参与文件的内容身份。核验不得重新读取当前配置或搜索 PATH；入口映射或文件内容改变时明确失败。命令构建返回 `file` 和独立 `args`，不能交给 shell。解析和身份核验均受 operation 预算约束，不启动工具；版本、协议、认证和真实会话可用性需要运行消费者独立验证。
+解析结果保留入口、真实路径、工具程序、解释器、结构化命令和参与文件的内容身份。冻结 recipe 按其记录核验，不重新读取当前配置或搜索 PATH；记录的入口映射或文件内容改变时明确失败。新执行候选校验发现身份改变时，同次调用先确认旧探针清理，再按当前选择重新解析和探测；清理未确认时不得启动新探针。已有执行仍使用原冻结 recipe 和进程身份。命令构建返回 `file` 和独立 `args`，不能交给 shell。解析、核验和刷新受 operation 预算及取消约束；版本、协议、认证和真实会话可用性需要运行消费者独立验证。
 
 ## 必须满足的行为
 

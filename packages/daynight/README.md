@@ -2227,26 +2227,17 @@ The shared resolver owns existence, executable format and interpreter checks.
 For resolver callers, automatic Codex and Herdr selection searches the captured
 Worker PATH. Automatic Copilot selects the bundled native runtime in Web context
 and the captured PATH in Herdr context; explicit choices select only that entry's
-installation. Supported Node entries use the frozen Worker Node executable, so
-an nvm CLI path does not select the Node beside it. Standard npm Node shims are
-validated as complete known templates and unpacked without executing shell code.
+installation. Node entries use the frozen Worker Node executable. npm Node shims
+are mapped to their target from a bounded snapshot without executing shell text;
+comments and harmless formatting changes do not require a registered template.
 Official Copilot entries resolve the native package within that installation.
-Official Codex entries retain their loader and record its selected native; the
-registered loader bytes cover releases 0.142.5, 0.145.0 and 0.156.1. Unknown loader
-or shim formats fail with `unsupported_launcher`; a supported Node entry or
-native executable can be selected directly.
+Codex JavaScript entries run as ordinary Node scripts; the loader selects its own
+native program. Actual file, permission, launch and protocol failures remain visible.
 
-Official Codex launches use the frozen Worker Node with
-`["--no-global-search-paths", "--no-preserve-symlinks", "--no-preserve-symlinks-main", canonicalLoader, ...args]`.
-The loader bytes remain unchanged. These Node options prevent `NODE_PATH` and
-symlink-preserving module resolution from changing which native package the
-loader selects. Ordinary Node scripts retain Node plus their canonical script
-path. Static package lookup follows the actual loader directory's ancestor
-`node_modules` directories and builds the native path from the canonical package
-manifest location; a candidate from another installation is rejected. Before
-launch, verification repeats this static selection from the frozen entry as well
-as checking recorded files, so installing a higher-priority package invalidates
-the selection even when the previous vendor binary remains unchanged.
+When a cached candidate's identity changes, a new preparation or execution first
+reconciles the previous probe's cleanup, then resolves and probes the current
+choice within the same operation. Unconfirmed cleanup blocks the new probe. This
+refresh does not replace the frozen recipe of an existing execution.
 
 New Web executions freeze the complete tool recipe and its observed version before
 submission. Target or PATH changes affect future executions. Recovery verifies the

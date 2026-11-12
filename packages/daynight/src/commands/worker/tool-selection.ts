@@ -29,6 +29,7 @@ type Slot = {
   tool: Tool; context: ToolContext; epoch: number; state: ToolPathObservation["state"]; reason: ToolPathObservation["reason"];
   actual: ToolPathActual | null; launch: ResolvedToolLaunch | undefined; token: unknown;
   error: ToolPathObservation["error"]; pending: { epoch: number; promise: Promise<void> } | undefined;
+  probeRecipe: ResolvedToolLaunch | undefined; tail: Promise<void> | undefined;
 };
 const contexts = [["codex", "web"], ["codex", "herdr"], ["copilot", "web"], ["copilot", "herdr"], ["herdr", "herdr"]] as const;
 const automatic = (): ToolPaths => ({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
@@ -42,7 +43,7 @@ const count = (value: number | null): boolean => value === null || Number.isSafe
 /** Own target generations and admission facts; process owners retain their cleanup acknowledgements. */
 export class ToolSelectionManager {
   private targets: ToolSelectionTargets = { source: "local", revision: null, choices: automatic() };
-  private readonly slots = new Map<string, Slot>(contexts.map(([tool, context]) => [`${tool}/${context}`, { tool, context, epoch: 0, state: "not_checked", reason: null, actual: null, launch: undefined, token: undefined, error: null, pending: undefined }]));
+  private readonly slots = new Map<string, Slot>(contexts.map(([tool, context]) => [`${tool}/${context}`, { tool, context, epoch: 0, state: "not_checked", reason: null, actual: null, launch: undefined, token: undefined, error: null, pending: undefined, probeRecipe: undefined, tail: undefined }]));
   private readonly inFlight = new Set<Promise<void>>();
   private probeClosing: Promise<void> | undefined;
   private readonly environment: NodeJS.ProcessEnv;
@@ -96,22 +97,34 @@ export class ToolSelectionManager {
     if (this.usable(slot)) {
       const verified = slot.launch!, verifiedEpoch = slot.epoch;
       try { await this.verifyFrozen(verified, operation); this.options.probe.assertAvailable?.(verified); }
-      catch (error) { if (slot.epoch === verifiedEpoch) this.fail(slot, error); throw error; }
+      catch (error) {
+        if (slot.epoch === verifiedEpoch && slot.launch === verified) { slot.epoch++; this.fail(slot, error); }
+        if (toolPathErrorCode(error) !== "tool_identity_changed") throw error;
+      }
       if (slot.epoch === verifiedEpoch && this.usable(slot)) return;
     }
     if (slot.pending?.epoch === slot.epoch) return withinOperation(slot.pending.promise, operation);
     const epoch = slot.epoch, choice = clone(this.targets.choices[tool]); slot.state = "checking"; slot.reason = null; slot.error = null;
+    const previous = slot.tail;
     const running = (async () => {
       try {
+        // A superseded inspection may still own a process. Join it before
+        // reconciling its recipe, even when the new target has a different key.
+        if (previous) await withinOperation(previous, operation);
+        this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
+        const priorRecipe = slot.probeRecipe;
+        if (priorRecipe && this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(priorRecipe, operation), operation);
+        this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         let launch = await (this.options.resolve ?? resolveToolLaunch)({ tool, context, choice, environment: this.environment, cwd: this.options.cwd, ...(this.options.workerNode === undefined ? {} : { workerNode: this.options.workerNode }) }, operation);
-        this.checkOpen(slot, operation);
+        this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         if (this.options.prepareLaunch) launch = await this.options.prepareLaunch(launch, operation);
-        await (this.options.verify ?? verifyToolLaunch)(launch, operation); this.checkOpen(slot, operation);
+        await (this.options.verify ?? verifyToolLaunch)(launch, operation); this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         // Recovery must reach the original process owner before the read-only
         // admission gate, and its result precedes the new inspection generation.
-        if (this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(launch, operation), operation);
-        this.checkOpen(slot, operation);
+        if ((!priorRecipe || priorRecipe.selectionKey !== launch.selectionKey) && this.options.probe.reconcile) await withinOperation(this.options.probe.reconcile(launch, operation), operation);
+        this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
         this.options.probe.assertAvailable?.(launch); const token = this.options.probe.cacheToken?.(launch);
+        slot.probeRecipe = clone(launch);
         const result = await this.options.probe.check(launch, operation); operation.check();
         if (!validVersion(result.version)) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");
         const checkedAt = result.checkedAt ?? this.now();
@@ -126,7 +139,7 @@ export class ToolSelectionManager {
         throw failure;
       }
     })();
-    slot.pending = { epoch, promise: running }; this.inFlight.add(running);
+    slot.pending = { epoch, promise: running }; slot.tail = running.then(() => {}, () => {}); this.inFlight.add(running);
     try { await running; } finally { this.inFlight.delete(running); if (slot.pending?.promise === running) slot.pending = undefined; }
   }
   async selectForNewExecution(tool: Tool, context: ToolContext, operation: Operation): Promise<ResolvedToolLaunch> {
@@ -136,7 +149,11 @@ export class ToolSelectionManager {
       await this.prepare(tool, context, operation); this.checkOpen(slot, operation); if (!this.usable(slot)) continue;
       const epoch = slot.epoch, launch = slot.launch!;
       try { await this.verifyFrozen(launch, operation); this.options.probe.assertAvailable?.(launch); }
-      catch (error) { if (slot.epoch === epoch) this.fail(slot, error); throw error; }
+      catch (error) {
+        if (slot.epoch === epoch && slot.launch === launch) { slot.epoch++; this.fail(slot, error); }
+        if (toolPathErrorCode(error) === "tool_identity_changed") continue;
+        throw error;
+      }
       if (epoch === slot.epoch && this.usable(slot)) return clone(launch);
     }
   }
