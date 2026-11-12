@@ -58,6 +58,8 @@ const [installed, directory, workerExpectation] = process.argv.slice(1);
 const worker = JSON.parse(workerExpectation);
 const load = relative => import(pathToFileURL(path.join(installed, "dist", relative)).href);
 const { openSqliteDatabase } = await load("platform/sqlite-access.js");
+const { acquireControllerStoragePermit, controllerStorageConnectionIsOpen } = await load("commands/controller/storage-lock.js");
+const { controllerJournalWriteOptions } = await load("commands/controller/storage-preparation.js");
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
@@ -69,12 +71,15 @@ const versions = [];
 for (const [module, name, version, tables] of owners) {
   const format = (await load(module))[name];
   const file = path.join(directory, name + ".sqlite");
-  const db = openSqliteDatabase({ file, format, allowCreate: true, onMigration: () => {} });
+  const permit = name === "controllerJournalFormat" ? acquireControllerStoragePermit(file) : undefined;
+  let db;
+  try { db = openSqliteDatabase({ ...(permit === undefined ? { file, format } : controllerJournalWriteOptions(file, permit, directory)), allowCreate: true, onMigration: () => {} }); }
+  catch (error) { if (permit !== undefined && !controllerStorageConnectionIsOpen(error)) permit.release(); throw error; }
   try {
     assert.equal(db.pragma("user_version", { simple: true }), version);
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name), tables);
     versions.push(version);
-  } finally { db.close(); }
+  } finally { db.close(); if (permit !== undefined) permit.release(); }
 }
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);

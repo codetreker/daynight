@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 12，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 6，保留已有 1→5 转换，5→6 先可靠导出正文再转换索引 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 9，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针和 9 输入来源 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -41,7 +41,7 @@ Review v2 不为接入公共机制额外提高版本或改写记录；journal v6
 每次非零来源检查读取的版本和结构必须属于同一快照，包括可写打开时的初检；不能把不同提交中的 user_version 和 schema 拼在一起，将有效的并发升级误判为格式损坏。版本 0 初检只标识重置，不要求匹配历史结构。初检的短读取事务结束后，才能配置连接的持久设置或取得写事务。重置或迁移仍须在实际写事务中重读版本及必要结构，不沿用初检结果，不重复执行已经提交的步骤。迁移不得绕过现有业务所有权：
 
 - Review/Worker 纯维护不接管任何已有实例锁，包括死 PID、损坏元数据或未知归属。自己的迁移连接未确认关闭时保留维护锁；只释放自己创建且身份仍匹配的锁。
-- Controller 在任何 DDL 之前检查旧 writer。版本 0 没有 `execution` 表时可重置；已有该表时必须能读取 `id` 和 `owner_pid`，列损坏或活跃、无法确认的 owner 阻止重置。非零版本继续执行已有 owner 检查。纯格式处理不执行 writer 认领或 generation 推进，也不将进程消失解释成完整原生停止。
+- Controller 可写 journal 阶段必须持有原 execution 的存储 permit，内部复用同一 permit，拒绝跨 journal、伪造或释放后的许可。只有明确 ESRCH 可接管陈旧存储 owner；活跃、权限、格式或未知存活保留原锁。迁移在实际连接上绑定本次 permit 和预留写入检查，当前格式纯读取不取锁、不访问迁移 context；旧格式文件读取才申请维护，借用连接必须显式绑定原 permit。任何 DDL 之前检查旧 writer：版本 0 没有 `execution` 表时可重置；已有该表时必须能读取 `id` 和 `owner_pid`，列损坏或活跃、无法确认的 owner 阻止重置。非零版本继续执行已有 owner 检查。纯格式处理不认领 writer、不推进 generation、不将进程消失解释成完整原生停止。停止记录持同一 permit 在事务外验证原进程边界，并在提交前比较 snapshot、ticket_hash 和 owner_pid 未变。升级、已停止维护与 writer 准入分别保留其角色约束；本机阶段关闭句柄后释放，网络期间不持锁。
 - Resume 库已有 lease 表的任何保留行都阻止重置或迁移，不按过期或 PID 消失回收；没有 lease 表的版本 0 文件可重置。当前格式下不同 native key 的租约仍可并存。
 
 ## 失败与可观察结果

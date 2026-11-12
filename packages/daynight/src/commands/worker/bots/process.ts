@@ -25,6 +25,9 @@ import { readLaunchToolSelection, writeLaunchToolSelection } from "../../control
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { FrozenToolObservation } from "../types.js";
 import { createControllerJobLeases, type ControllerJobLeases } from "../backends/controller-job-leases.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "../../controller/storage-lock.js";
+import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
+import { SqliteAccessError } from "../../../platform/sqlite-error.js";
 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
@@ -33,7 +36,7 @@ export const createBotProcess = (options: {
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
   toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
-  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController; reconcileLaunch?: typeof reconcileSubmittedControllerLaunch; stopBootstrap?: typeof stopControllerBootstrap };
+  dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController; reconcileLaunch?: typeof reconcileSubmittedControllerLaunch; stopBootstrap?: typeof stopControllerBootstrap; prepareStorage?: typeof prepareControllerStorage };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
   const environments = new Map<string, PreparedBotEnvironment>();
@@ -50,8 +53,14 @@ export const createBotProcess = (options: {
   };
   const stopWithLease = async (launchId: string, controller: Parameters<typeof stopControllerProcesses>[0], native: Parameters<typeof stopControllerProcesses>[1], deadline: number) => jobLeases.enabled
     ? stopProcesses(controller, native, deadline, await jobLeases.get(launchId)) : stopProcesses(controller, native, deadline);
-  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number) => jobLeases.enabled
-    ? recordStopped(file, ticket, deadline, await jobLeases.get(ticket.launchId)) : deadline === undefined ? recordStopped(file, ticket) : recordStopped(file, ticket, deadline);
+  const stateDirectory = resolveConfigurationPaths(options.homeDirectory).stateDirectory;
+  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, permit?: ControllerStoragePermit, signal?: AbortSignal) => {
+    const jobLease = jobLeases.enabled ? await jobLeases.get(ticket.launchId) : undefined;
+    return recordStopped(file, ticket, {
+      stateDirectory, ...(deadline === undefined ? {} : { deadline }), ...(permit === undefined ? {} : { permit }),
+      ...(signal === undefined ? {} : { signal }), ...(jobLease === undefined ? {} : { jobLease }),
+    });
+  };
   const pendingCleanup = new Map<string, BotEnvironmentCleanupError>();
   const environment = options.dependencies?.prepareEnvironment ?? prepareBotEnvironment;
   const launch = options.dependencies?.launch ?? launchControllerProcess, observe = options.dependencies?.observe ?? observeControllerProcess;
@@ -62,6 +71,37 @@ export const createBotProcess = (options: {
   const request = options.dependencies?.request ?? requestController;
   const reconcileLaunch = options.dependencies?.reconcileLaunch ?? reconcileSubmittedControllerLaunch;
   const stopBootstrap = options.dependencies?.stopBootstrap ?? stopControllerBootstrap;
+  const prepareStorage = options.dependencies?.prepareStorage ?? prepareControllerStorage;
+  const prepareRecoveryStorage = async (record: BotRecord, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<ControllerSnapshot> => {
+    signal.throwIfAborted();
+    const journalFile = record.intent!.journalPath;
+    let permit: ControllerStoragePermit;
+    try { permit = acquireControllerStoragePermit(journalFile); }
+    catch (cause) {
+      if (isControllerStorageLockHeld(cause) && cause instanceof Error) throw new ControllerStorageWaitingError("lock_busy", cause);
+      throw cause;
+    }
+    let failure: unknown, failed = false, stoppedCommitted = false;
+    try {
+      const stopped = await recordWithLease(journalFile, ticket, undefined, permit, signal);
+      stoppedCommitted = true;
+      options.executions.update(record, { snapshot: stopped });
+      signal.throwIfAborted();
+      const prepared = prepareStorage({ journalFile, stateDirectory, mode: "stopped-maintenance", ticket }, permit);
+      if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
+      return stopped;
+    } catch (cause) { failed = true; failure = cause; throw cause; }
+    finally {
+      if (!failed || !controllerStorageConnectionIsOpen(failure)) {
+        try { permit.release(); }
+        catch (release) {
+          const cause = failed ? new AggregateError([failure, release], "Bot storage preparation and ownership release failed.", { cause: failure }) : release;
+          if (stoppedCommitted) throw new SqliteAccessError("cleanup-failed", { database: "controller-journal", file: journalFile, phase: "release" }, { cause, outcome: "committed", connectionClosed: true });
+          throw cause;
+        }
+      }
+    }
+  };
   const current = (input: BotRecord, stopping = false): BotRecord => {
     const record = options.store.get(input.owner, input.botId);
     if (record === null || !stopping && record.observed.deletion !== null || record.definition === null) throw new Error("Bot execution requires its original active definition.");
@@ -201,9 +241,9 @@ export const createBotProcess = (options: {
         throw new Error(reason);
       }
       signal.throwIfAborted();
-      const stopped = await recordWithLease(record.intent!.journalPath, ticket);
-      options.executions.update(record, { snapshot: stopped });
+      const stopped = await prepareRecoveryStorage(record, ticket, signal);
       await jobLeases.release(ticket.launchId);
+      signal.throwIfAborted();
       record = options.executions.beginRecovery(record, stopped, options.homeDirectory, toolLaunch);
       // A new launch must revalidate CLI owner/server configuration. Old aliases
       // remain listed in durable evidence for precise eventual deletion.

@@ -20,6 +20,34 @@ import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJo
 import { prepareControllerIpcEndpoint } from "./paths.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
+import { prepareControllerStorage } from "./storage-preparation.js";
+
+const withIndependentStorage = async <T>(journalFile: string, action: (permit: ControllerStoragePermit) => Promise<T>, deadline?: number): Promise<T> => {
+  const permit = acquireControllerStoragePermit(journalFile, deadline);
+  let result: T | undefined, failure: unknown, failed = false;
+  try { result = await action(permit); }
+  catch (error) { failed = true; failure = error; }
+  if (failed && controllerStorageConnectionIsOpen(failure)) throw failure;
+  try { permit.release(); }
+  catch (release) {
+    if (failed) throw new AggregateError([failure, release], "Test controller storage operation and ownership release failed.", { cause: failure });
+    throw release;
+  }
+  if (failed) throw failure;
+  return result!;
+};
+
+const prepareIndependentWriter = async (journalFile: string, stateDirectory: string, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+  for (;;) {
+    signal.throwIfAborted();
+    try {
+      const prepared = await withIndependentStorage(journalFile, async permit => prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, permit));
+      if (prepared.kind === "prepared") return;
+    } catch (error) { if (!isControllerStorageLockHeld(error)) throw error; }
+    await delay(250, undefined, { signal });
+  }
+};
 
 class TestSessionRequestError extends Error {
   constructor(message: string, readonly retryable: boolean, options?: ErrorOptions) { super(message, options); }
@@ -145,6 +173,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
     ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
+    await prepareIndependentWriter(path.join(directory, "journal.sqlite"), resolveConfigurationPaths(home).stateDirectory, ticket, cancellation.signal);
     // Reconnect grants are valid for the first hello and survive a lost first connection.
     credential = await grant("reconnect"); await writeControllerCredential(credentialFile, credential);
     context.stdout(`Provider: ${input.provider}; starting in ${cwd}\nPress Ctrl+C to stop this Test Session.\n`);
@@ -383,7 +412,16 @@ export const runIndependentController = async (input: IndependentControllerInput
             remaining();
             throw new Error("Test controller IPC stop failed; the original execution evidence is retained.");
           }
-          stopped = await recordStoppedControllerGeneration(journal, ticket, deadline, ...(process.platform === "win32" ? [jobLease] as const : []));
+          let committed = false;
+          try {
+            stopped = await withIndependentStorage(journal, async permit => {
+              const stateDirectory = resolveConfigurationPaths(home).stateDirectory;
+              const result = await recordStoppedControllerGeneration(journal, ticket!, { stateDirectory, permit, deadline, ...(jobLease === undefined ? {} : { jobLease }) });
+              committed = true;
+              remaining();
+              return result;
+            }, deadline);
+          } catch (error) { if (committed) throw new TestControllerCommittedCleanupError(error); throw error; }
           try { remaining(); } catch (error) { throw new TestControllerCommittedCleanupError(error); }
         } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Test controller bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
         if (jobLeaseFailures.length) throw new AggregateError(jobLeaseFailures, "Test controller Job lease acquisition failed; execution evidence is retained.");
@@ -406,7 +444,7 @@ export const runIndependentController = async (input: IndependentControllerInput
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
         if (archived) {
           try {
-            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken });
+            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken, stateDirectory: resolveConfigurationPaths(home).stateDirectory });
             context.stdout("Test Session stopped and archived. Read-only history is available on its page.\n");
           } catch (error) {
             if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and history archival failed.");

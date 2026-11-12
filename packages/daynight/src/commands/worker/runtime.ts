@@ -193,7 +193,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (!task.webExecution) throw new Error("Original controller execution is missing.");
       const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl) throw new Error("Archive server identity changed.");
-      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal });
+      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, stateDirectory: paths.stateDirectory, signal });
     };
     const probeArchive: NonNullable<import("./backends/web.js").WebBackendOptions["probeArchive"]> = async (task, journalPath, signal) => {
       signal.throwIfAborted();

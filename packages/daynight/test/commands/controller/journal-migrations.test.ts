@@ -4,6 +4,8 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import { acquireControllerStoragePermit, type ControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { readControllerOperation, readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
@@ -11,12 +13,16 @@ import { sessionBinding } from "../../../src/session/protocol.js";
 
 const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const databases: Database.Database[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const database of databases.splice(0)) if (database.open) database.close(); });
+const permits: ControllerStoragePermit[] = [];
+const roots: string[] = [];
+afterEach(() => { vi.restoreAllMocks(); for (const database of databases.splice(0)) if (database.open) database.close(); for (const permit of permits.splice(0)) permit.release(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const fixture = () => {
   const home = path.resolve(import.meta.dirname, "../../../../../.tmp/journal-upgrades", randomUUID());
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  mkdirSync(home, { recursive: true }); roots.push(home);
+  const permit = acquireControllerStoragePermit(path.join(home, "journal.sqlite")); permits.push(permit);
   const database = createMemoryDatabase(); databases.push(database);
-  return { home, file: database, ticket };
+  return { home, file: database, ticket, permit };
 };
 // Fixtures reproduce the shipped statements rather than calling the current
 // format definition or removing columns from its latest schema.
@@ -33,8 +39,8 @@ const unversionedJournal = (db: Database.Database, ticket: ControllerLaunchTicke
 
 test.each([null, 2_000_000_000])("unversioned journals discard historical evidence after admitting owner %s", async owner => {
   const f = fixture(); unversionedJournal(f.file, f.ticket, owner);
-  expect(readControllerSnapshot(f.file)).toBeNull();
-  expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
+  expect(readControllerSnapshot(f.file, f.permit)).toBeNull();
+  expect(readControllerOperation(f.file, f.ticket.initialOperationId, f.permit)).toBeNull();
   const check = f.file;
   try { expect(check.pragma("user_version", { simple: true })).toBe(journalVersion); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
   finally { check.close(); }
@@ -43,7 +49,7 @@ test.each([null, 2_000_000_000])("unversioned journals discard historical eviden
 test.each(["active", "unknown"] as const)("an unversioned journal's %s owner blocks reset and preserves evidence", async owner => {
   const f = fixture(), original = unversionedJournal(f.file, f.ticket, process.pid);
   if (owner === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Owner status is unavailable"), { code: "EPERM" }); });
-  expect(() => readControllerSnapshot(f.file)).toThrow("upgrade-blocked");
+  expect(() => readControllerSnapshot(f.file, f.permit)).toThrow("upgrade-blocked");
   const check = f.file;
   try {
     expect(check.pragma("user_version", { simple: true })).toBe(0);
@@ -56,7 +62,7 @@ test.each(["table", "view"] as const)("case-insensitive %s owner evidence blocks
   const f = fixture(), db = f.file;
   db.exec(kind === "table" ? "CREATE TABLE ExEcUtIoN(id INTEGER, owner_pid INTEGER, sentinel TEXT)" : "CREATE TABLE owner_evidence(id INTEGER, owner_pid INTEGER, sentinel TEXT); CREATE VIEW ExEcUtIoN AS SELECT * FROM owner_evidence");
   db.prepare(`INSERT INTO ${kind === "table" ? "ExEcUtIoN" : "owner_evidence"} VALUES(1,?, 'preserved')`).run(process.pid);
-  expect(() => readControllerSnapshot(f.file)).toThrow("upgrade-blocked");
+  expect(() => readControllerSnapshot(f.file, f.permit)).toThrow("upgrade-blocked");
   const check = f.file;
   try { expect(check.pragma("user_version", { simple: true })).toBe(0); expect(check.prepare("SELECT owner_pid,sentinel FROM execution").get()).toEqual({ owner_pid: process.pid, sentinel: "preserved" }); }
   finally { check.close(); }
@@ -65,7 +71,7 @@ test.each(["table", "view"] as const)("case-insensitive %s owner evidence blocks
 test.each(["id", "owner_pid"] as const)("missing %s owner metadata prevents unversioned reset", async column => {
   const f = fixture(), db = f.file;
   db.exec(column === "id" ? "CREATE TABLE execution(owner_pid INTEGER, sentinel TEXT); INSERT INTO execution VALUES(NULL, 'preserved')" : "CREATE TABLE execution(id INTEGER, sentinel TEXT); INSERT INTO execution VALUES(1, 'preserved')");
-  expect(() => readControllerSnapshot(f.file)).toThrow();
+  expect(() => readControllerSnapshot(f.file, f.permit)).toThrow();
   const check = f.file;
   try { expect(check.pragma("user_version", { simple: true })).toBe(0); expect(check.prepare("SELECT sentinel FROM execution").get()).toEqual({ sentinel: "preserved" }); }
   finally { check.close(); }
@@ -74,7 +80,7 @@ test.each(["id", "owner_pid"] as const)("missing %s owner metadata prevents unve
 test.each([1, journalVersion, journalVersion + 1])("unknown nonzero journal version %s is rejected without migration", async version => {
   const f = fixture(), db = f.file;
   db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')"); db.pragma(`user_version=${version}`);
-  expect(() => readControllerSnapshot(f.file)).toThrow(version === journalVersion + 1 ? "unsupported-version" : "invalid-format");
+  expect(() => readControllerSnapshot(f.file, f.permit)).toThrow(version === journalVersion + 1 ? "unsupported-version" : "invalid-format");
   const check = f.file;
   try { expect(check.pragma("user_version", { simple: true })).toBe(version); expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" }); }
   finally { check.close(); }

@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
 import os from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -13,6 +14,9 @@ import { ControllerIpcIdentityConflictError, requestController } from "../../../
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
+import * as storageLock from "../../../src/commands/controller/storage-lock.js";
+import { ControllerStorageWaitingError } from "../../../src/commands/controller/storage-preparation.js";
 
 const roots: string[] = [], children: ChildProcess[] = [];
 afterEach(async () => {
@@ -33,6 +37,44 @@ it("retains the running instance and classifies a missing journal only after its
   const f = await fixture();
   expect((await f.observe()).kind).toBe("running-unobserved");
   await stopControllerBootstrap(f.proof, Date.now() + 15_000);
+  expect(await f.observe()).toEqual({ kind: "pre-writer-exited", process: f.proof, journal: "missing" });
+  await expect(access(f.journalFile)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(access(path.join(f.root, "storage.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+}, 30_000);
+
+it.each(["absent", "reappeared"] as const)("reconciles an existing-only journal acquisition race without creating a source (%s)", async state => {
+  const f = await fixture();
+  await stopControllerBootstrap(f.proof, Date.now() + 15_000);
+  new Database(f.journalFile).close();
+  const acquire = vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => {
+    if (state === "absent") unlinkSync(f.journalFile);
+    throw Object.assign(new Error("Journal disappeared before ownership acquisition."), { code: "ENOENT" });
+  });
+  try {
+    expect(await f.observe()).toEqual({ kind: "pre-writer-exited", process: f.proof, journal: "missing" });
+    expect(acquire).toHaveBeenCalledTimes(state === "absent" ? 1 : 2);
+    expect(acquire.mock.calls.every(([, , options]) => options?.fileMustExist === true)).toBe(true);
+    if (state === "absent") await expect(access(f.journalFile)).rejects.toMatchObject({ code: "ENOENT" });
+    else {
+      const journal = new Database(f.journalFile, { readonly: true, fileMustExist: true });
+      expect(journal.pragma("user_version", { simple: true })).toBe(0);
+      expect(journal.prepare("SELECT name FROM sqlite_schema").all()).toEqual([]);
+      journal.close();
+    }
+    await expect(access(path.join(f.root, "storage.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { acquire.mockRestore(); }
+}, 30_000);
+
+it("keeps an exited launch unacknowledged while storage maintenance owns its journal", async () => {
+  const f = await fixture();
+  await stopControllerBootstrap(f.proof, Date.now() + 15_000);
+  const permit = acquireControllerStoragePermit(f.journalFile);
+  try {
+    const waiting = await f.observe().catch(error => error);
+    expect(waiting).toBeInstanceOf(ControllerStorageWaitingError);
+    expect(waiting.reason).toBe("lock_busy");
+    expect(hasUnsafeControllerObservationFailure(waiting)).toBe(false);
+  } finally { permit.release(); }
   expect(await f.observe()).toEqual({ kind: "pre-writer-exited", process: f.proof, journal: "missing" });
 }, 30_000);
 

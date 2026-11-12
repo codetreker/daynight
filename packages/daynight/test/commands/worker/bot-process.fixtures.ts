@@ -7,6 +7,7 @@ import { openBotExecutionStore } from "../../../src/commands/worker/bots/executi
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import type { BotConfiguration, BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import type { prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
@@ -33,7 +34,8 @@ export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configur
   let ticket:ControllerLaunchTicket;
   const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); await options.onSpawned({ pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) }); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
   const observe=vi.fn(async(t:ControllerLaunchTicket)=>snapshot(t));
+  const prepareStorage=vi.fn<typeof prepareControllerStorage>(()=>({kind:"prepared",snapshot:null,legacyTimelineCleanupPending:false}));
   const api={register,grant,readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
-  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3, jobLeases?: ControllerJobLeases)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,jobLeases:jobLeases ?? { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },selectToolLaunch:async agent=>frozenToolLaunch(agent),dependencies:{prepareEnvironment,launch,observe,reconcileLaunch:async ({ticket}: {ticket:ControllerLaunchTicket})=>({kind:"observed" as const,snapshot:await observe(ticket)}),...extra}});
-  return {home,owner,get store(){return store;},get executions(){return executions;},reopen,current,register,grant,prepareEnvironment,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
+  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3, jobLeases?: ControllerJobLeases)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,jobLeases:jobLeases ?? { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },selectToolLaunch:async agent=>frozenToolLaunch(agent),dependencies:{prepareEnvironment,launch,observe,prepareStorage,reconcileLaunch:async ({ticket}: {ticket:ControllerLaunchTicket})=>({kind:"observed" as const,snapshot:await observe(ticket)}),...extra}});
+  return {home,owner,get store(){return store;},get executions(){return executions;},reopen,current,register,grant,prepareEnvironment,prepareStorage,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
 };

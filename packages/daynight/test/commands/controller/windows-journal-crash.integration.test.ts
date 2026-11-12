@@ -56,7 +56,7 @@ test.skipIf(process.platform !== "win32").each(["idle", "writing", "closing"] as
     }
     diagnostics = JSON.stringify({ phase, childExitCode: child.exitCode, childSignal: child.signalCode, files: await fileStates() });
     expect(readCurrentControllerSnapshot(journal, ticket, deadline)).toMatchObject({ lifecycle: "ready", controllerProcess: { pid: proof.pid } });
-    const stopped = await recordStoppedControllerGeneration(journal, ticket, deadline, lease);
+    const stopped = await recordStoppedControllerGeneration(journal, ticket, { stateDirectory: path.dirname(journal), deadline, jobLease: lease });
     expect(stopped).toMatchObject({ lifecycle: "stopped", nativeStopped: true, windowsJobStopProof: { version: 1 } });
     expect(readProvenWindowsStoppedControllerGeneration(journal, ticket, deadline)).toEqual(stopped); expect(stderr).not.toContain("Error");
   } catch (error) { failed = true; originalFailure = error; diagnostics = JSON.stringify({ phase, childExitCode: child?.exitCode, childSignal: child?.signalCode, files: await fileStates(), stderr }); }

@@ -1,4 +1,6 @@
 import {test,expect,vi} from 'vitest';
+vi.mock("../../../src/commands/controller/storage-lock.js", () => ({ acquireControllerStoragePermit: () => ({ journalFile: "/private/controller/journal.sqlite", owner: "fixture", release: () => {} }), isControllerStorageLockHeld: () => false }));
+vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: () => ({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false }) }));
 vi.mock("../../../src/commands/controller/launch-tool-selection.js", () => ({ readLaunchToolSelection: async () => undefined }));
 import {EventEmitter} from 'node:events';
 const f=vi.hoisted(()=>({callbacks:null as any,receipt:vi.fn(),close:vi.fn(),gap:vi.fn(),writes:0,state:'accepted'}));

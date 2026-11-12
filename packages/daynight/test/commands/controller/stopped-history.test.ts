@@ -5,9 +5,17 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
+import { ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
+import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { replayStoppedControllerHistory, type StoppedSourceTail } from "../../../src/commands/controller/stopped-history.js";
+const errorCauses = (error: unknown): Error[] => {
+  const values: Error[] = [];
+  for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
+  return values;
+};
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (count = 3, text = "durable", floor = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/stopped-history-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -15,7 +23,7 @@ const fixture = async (count = 3, text = "durable", floor = false) => {
   const journalPath = path.join(home, "journal.sqlite"), store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, ...(floor ? { maxOutboxBytes: 256 } : {}) });
   for (let i = 0; i < count; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
   store.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }); store.markDispatching(ticket.initialOperationId); store.recordOperation(ticket.initialOperationId, "unknown");
-  store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true }); store.close();
+  store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
   const read = () => { const db = new Database(journalPath, { readonly: true }); try { return { state: db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence,last_acknowledged,source_floor FROM execution").get(), operation: db.prepare("SELECT value FROM operations").get(), outbox: db.prepare("SELECT count(*) AS total FROM outbox").get(), batch: db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_tail'").get() }; } finally { db.close(); } };
   return { journalPath, ticket, read };
 };
@@ -72,6 +80,42 @@ test("a stopped batch cannot consume metadata beyond the settlement reserve or d
   const retained = await open(path.join(pending, "retained.tmp"), "wx", 0o600);
   try { await retained.truncate(136 * 1048576); } finally { await retained.close(); }
   const send = vi.fn();
-  await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toThrow("metadata budget");
+  const failure = await replayStoppedControllerHistory({ ...f, send }).then(() => null, (error: unknown) => error);
+  expect(failure).toMatchObject({ name: "ControllerStorageWaitingError", reason: "physical_capacity" });
+  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.any(ControllerMetadataBudgetError)]));
   expect(send).not.toHaveBeenCalled(); expect(f.read()).toEqual(before);
+});
+
+
+test("stopped transport releases local storage ownership before sending and reacquires it before ACK", async () => {
+  const f = await fixture();
+  let competing: ReturnType<typeof acquireControllerStoragePermit> | undefined;
+  try {
+    await expect(replayStoppedControllerHistory({ ...f, send: async batch => {
+      competing = acquireControllerStoragePermit(f.journalPath);
+      expect(f.read().batch).toEqual({ value: JSON.stringify(batch) });
+      return acknowledged(batch);
+    } })).rejects.toThrow("Cannot acquire instance lock");
+    expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
+    expect(f.read().outbox).toEqual({ total: 3 });
+  } finally { competing?.release(); }
+  await replayStoppedControllerHistory({ ...f, send: async batch => acknowledged(batch) });
+  expect(f.read().state).toMatchObject({ last_acknowledged: 3 });
+});
+
+
+test("a batch committed before connection shutdown failure retains its committed outcome and durable identity", async () => {
+  const f = await fixture(), send = vi.fn();
+  const close = sqliteAccess.closeSqliteDatabase;
+  const failure = new Error("Injected shutdown report failure");
+  vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
+    close(db, options, outcome);
+    if (options.file === f.journalPath && outcome === "committed" && f.read().batch !== undefined) throw failure;
+  });
+  await expect(replayStoppedControllerHistory({ ...f, send })).rejects.toMatchObject({ kind: "cleanup-failed", outcome: "committed", connectionClosed: true, cause: failure });
+  expect(send).not.toHaveBeenCalled();
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
+  expect(f.read().batch).toEqual({ value: expect.any(String) });
+  const permit = acquireControllerStoragePermit(f.journalPath);
+  permit.release();
 });

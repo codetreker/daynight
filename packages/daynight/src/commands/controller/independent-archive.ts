@@ -34,7 +34,7 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
     const journal = await lstat(journalPath);
     if (!journal.isFile() || journal.isSymbolicLink()) throw new Error("Test Session stop evidence must be a private regular file.");
   }
-  const stopped = await recordStoppedControllerGeneration(journalPath, ticket);
+  const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory: paths.stateDirectory });
   const proofPath = path.join(execution, "stop-proof.json");
   let body: unknown;
   if (existsSync(proofPath)) {
@@ -59,6 +59,6 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
   assertSessionFence(result, ticket);
   if (result.lifecycle !== "archived") throw new Error("Native execution is stopped; server session closure is unconfirmed.");
   writeDurableJson(path.join(execution, "stop-result.json"), { session: result });
-  await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken });
+  await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken, stateDirectory: paths.stateDirectory });
   context.stdout(`Test Session history archived: ${new URL(`/test-sessions/${ticket.sessionId}`, config.serverUrl).href}\n`);
 };

@@ -1,5 +1,8 @@
 import { ArchiveRepairRequiredError, ArchiveRequestError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
 import Database from "better-sqlite3";
+import path from "node:path";
+import { withStoppedControllerStorage } from "./stopped-storage.js";
+import { acquireControllerStoragePermit } from "./storage-lock.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { sessionBinding } from "../../session/protocol.js";
@@ -8,7 +11,7 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-tic
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
 import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
-import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
+import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { finalizePendingMigration, reconcilePendingContent, openPendingContent } from "./pending-content.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
@@ -69,7 +72,7 @@ const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<voi
   });
 };
 
-export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
+export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; stateDirectory?: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
   const fence = { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration };
   const identity = { fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
@@ -111,6 +114,17 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     const current = new Database(journalPath, { readonly: true, fileMustExist: true });
     return withClosedJournal(current, () => current.transaction(() => { assertOriginal(current); assertJournalMigrationAllowed(current, inspectSqlite(current, controllerJournalFormat)); return inspect(current); }).deferred());
   };
+  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, stateDirectory: options.stateDirectory ?? path.dirname(journalPath), assertOriginal }, action);
+  const localFiles = <T>(action: () => T): T => {
+    const permit = acquireControllerStoragePermit(journalPath);
+    let value: T | undefined, failure: unknown, failed = false;
+    try { inspectOriginal(() => undefined); value = action(); }
+    catch (error) { failed = true; failure = error; }
+    try { permit.release(); }
+    catch (release) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: journalPath, phase: "archive-file-release" }, { cause: failed ? new AggregateError([failure, release], "Archive file operation and storage release failed.") : release, outcome: "not-started", connectionClosed: true }); }
+    if (failed) throw failure;
+    return value!;
+  };
   const receiptPath = `${journalPath}.archive-receipt-${ticket.executionGeneration}.json`;
   if (existsSync(receiptPath)) {
     const receipt = parseSessionArchiveStatus(JSON.parse(readFileSync(receiptPath, "utf8"))), current = await status();
@@ -118,15 +132,12 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     const migratedOriginal = receipt.schemaVersion === undefined && current.migration?.sourceSha256 === receipt.sha256 && current.migration.sourceByteLength === receipt.byteLength;
     if (receipt.state !== "ready" || current.state !== "ready" || current.schemaVersion !== 3 || !(receipt.schemaVersion === 3 ? sameRepresentation : migratedOriginal)) throw new Error("Server archive differs from the confirmed receipt.");
     inspectOriginal(() => undefined);
-    if (receipt.schemaVersion === undefined) writeDurableJson(receiptPath, current);
+    if (receipt.schemaVersion === undefined) localFiles(() => writeDurableJson(receiptPath, current));
     return current;
   }
   const admission = await probeStoppedControllerArchive({ journalPath, ticket, signal: roundSignal });
   if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
-  const db = openSqliteDatabase({ file: journalPath, format: controllerJournalFormat, allowCreate: false,
-    assertMigrationAllowed: (db, source) => { assertOriginal(db); assertJournalMigrationAllowed(db, source); }, onReady: assertOriginal,
-  });
-  const frozen = withClosedJournal(db, () => {
+  const frozen = local(db => {
    if (existsSync(`${journalPath}.pending-content/manifest.json`)) finalizePendingMigration(db,openPendingContent(journalPath,ticket.sessionId,db));
    return runSqliteImmediate(db, () => {
     assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
@@ -178,13 +189,13 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     const bytes = Buffer.from(JSON.stringify(parseSessionArchive(source)));
     if (sha256(bytes) !== existing.migration.sourceSha256 || String(bytes.length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
     assertFrozen(false);
-    writeDurableJson(receiptPath, existing);
+    localFiles(() => writeDurableJson(receiptPath, existing));
     return existing;
   }
   if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
   if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
     // The durable batch identity and bytes survive retries, including reconciliation after response loss.
-    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+    await replayStoppedControllerHistory({ journalPath, ticket, ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }), signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
   }
   assertFrozen();
   // Only identity-preserving preparation is replayable; reset requests need their own policy.
@@ -192,21 +203,24 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
   const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
   const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
-  let intent: ArchiveIntent;
-  if (existsSync(intentPath)) {
-    const value = JSON.parse(readFileSync(intentPath,"utf8")) as unknown;
-    const keys = (value: unknown, names: string): value is Record<string,unknown> => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === names;
-    const id = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-    const file = (value: unknown, bytes: Uint8Array): boolean => keys(value,"byteLength,fileId,sha256") && id(value.fileId) && value.sha256 === sha256(bytes) && value.byteLength === String(bytes.length);
-    const expectedResources = frozen.resources.filter(resource=>resource.status === "available" && resource.revision === undefined).map(resource=>resource.resourceId).sort();
-    if (!keys(value,"controllerId,controllerInstanceId,fence,history,historyEpoch,resources,schemaVersion,sourceThrough,timeline") || value.schemaVersion !== 1 || JSON.stringify(value.fence) !== JSON.stringify(fence) || value.controllerId !== ticket.controllerId || value.controllerInstanceId !== ticket.controllerInstanceId || value.historyEpoch !== prepared.historyEpoch || value.sourceThrough !== prepared.sourceThrough || !file(value.history,historyBytes) || !file(value.timeline,timelineBytes) || !Array.isArray(value.resources) || !value.resources.every(resource=>keys(resource,"fileId,resourceId")&&id(resource.fileId)&&id(resource.resourceId)) || JSON.stringify(value.resources.map(resource=>resource.resourceId).sort())!==JSON.stringify(expectedResources)) throw new Error("Stopped archive intent cannot change identity.");
-    intent = value as ArchiveIntent;
-    const fileIds = [intent.history.fileId,intent.timeline.fileId,...intent.resources.map(resource=>resource.fileId)];
-    if (new Set(fileIds).size !== fileIds.length) throw new Error("Stopped archive file identities must be distinct.");
-  } else {
-    intent = { schemaVersion:1, ...identity, historyEpoch:prepared.historyEpoch,sourceThrough:prepared.sourceThrough,history:{fileId:randomUUID(),sha256:sha256(historyBytes),byteLength:String(historyBytes.length)},timeline:{fileId:randomUUID(),sha256:sha256(timelineBytes),byteLength:String(timelineBytes.length)},resources:frozen.resources.filter(resource => resource.status === "available" && resource.revision === undefined).map(resource => ({resourceId:resource.resourceId,fileId:randomUUID()})) };
-    writeDurableJson(intentPath,intent);
-  }
+  const intent = localFiles((): ArchiveIntent => {
+    let intent: ArchiveIntent;
+    if (existsSync(intentPath)) {
+      const value = JSON.parse(readFileSync(intentPath,"utf8")) as unknown;
+      const keys = (value: unknown, names: string): value is Record<string,unknown> => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === names;
+      const id = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+      const file = (value: unknown, bytes: Uint8Array): boolean => keys(value,"byteLength,fileId,sha256") && id(value.fileId) && value.sha256 === sha256(bytes) && value.byteLength === String(bytes.length);
+      const expectedResources = frozen.resources.filter(resource=>resource.status === "available" && resource.revision === undefined).map(resource=>resource.resourceId).sort();
+      if (!keys(value,"controllerId,controllerInstanceId,fence,history,historyEpoch,resources,schemaVersion,sourceThrough,timeline") || value.schemaVersion !== 1 || JSON.stringify(value.fence) !== JSON.stringify(fence) || value.controllerId !== ticket.controllerId || value.controllerInstanceId !== ticket.controllerInstanceId || value.historyEpoch !== prepared.historyEpoch || value.sourceThrough !== prepared.sourceThrough || !file(value.history,historyBytes) || !file(value.timeline,timelineBytes) || !Array.isArray(value.resources) || !value.resources.every(resource=>keys(resource,"fileId,resourceId")&&id(resource.fileId)&&id(resource.resourceId)) || JSON.stringify(value.resources.map(resource=>resource.resourceId).sort())!==JSON.stringify(expectedResources)) throw new Error("Stopped archive intent cannot change identity.");
+      intent = value as ArchiveIntent;
+      const fileIds = [intent.history.fileId,intent.timeline.fileId,...intent.resources.map(resource=>resource.fileId)];
+      if (new Set(fileIds).size !== fileIds.length) throw new Error("Stopped archive file identities must be distinct.");
+    } else {
+      intent = { schemaVersion:1, ...identity, historyEpoch:prepared.historyEpoch,sourceThrough:prepared.sourceThrough,history:{fileId:randomUUID(),sha256:sha256(historyBytes),byteLength:String(historyBytes.length)},timeline:{fileId:randomUUID(),sha256:sha256(timelineBytes),byteLength:String(timelineBytes.length)},resources:frozen.resources.filter(resource => resource.status === "available" && resource.revision === undefined).map(resource => ({resourceId:resource.resourceId,fileId:randomUUID()})) };
+      writeDurableJson(intentPath,intent);
+    }
+    return intent;
+  });
   let historyRevision: string | null = null;
   const transfer = async (purpose:"history"|"timeline"|"resource", file:{fileId:string;sha256:string;byteLength:string}, read:(offset:string,limit:number)=>Uint8Array, descriptor?: unknown): Promise<void> => {
     const path = purpose === "history" ? `/prepare/history/${file.fileId}` : `/files/${file.fileId}`;
@@ -237,8 +251,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if (prepared.phase === "settling") {
     await transfer("history",intent.history,(offset,limit)=>historyBytes.subarray(Number(offset),Number(offset)+limit));
     assertFrozen();
-    const checkpoint = openSqliteDatabase({file:journalPath,format:controllerJournalFormat,allowCreate:false,onReady:assertOriginal});
-    withClosedJournal(checkpoint,()=>runSqliteImmediate(checkpoint,()=>{
+    local(checkpoint=>runSqliteImmediate(checkpoint,()=>{
       assertCurrentSqlite(checkpoint,controllerJournalFormat);assertOriginal(checkpoint);
       checkpoint.prepare("INSERT INTO image_runtime_state VALUES('archive_history_checkpoint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({...identity,historyEpoch:intent.historyEpoch,sourceThrough:intent.sourceThrough,history:intent.history,timelineRevision:historyRevision}));
     }));
@@ -264,6 +277,6 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   }
   if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
   assertFrozen();
-  writeDurableJson(receiptPath,current);
+  localFiles(() => writeDurableJson(receiptPath,current));
   return current;
 };

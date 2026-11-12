@@ -18,8 +18,10 @@ import Database from "better-sqlite3";
 import { openPendingContent, reconcilePendingContent, finalizePendingMigration } from "./pending-content.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
-import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
+import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
+import { controllerJournalFormat } from "./journal-format.js";
+import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
+import { controllerJournalReadOptions, controllerJournalWriteOptions, prepareControllerStorage } from "./storage-preparation.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -52,27 +54,29 @@ const checkedSnapshot = (value: ControllerSnapshot): ControllerSnapshot => {
   if (value.startup !== undefined) parseStartupObservation(value.startup);
   return value;
 };
-const closeJournal = (db: Database.Database, file: string, operation: () => void): void => {
+const closeJournal = (db: Database.Database, file: string, operation: () => void, completedOutcome: SqliteOutcome = "committed"): void => {
   let failed = false, failure: unknown;
   try { operation(); } catch (cause) { failed = true; failure = cause; }
-  try { closeSqliteDatabase(db, { file, format: controllerJournalFormat }, failed ? sqliteTransactionOutcome(failure) : "committed"); }
+  const outcome = completedOutcome === "not-started" ? "not-started" : failed ? sqliteTransactionOutcome(failure) : completedOutcome;
+  try { closeSqliteDatabase(db, { file, format: controllerJournalFormat }, outcome); }
   catch (close) {
-    if (failed) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "close" }, { cause: new AggregateError([failure, close], "Controller journal operation and shutdown failed."), outcome: sqliteTransactionOutcome(failure), connectionClosed: false });
+    if (failed) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "close" }, { cause: new AggregateError([failure, close], "Controller journal operation and shutdown failed."), outcome, connectionClosed: !db.open });
     throw close;
   }
   if (failed) throw failure;
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file identifies its separate pending-content archive. */
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder } = {}) => {
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
+const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions, permit: ControllerStoragePermit) => {
+  assertControllerStoragePermit(permit, file);
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
-  const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
+  const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let pendingContent!: ReturnType<typeof openPendingContent>;
-  const db = openSqliteDatabase({ file: options.database ?? file, format: controllerJournalFormat, allowCreate: true,
+  const db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId), file: options.database ?? file, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
-    assertMigrationAllowed: assertJournalMigrationAllowed,
     onReady: (db) => {
       if (!db.memory) chmodSync(file, 0o600);
     const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
@@ -106,6 +110,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     reconcilePendingContent(db, pendingContent);
     },
   });
+  try {
   finalizePendingMigration(db, pendingContent);
   const metadataBudget = controllerMetadataBudget(file, db);
   let quarantined = false;
@@ -113,6 +118,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   const quarantine = (_cause: unknown): void => { quarantined = true; };
   const transaction = <T>(action: () => T, mode: "deferred" | "immediate"): T => {
     assertUsable();
+    assertControllerStoragePermit(permit, file);
     const nested = db.inTransaction;
     let failed = false, primary: unknown;
     try {
@@ -396,24 +402,54 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       finally { closed = !db.open; }
     },
   };
+  } catch (primary) {
+    try { if (db.open) closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "committed"); }
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "initialize-close" }, { cause: new AggregateError([primary, cleanup], "Controller journal initialization and shutdown failed."), outcome: "committed", connectionClosed: !db.open }); }
+    throw primary;
+  }
+};
+
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions = {}) => {
+  parseLaunchTicket(ticket);
+  const permit = options.storagePermit ?? acquireControllerStoragePermit(file);
+  const owned = options.storagePermit === undefined;
+  let store: ReturnType<typeof createControllerLifecycleStore>;
+  try { store = createControllerLifecycleStore(file, ticket, options, permit); }
+  catch (primary) {
+    if (owned && (!(primary instanceof SqliteAccessError) || primary.connectionClosed)) {
+      try { permit.release(); }
+      catch (release) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "initialize-release" }, { cause: new AggregateError([primary, release], "Controller journal initialization and storage release failed."), outcome: primary instanceof SqliteAccessError ? primary.outcome : "not-started", connectionClosed: true }); }
+    }
+    throw primary;
+  }
+  let closed = false;
+  return { ...store, close: (): void => {
+    if (closed) return;
+    store.close();
+    if (owned) {
+      try { permit.release(); }
+      catch (cause) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "release" }, { cause, outcome: "committed", connectionClosed: true }); }
+    }
+    closed = true;
+  } };
 };
 export type ControllerLifecycleStore = ReturnType<typeof openControllerLifecycleStore>;
 
 /** Recovery reads may upgrade the format without acquiring a native writer. */
-export const readControllerSnapshot = (file: SqliteDatabaseSource): ControllerSnapshot | null => readSqliteDatabase({
-  file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed,
+export const readControllerSnapshot = (file: SqliteDatabaseSource, permit?: ControllerStoragePermit): ControllerSnapshot | null => readSqliteDatabase({
+  ...controllerJournalReadOptions(file, permit), onMissing: () => null,
 }, db => {
   const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
   return row === undefined ? null : checkedSnapshot(json<ControllerSnapshot>(row.snapshot));
 });
 
-type ControllerStopRow = { snapshot: ControllerSnapshot; ticketHash: string };
-const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false): ControllerStopRow | null => {
+type ControllerStopRow = { snapshot: ControllerSnapshot; rawSnapshot: string; ticketHash: string; ownerPid: number | null };
+const readControllerStopRow = (file: string, deadline?: number, strictReadOnly = false, permit?: ControllerStoragePermit): ControllerStopRow | null => {
   const read = (db: Database.Database): ControllerStopRow | null => {
-    const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
-    return row === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), ticketHash: row.ticket_hash };
+    const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;
+    return row === undefined ? null : { snapshot: checkedSnapshot(json<ControllerSnapshot>(row.snapshot)), rawSnapshot: row.snapshot, ticketHash: row.ticket_hash, ownerPid: row.owner_pid };
   };
-  if (deadline === undefined && !strictReadOnly) return readSqliteDatabase({ file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed }, read);
+  if (deadline === undefined && !strictReadOnly) return readSqliteDatabase({ ...controllerJournalReadOptions(file, permit), onMissing: () => null }, read);
   const remaining = () => {
     if (deadline === undefined) return 5000;
     if (!Number.isSafeInteger(deadline) || deadline <= 0) throw new Error("Invalid controller stop deadline.");
@@ -436,7 +472,7 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
         db.pragma(`busy_timeout = ${remaining()}`);
         const row = read(db); remaining(); return row;
       }).deferred();
-    });
+    }, "not-started");
     remaining(); return result;
   } catch (cause) {
     if (deadline !== undefined && Date.now() >= deadline && !(cause instanceof Error && /deadline/.test(cause.message))) {
@@ -475,7 +511,7 @@ export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLa
 };
 
 /** Hashes bind durable evidence for consistency; they are not authentication against a local writer. */
-const validateWindowsStoredStopProof = (snapshot: ControllerSnapshot, ticketHash: string): void => {
+export const validateWindowsStoredStopProof = (snapshot: ControllerSnapshot, ticketHash: string): void => {
   const marker = snapshot?.windowsJobStopProof;
   if (marker === undefined) throw new Error("Windows Job stop proof is unavailable; complete process-tree stop is unconfirmed.");
   if (marker === null || typeof marker !== "object" || Array.isArray(marker) || Object.keys(marker).sort().join() !== "snapshotHash,ticketHash,version"
@@ -509,7 +545,11 @@ export const readProvenWindowsStoppedControllerGeneration = (file: string, ticke
 };
 
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
-export const recordStoppedControllerGeneration = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, lease?: ControllerJobLease): Promise<ControllerSnapshot> => {
+export type ControllerStopOptions = { stateDirectory: string; permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease };
+const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTicket, options: ControllerStopOptions, permit: ControllerStoragePermit): Promise<ControllerSnapshot> => {
+  assertControllerStoragePermit(permit, file);
+  const { deadline, jobLease: lease } = options;
+
   const remaining = (): number => {
     if (deadline === undefined) return 5000;
     if (!Number.isSafeInteger(deadline) || deadline <= 0) throw new Error("Invalid controller stop deadline.");
@@ -524,8 +564,18 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
     }
     throw cause;
   };
+  remaining();
+  if (sqliteDatabaseIsMissing(file)) throw new Error("Original controller stop evidence is unavailable.");
+  const inspection = new Database(file, { readonly: true, fileMustExist: true, timeout: remaining() });
+  let needsUpgrade = false;
+  closeJournal(inspection, file, () => { needsUpgrade = inspection.transaction(() => inspectSqlite(inspection, controllerJournalFormat).kind !== "current").deferred(); }, "not-started");
+  if (needsUpgrade) {
+    const preparation = prepareControllerStorage({ journalFile: file, stateDirectory: options.stateDirectory, mode: "upgrade-only", ...(deadline === undefined ? {} : { deadline }) }, permit);
+    if (preparation.kind === "waiting") throw preparation.cause;
+  }
+  remaining();
   let observedRow: ControllerStopRow | null = null;
-  try { observedRow = readControllerStopRow(file, deadline, process.platform === "win32" && lease === undefined); }
+  try { observedRow = readControllerStopRow(file, deadline, true, permit); }
   catch (error) { failedAtDeadline(error, "not-started", error instanceof SqliteAccessError ? error.connectionClosed : true); }
   const observed = observedRow?.snapshot ?? null;
   if (observed === null || observed.controllerProcess === null || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Original controller stop evidence is unavailable.");
@@ -549,8 +599,8 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
       stopped = runSqliteImmediate(db, () => {
         remaining();
         assertCurrentSqlite(db, controllerJournalFormat);
-        const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string };
-        if (row.snapshot !== JSON.stringify(observed) || row.ticket_hash !== ticketHash) throw new Error("The controller state changed during stop verification.");
+        const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null };
+        if (row.snapshot !== observedRow!.rawSnapshot || row.ticket_hash !== ticketHash || row.owner_pid !== observedRow!.ownerPid) throw new Error("The controller state changed during stop verification.");
         const value: ControllerSnapshot = { ...observed, lifecycle: "stopped", nativeStopped: true, stoppedAt: observed.stoppedAt ?? new Date().toISOString(), activity: "stopped", capabilities: { send: false, steer: false, cancel: false, respond: false } };
         if (process.platform === "win32") {
           value.windowsJobStopProof = { version: 1, ticketHash, snapshotHash: controllerPayloadHash(value) };
@@ -566,10 +616,26 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
   if (deadline !== undefined && Date.now() >= deadline) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "stop-deadline" }, { outcome: "committed", connectionClosed: true, cause: new Error("Controller stop recording exceeded its deadline after commit.") });
   return stopped!;
 };
-export const readControllerOperation = (file: SqliteDatabaseSource, operationId: string): ControllerOperation | null => readSqliteDatabase({
-  file, format: controllerJournalFormat,
+
+/** The original storage owner remains held across process verification and the compare-and-commit. */
+export const recordStoppedControllerGeneration = async (file: string, ticket: ControllerLaunchTicket, options: ControllerStopOptions): Promise<ControllerSnapshot> => {
+  if (sqliteDatabaseIsMissing(file)) throw new Error("Original controller stop evidence is unavailable.");
+  const permit = options.permit ?? acquireControllerStoragePermit(file, options.deadline);
+  const owned = options.permit === undefined;
+  let result: ControllerSnapshot | undefined, failure: unknown, failed = false;
+  try { result = await recordStoppedWithPermit(file, ticket, options, permit); }
+  catch (cause) { failed = true; failure = cause; }
+  if (owned && (!(failure instanceof SqliteAccessError) || failure.connectionClosed)) {
+    try { permit.release(); }
+    catch (release) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "stop-release" }, { cause: failed ? new AggregateError([failure, release], "Controller stop recording and storage release failed.") : release, outcome: failed ? failure instanceof SqliteAccessError ? failure.outcome : "not-started" : "committed", connectionClosed: true }); }
+  }
+  if (failed) throw failure;
+  if (options.deadline !== undefined && Date.now() >= options.deadline) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "stop-deadline" }, { outcome: "committed", connectionClosed: true, cause: new Error("Controller stop recording exceeded its deadline after storage release.") });
+  return result!;
+};
+export const readControllerOperation = (file: SqliteDatabaseSource, operationId: string, permit?: ControllerStoragePermit): ControllerOperation | null => readSqliteDatabase({
+  ...controllerJournalReadOptions(file, permit),
   onMissing: (): ControllerOperation | null => { throw new Error("The controller journal does not exist."); },
-  assertMigrationAllowed: assertJournalMigrationAllowed,
 }, db => {
   const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined;
   return row === undefined ? null : json<ControllerOperation>(row.value);

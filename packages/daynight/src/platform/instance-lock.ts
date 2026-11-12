@@ -12,8 +12,9 @@ export class InstanceLockHeldError extends Error {
 }
 const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 
-const withOwnershipGate = <T>(databaseFile: string, operation: () => T, fileMustExist = false): T => {
-  const database = new Database(databaseFile, { timeout: 5_000, fileMustExist });
+const withOwnershipGate = <T>(databaseFile: string, operation: () => T, fileMustExist = false, timeoutMs = 5_000): T => {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError("Instance-lock timeout must be a positive safe integer of at most 60000 milliseconds.");
+  const database = new Database(databaseFile, { timeout: timeoutMs, fileMustExist });
   let result: T;
   try { result = database.transaction(operation).immediate(); }
   catch (error) {
@@ -55,7 +56,8 @@ const replaceOwner = (lockFile: string, content: string): void => {
   }
 };
 
-export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: string, owner: string = randomUUID()) => {
+export const acquireInstanceLockSync = (lockFile: string, ownershipGateFile: string, owner: string = randomUUID(), options: { timeoutMs?: () => number; fileMustExist?: boolean } = {}) => {
+  const timeout = (): number => options.timeoutMs === undefined ? 5000 : options.timeoutMs();
   const content = JSON.stringify({ owner, pid: process.pid, startedAt: new Date().toISOString() });
   let previousProcessesExcluded: boolean;
   try {
@@ -77,7 +79,7 @@ export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: s
       }
       replaceOwner(lockFile, content);
       return true;
-    });
+    }, options.fileMustExist === true, timeout());
   } catch (cause) {
     throw new Error(`Cannot acquire instance lock ${lockFile}. If recovery requires operator confirmation, confirm that the previous CLI and all managed processes have stopped before manually removing the lock.`, { cause });
   }
@@ -85,21 +87,26 @@ export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: s
   return {
     owner,
     previousProcessesExcluded,
-    release: async (): Promise<void> => {
+    release: (): void => {
       if (released) return;
       withOwnershipGate(ownershipGateFile, () => {
         if (readFileSync(lockFile, "utf8").trim() !== content) throw new Error(`Instance lock ${lockFile} no longer belongs to this CLI; it was retained.`);
         unlinkSync(lockFile);
-      });
+      }, options.fileMustExist === true, timeout());
       released = true;
     },
   };
 };
 
 
+export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: string, owner: string = randomUUID()) => {
+  const lock = acquireInstanceLockSync(lockFile, ownershipGateFile, owner);
+  return { ...lock, release: async (): Promise<void> => { lock.release(); } };
+};
+
 export class MaintenanceLockHeldError extends Error {
-  constructor(readonly lockFile: string) {
-    super(`An existing instance lock blocks SQLite maintenance: ${lockFile}. Its ownership evidence was retained.`);
+  constructor(readonly lockFile: string, options?: ErrorOptions) {
+    super(`An existing instance lock blocks SQLite maintenance: ${lockFile}. Its ownership evidence was retained.`, options);
     this.name = "MaintenanceLockHeldError";
   }
 }

@@ -27,6 +27,11 @@ import type { createWebControllerLauncher } from "./web-process.js";
 import { createWebStopObserver } from "./web-stop.js";
 import type { CleanupRequest } from "../execution-stop.js";
 import { createControllerJobLeases, type ControllerJobLeases } from "./controller-job-leases.js";
+import { resolveConfigurationPaths } from "../../../config/paths.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
+import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
+import { prepareControllerLaunchStorage } from "./controller-process.js";
+import { SqliteAccessError } from "../../../platform/sqlite-error.js";
 export type WebBackendOptions = {
   jobLeases?: ControllerJobLeases;
   homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "prepare" | "launch" | "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "setGrantObserver">>;
@@ -42,7 +47,7 @@ export class WebRecoveryBlockedError extends Error {
   constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
 }
 export type WebCleanupOutcome = { task: LocalTask; complete: boolean };
-export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large";
+export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large" | "storage_maintenance";
 export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
@@ -77,8 +82,32 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   const stopWithLease = async (launchId: string, controller: ProcessProof, native: readonly ProcessProof[], deadline: number) => jobLeases.enabled
     ? stopControllerProcesses(controller, native, deadline, await jobLeases.get(launchId)) : stopControllerProcesses(controller, native, deadline);
-  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number) => jobLeases.enabled
-    ? recordStoppedControllerGeneration(file, ticket, deadline, await jobLeases.get(ticket.launchId)) : deadline === undefined ? recordStoppedControllerGeneration(file, ticket) : recordStoppedControllerGeneration(file, ticket, deadline);
+  const stateDirectory = resolveConfigurationPaths(options.homeDirectory).stateDirectory;
+  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, maintain = false): Promise<ControllerSnapshot> => {
+    const jobLease = jobLeases.enabled ? await jobLeases.get(ticket.launchId) : undefined;
+    const stopOptions = { stateDirectory, ...(deadline === undefined ? {} : { deadline }), ...(jobLease === undefined ? {} : { jobLease }) };
+    if (!maintain) return recordStoppedControllerGeneration(file, ticket, stopOptions);
+    let permit: ReturnType<typeof acquireControllerStoragePermit>;
+    try { permit = acquireControllerStoragePermit(file); }
+    catch (cause) {
+      if (cause instanceof Error && isControllerStorageLockHeld(cause)) throw new ControllerStorageWaitingError("lock_busy", cause);
+      throw cause;
+    }
+    let snapshot: ControllerSnapshot | undefined, failure: unknown, failed = false;
+    try {
+      snapshot = await recordStoppedControllerGeneration(file, ticket, { ...stopOptions, permit });
+      const prepared = prepareControllerStorage({ journalFile: file, stateDirectory, mode: "stopped-maintenance", ticket }, permit);
+      if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
+    } catch (cause) { failed = true; failure = cause; }
+    try { if (!failed || !controllerStorageConnectionIsOpen(failure)) permit.release(); }
+    catch (cause) {
+      const releaseFailure = failed ? new AggregateError([failure, cause], "Controller recovery preparation and storage release failed.", { cause: failure }) : cause;
+      if (snapshot !== undefined) throw new SqliteAccessError("cleanup-failed", { database: "controller-journal", file, phase: "release" }, { cause: releaseFailure, outcome: "committed", connectionClosed: true });
+      throw releaseFailure;
+    }
+    if (failed) throw failure;
+    return snapshot!;
+  };
   type FailureObservation = { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean };
   type Monitoring = { observeWorktree?: (identity: ClaimIdentity, root: string, target: string) => void; observePhase?: WorkerPhaseObserver; observeSelect?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey: string) => void; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey?: string) => void; observeFailure?: (identity: ClaimIdentity, phase: WorkerObservedPhase, error: unknown, operationKey?: string, observedFailure?: FailureObservation) => boolean; observeRetry?: (identity: ClaimIdentity, operationKey: string, running: boolean) => void; observeDiscard?: (identity: ClaimIdentity, operationKey: string) => void; observeUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => boolean };
   let monitoring: Monitoring = {};
@@ -312,7 +341,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         if (observed !== null && ["paused", "failed", "stopped", "stopping"].includes(observed.lifecycle)) options.store.pauseRecovery(task, observed.error ?? "The native controller is paused or stopped.", options.now(), "recovery_blocked");
         throw new Error("Orchestration verification could not confirm the healthy original native identity or complete process stop.");
       }
-      const stoppedSnapshot = await recordWithLease(journal(task), ticket);
+      const stoppedSnapshot = await recordWithLease(journal(task), ticket, undefined, true);
       if (!matchesGeneration(task, stoppedSnapshot) || stoppedSnapshot.lifecycle !== "stopped" || !stoppedSnapshot.nativeStopped || stoppedSnapshot.stoppedAt === null
         || !preservesControllerEvidence(saved, stoppedSnapshot, ticket.launchId)
         || (observed !== null && !preservesControllerEvidence(observed, stoppedSnapshot, ticket.launchId))) throw new Error("The stopped native observation conflicts with the original controller evidence.");
@@ -391,9 +420,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             // Preparation may fail after allocating a generation but before any writer is launched.
             const previous = readControllerSnapshot(journal(task));
             if (previous === null || previous.controllerProcess === null || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null) throw new Error("Unsubmitted recovery requires the original complete stopped generation evidence.");
+            const execution = task.webExecution;
+            if (execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || previous.executionId !== execution.executionId || previous.claimId !== task.claimId || previous.sessionId !== execution.sessionId || String(BigInt(previous.executionGeneration) + 1n) !== execution.executionGeneration || previous.controllerInstanceId === execution.controllerInstanceId || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession.sessionId) throw new Error("Unsubmitted recovery requires the exact preceding generation and original launch evidence.");
             if (!await confirmWithLease(previousLaunchId(previous.controllerProcess, task.webExecution!.launchId), previous.controllerProcess, previous.nativeProcesses, undefined, previous)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
             signal.throwIfAborted();
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
+            const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
+            prepareControllerLaunchStorage(options.homeDirectory, retryTicket);
             task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
           } else {
             const saved = originalSnapshot();
@@ -403,7 +436,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (proof === null || !await confirmWithLease(task.webExecution!.launchId, proof, task.webExecution!.nativeProcesses, undefined, saved)) throw new Error("Web retry requires complete original controller and native process stop.");
             const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
             const toolLaunch = await recoverySelection(task, ticket);
-            const stopped = await recordWithLease(journal(task), ticket);
+            const stopped = await recordWithLease(journal(task), ticket, undefined, true);
             await jobLeases.release(ticket.launchId);
             task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
           }
@@ -485,7 +518,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           if (proof === null || !await confirmWithLease(task.webExecution!.launchId, proof, task.webExecution!.nativeProcesses, undefined, saved)) throw new Error("The original controller is unreachable; its native writer may still be alive and will not be replaced.", { cause: error });
           if (saved.nativeSessionId === null) throw new WebRecoveryBlockedError("native_identity_missing", "The stopped native launch has no proven session identity; recovery cannot create another conversation.");
           const toolLaunch = await recoverySelection(task, ticket);
-          const stopped = await recordWithLease(journal(task), ticket);
+          const stopped = await recordWithLease(journal(task), ticket, undefined, true);
           await jobLeases.release(ticket.launchId);
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;
@@ -530,6 +563,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         options.emit({ kind: "web-observed", task, message: `Original ${ticket.provider} controller generation ${ticket.executionGeneration} is bound to session ${ticket.sessionId}.` });
         return current(task);
       } catch (error) {
+        if (!signal.aborted && error instanceof ControllerStorageWaitingError) {
+          waiting.set(task.claimId, "storage_maintenance");
+          phase(task, { kind: "execution", phase: "waiting" }, false, undefined, "web-storage-maintenance");
+          return current(task);
+        }
         if (!signal.aborted && error instanceof PromptUnknownError) { waiting.set(task.claimId, "prompt_unknown"); return current(task); }
         if (!signal.aborted && error instanceof PromptInputLimitError && capturedSignature !== null) {
           if (rejected.get(task.claimId) !== capturedSignature) {
@@ -820,7 +858,14 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       }
     },
     advanceResult: async (task: LocalTask, signal: AbortSignal): Promise<WebAdvanceResult> => {
-      const result = await backend.advance(task, signal);
+      let result: LocalTask;
+      try { result = await backend.advance(task, signal); }
+      catch (cause) {
+        if (signal.aborted || !(cause instanceof ControllerStorageWaitingError)) throw cause;
+        result = current(task);
+        waiting.set(task.claimId, "storage_maintenance");
+        phase(result, { kind: "execution", phase: "waiting" }, false, undefined, "web-storage-maintenance");
+      }
       const reason = waiting.get(task.claimId);
       return reason === undefined ? { kind: "observed", task: result } : { kind: "waiting_input", reason, task: result };
     },

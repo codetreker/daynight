@@ -1,5 +1,4 @@
-import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
-import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
+import { openControllerTestDatabase, closeControllerTestDatabase } from "../../helpers/controller-sqlite.js";
 import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm, stat, open, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -12,7 +11,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 test("real SQLite pages, WAL and pending timeline share the normal and settlement metadata limits", async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-metadata-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "m-")); roots.push(root);
-  const file = path.join(root, "journal.sqlite"), db = openSqliteDatabase({ file, format: controllerJournalFormat, allowCreate: true, onMigration: () => {} });
+  const file = path.join(root, "journal.sqlite"), db = openControllerTestDatabase({ file, allowCreate: true, onMigration: () => {} });
   try {
     db.pragma("journal_mode=WAL"); db.pragma("wal_autocheckpoint=0");
     db.exec("CREATE TABLE retained(value BLOB); INSERT INTO retained VALUES(zeroblob(1048576))");
@@ -35,5 +34,5 @@ test("real SQLite pages, WAL and pending timeline share the normal and settlemen
     expect(budget.bytes()).toBe(physical + pendingBytes + 1048576);
     await writeFile(path.join(pending, "resource-pins.json"), "x".repeat(1024));
     expect(budget.bytes()).toBe(physical + pendingBytes + 1048576 + 1024);
-  } finally { db.close(); }
+  } finally { closeControllerTestDatabase(db); }
 });

@@ -1,13 +1,15 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as localClient from "../../../src/commands/controller/local-client.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
+import * as storageLock from "../../../src/commands/controller/storage-lock.js";
 import { ControllerLaunchJournalObservationError, reconcileSubmittedControllerLaunch } from "../../../src/commands/controller/launch-observation.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 
 const ticket = {} as ControllerLaunchTicket;
 const proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
 const ipc = () => new localClient.ControllerIpcOutcomeUnknownError("IPC unavailable");
+beforeEach(() => { vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementation(journalFile => ({ journalFile, owner: "boundary-owner", release: vi.fn() })); });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 it("retains the IPC failure when its observation crosses the deadline", async () => {
