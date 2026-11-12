@@ -7,6 +7,7 @@ import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider'
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import { GoalCreate } from '../src/features/goal-detail/GoalCreate';
+import type { TaskDetail, TaskStatus } from '../src/api/types';
 import { ApiError, createTask, pauseAuthRequests } from '../src/api/client';
 import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -188,6 +189,93 @@ it.each(['status', 'assignedTo', 'delete'] as const)('reports an unknown %s outc
   expect(screen.getByText('The operation outcome is unknown. Checking the current state will not resend the request.')).toBeVisible();
   expect(screen.queryByText(/do not have permission|refused|failed/i)).toBeNull();
   expect(check).toHaveBeenCalledTimes(1); expect(write).not.toHaveBeenCalled();
+});
+
+const goalStatuses = ['todo', 'in_progress', 'done', 'cancelled'] as const;
+const statusLabels = {
+  en: ['To do', 'In progress', 'Done', 'Cancelled'],
+  'zh-CN': ['待处理', '进行中', '已完成', '已取消'],
+} as const;
+const statusSurface = (current: TaskDetail, setStatus: (status: TaskStatus, version: bigint) => void, canSetStatus = true) => {
+  const task = { detail: current, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null },
+    historyGeneration: 1, canEditGoal: true, canDisplayStatus: true, canSetStatus, canDisplayAssignee: true, canSetAssignedTo: true,
+    canDisplayDelete: true, canDelete: true, assignmentUncertain: false, setStatus, reconcile: check,
+  } as unknown as ReturnType<typeof useTaskDetail>;
+  return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={current} resourceState={task} snapshot={null} presentation="dialog"
+    fullscreen={{ active: false, onChange: () => {} }} onSelectTask={() => {}} onClose={() => {}} onRefreshGraph={() => {}} />;
+};
+
+it.each((['en', 'zh-CN'] as const).flatMap(locale => goalStatuses.map((status, index) => ({ locale, status, index }))))('presents the four Goal statuses in $locale with $status selected', ({ locale, status, index }) => {
+  const current = { ...detail, status };
+  renderWithLocale(statusSurface(current, write), { locale, taskCache: true, container: root });
+  const trigger = screen.getByRole('button', { name: statusLabels[locale][index]! });
+  expect(trigger).toBeEnabled();
+  expect(trigger.querySelector(`.task-detail-dot-${status}`)).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: /goal status|goal 状态/i })).toBeNull();
+  fireEvent.click(trigger);
+  const menu = screen.getByRole('menu', { name: locale === 'zh-CN' ? 'Goal 状态' : 'Goal status' });
+  const options = within(menu).getAllByRole('menuitemradio');
+  expect(options.map(option => option.textContent?.replace('✓', ''))).toEqual(statusLabels[locale]);
+  expect(options[index]).toHaveAttribute('aria-checked', 'true');
+  expect(options[index]).toHaveFocus();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('supports keyboard navigation and Escape without changing Goal status', () => {
+  const current = { ...detail, status: 'in_progress' as const };
+  renderWithLocale(statusSurface(current, write), { locale: 'en', taskCache: true, container: root });
+  const trigger = screen.getByRole('button', { name: 'In progress' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const menu = screen.getByRole('menu');
+  const options = within(menu).getAllByRole('menuitemradio');
+  expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'End' }); expect(options[3]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(options[3]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'Home' }); expect(options[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(trigger).toHaveFocus();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it.each(goalStatuses.flatMap(from => goalStatuses.filter(to => to !== from).map(to => ({ from, to }))))('routes Goal $from → $to with the reviewed exact version', ({ from, to }) => {
+  const current = { ...detail, status: from, version: 9007199254740993n };
+  renderWithLocale(statusSurface(current, write), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: statusLabels.en[goalStatuses.indexOf(from)]! }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: statusLabels.en[goalStatuses.indexOf(to)]! }));
+  if (to === 'done' || to === 'cancelled') {
+    const confirmation = screen.getByRole('alertdialog', { name: to === 'done' ? 'Complete this Goal?' : 'Cancel this Goal?' });
+    expect(write).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm' }));
+  }
+  expect(write).toHaveBeenCalledExactlyOnceWith(to, current.version);
+});
+
+it.each(['done', 'cancelled'] as const)('dismisses the %s confirmation via Back and Escape without a write', target => {
+  renderWithLocale(statusSurface(detail, write), { locale: 'en', taskCache: true, container: root });
+  const choose = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'To do' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: statusLabels.en[goalStatuses.indexOf(target)]! }));
+    return screen.getByRole('alertdialog', { name: target === 'done' ? 'Complete this Goal?' : 'Cancel this Goal?' });
+  };
+  fireEvent.click(within(choose()).getByRole('button', { name: 'Back' }));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  choose(); fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('does not confirm a terminal Goal status against a changed reviewed version', () => {
+  const view = renderWithLocale(statusSurface(detail, write), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: 'To do' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Done' }));
+  view.rerender(statusSurface({ ...detail, version: detail.version + 1n }, write));
+  const confirm = within(screen.getByRole('alertdialog', { name: 'Complete this Goal?' })).getByRole('button', { name: 'Confirm' });
+  expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  fireEvent.click(confirm);
+  expect(write).not.toHaveBeenCalled();
 });
 
 it.each(['api', 'confirmed-api', 'non-api'] as const)('reports an unknown Goal creation after a %s error without claiming failure', async kind => {
