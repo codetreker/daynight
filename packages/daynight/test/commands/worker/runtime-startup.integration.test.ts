@@ -662,6 +662,7 @@ describe("worker cloud-first startup", () => {
         remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
         await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
       } catch (error) { assertionFailure = error; } finally { operation.dispose(); controller.abort(); }
@@ -696,6 +697,7 @@ describe("worker cloud-first startup", () => {
         secondAvailable = true;
         await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }, operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
       } catch (error) { assertionFailure = error; } finally { operation.dispose(); controller.abort(); }
