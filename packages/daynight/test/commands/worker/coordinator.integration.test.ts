@@ -1025,7 +1025,7 @@ it("releases a stopped execution while its worktree remains held, without admitt
   } finally { release(); await coordinator.shutdown(); }
 });
 
-it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdown" }, { stream: "child", mode: "shutdown" }, ...(process.platform === "win32" ? [{ stream: "helper", mode: "shutdown" }] : [])])("holds the original task gate through $stream closure and $mode", async ({ stream, mode }) => {
+it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shutdown" }, { stream: "child", mode: "shutdown" }, ...(process.platform === "win32" ? [{ stream: "helper", mode: "shutdown" }] : [])])("holds the original task gate through $stream closure and $mode", async ({ stream, mode }) => {
   const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
   await mkdir(f.project.localPath, { recursive: true });
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10_000 });
@@ -1144,9 +1144,8 @@ it.each([{ stream: "stdout", mode: "retry" }, { stream: "stderr", mode: "shutdow
       expect((await joined.promise).kind).toBe("local-closed");
       expect(gitProcess.childClosed).toBe(true);
       expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true);
-      await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
-      f.clock(1_000_000);
-      await coordinator.tick();
+      await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-effect-error", identity: expect.objectContaining(owner), error: expect.any(AggregateError) })));
+      expect(contains(f.events.find(event => event.kind === "cleanup-effect-error")?.error, pending?.error)).toBe(true);
       await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
       await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
     }
