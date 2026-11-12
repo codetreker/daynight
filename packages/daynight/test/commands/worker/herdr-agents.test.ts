@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { WindowsProcessProofError } from "../../../src/commands/controller/windows-process-proof.js";
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,11 +21,13 @@ import { mappingFiles } from "../../../src/commands/worker/herdr/tool-launch-pro
 import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 
 type Entry = Record<string, unknown>;
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+const setPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, "platform", { ...platformDescriptor, value });
 const directories: string[] = [];
 const mappingLifecycle = { captureProcesses: async (pids: readonly number[]) => [...pids], verifyProcesses: async () => {}, confirmStopped: async () => true, stopProcesses: async () => {}, releaseFrozen: async () => {}, retire: async () => {} };
 const operations: Operation[] = [];
 const operation = (totalMs = 10_000): Operation => { const value = createOperation({ limits: { totalMs } }); operations.push(value); return value; };
-afterEach(async () => { operations.splice(0).forEach((value) => value.dispose()); await Promise.all(directories.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
+afterEach(async () => { Object.defineProperty(process, "platform", platformDescriptor); vi.restoreAllMocks(); operations.splice(0).forEach((value) => value.dispose()); await Promise.all(directories.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
 
 const taskTitle = "Repair worker startup";
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -263,6 +267,91 @@ describe("native argument ownership", () => {
     f.mapping.verifyProcesses = async input => { if (input.receipt !== undefined && f.prompts.length > 0) throw new Error("original native child exited"); };
     await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ submission: "unknown", promptSubmission: "submitted" });
     expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("reobserves a terminating Windows process after submission without repeating input", async () => {
+    const f = await mappedFixture(); setPlatform("win32"); let confirmations = 0;
+    f.mapping.verifyProcesses = async input => {
+      if (f.prompts.length === 0) return;
+      expect(input.receipt).toEqual(f.receipt);
+      if (++confirmations === 1) throw new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).resolves.toMatchObject({ nativeSession: { sessionId: nativeId } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+  });
+
+  it("pins the first official Session while retrying when none existed before input", async () => {
+    const f = await mappedFixture();
+    await f.manager.launch(f.context, f.binding, { configuration: f.config }, operation());
+    delete f.agents[0]!.agent_session; setPlatform("win32");
+    f.hook(async method => {
+      if (method === "session.snapshot" && f.prompts.length && !f.agents[0]!.agent_session) f.agents[0]!.agent_session = { source: "herdr:copilot", agent: "copilot", kind: "id", value: nativeId };
+      return undefined;
+    });
+    let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      confirmations++;
+      f.agents[0]!.agent_session = { source: "herdr:copilot", agent: "copilot", kind: "id", value: projectId };
+      throw new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    };
+    const error = await f.manager.submitInitialPrompt(f.context, f.binding, "once", operation()).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted", cause: { errors: [expect.any(WindowsProcessProofError), expect.objectContaining({ message: expect.stringMatching(/session/i) })] } });
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["retry", "final"] as const)("rejects an original receipt changed during %s confirmation", async phase => {
+    const f = await mappedFixture(); setPlatform("win32"); let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      confirmations++; f.receipt.childPid++;
+      if (phase === "retry") throw new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    };
+    const error = await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation()).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted" });
+    expect(error.cause.message).toMatch(/receipt|confirmation/i);
+    if (phase === "retry") expect(error.cause.errors[1].message).toMatch(/receipt/i);
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["deadline", "cancelled"] as const)("retains the first termination error and terminal %s without another input", async terminal => {
+    const f = await mappedFixture(); setPlatform("win32");
+    const abort = new AbortController(), active = createOperation({ signal: abort.signal, limits: { totalMs: 10_000 } }); operations.push(active);
+    const originalNow = performance.now.bind(performance); let elapsed = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => originalNow() + elapsed);
+    const first = new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS"); let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      if (++confirmations === 2) { if (terminal === "deadline") elapsed = 20_000; else abort.abort(new Error("controlled cancellation")); }
+      throw confirmations === 1 ? first : new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    };
+    const error = await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, active).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted", cause: { cause: first, errors: [first, expect.objectContaining({ kind: terminal })] } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["aggregate", "wrapped", "access", "stage", "domain", "other", "non-windows"] as const)("does not retry a %s failure after initial input", async kind => {
+    const f = await mappedFixture(); setPlatform(kind === "non-windows" ? "linux" : "win32");
+    const terminating = new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    const failure = kind === "aggregate" ? new AggregateError([terminating, new Error("CloseHandle failed")], "close failed", { cause: terminating })
+      : kind === "wrapped" ? new Error("wrapped failure", { cause: terminating })
+      : kind === "access" ? new WindowsProcessProofError("command-line", 0xc0000022 | 0, "NTSTATUS")
+      : kind === "stage" ? new WindowsProcessProofError("basic-information", 0xc000010a | 0, "NTSTATUS")
+      : kind === "domain" ? new WindowsProcessProofError("command-line", 0xc000010a | 0, "Win32")
+      : kind === "other" ? new Error("changed native birth") : terminating;
+    let confirmations = 0;
+    f.mapping.verifyProcesses = async () => { if (f.prompts.length) { confirmations++; throw failure; } };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ promptSubmission: "submitted", cause: failure });
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("keeps pre-input Windows termination failures closed without retrying", async () => {
+    const f = await mappedFixture(); setPlatform("win32"); let checks = 0;
+    const failure = new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    f.mapping.verifyProcesses = async () => { checks++; throw failure; };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never" }, operation())).rejects.toMatchObject({ cause: failure });
+    expect(checks).toBe(1); expect(f.prompts).toEqual([]);
   });
 
   it("keeps input closed when the receipt processes do not belong to the original shell", async () => {

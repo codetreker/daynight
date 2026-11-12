@@ -1,3 +1,4 @@
+import { WindowsProcessProofError } from "../../controller/windows-process-proof.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { readCodexConfiguration } from "./codex-config.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -474,17 +475,37 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     // SessionStart may be emitted on the first input rather than process launch.
     // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
     const mapping = await mappingFor(context, operation);
+    let originalSession = expectedSession === undefined ? undefined : canonicalId(expectedSession);
+    let receiptIdentity: string | undefined, firstTermination: WindowsProcessProofError | undefined;
+    const readOriginalReceipt = async (): Promise<HerdrToolLaunchReceipt> => {
+      const receipt = await mapping!.readReceipt(operation);
+      if (receipt === null) throw new Error("The original native launch receipt disappeared before Session confirmation.");
+      const identity = JSON.stringify(receipt);
+      if (receiptIdentity !== undefined && identity !== receiptIdentity) throw new Error("The original native launch receipt changed during Session confirmation.");
+      receiptIdentity = identity;
+      return receipt;
+    };
     try {
       while (true) {
         const current = await observation(context, binding, operation);
         if (current.nativeSession !== null) {
-          if (expectedSession !== undefined && current.nativeSession.sessionId !== canonicalId(expectedSession)) throw new Error("The original native identity differs from the requested session.");
+          if (originalSession === undefined) originalSession = current.nativeSession.sessionId;
+          if (current.nativeSession.sessionId !== originalSession) throw new Error("The original native identity differs from the requested session.");
           if (mapping !== null) {
-            const originalReceipt = await mapping.readReceipt(operation);
-            if (originalReceipt === null) throw new Error("The original native launch receipt disappeared before Session confirmation.");
-            await verifyMappingProcesses(context, binding, mapping, operation, originalReceipt);
+            const originalReceipt = await readOriginalReceipt();
+            try { await verifyMappingProcesses(context, binding, mapping, operation, originalReceipt); }
+            catch (cause) {
+              // A sampled descendant can exit while its command line is read.
+              // Reobserve the complete original chain without resubmitting input.
+              if (process.platform !== "win32" || !(cause instanceof WindowsProcessProofError) || cause.domain !== "NTSTATUS" || cause.stage !== "command-line" || (cause.code >>> 0) !== 0xc000010a) throw cause;
+              firstTermination ??= cause;
+              await wait(operation);
+              continue;
+            }
             const confirmed = await observation(context, binding, operation);
-            if (confirmed.nativeSession?.sessionId !== current.nativeSession.sessionId) throw new Error("The original official Session identity changed during native process confirmation.");
+            if (confirmed.nativeSession?.sessionId !== originalSession) throw new Error("The original official Session identity changed during native process confirmation.");
+            await readOriginalReceipt();
+            operation.check();
             return confirmed;
           }
           return current;
@@ -497,7 +518,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
     } catch (cause) {
       if (mapping === null) throw cause;
-      throw new HerdrAgentActionError("The initial input was submitted but its original official native Session could not be confirmed; input cannot be repeated.", "agent.prompt", "unknown", { cause, promptSubmission: "submitted" });
+      const failure = firstTermination === undefined || cause === firstTermination ? cause : new AggregateError([firstTermination, cause], "The original native Session confirmation failed after a process exited during observation.", { cause: firstTermination });
+      throw new HerdrAgentActionError("The initial input was submitted but its original official native Session could not be confirmed; input cannot be repeated.", "agent.prompt", "unknown", { cause: failure, promptSubmission: "submitted" });
     }
   };
   return {

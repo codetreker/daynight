@@ -46,6 +46,8 @@ Windows 的 `ParentProcessId` 可能保留已退出父进程的编号，并指�
 
 新会话的官方 integration 可能直到首次输入触发 SessionStart 才报告 ID。因此初始输入最多提交一次，递交前持久保存原 intent；macOS 继续使用原输入 journal 与仲裁器。启动成功必须等待同 pane 的官方 integration 报告符合原 kind 的合法 native Session UUID，并再次核验原进程归属。已知 ID 必须精确相同。缺失事件、不同 Session、进程变化及未知输入结果均保持未确认，不重放初始输入、不换会话、不人工补报。普通自动输入不能越过 frozen 执行的未知 native Session。
 
+Windows 在首次输入已提交后的进程复核中，若原生命令行读取直接返回 `STATUS_PROCESS_IS_TERMINATING`，只能在原操作预算内等待并重新观察原执行。第一次合法官方 Session 与原 receipt 一经观察即固定；不同 Session 身份或 receipt 变化立即拒绝，Session 暂时缺失则保留原标识并继续保持未确认。每次重新观察仍完整核验 binding、shell/helper/native、Job、出生链、foreground 与进程 journal，不跳过失败进程或丢弃已登记责任。该错误不是停止证明，也不授予输入重放或替代会话权限。句柄释放聚合错误、其它原生错误及身份矛盾不进入此等待路径；最终失败同时保留首个退出竞态错误和结束原因，超时或取消不延长预算。
+
 退出与清理包含 helper、loader、native 和已登记后代。helper 退出但 native 仍活着不能证明关闭，也不能授权 mapping 换代或共享 daemon 切换。macOS 的 audit/birth 身份及停止顺序继续由独占生命周期维护；共享路径保留各代进程 journal，缺损或未解释资源阻止新 spawn。启动 intent/receipt 声明的 helper 与 native 都必须有原出生证明；只有 shell 的 journal 不能证明尚未登记的 native 已停止。已严格确认的 retirement 是该代的终态停证，后续 PID 复用不重新开启旧责任。
 
 Windows helper 在 native spawn 前创建唯一命名 Job、配置 kill-on-close 并加入自身，使后续子进程继承同一 Job；全部成功后才持久发布绑定原 owner、nonce、selection 和 helper 的边界记录。helper 的原句柄保留到 OS 处理其自然或异常退出，不在 JavaScript 清理中关闭并误杀自身，从而保留 native 的退出码。Job 成员引用可以保留对象本体，却不能在最后命名句柄关闭后保留名称；按名称查询失败不能解释为空 Job。

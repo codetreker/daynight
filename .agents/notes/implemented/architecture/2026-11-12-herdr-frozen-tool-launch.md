@@ -98,6 +98,18 @@ requires the subsequent official same-pane Session report and original-process
 verification. Unknown input or missing Session evidence never permits replay or
 a replacement conversation.
 
+After submitted input, a direct Windows command-line proof failure with
+`STATUS_PROCESS_IS_TERMINATING` permits another complete observation within the
+original operation budget. The first valid official Session and receipt remain
+fixed through those observations. A temporarily missing Session remains
+unconfirmed without changing that identity; a different ID or receipt fails.
+Every successful confirmation still requires
+the original binding and complete process proofs; no process is skipped and no
+journal responsibility is discarded. Other errors, including aggregated handle
+release failures, stop confirmation. A terminal failure retains both the first
+termination observation and the final cause. This waiting path never submits
+input or starts a native process.
+
 macOS retains per-run daemons. Linux and Windows retain shared daemons with a
 durable switch journal and serialized admission. A new target waits for all old
 responsibilities and both endpoints to close. Original-claim recovery may recreate
@@ -156,6 +168,16 @@ idle root suitable for agent startup. Root preparation keeps the expected topolo
 verified Codex and Copilot releases does not supply that ID at the initial idle
 prompt. Waiting there cannot reach the first input. The ordered proof and durable
 input fence retain identity protection without manufacturing an integration event.
+
+**Abandon Session confirmation on any concurrent process exit.** Windows can
+return `STATUS_PROCESS_IS_TERMINATING` after process times and basic information
+were read from the same retained handle. The observed failure did not identify
+which process role was exiting, so it cannot justify skipping descendants or
+loosening the shared process-proof reader. Repeating the complete observation
+with fixed Session and receipt identities can establish a later consistent
+result; persistent errors still end at the original deadline with the first
+failure retained. Merely treating the status as stopped would lose the original
+ownership and cleanup requirements.
 
 **Switch all platforms by draining one shared daemon.** macOS already isolates
 each run and can start a new execution with a different tool while old executions
