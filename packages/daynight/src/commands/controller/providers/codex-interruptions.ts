@@ -15,7 +15,7 @@ export class CodexInterruptions {
   private readonly fallbackIds = new Map<string, string>();
   private pendingInput: string | null = null;
 
-  constructor(private readonly sessionId: () => string, private readonly emit: (entry: ProviderEntry) => void, private readonly hasTimelineEntry?: (entryId: string) => boolean) {}
+  constructor(private readonly sessionId: () => string, private readonly emit: (entry: ProviderEntry) => void, private readonly hasTimelineEntry?: (entryId: string) => boolean, private readonly onInputMessage?: (operationId: string, nativeSessionId: string, entryId: string) => string | void) {}
 
   submitting(operationId: string, text: string, turnId: string | null): void {
     this.submitted.set(operationId, { text, turnId, outcome: "pending" });
@@ -88,7 +88,8 @@ export class CodexInterruptions {
         if (input.turnId !== turnId || this.observed.has(operationId)) continue;
         const id = `submitted-input:${turnId}:${operationId}`;
         this.fallbackIds.set(operationId, id);
-        this.emit({ ...base(id), kind: "user_message", content: [{ type: "text", text: limited(input.text) }, { type: "text", text: input.outcome === "unknown" ? "[Submitted input retained by the Controller; dispatch outcome is unknown and native recording is unavailable.]" : "[Submitted input retained by the Controller; native recording is unavailable.]" }] });
+        const entryId = this.onInputMessage?.(operationId, this.sessionId(), base(id).entryId) ?? base(id).entryId;
+        this.emit({ ...base(id), entryId, kind: "user_message", content: [{ type: "text", text: limited(input.text) }, { type: "text", text: input.outcome === "unknown" ? "[Submitted input retained by the Controller; dispatch outcome is unknown and native recording is unavailable.]" : "[Submitted input retained by the Controller; native recording is unavailable.]" }] });
       }
       if (completeHistory !== null) this.emit({ ...base(`missing-input:${turnId}`), kind: "error", code: "native_input_missing", message: completeHistory
         ? "Native Codex did not record this interrupted turn's submitted input. Any submitted text shown here is retained by the Controller."

@@ -34,7 +34,13 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   let currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, verified = false, disconnected = false;
   let controls: ClaudeControls | undefined, turnStartedAt: string | null = null, native: ClaudeLiveQuery | undefined;
   let historyReader: ClaudeTranscriptReader | undefined;
-  const imageInputs = new ClaudeImageInputs(options, nativeId), projection = new ClaudeProjection(options, nativeId, id => imageInputs.original(id));
+  const pendingInputMessages = new Map<string, string>();
+  const projectionOptions: ProviderOptions = { ...options, onInputMessage: (operationId, sessionId, entryId) => {
+    if (sessionId !== nativeId) throw new Error("Native Claude input provenance identity mismatch.");
+    if (!verified) { pendingInputMessages.set(operationId, entryId); return; }
+    options.onInputMessage?.(operationId, sessionId, entryId);
+  } };
+  const imageInputs = new ClaudeImageInputs(options, nativeId), projection = new ClaudeProjection(projectionOptions, nativeId, id => imageInputs.original(id));
   let cancellation: { turnId: string; acknowledged: boolean; result?: unknown; entryId?: string } | undefined;
   const steered = new Map<string, { text: string; started: boolean; resolve(value: ProviderReceipt): void; reject(error: Error): void }>();
   const interactions = new Map<string, PendingInteraction>();
@@ -43,7 +49,13 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   let identityResolve!: () => void; let identityReject!: (error: Error) => void;
   const identity = new Promise<void>((resolve, reject) => { identityResolve = resolve; identityReject = reject; });
   void identity.catch(() => {});
-  const verify = (sessionId: unknown) => { if (sessionId !== nativeId) { const error = new Error("Native Claude session identity mismatch."); identityReject(error); throw error; } if (!verified) { verified = true; identityResolve(); state(); } };
+  const verify = (sessionId: unknown) => { if (sessionId !== nativeId) { const error = new Error("Native Claude session identity mismatch."); identityReject(error); throw error; } if (!verified) {
+    verified = true; identityResolve(); state();
+    // The first dispatch can precede SessionStart. Publish the verified identity
+    // before associating its retained input with the Controller's durable journal.
+    for (const [operationId, entryId] of pendingInputMessages) options.onInputMessage?.(operationId, nativeId, entryId);
+    pendingInputMessages.clear();
+  } };
   const publishInteraction = (interaction: SessionInteraction) => options.onTimeline({ entryId: interaction.interactionId, revision: interaction.revision, kind: "interaction", interaction });
   const ask = (interaction: SessionInteraction, signal: AbortSignal, nativeToolId: string | null = null): Promise<InteractionResponse> => new Promise((resolve, reject) => {
     const abort = () => { const pending = interactions.get(interaction.interactionId); if (!pending) return; interactions.delete(interaction.interactionId); publishInteraction({ ...interaction, revision: "2", state: "expired" }); const error = new Error("Native interaction expired."); reject(error); pending.rejectConfirmation?.(error); state(); };

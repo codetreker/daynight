@@ -120,7 +120,12 @@ func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {
 		t.Fatal("project admin read another user's test session")
 	}
 	f.dao.FinishContext(ctx)
-	cmd := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"first input"}],"expectedTurnId":null}`)}
+	cmd := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"first input"}],"expectedTurnId":null,"origin":"daynight"}`)}
+	ctx = f.BrowserPhase(ctx, map[string]int{"LockCredential": 1})
+	if _, e = f.s.Submit(ctx, outsider, "", "", v.SessionID, cmd); e == nil {
+		t.Fatal("notification origin let another user submit")
+	}
+	f.dao.FinishContext(ctx)
 	ctx = f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1})
 	if _, e = f.s.Submit(ctx, f.p, "", "", v.SessionID, cmd); e == nil {
 		t.Fatal("initializing send")
@@ -160,6 +165,14 @@ func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {
 	}
 	if offers[0]["testExecutionId"] != v.TestExecutionID || offers[0]["claimId"] != nil {
 		t.Fatal("offer scope", offers)
+	}
+	var offered map[string]json.RawMessage
+	if err := json.Unmarshal(encode(offers[0]["command"]), &offered); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(offered["payload"], &payload); err != nil || payload["origin"] != "daynight" {
+		t.Fatal("controller offer lost notification origin", payload, err)
 	}
 	selectContentOffer(t, f)
 	ctx = f.ControllerPhase(ctx, map[string]int{"LockCredential": 4, "SessionOperation": 1, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1})

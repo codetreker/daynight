@@ -20,6 +20,7 @@ func canonicalIntent(c sp.Command) ([]byte, error) {
 		return nil, err
 	}
 	delete(value, "requestId")
+	normalizeMessageOrigin(c.Kind, value["payload"])
 	return sp.CanonicalImageJSON(value)
 }
 func imageCommandHash(c sp.Command) []byte {

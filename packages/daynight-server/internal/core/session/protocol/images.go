@@ -234,7 +234,7 @@ func ContainsImages(data []byte) bool {
 	return false
 }
 func validateImageSend(data []byte) error {
-	fields, err := object(data, "content", "expectedTurnId", "target", "draftId", "draftRevision", "expectedImageCapabilityRevision")
+	fields, err := messageObject(data, "content", "expectedTurnId", "target", "draftId", "draftRevision", "expectedImageCapabilityRevision")
 	if err != nil || !nullableString(fields["expectedTurnId"], false, 256) || !validateObject(fields["target"], imageTargetSchema) || !identifier(fields["draftId"]) || !sequence(fields["draftRevision"]) || !sequence(fields["expectedImageCapabilityRevision"]) {
 		return errInvalid
 	}
