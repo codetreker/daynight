@@ -74,7 +74,7 @@ describe("worker terminal attachment", () => {
     durableRecords(record());
     const pending = attachWorker({ homeDirectory: "/worker" }); await spawned();
     expect(mocks.verifyLaunch).toHaveBeenCalledWith(record().runs[0]!.launches!.herdr, expect.anything());
-    expect(mocks.spawn.mock.calls[0]!.slice(0, 2)).toEqual(["/tools/herdr-A", ["--session", "w", "client"]]);
+    expect(mocks.spawn.mock.calls[0]!.slice(0, 2)).toEqual([record().runs[0]!.launches!.herdr!.command.file, ["--session", "w", "client"]]);
     client.emit("close", 0, null); await pending;
   });
 
@@ -170,7 +170,7 @@ describe("worker terminal attachment", () => {
     await spawned();
     expect(mocks.connect).toHaveBeenCalledOnce();
     const [executable, args, options] = mocks.spawn.mock.calls[0]!;
-    expect(executable).toBe("/tools/herdr-A"); expect(args).toEqual(["--session", "w", "client"]);
+    expect(executable).toBe(record().runs[0]!.launches!.herdr!.command.file); expect(args).toEqual(["--session", "w", "client"]);
     expect(options).toMatchObject({ stdio: "inherit", detached: false, windowsHide: false, env: { ...attachment.environment, CODEX_HOME: "/native-home" } });
     for (const key of attachment.unsetEnvironment) expect(options.env).not.toHaveProperty(key);
     expect(process.env.HERDR_SESSION).toBe("human");

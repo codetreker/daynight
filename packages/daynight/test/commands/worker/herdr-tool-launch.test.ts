@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +11,7 @@ import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch
 import { advanceToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import { parseWindowsMappingProcessInventory, windowsMappingProcessInventoryCommand } from "../../../src/commands/worker/herdr/tool-launch-lifecycle.js";
+import { hasUnconfirmedHerdrCommandCleanup, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const operation = (): Operation => { const value = createOperation({ limits: { totalMs: 10_000 } }); operations.push(value); return value; };
@@ -34,6 +35,70 @@ const execute = async (file: string, args: string[], environment = process.env) 
   try { const [code, signal] = await once(child, "close"); return { code, signal, stdout, stderr, pid: child.pid }; }
   finally { clearTimeout(timer); }
 };
+const windowsInventoryDiagnostics = async (environment: NodeJS.ProcessEnv) => {
+  const command = windowsMappingProcessInventoryCommand(environment), prefix = command.args.slice(0, -2);
+  const marker = "$ErrorActionPreference='Stop'; [Console]::Out.Write('daynight-stdout'); [Console]::Error.Write('daynight-stderr'); Write-Output 'daynight-pipeline'";
+  const args = (script: string, encoded = false): string[] => [...prefix, encoded ? "-EncodedCommand" : "-Command", encoded ? Buffer.from(script, "utf16le").toString("base64") : script];
+  const results: Record<string, unknown> = {};
+  let cleanupUnconfirmed = false;
+  const probe = async (name: string, run: () => Promise<{ stdout: string; stderr: string; code?: number | null; signal?: string | null }>, inventory = false) => {
+    if (cleanupUnconfirmed) { results[name] = { skipped: "An earlier probe has unconfirmed cleanup." }; return; }
+    try {
+      const result = await run();
+      let output: unknown = result.stdout.slice(0, 256);
+      if (inventory) {
+        try { const rows = parseWindowsMappingProcessInventory(result.stdout, result.stderr); output = { count: rows.length, containsCurrentProcess: rows.some(row => row.pid === process.pid) }; }
+        catch (error) { output = error instanceof Error ? error.message : String(error); }
+      }
+      results[name] = { code: result.code === undefined ? 0 : result.code, signal: result.signal ?? null, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr), output, stderr: result.stderr.slice(0, 2048) };
+    } catch (error) {
+      cleanupUnconfirmed = hasUnconfirmedHerdrCommandCleanup(error);
+      if (!(error instanceof Error)) { results[name] = { error: String(error), cleanupUnconfirmed }; return; }
+      const details = error as Error & Record<string, unknown>;
+      const metadata: Record<string, unknown> = {};
+      for (const key of ["code", "exitCode", "signal", "killed"] as const) if (key in details) metadata[key] = details[key];
+      for (const key of ["stdout", "stderr"] as const) if (typeof details[key] === "string") {
+        const output = details[key];
+        metadata[`${key}Bytes`] = Buffer.byteLength(output);
+        if (key === "stderr") metadata.stderr = output.slice(0, 2048);
+      }
+      results[name] = { name: error.name, message: error.message.slice(0, 2048), cleanupUnconfirmed, ...metadata };
+    }
+  };
+  const runner = async (commandArgs: readonly string[]) => {
+    const budget = createOperation({ limits: { totalMs: 4000, requestMs: 2500 } });
+    try { return await runHerdrCommand({ ...command, args: commandArgs }, budget, undefined, { cleanupWithinDeadline: true }); }
+    finally { budget.dispose(); }
+  };
+  const direct = (commandArgs: readonly string[]) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(command.file, commandArgs, { env: command.environment, windowsHide: true, timeout: 2500, killSignal: "SIGKILL", maxBuffer: 64 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error !== null) reject(Object.assign(error, { stdout, stderr }));
+      else resolve({ stdout, stderr });
+    });
+  });
+  const rawSpawn = async (detached: boolean, stdin: "ignore" | "pipe") => {
+    const child = spawn(command.file, args(marker), { env: command.environment, detached, windowsHide: true, stdio: [stdin, "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout!.on("data", chunk => { stdout += chunk; }); child.stderr!.on("data", chunk => { stderr += chunk; });
+    child.stdin?.end();
+    const timer = setTimeout(() => child.kill("SIGKILL"), 2500);
+    try { const [code, signal] = await once(child, "close"); return { code: code as number | null, signal: signal as string | null, stdout, stderr }; }
+    finally { clearTimeout(timer); }
+  };
+  // Only fixed markers, PID/PPID output summaries and bounded errors are recorded.
+  // A working alternate probe does not replace the original production failure.
+  await probe("runner-command-marker", () => runner(args(marker)));
+  await probe("runner-encoded-marker", () => runner(args(marker, true)));
+  await probe("spawn-detached-ignore-marker", () => rawSpawn(true, "ignore"));
+  await probe("spawn-attached-ignore-marker", () => rawSpawn(false, "ignore"));
+  await probe("spawn-detached-pipe-marker", () => rawSpawn(true, "pipe"));
+  await probe("execFile-command-marker", () => direct(args(marker)));
+  await probe("execFile-encoded-marker", () => direct(args(marker, true)));
+  await probe("runner-encoded-inventory", () => runner(args(command.args.at(-1)!, true)), true);
+  await probe("execFile-command-inventory", () => direct(command.args), true);
+  await probe("execFile-encoded-inventory", () => direct(args(command.args.at(-1)!, true)), true);
+  return results;
+};
 afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned Herdr launch mapping", () => {
@@ -55,6 +120,20 @@ describe("owned Herdr launch mapping", () => {
     expect(parseWindowsMappingProcessInventory('[{"ProcessId":12,"ParentProcessId":4}]')).toEqual([{ pid: 12, parentPid: 4, group: null }]);
   });
 
+  it("retains bounded command stderr and the JSON cause when a Windows inventory is incomplete", () => {
+    let failure: unknown;
+    try { parseWindowsMappingProcessInventory("", `fixed-stderr-marker:${"x".repeat(4096)}:omitted-tail`); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    const error = failure as Error;
+    expect(error.cause).toBeInstanceOf(SyntaxError);
+    expect(error.message).toContain("stdoutBytes=0");
+    expect(error.message).toContain("stderrBytes=4129");
+    expect(error.message).toContain("fixed-stderr-marker:");
+    expect(error.message).not.toContain("omitted-tail");
+    expect(error.message.length).toBeLessThan(2300);
+  });
+
   it.skipIf(process.platform !== "win32")("reads the real Windows process inventory despite inherited incompatible PowerShell module paths", async () => {
     const f = await fixture(), native = spawn(process.execPath, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     const closed = once(native, "close"), timer = setTimeout(() => native.kill("SIGKILL"), 8_000);
@@ -62,13 +141,15 @@ describe("owned Herdr launch mapping", () => {
       await once(native.stdout!, "data");
       const environment = { ...f.input.nativeEnvironment, PSModulePath: path.join(f.directory, "incompatible-modules"), pSmOdUlEpAtH: path.join(f.directory, "other-incompatible-modules") };
       const mapping = (await createToolLaunchMapping({ ...f.input, nativeEnvironment: environment, existingOnly: true }, operation()))!;
-      expect(await mapping.captureProcesses([native.pid!], operation())).toContain(native.pid);
-      native.kill("SIGKILL"); await closed;
-      expect(await mapping.confirmStopped(operation())).toBe(true);
+      try {
+        expect(await mapping.captureProcesses([native.pid!], operation())).toContain(native.pid);
+        native.kill("SIGKILL"); await closed;
+        expect(await mapping.confirmStopped(operation())).toBe(true);
+      } catch (cause) { throw new Error(`Windows process inventory command diagnostics: ${JSON.stringify(await windowsInventoryDiagnostics(environment))}`, { cause }); }
       expect(environment.PSModulePath).toBe(path.join(f.directory, "incompatible-modules"));
       expect(environment.PATH).toBe("/native/path");
     } finally { clearTimeout(timer); native.kill("SIGKILL"); await closed; }
-  });
+  }, 60_000);
 
   it("distinguishes Linux process births within one wall-clock second and rejects malformed proc identities", () => {
     const boot = "12345678-1234-4234-8234-123456789abc";

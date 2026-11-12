@@ -49,6 +49,10 @@ for (const [tool, repository, version, asset, expectedHash, executableName] of e
     if (matches.length !== 1) throw new Error(`Expected one ${executableName} in ${asset}.`);
     executable = path.join(directory, matches[0]); await rm(download);
   } else { executable = path.join(directory, executableName); await rename(download, executable); }
+  // Codex release archives include the target in the filename; its documented install entry is codex.
+  // https://github.com/openai/codex/blob/0a94398fa60c4fac0e7659e4213a0a36e613dd46/README.md#installing-and-running-codex-cli
+  const installed = path.join(directory, process.platform === "win32" ? `${tool}.exe` : tool);
+  if (executable !== installed) { await rename(executable, installed); executable = installed; }
   if (process.platform !== "win32") await chmod(executable, 0o700);
   evidence.assets.push({ tool, repository, version, asset, url, sha256: actualHash, executable });
   evidence.environment[`DAYNIGHT_TEST_${tool.toUpperCase()}`] = executable;

@@ -22,21 +22,22 @@ export const windowsMappingProcessInventoryCommand = (environment: NodeJS.Proces
   const metadataEnvironment = Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
   return { file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::Out.Write((ConvertTo-Json -InputObject @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | Select-Object ProcessId,ParentProcessId) -Compress))"], environment: metadataEnvironment };
 };
-export const parseWindowsMappingProcessInventory = (stdout: string): Inventory[] => {
+export const parseWindowsMappingProcessInventory = (stdout: string, stderr = ""): Inventory[] => {
+  const diagnostics = (): string => `stdoutBytes=${Buffer.byteLength(stdout)}, stderrBytes=${Buffer.byteLength(stderr)}, stderr=${JSON.stringify(stderr.slice(0, 2048))}`;
   let value: unknown;
   try { value = JSON.parse(stdout); }
-  catch (cause) { throw new Error("The Windows process inventory produced no complete JSON; original process ownership remains unknown.", { cause }); }
+  catch (cause) { throw new Error(`The Windows process inventory produced no complete JSON; original process ownership remains unknown. ${diagnostics()}`, { cause }); }
   const ids = new Set<number>();
   if (!Array.isArray(value) || value.length === 0 || value.some(row => {
     if (row === null || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join() !== "ParentProcessId,ProcessId" || !Number.isSafeInteger(row.ProcessId) || row.ProcessId < 0 || !Number.isSafeInteger(row.ParentProcessId) || row.ParentProcessId < 0 || ids.has(row.ProcessId)) return true;
     ids.add(row.ProcessId); return false;
-  }) || !value.some(row => row.ProcessId > 0)) throw new Error("The Windows process inventory could not be established; original process ownership remains unknown.");
+  }) || !value.some(row => row.ProcessId > 0)) throw new Error(`The Windows process inventory could not be established; original process ownership remains unknown. ${diagnostics()}`);
   return value.filter(row => row.ProcessId > 0).map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, group: null }));
 };
 const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
   if (process.platform === "win32") {
     const result = await runHerdrCommand(windowsMappingProcessInventoryCommand(environment), operation);
-    return parseWindowsMappingProcessInventory(result.stdout);
+    return parseWindowsMappingProcessInventory(result.stdout, result.stderr);
   }
   const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
   return result.stdout.split("\n").filter(row => row.trim() !== "").flatMap(row => {
