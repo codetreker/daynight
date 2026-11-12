@@ -12,11 +12,13 @@ import (
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type AuthenticateCredential func(context.Context, model.CredentialKind, string) (model.Principal, error)
 type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent) error
+type AuthenticateAPIAccess func(context.Context, string) (store.OAuthAccessIdentity, error)
 
 type RequestAuthentication struct {
 	authenticate AuthenticateCredential
@@ -24,6 +26,28 @@ type RequestAuthentication struct {
 	secure       bool
 	logger       *slog.Logger
 	observeUsage ObserveUsage
+	apiAccess    AuthenticateAPIAccess
+	apiOrigin    string
+}
+
+// BindAPIAccess configures the application verifier for explicit browser channel credentials.
+func (h *RequestAuthentication) BindAPIAccess(authenticate AuthenticateAPIAccess, origin string) {
+	h.apiAccess, h.apiOrigin = authenticate, origin
+}
+
+func (h *RequestAuthentication) AuthenticateAPIAccess(request *http.Request, token string) (store.OAuthAccessIdentity, error) {
+	if h.apiAccess == nil {
+		return store.OAuthAccessIdentity{}, Failure()
+	}
+	identity, err := h.apiAccess(request.Context(), token)
+	if err != nil {
+		return store.OAuthAccessIdentity{}, err
+	}
+	origins := request.Header.Values("Origin")
+	if h.apiOrigin == "" || len(origins) != 1 || origins[0] != h.apiOrigin {
+		return store.OAuthAccessIdentity{}, &model.Fault{Code: "forbidden", Message: "Application channels require the configured application Origin."}
+	}
+	return identity, nil
 }
 
 func NewRequestAuthentication(authenticate AuthenticateCredential, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*RequestAuthentication, error) {

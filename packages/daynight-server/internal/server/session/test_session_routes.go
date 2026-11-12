@@ -25,7 +25,11 @@ func (h *Routes) registerTestRoutes(mux *http.ServeMux) {
 		"GET /api/v1/test-sessions/{sessionId}/channel":                        h.browserChannel,
 	}
 	for route, handler := range routes {
-		mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+		if route == "GET /api/v1/test-sessions/{sessionId}/channel" {
+			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(handler), true))
+		} else {
+			mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+		}
 	}
 	for path, method := range map[string]string{"/api/v1/test-session-capabilities": "GET", "/api/v1/test-sessions": "GET, POST", "/api/v1/test-sessions/{sessionId}": "GET", "/api/v1/test-sessions/{sessionId}/controller-grant": "POST", "/api/v1/test-sessions/{sessionId}/stop": "POST", "/api/v1/test-sessions/{sessionId}/timeline": "GET", "/api/v1/test-sessions/{sessionId}/commands": "POST", "/api/v1/test-sessions/{sessionId}/operations/{operationId}": "GET", "/api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": "GET", "/api/v1/test-sessions/{sessionId}/channel": "GET"} {
 		fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {

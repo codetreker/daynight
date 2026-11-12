@@ -62,6 +62,9 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	if err != nil {
 		return nil, err
 	}
+	if app.OAuth != nil {
+		auth.BindAPIAccess(app.OAuth.AuthenticateAPIAccess, config.S2S.AllowedOrigin)
+	}
 	endpoint, err := mcphttp.New(app.Identity, config.Server.PublicOrigin, config.MCP.Origins.AllowedOrigins, logger, app.OAuth, observe)
 	if err != nil {
 		return nil, err

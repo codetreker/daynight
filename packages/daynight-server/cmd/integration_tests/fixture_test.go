@@ -104,11 +104,12 @@ func (p *serverProcess) stop(t *testing.T) {
 }
 
 type fixture struct {
-	context context.Context
-	origin  string
-	client  *http.Client
-	userID  string
-	process *serverProcess
+	context     context.Context
+	origin      string
+	client      *http.Client
+	userID      string
+	databaseURL string
+	process     *serverProcess
 }
 
 func verifyServerBuild(t *testing.T) string {
@@ -368,7 +369,7 @@ func newFixture(t *testing.T) *fixture {
 	browser.CloseIdleConnections()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
-	f := &fixture{context: ctx, origin: origin, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
+	f := &fixture{context: ctx, origin: origin, databaseURL: parsed.String(), process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
 	response, body := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
 	var page api.ProjectPage
 	if err := json.Unmarshal(body, &page); err != nil {

@@ -244,7 +244,12 @@ Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[R
 
 Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。读取准入与执行交互分别判断：当前项目成员可读，执行交互只允许认证用户等于持久 `owner_user_id` 的原 Session owner，项目或 Team 的 admin 角色不授予交互权。Web 与 Herdr 共用这项限制；Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
 
-派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查；Herdr 的控制派发、租约重检及 ACK 授租也核对原 actor，已存在的非 owner 操作或 lease 不能继续执行。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查；Herdr 的控制派发、租约重检及 ACK 授租也核对原 actor，已存在的非 owner 操作或 lease 不能继续执行。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查完整凭据、项目准入与执行身份，观察到失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+
+应用用户 channel 的唯一授权 marker、精确应用 Origin、固定 API family、连接 effective-expiry deadline
+及 best-effort 关闭由[鉴权设计](daynight-auth.md#应用用户-websocket)所有。Task 用户 channel 接受实际
+v1/v2，独立 Test 用户 channel 接受 v1；原 Controller 和 Worker 生产者握手保持。刷新 access 不延长
+旧连接或替换持久 Actor，新连接沿用原 fence、lease 与 resume。
 
 Web 的 current 与 browser channel 按当前读者投影权限：非 owner 的 `operations` 全部关闭，setting 的 `mutable` 与命令的 `available` 为 false；投影复制控制目录，不能改写 Controller 的持久能力。Herdr 对非 owner 清空 `control.availableActions`，保留画面与控制归属供阅读。
 

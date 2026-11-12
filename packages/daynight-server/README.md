@@ -342,7 +342,16 @@ and finalization retain their original credential requirements. Persisted
 operation Actors retain their original access UUID and are reauthorized for the
 actual operation before dispatch; refreshed access can query an authorized receipt
 without replacing that Actor or replaying the command. Public REST authentication
-still uses PATs or browser Cookies.
+still uses PATs or browser Cookies. Task user WebSockets (v1/v2) and Test user
+WebSockets (v1) accept one actual Session subprotocol with one
+`daynight.authorization.<accessToken>` marker. They authenticate the fixed API
+family against the exact configured application Origin, echo only the Session
+protocol, and bind the connection to its effective expiry. A malformed marker
+never falls back to a browser Cookie. Original polling rechecks the family and
+current resource permissions; refreshed access does not extend an old socket or
+replace its Actor. The [authentication design](../../docs/design/daynight-auth.md#应用用户-websocket)
+owns error classification, best-effort close frames and the original connection
+cleanup stages.
 
 Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
 Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
