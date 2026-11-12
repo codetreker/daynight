@@ -21,11 +21,13 @@ status and membership continue to count ordinary members only.
 
 External cards have an independent native Expand button beside inspection and
 Details. The project owner resolves the card's actual task ID through the current
-ordinary-component index. A multi-member destination opens its Goal graph using
-the destination Goal's own graph-direction preference. A standalone destination
-closes the original graph and opens the existing task reader. Expand does not
-append external ancestry to the original canvas. Ordinary member cards retain
-bounded direction expansion within the projection.
+ordinary-component index. An unparented multi-member destination opens its
+chain graph using the destination representative's graph-direction preference.
+An unparented standalone destination closes the original graph and opens the
+existing task reader; a destination with a readable Goal Parent opens that Goal
+and its task witness. Expand does not append external ancestry to the original
+canvas. Ordinary member cards retain bounded direction expansion within the
+projection.
 
 The original navigation decision located the destination list page and cleared
 only filters that hid its Goal. That made a destination outside the displayed
@@ -73,9 +75,10 @@ as recorded in the [batch-read decision](../simplification/2026-11-09-task-canon
 action-footer geometry so their navigation is available even when no local
 neighbors are hidden.
 
-Navigating to another Goal initializes that resource's graph exploration and
-inspection state. It preserves list filters, pagination, disclosure and scroll,
-and the graph session retains its original list opener for close. External
+Navigating to another unparented chain initializes that resource's graph
+exploration and inspection state. It preserves list filters, pagination,
+disclosure and scroll, and the project reading owner retains the original list
+source through graph navigation and standalone task details. External
 context does not add members to Goal progress and does not change execution
 blocking, cycle detection or dependency classification. The archived dense
 external ancestry workload remains historical input evidence; current validation

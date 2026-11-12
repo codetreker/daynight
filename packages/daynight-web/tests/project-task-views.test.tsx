@@ -1206,10 +1206,37 @@ describe('recent task browsing and pagination', () => {
     const source = canonicalTask(1), dependency = canonicalTask(3);
     graphRequest.mockResolvedValue(snapshot([seed(source), seed(canonicalTask(2), 'todo', [source, dependency], [dependency]), seed(dependency)]));
     mount(); await openChain(source);
+    const trigger = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
     await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expect(getTask).toHaveBeenCalledWith(project, dependency, expect.anything(), expect.anything());
+    vi.mocked(window.scrollTo).mockClear();
+    vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+    fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the visible chain list when a singleton origin disappears during refresh', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const source = canonicalTask(1), child = canonicalTask(2), dependency = canonicalTask(3);
+    const initial = [seed(source), seed(child, 'todo', [source, dependency], [dependency]), seed(dependency, 'done')];
+    const refreshed = initial.map((task) => task.id === source || task.id === child ? { ...task, status: 'done' as const } : task);
+    graphRequest.mockResolvedValueOnce(snapshot(initial)).mockResolvedValueOnce(snapshot(refreshed));
+    mount(); await findChainRow(source);
+    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    await openChain(source);
+    const trigger = chainGraphButton(source);
+    fireEvent.click(screen.getByTestId(`external-${dependency}`));
+    await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await waitFor(() => expect(trigger.isConnected).toBe(false));
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(document.getElementById('project-chain-list')).toHaveFocus());
+    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
   });
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {

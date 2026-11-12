@@ -9,7 +9,7 @@ import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { compareTaskMembers } from '../projects/task-order';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
-import { TaskChainDialog } from './TaskChainDialog';
+import { ProjectListGraphHost } from './ProjectListGraphHost';
 import { ChainMemberRow } from './ChainMemberRow';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
 import { ScopedTaskChainRow } from './ScopedTaskChainRow';
@@ -33,6 +33,7 @@ type ChainListProps = {
   readonly openChainId: string | null;
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
   readonly onCloseChain: () => void;
+  readonly onRestoreGraphFocus?: () => void;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
@@ -116,34 +117,21 @@ const ScopedChainRow = memo(({ projectId, index, workerMachines, rootId, members
   return <ScopedTaskChainRow ref={container} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} memberIds={members} progress={progress} instanceId={rootId} expanded={expanded} onExpandedChange={setExpanded} open={open} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
 });
 
+const noop = () => {};
+
 const focusAvailable = (element: HTMLElement | null | undefined) => {
   if (element == null || !element.isConnected || element.closest('[hidden], [inert]') !== null) return false;
   element.focus({ preventScroll: true });
   return true;
 };
 
-export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openChainId, onOpenChain, onCloseChain, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openChainId, onOpenChain, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
   const { messages: { graph: m, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   const focusedChain = useRef<string | null>(null);
-  const opener = useRef<HTMLElement | null>(null);
-  const openedTask = useRef<string | null>(null);
   const state = useRef({ index, representativeIds });
   state.current = { index, representativeIds };
-  const openChain = useCallback((id: string, trigger: HTMLElement) => {
-    opener.current = trigger;
-    openedTask.current = id;
-    onOpenChain(id, trigger);
-  }, [onOpenChain]);
-  const navigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
-    if (onNavigateExternalTask !== undefined) onNavigateExternalTask(id, trigger);
-    else {
-      const representative = index.componentByTask.get(id)!;
-      if (index.components.get(representative)!.memberIds.size > 1) onOpenChain(representative, trigger);
-      else { onCloseChain(); onOpenTask(id, trigger); }
-    }
-  }, [index, onNavigateExternalTask, onOpenChain, onCloseChain, onOpenTask]);
   const restoreListFocus = useCallback((witness: string | null) => {
     const { index, representativeIds } = state.current;
     const representative = witness === null ? undefined : index.componentByTask.get(witness);
@@ -154,14 +142,11 @@ export const ChainList = ({ projectId, index, summaries, workerMachines, represe
     const tabId = panel?.getAttribute('aria-labelledby');
     if (tabId !== undefined && tabId !== null) focusAvailable(document.getElementById(tabId));
   }, []);
-  const restoreFocus = useCallback(() => {
-    if (!focusAvailable(opener.current)) restoreListFocus(openedTask.current);
-  }, [restoreListFocus]);
   useLayoutEffect(() => {
     if (openChainId !== null || focusedControl.current === null || focusedControl.current.isConnected || document.activeElement !== document.body) return;
     restoreListFocus(focusedChain.current);
   }, [index, openChainId, representativeIds, restoreListFocus]);
-  return <section id="project-chain-list" aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
+  return <section id="project-chain-list" data-list-empty={allRepresentativeIds.length === 0} aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
     if (event.currentTarget.contains(event.target)) {
       focusedControl.current = event.target;
       const chainId = event.target.closest<HTMLElement>('[data-chain-id]')?.dataset.chainId;
@@ -174,9 +159,9 @@ export const ChainList = ({ projectId, index, summaries, workerMachines, represe
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
       : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
         : <ul className="root-list">{representativeIds.map((rootId) => scopedMembers === undefined || scopedMembers.get(rootId)?.length === index.components.get(rootId)!.memberIds.size
-          ? <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />
-          : <ScopedChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} members={scopedMembers.get(rootId)!} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+          ? <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />
+          : <ScopedChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} members={scopedMembers.get(rootId)!} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
-    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={openChainId} onOpenTask={onOpenTask} onNavigateExternalTask={navigateExternalTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} {...(renderNested === undefined ? {} : { renderNested })} {...(onGraphRootChange === undefined ? {} : { onRootChange: onGraphRootChange })} />}
+    {openChainId !== null && <ProjectListGraphHost projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={openChainId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} onOpenChain={onOpenChain} onClose={onCloseChain} onRestoreFocus={onRestoreGraphFocus ?? noop} {...(renderNested === undefined ? {} : { renderNested })} {...(onGraphRootChange === undefined ? {} : { onRootChange: onGraphRootChange })} />}
   </section>;
 };
