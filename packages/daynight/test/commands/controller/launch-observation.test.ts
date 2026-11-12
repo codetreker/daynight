@@ -115,12 +115,13 @@ it("returns observed only from the original authenticated IPC response", async (
 
 it("interrupts an in-flight IPC observation with the original cancellation reason", async () => {
   const f = await fixture(); const connected = Promise.withResolvers<void>();
-  const server = createServer(() => connected.resolve());
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer(socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); socket.on("error", () => {}); socket.resume(); connected.resolve(); });
   server.listen(f.ticket.ipcEndpoint); await once(server, "listening");
   try {
     const controller = new AbortController(), reason = new Error("cancel observation");
     const observed = reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: f.proof, signal: controller.signal });
     await connected.promise; controller.abort(reason);
     await expect(observed).rejects.toBe(reason);
-  } finally { server.close(); await once(server, "close"); }
+  } finally { for (const socket of sockets) socket.destroy(); server.close(); await once(server, "close"); }
 }, 20_000);

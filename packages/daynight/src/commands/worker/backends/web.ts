@@ -492,7 +492,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         signal = AbortSignal.timeout(CLEANUP_OPERATION_MS);
         let launched = false;
         if (execution !== null) {
-          if (execution.launchSubmission === "not-submitted") await notifyStopped();
+          await notifyStopped();
           let saved = execution.launchSubmission === "not-submitted" ? readControllerSnapshot(journal(task)) : null;
           let initialResponse: Awaited<ReturnType<typeof request>> | undefined;
           if (execution.launchSubmission !== "not-submitted") {

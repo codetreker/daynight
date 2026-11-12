@@ -131,7 +131,18 @@ export const createBotProcess = (options: {
     if (prior?.startup?.state === "failed" && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
     if (prior !== null && prior.launchSubmission !== "not-submitted") {
       const ticket = await checkedTicket(record);
-      if (prior.controllerProcess === null) throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
+      if (prior.controllerProcess === null) {
+        // Legacy records can still authenticate a live peer, but cannot prove stop
+        // or authorize a replacement generation without the original process proof.
+        const snapshot = await observe(ticket, signal);
+        if (snapshot.sessionId !== ticket.sessionId) throw new Error("Bot controller IPC session identity mismatch.");
+        if (["starting", "ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped) {
+          const observed = remember(record, snapshot);
+          options.executions.resumeObserved(record);
+          return observed;
+        }
+        throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
+      }
       const observation = await reconcileLaunch({ journalFile: record.intent!.journalPath, ticket, spawnProof: prior.controllerProcess, signal });
       if (observation.kind === "observed") {
         const observed = remember(record, observation.snapshot);

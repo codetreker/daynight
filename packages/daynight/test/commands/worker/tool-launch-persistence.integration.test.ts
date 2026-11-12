@@ -214,7 +214,7 @@ it("keeps a legacy submitted Bot observable and refuses recovery before allocati
     const stopped: ControllerSnapshot = { ...ready, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-12T00:00:00Z" };
     f.dependencies.observe.mockResolvedValue(stopped);
     f.dependencies.readSnapshot.mockReturnValue(stopped);
-    await expect(f.manager().advance(f.current(), new AbortController().signal)).rejects.toThrow("legacy_tool_identity_missing");
+    await expect(f.manager().advance(f.current(), new AbortController().signal)).rejects.toThrow("spawn proof is unavailable");
     expect(f.current().intent).toEqual(original);
     expect(f.selectToolLaunch).not.toHaveBeenCalled();
     expect(f.dependencies.launch).not.toHaveBeenCalled();
