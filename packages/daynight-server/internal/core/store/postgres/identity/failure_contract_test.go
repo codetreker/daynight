@@ -15,7 +15,7 @@ import (
 )
 
 func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
-	for _, operation := range []string{"create-login", "upsert-user", "insert-session", "insert-pat", "list-pat", "delete-pat", "delete-session", "consume-login", "authenticate", "user", "insert-device", "inspect-device", "decide-device", "redeem-device", "device-rate", "expiry"} {
+	for _, operation := range []string{"create-login", "upsert-user", "ensure-user", "patch-user", "insert-session", "insert-pat", "list-pat", "delete-pat", "delete-session", "consume-login", "authenticate", "user", "insert-device", "inspect-device", "decide-device", "redeem-device", "device-rate", "expiry"} {
 		t.Run(operation, func(t *testing.T) {
 			db := isolatedStore(t)
 			ctx := t.Context()
@@ -25,7 +25,7 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 			switch operation {
 			case "create-login", "consume-login":
 				table = "login_transactions"
-			case "upsert-user", "user":
+			case "upsert-user", "ensure-user", "patch-user", "user":
 				table = "users"
 			case "insert-session", "delete-session", "authenticate":
 				table = "sessions"
@@ -47,6 +47,12 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 					return err
 				case "upsert-user":
 					_, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "new"}, now)
+					return err
+				case "ensure-user":
+					_, _, err := dao.EnsureUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "new"}, now)
+					return err
+				case "patch-user":
+					_, err := dao.PatchUser(ctx, p.UserID, model.UserProfilePatch{Name: model.ProfileField{Present: true}})
 					return err
 				case "insert-session":
 					return dao.InsertSession(ctx, session)

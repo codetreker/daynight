@@ -20,6 +20,7 @@ type strictIdentity struct {
 	t            *testing.T
 	callback     func() string
 	authenticate func(context.Context, model.CredentialKind, string) (model.Principal, error)
+	patchUser    func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -52,6 +53,12 @@ func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (ide
 }
 func (m *strictIdentity) User(context.Context, model.Principal) (model.User, error) {
 	return model.User{}, m.unexpected("User")
+}
+func (m *strictIdentity) PatchUser(ctx context.Context, p model.Principal, patch model.UserProfilePatch) (model.User, error) {
+	if m.patchUser == nil {
+		return model.User{}, m.unexpected("PatchUser")
+	}
+	return m.patchUser(ctx, p, patch)
 }
 func (m *strictIdentity) Logout(context.Context, model.Principal) error {
 	return m.unexpected("Logout")

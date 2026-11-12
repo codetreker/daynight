@@ -30,6 +30,16 @@ type User struct {
 	PersonalTeam  TeamRef
 }
 
+type ProfileField struct {
+	Present bool
+	Value   *string
+}
+
+type UserProfilePatch struct {
+	Name      ProfileField
+	AvatarURL ProfileField
+}
+
 type LoginTransaction struct {
 	ID                 string
 	StateHash          []byte

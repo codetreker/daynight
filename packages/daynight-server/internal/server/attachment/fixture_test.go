@@ -498,6 +498,10 @@ func (s *authenticationMock) WriteIdentity(ctx context.Context, fn func(store.Id
 func (s *authenticationMock) IdentityDAO() store.IdentityDAO {
 	return &authenticationDAO{unexpectedIdentityDAO: unexpectedIdentityDAO{s.unexpectedDAO}, principal: s.principal, hash: s.hash}
 }
+func (s *authenticationMock) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	s.reject("CredentialFamilyDAO")
+	panic("unreachable")
+}
 func (s *authenticationMock) PersonalTeamDAO() store.PersonalTeamDAO {
 	s.reject("PersonalTeamDAO")
 	return nil
@@ -670,6 +674,14 @@ func (s *unexpectedIdentityDAO) ConsumeLogin(context.Context, []byte, []byte, ti
 }
 func (s *unexpectedIdentityDAO) UpsertUser(context.Context, model.User, time.Time) (model.User, error) {
 	s.reject("UpsertUser")
+	panic("unreachable")
+}
+func (s *unexpectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	s.reject("EnsureUser")
+	panic("unreachable")
+}
+func (s *unexpectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	s.reject("PatchUser")
 	panic("unreachable")
 }
 func (s *unexpectedIdentityDAO) InsertSession(context.Context, model.Session) error {

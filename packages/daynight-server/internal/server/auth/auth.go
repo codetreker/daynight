@@ -74,12 +74,13 @@ func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("HEAD /api/v1/auth/login", httpx.MethodNotAllowed(h.logger, "GET"))
 	mux.HandleFunc("HEAD "+h.callbackPath, httpx.MethodNotAllowed(h.logger, "GET"))
 	mux.HandleFunc("GET /api/v1/me", h.Require(h.me))
+	mux.HandleFunc("PATCH /api/v1/me", h.Require(h.patchMe))
 	mux.HandleFunc("POST /api/v1/auth/logout", h.Require(h.logout))
 	mux.HandleFunc("GET /api/v1/me/tokens", h.Require(h.listTokens))
 	mux.HandleFunc("POST /api/v1/me/tokens", h.Require(h.createToken))
 	mux.HandleFunc("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken))
 	mux.HandleFunc("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken))
-	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
+	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD, PATCH", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
 		fallback := httpx.MethodNotAllowed(h.logger, methods)
 		if path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/me") {
 			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }))

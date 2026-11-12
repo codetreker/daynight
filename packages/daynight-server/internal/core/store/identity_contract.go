@@ -14,6 +14,7 @@ type IdentityWriter interface {
 }
 
 type IdentityScope interface {
+	CredentialFamilyDAO() CredentialFamilyDAO
 	IdentityDAO() IdentityDAO
 	PersonalTeamDAO() PersonalTeamDAO
 }
@@ -30,6 +31,9 @@ type IdentityDAO interface {
 	InsertLogin(context.Context, model.LoginTransaction) error
 	ConsumeLogin(context.Context, []byte, []byte, time.Time) (model.LoginTransaction, error)
 	UpsertUser(context.Context, model.User, time.Time) (model.User, error)
+	// EnsureUser preserves an existing profile; inserted describes this transaction, not its commit.
+	EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error)
+	PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error)
 	InsertSession(context.Context, model.Session) error
 	Authenticate(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
 	IdentityUser(context.Context, string) (model.User, PersonalTeamFacts, error)

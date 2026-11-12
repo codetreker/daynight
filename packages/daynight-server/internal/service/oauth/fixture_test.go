@@ -380,6 +380,14 @@ func (d *identityCapability) UpsertUser(context.Context, model.User, time.Time) 
 	return model.User{}, nil
 }
 
+func (d *identityCapability) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	d.f.unexpected("EnsureUser")
+	panic("unreachable")
+}
+func (d *identityCapability) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	d.f.unexpected("PatchUser")
+	panic("unreachable")
+}
 func (d *identityCapability) InsertSession(context.Context, model.Session) error {
 	d.f.unexpected("InsertSession")
 	return nil

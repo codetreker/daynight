@@ -185,7 +185,7 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 
 `RequestAuthentication` 拥有请求凭据的 HTTP 适配：Bearer 解析、会话 Cookie 选择、Cookie 写入的精确 Origin 校验、`AuthenticateRequest` 和 `Require`。它接收 `AuthenticateCredential` 操作，调用时传递原 request context、凭据种类和 secret，并保留 principal 或原错误。`ValidatePublicOrigin` 校验该 middleware 的公开 Origin 与 HTTP 测试配置。
 
-完整 `Authentication` 组合这个 middleware，通过私有 consumer 接口使用 Identity 的 17 个直接操作，并保留登录、账户、PAT 和 device 路由；其构造使用同一 Identity 对象校验完整认证配置和 callback，并绑定请求认证操作。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
+完整 `Authentication` 组合这个 middleware，通过私有 consumer 接口使用 Identity 的 18 个直接操作，并保留登录、账户、PAT 和 device 路由；其构造使用同一 Identity 对象校验完整认证配置和 callback，并绑定请求认证操作。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
 
 `RequestAuthentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
 从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
@@ -252,6 +252,44 @@ upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规
 随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
 完整性错误，不在 Authenticate 中补数据。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login`、`/auth/complete` 及实际 callback；
 无目标默认 `/projects`，不把已提供的非法目标替换成默认值。
+
+### 完整用户初始化与本人资料更新
+
+`service/identity.EnsureUser` 为后端调用者提供完整账号初始化。输入只接受非空 UTF-8 外部身份键与可空
+name/avatarUrl；外部键禁止 control 字符、最多 1024 bytes，并复用 `CanonicalUniAuthID`。
+姓名原样保存、禁止 NUL、最多 1024 UTF-8 bytes；头像同样禁止 NUL、最多 524288 UTF-8 bytes。
+共享 `ExternalUserInput` 的 profile 可省略，提供时只能包含 name/avatarUrl；未知、重复字段及错误类型、
+非法 Unicode 均拒绝。新账号的省略或 null 资料保持 null，email/emailVerified 由原生身份交接拥有。
+
+初始化使用严格的 read-committed identity 事务。IdentityDAO 先执行按 `users.uniauth_id` 唯一键的
+`INSERT ... ON CONFLICT DO NOTHING RETURNING`；冲突时在下一条 statement 按该键读取真实用户，
+使等待并发创建后能够观察提交结果。返回的 inserted 只表示当前事务插入候选，不证明提交。
+新 user、Personal Team 与唯一 owner admin 成员在同一事务建立，已有用户资料保持不变。
+完整资料编码与 Personal Team 完整性校验成功且提交已确认后，service 才交付账号；初始化异常、
+领域拒绝或容量失败整体回滚，未知提交结果不继续后继写入。该路径不使用允许提交 device 轮询拒绝的 runner。
+
+`PATCH /api/v1/me` 仅接受非空的 `{name:string|null,avatarUrl:string|null}` subset，无 query、version、
+目标 ID 或其他资料字段。缺省保留、null 清除、string 原样保存；身份、email、emailVerified 与
+Personal Team 保持不变。Cookie 写请求仍校验精确主站 Origin，原生 Session/PAT 仅能修改本人。
+HTTP body 读取使用原 1 MiB、15 秒预算，decode 完成后另设继承父取消的 15 秒 operation deadline。
+body 超限返回 413；解码字段和完整候选资料的容量拒绝返回 400 invalid_input，并保留原容量错误链。
+
+PATCH 在同一严格 identity 事务内复核实际凭据，再由 DAO 仅更新提交字段与 `updated_at`。
+UPDATE 的自然 user 行锁串行化并发写入；不预读全量资料回写，不使用 CAS。
+`IdentityScope.CredentialFamilyDAO()` 由根 PostgreSQL 装配注入同事务实例；
+`identity.NewScope(tx,family)` 保持 oauth→identity 依赖方向，OAuth owner-session 检查传入其自身 DAO。
+内部 API principal 使用固定 API resource/scope/client tuple 执行原 `LockAccess`。resource 取自启动配置的
+可信 callback URL 的 scheme/host，加 `/api/v1`；scope/client 使用既有固定 API profile，拒绝无效配置。
+原生凭据使用原 IdentityDAO 检查。读取实际完整用户、校验 Personal Team 与 profile 1 MiB/本人 response 2 MiB 编码容量后，
+以新鲜时间再次复核凭据，覆盖 user 行等待期间的到期；任何失败均回滚资料更新。
+
+成功仅在确认提交后返回 `200` 与原 `api.User`，保留所有 nullable 字段、完整 personalTeam、
+`Daynight-User-ID` 和 no-store。实际 COMMIT 结果未知返回 `503 write_outcome_unknown`；
+SQL 与清理失败保留原错误优先级。确认提交后的响应取消或写入失败记录 response unknown，
+不重做资料写入，也不在部分响应后补写错误正文。
+GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETag；普通认证读取不改资料，
+后续原生 UniAuth 登录仍按上游姓名与头像覆盖本地两字段。公开 API OAuth 准入和 S2S 发行保持各自入口的现有范围。
+[用户初始化与资料更新决策](../../.agents/notes/implemented/feature/2026-11-12-user-profile-patch.md)记录事务与稀疏更新的取舍。
 
 ### 主站 session 与 PAT
 
@@ -566,6 +604,7 @@ HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由�
 | GET /api/v1/auth/login?provider=... | 校验输入；无有效 scope 时初始化并返回同一 URL，否则按容量创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET/HEAD /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin，认证及完整资料读取后以强 ETag 重验，成功 200/304 使用 private, no-cache。 |
+| PATCH /api/v1/me | 当前 Session/PAT 本人，仅提交 name/avatarUrl 的非空 subset；缺省保持、null 清除，确认提交后返回原完整 api.User 与 no-store。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
 | GET/PATCH/DELETE /api/v1/teams/{teamId} | 详情含本人真实 membership；当前 admin 按元数据 version 改名或删除空普通 Team，删除另匹配名称原文。 |
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |

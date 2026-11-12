@@ -38,6 +38,9 @@ type realIdentityWriter struct {
 type realIdentityScope struct{ dao store.IdentityDAO }
 
 func (s realIdentityScope) IdentityDAO() store.IdentityDAO { return s.dao }
+func (s realIdentityScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	panic("unexpected CredentialFamilyDAO")
+}
 func (s realIdentityScope) PersonalTeamDAO() store.PersonalTeamDAO {
 	panic("unexpected PersonalTeamDAO")
 }

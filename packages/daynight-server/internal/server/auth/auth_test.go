@@ -67,6 +67,10 @@ func (s *identityHTTPScope) invoke(name string, args ...any) any {
 	return call.check(args)
 }
 
+func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	return nil
+}
 func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
 func (s *identityHTTPScope) AdmitLogin(ctx context.Context, hash []byte, global, browser int) (time.Time, string, error) {
@@ -900,4 +904,13 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 			t.Fatal("authentication logs exposed a credential or OAuth handover value")
 		}
 	}
+}
+
+func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	return model.User{}, false, nil
+}
+func (d httpRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
+	return model.User{}, nil
 }

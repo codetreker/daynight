@@ -160,6 +160,7 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 		t.Fatal("PAT authenticated the wrong user")
 	}
 	usageWait(t, f, readPAT, nil, patStart, patEnd)
+	profileNormalFlow(t, f, browser, plain, pat)
 
 	const callback = "http://127.0.0.1:9012/callback"
 	_, data = usageRequest(t, f, plain, http.MethodPost, "/oauth/register", `{"client_name":"Usage integration","redirect_uris":["http://127.0.0.1:9012/callback"]}`, "application/json", "", http.StatusCreated)

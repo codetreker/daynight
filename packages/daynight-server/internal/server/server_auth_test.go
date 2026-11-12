@@ -71,6 +71,22 @@ func (s *identityHTTPScope) invoke(name string, args ...any) any {
 
 func (s *identityHTTPScope) IdentityDAO() store.IdentityDAO         { return s }
 func (s *identityHTTPScope) PersonalTeamDAO() store.PersonalTeamDAO { return s }
+func (s *identityHTTPScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	panic("unreachable")
+}
+func (s httpAuthenticationScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	unexpectedHTTPCall(s.t, "CredentialFamilyDAO")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.EnsureUser")
+	panic("unreachable")
+}
+func (d httpRejectedIdentityDAO) PatchUser(context.Context, string, model.UserProfilePatch) (model.User, error) {
+	unexpectedHTTPCall(d.t, "IdentityDAO.PatchUser")
+	panic("unreachable")
+}
 func (s *identityHTTPScope) AdmitLogin(ctx context.Context, hash []byte, global, browser int) (time.Time, string, error) {
 	return s.invoke("AdmitLogin", ctx, hash, global, browser).(time.Time), "", nil
 }

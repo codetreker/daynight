@@ -27,6 +27,12 @@ type Identity struct {
 }
 
 type identityOperations struct {
+	ensureUser               func(context.Context, store.IdentityDAO, model.User, time.Time) (model.User, bool, error)
+	patchUser                func(context.Context, store.IdentityDAO, string, model.UserProfilePatch) (model.User, error)
+	lockProfileCredential    func(context.Context, store.IdentityDAO, store.CredentialFamilyDAO, model.Principal, string, time.Time) error
+	validateProfilePatch     func(model.UserProfilePatch) error
+	validateExternalUser     func(model.User) (model.User, error)
+	admitCompleteUser        func(model.User, bool) error
 	validateLogin            func(provider, returnPath string) error
 	startLogin               func(provider, returnPath string, now time.Time) (core.LoginStart, model.LoginTransaction, error)
 	createLogin              func(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, appNow time.Time) (time.Time, error)
@@ -70,6 +76,12 @@ type identityOperations struct {
 func New(writer store.IdentityWriter, client *uniauth.Client, callbackURL string) *Identity {
 	module := core.NewIdentity(callbackURL)
 	return &Identity{writer: writer, client: client, callbackURL: callbackURL, now: time.Now, ops: identityOperations{
+		ensureUser:               module.EnsureUser,
+		patchUser:                module.PatchUser,
+		lockProfileCredential:    module.LockProfileCredential,
+		validateProfilePatch:     core.ValidateProfilePatch,
+		validateExternalUser:     core.ValidateExternalUser,
+		admitCompleteUser:        core.AdmitCompleteUser,
 		validateLogin:            module.ValidateLogin,
 		startLogin:               module.StartLogin,
 		createLogin:              module.CreateLogin,
