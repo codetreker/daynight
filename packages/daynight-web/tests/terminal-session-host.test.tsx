@@ -85,8 +85,6 @@ describe('unified Session and managed records', () => {
       fireEvent.change(draft, { target: { value: 'local draft' } });
       act(() => {
         resume = pauseAuthRequests();
-        expect(close).not.toHaveBeenCalled();
-        client.suspendForAccountRefresh();
         expect(close).toHaveBeenCalledOnce();
       });
       expect(client.getSnapshot()).toMatchObject({ transport: 'paused', inputReady: false, session: state });
@@ -447,7 +445,7 @@ describe('unified Session and managed records', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
       await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
       expect(authority.signal.aborted).toBe(false); expect(preserved).toBeVisible(); expect(screen.queryByRole('alert')).toBeNull();
-      if (image !== null) { expect(image.reader.close).not.toHaveBeenCalled(); expect(screen.getByRole('img', { name: image.resource.name })).toBe(savedImage); }
+      if (image !== null) { expect(image.reader.close).toHaveBeenCalledOnce(); expect(screen.getByRole('img', { name: image.resource.name })).toBe(savedImage); }
     } finally { view.unmount(); resume(); authority.dispose(); }
   });
   it.each([1, 3] as const)('shows schema %s saved images inside the record and retains them during an admission check', async schemaVersion => {
@@ -527,7 +525,7 @@ describe('unified Session and managed records', () => {
     try {
       await screen.findByText('Saved image record.'); await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); await act(async () => {});
       expect(authority.signal.aborted).toBe(false); expect(screen.getByText('Saved image record.')).toBeVisible();
-      expect(scopes.mock.results[0]!.value.valid).toBe(true); expect(close).not.toHaveBeenCalled(); expect(screen.queryByRole('alert')).toBeNull();
+      expect(scopes.mock.results[0]!.value.valid).toBe(true); expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alert')).toBeNull();
     } finally { view.unmount(); resume(); authority.dispose(); }
   });
   it.each(['not_registered', 'not_applicable'] as const)('keeps completed %s recoverable without consulting old history', async status => {

@@ -464,7 +464,7 @@ describe('standalone full task details', () => {
     expect(fetcher).not.toHaveBeenCalled();
     view.unmount();
     replaceRoute(address('overview', 'docs/guide.md') + '&authError=login_failed');
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response(JSON.stringify({ error: { code: 'unauthenticated', message: 'Sign in', requestId: 'login' } }), { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
     const login = vi.fn();
     localeRender(<AuthenticatedApp navigateToLogin={login} />);
     fireEvent.click(await screen.findByRole('button', { name: '使用 GitHub 登录' }));

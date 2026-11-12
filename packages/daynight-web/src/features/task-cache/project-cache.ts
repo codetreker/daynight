@@ -158,7 +158,11 @@ export class TaskCacheScope {
       }
       for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
     });
-    this.channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("daynight-task-cache");
+    // Cache hints are optional; blocked channel creation must not prevent the
+    // confirmed account from opening its local scope.
+    let channel: BroadcastChannel | null = null;
+    try { if (typeof BroadcastChannel !== "undefined") channel = new BroadcastChannel("daynight-task-cache"); } catch { /* Local cache remains available without hints. */ }
+    this.channel = channel;
     if (this.channel !== null) this.channel.onmessage = (event: MessageEvent<unknown>) => {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;

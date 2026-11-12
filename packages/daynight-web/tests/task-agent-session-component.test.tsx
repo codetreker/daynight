@@ -74,7 +74,7 @@ it('identifies Copilot and honors its missing steer capability', async () => {
   expect(f.api.command).not.toHaveBeenCalled();
 });
 
-it('retains a task session channel and draft through a short identity pause, but disconnects stale task content', async () => {
+it('stops the task session immediately on account pause and retains its draft', async () => {
   const f = fixture(); const view = render(f.element());
   await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
   f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
@@ -82,20 +82,20 @@ it('retains a task session channel and draft through a short identity pause, but
   const input = screen.getByRole('textbox');
   fireEvent.change(input, { target: { value: 'keep draft' } });
   const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
-  const resume = pauseAuthRequests();
+  let resume = () => {};
   try {
+    act(() => { resume = pauseAuthRequests(); expect(close).toHaveBeenCalledOnce(); });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled());
-    expect(close).not.toHaveBeenCalled();
     expect(screen.queryByText('Restoring session')).toBeNull();
     expect(screen.getByRole('textbox')).toBe(input);
   } finally { resume(); }
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   expect(f.api.current).toHaveBeenCalledOnce();
   expect(f.api.channel).toHaveBeenCalledOnce();
   expect(f.api.timeline).toHaveBeenCalledOnce();
   expect(input).toHaveValue('keep draft');
   view.rerender(f.element(false));
-  await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(close).toHaveBeenCalledOnce();
 });
 
 it('keeps the channel, draft and retained message when changing display mode', async () => {
@@ -211,7 +211,7 @@ it('does not prefetch a selected Session while its document is initially hidden'
   } finally { visibility.mockRestore(); }
 });
 
-it('cancels a current read queued behind identity admission when the production panel hides', async () => {
+it('cancels a current read on account pause and does not restart when the panel reopens', async () => {
   vi.useFakeTimers(); let resume: (() => void) | undefined;
   try {
     const f = fixture(); const view = render(f.element()); await act(async () => vi.advanceTimersByTimeAsync(0));
@@ -225,7 +225,7 @@ it('cancels a current read queued behind identity admission when the production 
     resume!(); resume = undefined; await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(sent).not.toHaveBeenCalled(); expect(f.api.current).toHaveBeenCalledTimes(2);
     view.rerender(f.element(true, true)); await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(f.api.current).toHaveBeenCalledTimes(3); expect(f.api.channel).toHaveBeenCalledOnce();
+    expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.channel).toHaveBeenCalledOnce();
   } finally { resume?.(); vi.useRealTimers(); }
 });
 

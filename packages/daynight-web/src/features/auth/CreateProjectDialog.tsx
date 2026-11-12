@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from './AccountRefreshNotice';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createProject, ProjectCreationUnknown } from "../../api/auth";
 import { ApiError, authRequestsPaused, isAbortError, listProjects, readAuthRequestGeneration, waitForAuthRequests } from "../../api/client";
@@ -281,7 +282,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     })();
   };
   return <dialog ref={dialog} className="auth-dialog" aria-labelledby="create-project-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
-    <form onSubmit={submit} onChange={() => { setDraftRevision(++revision.current); }}><header className="dialog-header"><h2 id="create-project-title">{target.personal ? m.title : locale === "zh-CN" ? "创建项目" : "Create project"}</h2><button className="close-button" type="button" aria-label={m.close} disabled={busy} onClick={onClose}>×</button></header><div className="dialog-body"><p>{target.personal ? m.intro : locale === "zh-CN" ? "Team 成员可以访问此项目，也可以单独管理项目权限。" : "Team members can access this project; project permissions can also be managed separately."}</p>
+    <form onSubmit={submit} onChange={() => { setDraftRevision(++revision.current); }}><header className="dialog-header"><h2 id="create-project-title">{target.personal ? m.title : locale === "zh-CN" ? "创建项目" : "Create project"}</h2><AccountRefreshNotice /><button className="close-button" type="button" aria-label={m.close} disabled={busy} onClick={onClose}>×</button></header><div className="dialog-body"><p>{target.personal ? m.intro : locale === "zh-CN" ? "Team 成员可以访问此项目，也可以单独管理项目权限。" : "Team members can access this project; project permissions can also be managed separately."}</p>
       {targetTeamId !== undefined && <p>{locale === "zh-CN" ? "创建到：" : "Create in: "}<strong>{target.personal ? (locale === "zh-CN" ? "个人" : "Personal") : target.name}</strong></p>}
       <div className="field"><label htmlFor="project-name">{m.name} <span className="required">*</span></label><input ref={name} id="project-name" name="name" required autoComplete="off" disabled={busy} /></div>
       <div className="field"><label htmlFor="project-repository">{m.repository} <span className="required">*</span></label><input id="project-repository" name="repoUrl" required type="text" autoComplete="off" placeholder="https://github.com/team/project" disabled={busy} /><p className="hint">{m.repositoryHint}</p></div>

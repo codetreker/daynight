@@ -140,11 +140,11 @@ unknown 时保留完整 intent、快照、bytes、引用和原操作入口；前
 
 ## 账户、撤权与清理
 
-恢复和每次网络/本地发布都使用既有 principal 屏障。普通同账户权限复核暂停新上传、发送、下载和持久写准入，但保留已显示草稿/预览/焦点；成功且身份不变复用状态，不新建 draft 或重传。确认账户变化、访问撤销、Session/record 删除时同步关闭预览、清 src、撤销 URL、停止请求和 owner 使用，再做异步持久清理；不让删除耗时窗口暴露旧图片。
+恢复和每次网络/本地发布都使用既有 principal 屏障。账户变化等待刷新暂停新上传、发送、下载和持久写准入，保留已显示草稿、预览、焦点和已解码图片；不自动重读或重传。真实访问撤销、Session/record 删除或会话失效时同步关闭预览、清 src、撤销 URL、停止请求和 owner 使用，再做异步持久清理。
 
-将 owner accessEpoch 递增/blocked tombstone 与删除相关 drafts/blobs 的事务序列化；旧异步写回必须检查 epoch，不能在清理后重建。账户切换只清前账户私有内容，不枚举或显示给新账户；新的 tab 对另一账户只能经正式身份确认打开对应 owner。广播仅加速其它已打开 tab失效，各 tab网络响应 principal检查/focus复核仍执行。已提交请求与撤权的先后由服务决定，浏览器 abort 不声称撤回 Provider 已接受数据。
+将 owner accessEpoch 递增/blocked tombstone 与删除相关 drafts/blobs 的事务序列化；旧异步写回必须检查 epoch，不能在清理后重建。账户变化等待刷新保留当前内容但阻止新的远程工作；真实会话失效只清原账户私有内容，不枚举或显示给新账户。新的 tab 对另一账户只能经正式身份确认打开对应 owner；广播提示接收方重读当前账户记录，网络响应仍执行 principal 检查。已提交请求与撤权的先后由服务决定，浏览器 abort 不声称撤回 Provider 已接受数据。
 
-对 unresolved 操作，换账户/撤权可以删除敏感正文和 Blob，但保留不含正文、图片label/摘要/凭证的最小 owner+operationId+fence关联 tombstone，仅原账户以后重新获权才可查询。它不能使新账户获知旧操作，也不授权新发送；服务 unknown引用仍按公共协议保留。若所属 Session 被正式删除，停止后续查询并清本地 tombstone；不能据此声称原生从未执行。IDB 清理失败保持 blocked 并报告本地清理未完成，后续打开先完成清理，不先渲染；不得用“已删除”掩盖失败。
+对 unresolved 操作，真实会话失效或撤权可以删除敏感正文和 Blob，但保留不含正文、图片label/摘要/凭证的最小 owner+operationId+fence关联 tombstone，仅原账户以后重新获权才可查询。它不能使新账户获知旧操作，也不授权新发送；服务 unknown引用仍按公共协议保留。若所属 Session 被正式删除，停止后续查询并清本地 tombstone；不能据此声称原生从未执行。IDB 清理失败保持 blocked 并报告本地清理未完成，后续打开先完成清理，不先渲染；不得用“已删除”掩盖失败。
 
 普通移除、清空、接受只删除没有 editable/frozen 引用的本地 Blob；预览模块页面 lease 独立释放。卸载/全屏切换/冷 pane 驱逐不删除持久 bytes。服务资源由服务图片存储引用集合清理，草稿模块最多释放上传引用；消息/unknown/归档引用不是前端 GC 对象。
 
@@ -244,7 +244,8 @@ type ImageAssetAdapter = {
 | digest/长度/块格式不一致 | 丢弃本次未验证 bytes 和 URL，显示校验失败；不可下载，不自动循环；重取服务事实后由正式错误资格决定恢复 |
 | failed/unavailable 或 ImageUnavailablePart | 留在原消息/原工具位置，显示安全错误；适用来源重试只由服务明确资格提供，只读记录无此操作 |
 | 暂时权限复核 / 已知无变化 | 保持已显示图片、锚点和预览，冻结新的读/下载/来源重试；复核成功后复用原 lease，不重挂 |
-| 账户变化、owner 删除、确认撤权 | 立即关闭敏感预览、清除 src、撤销 Blob URL、取消请求和下载资格；旧响应丢弃；不能保留旧图等新账户鉴权 |
+| 账户变化等待刷新 | 停止请求和下载，丢弃旧响应，保留已解码图片及当前预览直到真实刷新 |
+| owner 删除、确认撤权或真实会话失效 | 立即关闭敏感预览、清除 src、撤销 Blob URL、取消请求和下载资格；旧响应丢弃 |
 
 网络失败不证明权限撤销；确认撤销也不能当普通离线。长期未恢复的未知身份沿现有认证流程，不能使用旧授权发新请求。执行 generation/native 变化时 live adapter 先隔离旧 scope，旧消息若仍可读取需由新的正式 owner 读取授权重新确认；已保存 record 的 scope 不绑定新的 live generation，不能错误删除有效归档缓存。无变化权限复核与这些真实变化必须区分。
 
@@ -286,7 +287,7 @@ Controller 媒体存储尺寸是未应用 EXIF orientation 的存储画布，动
 
 ## Markdown 映射与链接图片
 
-采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。 自动重取按同 owner 和 entry revision 去重，最多一次；身份复核或 current 准入暂停时保留待处理项，恢复后只重读权威条目或所选归档。同 available ID 元数据冲突使用同一恢复通道，普通网络、完整性或本地解码错误不自动循环读取。重取后仍不合格则保留显式失败与手动刷新入口。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
+采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。 自动重取按同 owner 和 entry revision 去重，最多一次；账户变化或 current 准入暂停时保留待处理项，恢复后只重读权威条目或所选归档。同 available ID 元数据冲突使用同一恢复通道，普通网络、完整性或本地解码错误不自动循环读取。重取后仍不合格则保留显式失败与手动刷新入口。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
 
 `ChatMarkdown` 新增可选受控节点 renderer，只接收经验证的节点 key/内容；缺省仍显示不可用。Session 层负责创建 callback及scope，其他 ChatMarkdown 消费者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
 
@@ -315,7 +316,7 @@ fit 模式使用可用舞台宽高等比 contain，小图不强制放大；100% 
 | 入口 / 主线实际链 | scope/宿主与必须结果 |
 | --- | --- |
 | Task 弹窗、独立页：TaskDetailSurface → TaskSessionHost → TaskAgentSession → SessionView | 真实账户+Task Session授权；同一个 SessionView 挂 scope/host，弹窗与页布局不产生第二个 client。图片输入资格给草稿模块，读取独立。 |
-| TestSessionPage → SessionView | 使用独立 Session resolver 与 testExecutionId；不伪造 task/claim。既有删除准入、身份复核与媒体取消连接。 |
+| TestSessionPage → SessionView | 使用独立 Session resolver 与 testExecutionId；不伪造 task/claim。既有删除准入、账户暂停与媒体取消连接。 |
 | BotSessionHost → retained pane → SessionView | botId只是管理对象，媒体 owner 为实际 selected Session；隐藏/inert pane停止新读并关闭预览。切换回来在原权限确认后复用缓存/展开状态/bookmark；不把另一 Bot 同名 Session 的图挂入。 |
 | Session 全屏、Task 全屏 | 复用原 host/DOM/client，预览作为内层模态；同图不重新下载，Escape只退出一层，保留背景锚点。 |
 | Task 历史选择器 → FixedSessionRecording → NativeRecording → SessionTimeline | 归档模块提供 recordId所属 reader与资源索引，无 live snapshot 也可展示、预览和下载；禁输入和来源采集重试。保留 current Session pane不授予历史写资格。 |

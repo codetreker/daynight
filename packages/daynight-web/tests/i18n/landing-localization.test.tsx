@@ -1,3 +1,4 @@
+import { AccountSessionProvider } from "../../src/app/AccountSessionProvider";
 import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -11,7 +12,7 @@ describe("landing page language changes", () => {
     const fetcher = vi.fn(() => new Promise<Response>(() => {}));
     vi.stubGlobal("fetch", fetcher);
     const interaction = userEvent.setup();
-    const { container } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { container } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     const tabs = screen.getAllByRole("tab");
     await interaction.click(container.querySelector<HTMLButtonElement>('[data-demo-task="ui"]')!);
     await interaction.click(tabs[0]!);
@@ -43,7 +44,7 @@ describe("landing page language changes", () => {
   it("translates an identity error and blocked-task list without restarting the hint", async () => {
     const fetcher = vi.fn().mockRejectedValue(new TypeError("Controlled network error"));
     vi.stubGlobal("fetch", fetcher);
-    const { container, setLocale } = renderWithLocale(<LandingPage />, { locale: "en" });
+    const { container, setLocale } = renderWithLocale(<AccountSessionProvider><LandingPage /></AccountSessionProvider>, { locale: "en" });
     const notice = await screen.findByRole("status");
     const interaction = userEvent.setup();
     await interaction.click(container.querySelector<HTMLButtonElement>('[data-demo-task="verification"]')!);

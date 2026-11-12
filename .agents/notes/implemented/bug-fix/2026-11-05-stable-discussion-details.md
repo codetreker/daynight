@@ -21,6 +21,8 @@ The [Discussion design](../../../../docs/design/task-thread-web.md) owns the
 mechanism, and the [workspace decision](2026-11-05-stable-workspace-during-identity-checks.md)
 owns the shared presentation and admission policy.
 
+The later [document account synchronization decision](../architecture/2026-11-11-document-account-sync.md) replaces foreground account revalidation; feature-specific visibility and resource checks retain their own lifecycles.
+
 ## Alternatives
 
 **Close and reopen the dialog on every check.** This releases focus and parent

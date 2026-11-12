@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { TaskPauseCount, usePausedTaskIds } from "../task-pause/TaskPause";
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
@@ -95,7 +96,7 @@ export const TaskChainDialog = ({ projectId, index, summaries, rootId, onOpenTas
           <h2 id={titleId}>{task.titlePreview}{task.titleTruncated ? '…' : ''}</h2>
           <p className="task-chain-meta"><span>{m.rootSummary({ total: progress.total, remaining: progress.total - progress.ended })}</span><span>{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><TaskPauseCount count={pausedCount} /><span className={`graph-status graph-status-${progress.status}`}>{common.status[progress.status]}</span></p>
         </div>
-        <button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
+        <AccountRefreshNotice /><button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </header>
       <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreenControl} />
     </section>
