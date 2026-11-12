@@ -692,3 +692,12 @@ func TestExhaustedCandidateSurvivesCapacityAndReplay(t *testing.T) {
 	}
 	record(t, s, obs(ResidentLimit+1, c.now), Accepted)
 }
+
+func TestNewRejectsMissingClock(t *testing.T) {
+	defer func() {
+		if got := recover(); got != "credentialusage: clock is required" {
+			t.Fatalf("missing clock panic = %v", got)
+		}
+	}()
+	_ = New(nil)
+}
