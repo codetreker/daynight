@@ -106,13 +106,13 @@ const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters
   void running.catch(() => {});
   return { cancellation, running };
 };
-const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoordinatorOptions) => void = () => {}) => {
+const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoordinatorOptions) => void = () => {}, canInspect: (options: WorkerCoordinatorOptions) => boolean = () => true) => {
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
     let current = options;
     return {
       archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
-        if (!current.readyProjectIds?.includes(uuid(1))) return;
+        if (!current.readyProjectIds?.includes(uuid(1)) || !canInspect(current)) return;
         try { check(current); } finally { cancellation.abort(); }
       }),
       shutdown: vi.fn(async () => true),
@@ -599,7 +599,7 @@ describe("worker cloud-first startup", () => {
       accepted = options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false });
       return reporter();
     });
-    finishAtTick(cancellation, options => { expect(options.maxConcurrent).toBe(3); expect(options.globalConfiguration).not.toBeNull(); expect(options.globalConfiguration!.model).toBe("cloud-model"); });
+    finishAtTick(cancellation, options => { expect(options.maxConcurrent).toBe(3); expect(options.globalConfiguration).not.toBeNull(); expect(options.globalConfiguration!.model).toBe("cloud-model"); }, options => options.globalConfiguration !== null && options.maxConcurrent === 3);
     const { running } = start(f, { signal: cancellation.signal });
     await running; await accepted;
     expect(remote.reportConfiguration).not.toHaveBeenCalled();
