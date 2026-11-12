@@ -212,6 +212,15 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   return { stoppedRuns, root, get store() { return store; }, reopenStore, project, candidates, grants, grant, resources, worktrees, manifests, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
 
+const waitForOriginalStartup = (f: Awaited<ReturnType<typeof fixture>>) => eventually(() => {
+  const original = f.store.listTasks()[0];
+  expect(original?.sessionId).toEqual(expect.any(String));
+  const granted = f.grants.get(original!.claimId);
+  expect(granted).toBeDefined();
+  // The local session is persisted before this summary commits to the fixture's remote inventory.
+  expect(readWorkerClaim(granted!.properties)).toMatchObject({ claimId: original!.claimId, workerId, phase: "executing", nativeSessionId: original!.sessionId });
+});
+
 const deletedArchive = async (f: Awaited<ReturnType<typeof fixture>>, explicit = false) => {
   const doc = parseSessionV2Archive(structuredClone(archiveFixture));
   doc.owner.projectId = f.project.projectId; doc.owner.workerId = workerId;
@@ -1027,6 +1036,52 @@ it("releases a stopped execution while its worktree remains held, without admitt
   } finally { release(); await coordinator.shutdown(); }
 });
 
+it("waits for the original startup summary before withdrawing its grant", async () => {
+  const f = await fixture();
+  f.candidates.splice(1);
+  const releaseSummary = Promise.withResolvers<void>();
+  let summaryBlocked = false;
+  const update = vi.mocked(f.remote.update).getMockImplementation()!;
+  vi.mocked(f.remote.update).mockImplementation(async (current, summary, operation) => {
+    if (summary.phase === "executing") { summaryBlocked = true; await releaseSummary.promise; }
+    return update(current, summary, operation);
+  });
+  let ready = false;
+  let startup: Promise<void> | undefined;
+  const failures: unknown[] = [];
+  try {
+    await f.coordinator.tick();
+    await eventually(() => expect(summaryBlocked).toBe(true));
+    const original = f.store.listTasks()[0]!;
+    expect(original.sessionId).toEqual(expect.any(String));
+    expect(readWorkerClaim(f.grants.get(original.claimId)!.properties)).toMatchObject({ phase: "preparing", nativeSessionId: null });
+    startup = waitForOriginalStartup(f).then(() => { ready = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ready).toBe(false);
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    releaseSummary.resolve();
+    await startup;
+    expect(ready).toBe(true);
+    f.candidates.splice(0); f.grants.clear();
+    await vi.waitFor(async () => { await f.coordinator.tick(); expect(f.git.removeWorktree).toHaveBeenCalledOnce(); }, { timeout: 3500, interval: 10 });
+    await eventually(() => expect(f.store.getTask(original)?.status).toBe("done"));
+    expect(f.grants.has(original.claimId)).toBe(false);
+    expect(f.resources.has(original.claimId)).toBe(false);
+    expect(f.worktrees.has(original.claimId)).toBe(false);
+    expect(f.order.slice(-2)).toEqual(["stop-close", "remove-worktree"]);
+  } catch (error) { failures.push(error); }
+  finally {
+    releaseSummary.resolve();
+    const startupSettlement = await Promise.allSettled([startup]);
+    const shutdownSettlement = await Promise.allSettled([f.coordinator.shutdown()]);
+    for (const result of [...startupSettlement, ...shutdownSettlement]) {
+      if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Startup summary regression or fixture cleanup failed.", { cause: failures[0] });
+  }
+});
+
 it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shutdown" }, { stream: "child", mode: "shutdown" }, ...(process.platform === "win32" ? [{ stream: "helper", mode: "shutdown" }] : [])])("holds the original task gate through $stream closure and $mode", async ({ stream, mode }) => {
   const f = await fixture(), monitoring = createMonitoringObserver({ now: f.options.now });
   await mkdir(f.project.localPath, { recursive: true });
@@ -1078,7 +1133,7 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
   const coordinator = createWorkerCoordinator({ ...f.options, git: manager, monitoring });
   try {
     await coordinator.tick();
-    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    await waitForOriginalStartup(f);
     const original = f.store.listTasks()[0]!;
     const owner = f.resources.get(original.claimId)!.owner;
     gitProcess.wrapper = wrapper;
@@ -1086,7 +1141,22 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
     f.grants.clear();
     await coordinator.tick();
     const started = stream === "helper" ? rootReady : ready;
-    await vi.waitFor(async () => { await expect(access(started)).resolves.toBeUndefined(); }, { timeout: 15_000, interval: 20 });
+    try {
+      await vi.waitFor(async () => { await coordinator.tick(); await expect(access(started)).resolves.toBeUndefined(); }, { timeout: 15_000, interval: 20 });
+    } catch (error) {
+      const granted = f.grants.get(original.claimId), local = f.store.getTask(original), cleanup = f.store.getCleanupSchedule(original);
+      const claim = granted === undefined ? undefined : readWorkerClaim(granted.properties);
+      console.error("Original task cleanup did not reach its startup marker.", {
+        stream, mode, owner,
+        grant: claim === undefined ? null : { claimId: claim.claimId, workerId: claim.workerId, phase: claim.phase, state: claim.state, nativeSessionId: claim.nativeSessionId },
+        local: local === null ? null : { projectId: local.projectId, taskId: local.taskId, claimId: local.claimId, sessionId: local.sessionId, status: local.status },
+        child: { pid: gitProcess.child?.pid, exitCode: gitProcess.child?.exitCode, signalCode: gitProcess.child?.signalCode, closed: gitProcess.childClosed, stdoutClosed: gitProcess.stdoutClosed, stderrClosed: gitProcess.stderrClosed },
+        helper: { pid: gitProcess.stopHelper?.pid, exitCode: gitProcess.stopHelper?.exitCode, signalCode: gitProcess.stopHelper?.signalCode, closed: gitProcess.helperClosed, stdoutClosed: gitProcess.helperStdoutClosed },
+        cleanup: cleanup === null ? null : { ...cleanup, lastError: cleanup.lastError?.slice(0, 300) },
+        events: f.events.filter(event => event.kind.startsWith("cleanup") || event.kind === "summary-error" || event.kind === "execution-error" || event.kind === "stop-unknown").slice(-10).map(event => ({ kind: event.kind, identity: event.identity, phase: event.phase, error: event.error instanceof Error ? event.error.message.slice(0, 300) : undefined })),
+      });
+      throw error;
+    }
     if (stream === "child" && process.platform !== "win32") {
       await vi.waitFor(() => { expect(gitProcess.stdoutClosed).toBe(true); expect(gitProcess.stderrClosed).toBe(true); }, { timeout: 12_000, interval: 20 });
     } else if (stream === "stdout" || stream === "stderr") {
