@@ -20,6 +20,7 @@ import (
 )
 
 func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
+	application := newApplicationFixture(t, f)
 	workerID := uuid.NewString()
 	base := "/api/v1/me/workers/" + workerID
 	stamp := time.Now().UTC().Format(time.RFC3339Nano)
@@ -89,18 +90,19 @@ func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
 	request.Header.Set("Content-Type", "application/json")
 	type answer struct {
 		status int
+		userID string
 		body   []byte
 		err    error
 	}
 	answers := make(chan answer, 1)
 	go func() {
-		response, err := f.client.Do(request)
+		response, err := application.client.Do(request)
 		if err != nil {
 			answers <- answer{err: err}
 			return
 		}
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, ro.MaxWireBytes+1))
-		answers <- answer{status: response.StatusCode, body: body, err: errors.Join(readErr, response.Body.Close())}
+		answers <- answer{status: response.StatusCode, userID: response.Header.Get("Daynight-User-ID"), body: body, err: errors.Join(readErr, response.Body.Close())}
 	}()
 	dispatched := read()
 	if dispatched.Type != "request" || dispatched.Fence != ready.Fence || dispatched.RequestID != input.RequestID || dispatched.Operation != input.Operation || !bytes.Equal(dispatched.Input, input.Input) || dispatched.TimeoutMs <= 0 {
@@ -110,7 +112,7 @@ func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
 	write(result)
 	select {
 	case response := <-answers:
-		if response.err != nil || response.status != http.StatusOK {
+		if response.err != nil || response.status != http.StatusOK || response.userID != f.userID {
 			t.Fatalf("readonly HTTP result: status=%d error=%v body=%s", response.status, response.err, response.body)
 		}
 		var actual ro.Message

@@ -295,6 +295,7 @@ func newFixture(t *testing.T) *fixture {
 		"storage":   map[string]any{"root": "attachments"},
 		"uniauth":   map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
 		"task_sync": map[string]any{"overlap": "10s"},
+		"webhook":   map[string]any{"enabled": true},
 	}
 	configDir := filepath.Join(root, "config")
 	if err := os.Mkdir(configDir, 0o700); err != nil {
