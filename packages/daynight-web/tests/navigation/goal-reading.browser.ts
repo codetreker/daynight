@@ -106,6 +106,14 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
     details = [root, child]; currentGraph = graphFixture(details);
+  }, addTimedGoalChain: () => {
+    const external = detailFixture(projectId, outsideId, { title: 'Timed external prerequisite', status: 'done',
+      startedAt: '2026-10-22T09:57:00Z', completedAt: '2026-10-22T09:57:30Z' });
+    details = [goal,
+      { ...first, status: 'done', startedAt: '2026-10-22T09:58:00Z', completedAt: '2026-10-22T09:58:45Z' },
+      { ...second, status: 'in_progress', startedAt: '2026-10-22T09:59:00Z', dependsOn: [firstId, outsideId], externalDependsOn: [outsideId] },
+      single, external];
+    currentGraph = graphFixture(details);
   }, forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
     currentGraph = graphFixture(details);
@@ -137,6 +145,39 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     currentGraph = graphFixture(details);
   } };
 }
+
+for (const presentation of ['dialog', 'page'] as const) test(`Goal timed graph stays usable from its ${presentation} entry`, async ({ page }, testInfo) => {
+  const errors: Error[] = [];
+  page.on('pageerror', error => errors.push(error));
+  const fixture = await install(page); fixture.addTimedGoalChain();
+  if (presentation === 'dialog') {
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+    await page.getByRole('tab', { name: /^Goal/ }).click();
+    await page.locator(`#project-goal-${goalId}`).click();
+  } else await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  const opener = surface.getByRole('button', { name: 'View dependencies' });
+  await opener.click();
+  const graphDialog = page.locator('.task-chain-dialog');
+  await expect(graphDialog).toBeVisible();
+  await expect(graphDialog.locator('.task-node')).toHaveCount(3);
+  await expect(graphDialog.locator(`[data-id="${firstId}"] .task-duration`)).toHaveAttribute('datetime', 'PT45.000S');
+  await expect(graphDialog.locator(`[data-id="${secondId}"] .task-duration`)).toBeVisible();
+  const external = graphDialog.locator(`[data-id="${outsideId}"] .task-node-external`);
+  await expect(external.locator('.task-duration')).toHaveAttribute('datetime', 'PT30.000S');
+  await page.screenshot({ path: testInfo.outputPath(`goal-timed-graph-${presentation}.png`) });
+  await graphDialog.getByRole('button', { name: 'Second task, Details' }).click();
+  const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+  await expect(child.locator('.task-detail-title')).toHaveText('Second task');
+  await page.keyboard.press('Escape');
+  await expect(child).toHaveCount(0);
+  await expect(graphDialog).toBeVisible();
+  await graphDialog.getByRole('button', { name: 'Close dependency graph' }).click();
+  await expect(graphDialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  expect(errors.map(error => error.message)).toEqual([]);
+});
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal description navigation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 800 });
