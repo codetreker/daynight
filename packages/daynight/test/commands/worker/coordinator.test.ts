@@ -135,7 +135,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
-    listWorktreeManifests: vi.fn(async (source: WorkerProject) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId)),
+    listWorktreeManifests: vi.fn(async (source: WorkerProject, _operation: Operation, includeOtherProjects = false) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId || includeOtherProjects && store.getProject(owner)?.localPath === source.localPath)),
     retireWorktreeManifest: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { manifests.delete(owner.claimId); }),
     removeUnpublishedReservation: vi.fn(async () => {}),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
@@ -383,14 +383,20 @@ describe("worker report publication boundaries", () => {
     record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 2);
     webStore.completeTask(record, 3);
     f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) });
-    vi.mocked(f.git.retireWorktreeManifest).mockRejectedValueOnce(new Error("manifest unlink failed"));
+    vi.mocked(f.git.retireWorktreeManifest).mockRejectedValueOnce(new Error("manifest unlink failed")).mockRejectedValueOnce(new Error("manifest unlink failed"));
     const coordinator = createWorkerCoordinator({ ...f.options, webStore });
     try {
+      expect(() => coordinator.assertCanAcquire(owner)).not.toThrow();
+      const candidates = f.candidates.splice(0);
       await coordinator.tick();
       expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error", message: "Worktree metadata retirement remains pending." }));
       expect(f.manifests.has(owner.claimId)).toBe(true);
       expect(f.store.getCleanupSchedule(owner)).toBeNull();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(() => coordinator.assertCanAcquire(owner)).not.toThrow();
+      f.candidates.push(...candidates);
+      await coordinator.tick();
+      expect(f.manifests.has(owner.claimId)).toBe(true);
       expect(f.remote.claim).toHaveBeenCalledOnce();
       expect(vi.mocked(f.remote.claim).mock.calls[0]![0].id).toBe(owner.taskId);
       await eventually(async () => { await coordinator.tick(); expect(f.manifests.has(owner.claimId)).toBe(false); });
@@ -1334,6 +1340,7 @@ describe("minimal worker resource reconciliation", () => {
     const newer = f.grant(task(old.projectId, old.taskId), { claimId: uuid(400), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(401) });
     await f.coordinator.tick(); expect(f.store.getTask({ ...old, claimId: uuid(400) })?.status).toBe("pending");
     await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
+    await eventually(() => expect(f.store.getCleanupSchedule(old)).toBeNull());
     const newOwner = { projectId: newer.projectId, taskId: newer.id, claimId: uuid(400), worktreeId: uuid(401) };
     f.worktrees.set(newOwner.claimId, { owner: newOwner, binding: f.bind(newOwner) });
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));

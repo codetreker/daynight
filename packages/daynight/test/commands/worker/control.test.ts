@@ -38,7 +38,7 @@ const fixture = (local = true) => {
   const order: string[] = [];
   const events: WorkerEvent[] = [];
   const coordinator = {
-    assertCanAcquire: vi.fn(),
+    assertCanResume: vi.fn(async (_target: { projectId: string; taskId: string }, _signal: AbortSignal) => {}),
     registerClaim: vi.fn((granted: Task) => { const grantedClaim = readWorkerClaim(granted.properties)!; expect(store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: grantedClaim.claimId })?.status).toBe("pending"); }),
     advanceRetry: vi.fn(async (): Promise<WorkerInputWait | void> => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
@@ -197,10 +197,10 @@ describe("worker explicit resume grants", () => {
   it("rejects retained archive responsibility before submitting a fresh resume claim", async () => {
     const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
     const failure = new Error("Original worktree remains reserved until archive finalization");
-    f.coordinator.assertCanAcquire.mockImplementation(() => { throw failure; });
+    f.coordinator.assertCanResume.mockImplementation(async () => { throw failure; });
     await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toBe(failure);
     expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
-    expect(f.coordinator.assertCanAcquire).toHaveBeenCalledExactlyOnceWith({ projectId, taskId });
+    expect(f.coordinator.assertCanResume).toHaveBeenCalledExactlyOnceWith({ projectId, taskId }, f.options.signal);
   });
 
   it("uses fresh printed identities and current agent settings without inheriting old native history", async () => {

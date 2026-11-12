@@ -16,7 +16,7 @@ export type WorkerControlRequest =
   | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint };
 
 type ControlCoordinator = {
-  assertCanAcquire(target: Pick<ClaimIdentity, "projectId" | "taskId">): void;
+  assertCanResume(target: Pick<ClaimIdentity, "projectId" | "taskId">, signal: AbortSignal): Promise<void>;
   registerClaim(task: Task): void;
   advanceRetry(identity: ClaimIdentity): Promise<WorkerInputWait | void>;
   cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<ResourceOwner>;
@@ -78,7 +78,7 @@ export const submitWorkerControl = async (options: {
     requireImplementedWorkerBackend(repository.configuration);
     if (repository.configuration.agentControlMode === "web") { if (!options.verifyWebServer) throw new Error("Web backend capabilities are unavailable."); await options.verifyWebServer(repository.configuration.agent, signal); }
     await remote.authorizeControl(projectId, worker.userId, signal);
-    coordinator.assertCanAcquire({ projectId, taskId: request.taskId });
+    await coordinator.assertCanResume({ projectId, taskId: request.taskId }, signal);
     const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}) };
     options.emit({ kind: "management-request", message: `Resume ${projectId}/${request.taskId}: previousClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}.` });
     const granted = await confirmMutation(

@@ -236,7 +236,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     await removeEmptyDirectory(target, operation);
     if (await directory(target) !== null || (await registrations(repository, target, operation)).length > 0) throw new Error("The unregistered task reservation removal is incomplete.");
   };
-  const scanWorktrees = async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false): Promise<WorktreeScan> => {
+  const scanWorktrees = async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false, settled: readonly OwnedWorktree[] = []): Promise<WorktreeScan> => {
     operation.check();
     try {
       if (allowMissingRepository) {
@@ -250,7 +250,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, false, index, observedPointer);
         if (observed === null) throw new Error("The worktree manifest disappeared.");
         return { owner, binding: observed.binding };
-      }, includeOtherProjects);
+      }, includeOtherProjects, settled);
     } catch (error) {
       operation.check();
       return { enumerationComplete: false, validated: [], quarantined: [], unknown: [{ error }] };
@@ -373,9 +373,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const repository = await requirePrepared(project, operation), manifest = manifestFor(project, owner, repository);
       return manifest === null ? null : bindingForManifest(project.localPath, repository.commonDirectory, manifest);
     },
-    listWorktreeManifests: async (project: WorkerProject, operation: Operation): Promise<OwnedWorktree[]> => {
+    listWorktreeManifests: async (project: WorkerProject, operation: Operation, includeOtherProjects = false): Promise<OwnedWorktree[]> => {
       const repository = await requirePrepared(project, operation);
-      return createWorktreeManifestStore(repository.commonDirectory).list().filter(manifest => manifest.projectId === project.projectId).map(manifest => ({ owner: coordinates(manifest), binding: bindingForManifest(project.localPath, repository.commonDirectory, manifest) }));
+      return createWorktreeManifestStore(repository.commonDirectory).list().filter(manifest => includeOtherProjects || manifest.projectId === project.projectId).map(manifest => ({ owner: coordinates(manifest), binding: bindingForManifest(project.localPath, repository.commonDirectory, manifest) }));
     },
     retireWorktreeManifest: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
       const repository = await requirePrepared(project, operation), manifest = manifestFor(project, owner, repository);
@@ -501,9 +501,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),
     findWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.findWorktree(project, owner, scoped)),
     resolveWorktreeBinding: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.resolveWorktreeBinding(project, owner, scoped)),
-    listWorktreeManifests: (project: WorkerProject, operation: Operation) => tracked(operation, scoped => manager.listWorktreeManifests(project, scoped)),
+    listWorktreeManifests: (project: WorkerProject, operation: Operation, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktreeManifests(project, scoped, includeOtherProjects)),
     retireWorktreeManifest: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.retireWorktreeManifest(project, owner, scoped)),
-    scanWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.scanWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
+    scanWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false, settled: readonly OwnedWorktree[] = []) => tracked(operation, scoped => manager.scanWorktrees(project, scoped, allowMissingRepository, includeOtherProjects, settled)),
     listWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
     removeWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeWorktree(project, owner, scoped)),
     dispose: manager.dispose,

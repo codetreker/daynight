@@ -12,7 +12,7 @@ import { requireImplementedWorkerBackend } from "./backend.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -35,7 +35,7 @@ import type { ExecutionAdvance } from "./execution.js";
 import { isUnavailableProject } from "./remote.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
-import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 import { encodeWorktree } from "./monitoring/worktree.js";
@@ -374,7 +374,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
 
   const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
-  const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set(), fileGated: ReadonlySet<string> = new Set()): Promise<Snapshot> => {
+  const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set(), fileGated: ReadonlySet<string> = new Set(), onlyProject?: string): Promise<Snapshot> => {
     const observed = await listHerdr(signal);
     const herdr = observed;
     const owners = new Map<string, ResourceOwner>();
@@ -449,6 +449,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       return true;
     };
     for (const project of options.store.listProjects()) {
+      if (onlyProject !== undefined && project.projectId !== onlyProject) continue;
       const warnings = new Map<string, string>();
       currentWarnings.set(project.projectId, warnings);
       if (fileGated.has(project.projectId)) continue;
@@ -460,8 +461,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         ? configuration.repositories.some(repository => repository.project.projectId === project.projectId)
         : configuration.targetProjectIds.includes(project.projectId);
       try {
-        const scan = await workerOperation(operation => options.git.scanWorktrees(project, operation, unavailable.has(project.projectId) || !target, true), signal);
+        const manifests = await workerOperation(operation => options.git.listWorktreeManifests(project, operation, true), signal);
+        const settled: typeof manifests = [];
+        for (const manifest of manifests) {
+          const mapping = options.store.getProject(manifest.owner);
+          if (mapping === null || (mapping.localPath !== project.localPath && await realpath(mapping.localPath) !== await realpath(project.localPath)) || repositoryIdentity(mapping.repoUrl) !== repositoryIdentity(project.repoUrl)) throw new Error("The worktree manifest conflicts with its original project repository.");
+          if (!currentClaims.some(owner => key(owner) === key(manifest.owner)) && await manifestSettled(project, manifest.owner, manifest.binding)) settled.push(manifest);
+        }
+        const scan = await workerOperation(operation => options.git.scanWorktrees(project, operation, unavailable.has(project.projectId) || !target, true, settled), signal);
         if (!scan.enumerationComplete || scan.unknown.length > 0) throw scan.unknown[0]?.error ?? new Error("Git resource enumeration is incomplete.");
+        const afterScan = await workerOperation(operation => options.git.listWorktreeManifests(project, operation, true), signal);
+        if (!isDeepStrictEqual(manifests, afterScan)) throw new Error("Worktree manifests changed during resource observation.");
         for (const item of scan.quarantined) {
           if (!await provenQuarantine(item.owner, project)) throw new Error("The quarantined worktree has no unambiguous independent ownership proof.", { cause: item.error });
         }
@@ -481,6 +491,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (independentOwners.some(other => key(other) === key(worktree.owner)) && !await provenQuarantine(worktree.owner, project)) throw new Error("The worktree manifest conflicts with its original execution binding.");
         }
         worktrees = scan.validated;
+        // A manifest whose checkout and registration are absent is not itself
+        // proof that its previous operation settled. Retain its owner until
+        // durable backend or joined-operation evidence establishes settlement.
+        const present = new Set([...scan.validated.map(item => key(item.owner)), ...scan.quarantined.map(item => key(item.owner))]);
+        for (const { owner, binding } of manifests) {
+          if (present.has(key(owner)) || settled.some(item => key(item.owner) === key(owner) && item.owner.worktreeId === owner.worktreeId && item.binding.worktreePath === binding.worktreePath)) continue;
+          recordOwner(owner); unresolved.add(key(owner));
+        }
       }
       catch (error) {
         if (isWorkerCancellation(error, signal ?? normalSignal)) throw error;
@@ -673,7 +691,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     // Persist ownership before a stop can close the only workspace proving it.
     return options.store.registerPending({ ...owner, agent, sessionId: pane !== undefined && liveAgent(pane) && pane.nativeSession !== null ? pane.nativeSession.sessionId : null });
   };
-  const runCleanup = async (owner: CleanupTarget, deleteWorktree: boolean, signal?: AbortSignal, scope?: TerminalCleanupContext, control = false): Promise<void> => {
+  const runCleanup = async (owner: CleanupTarget, deleteWorktree: boolean, signal?: AbortSignal, scope?: TerminalCleanupContext, control = false): Promise<WorktreeBinding | undefined> => {
     if (deleteWorktree && hasWorktreeIdentity(owner) && scope === undefined) {
       const attempt = { owner, attemptId: randomUUID() };
       executionCapacity.beginAttempt(attempt);
@@ -741,8 +759,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const project = projectFor(owner);
           const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
           if (binding === null) await cleanupOperation(operation => options.git.removeUnpublishedReservation(project, owner, operation), signal);
-          else await cleanupOperation(operation => options.git.removeWorktree(project, owner, operation), signal);
+          else {
+            await cleanupOperation(operation => options.git.removeWorktree(project, owner, operation), signal);
+            if (await cleanupOperation(operation => options.git.findWorktree(project, owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+            const after = await cleanupOperation(operation => options.git.resolveWorktreeBinding(project, owner, operation), signal);
+            if (!isDeepStrictEqual(binding, after)) throw new Error("The original worktree binding changed during cleanup.");
+          }
           if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner);
+          return binding ?? undefined;
         }
         return;
       }
@@ -750,7 +774,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
         if (result.complete) {
           if (deleteWorktree) { if (result.task.status !== "done") options.webStore.completeTask(owner, now()); if (local && executionCapacity.stopped(owner)) options.store.completeTask(owner); }
-          return;
+          return deleteWorktree ? result.task.resources.worktree ?? undefined : undefined;
         }
         await delay(1000, undefined, signal === undefined ? {} : { signal });
       }
@@ -763,8 +787,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await cleanupOperation(operation => options.herdr.ensureInstance(operation), signal);
     const resources = await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal);
     const task = recordMissingClaim(owner, actualTaskPane(owner, resources));
-    await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
+    const binding = await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
     if (deleteWorktree && task !== null && task.status !== "done" && executionCapacity.stopped(owner)) options.store.completeTask(owner);
+    return binding;
   };
 
   const observeArchiveRepair = (owner: CleanupTarget, code: ArchiveRepairCode, nextAttemptAt: number): void => {
@@ -816,14 +841,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           } catch (error) { throw new WorkerCleanupError("archive", error); }
           archiveProbes.delete(identityKey);
         }
-        await runCleanup(owner, true, signal);
+        const completedBinding = await runCleanup(owner, true, signal);
         const actual = ending.get(identityKey);
         if (actual && hasWorktreeIdentity(actual) && !executionCapacity.stopped(actual)) throw new WorkerCleanupError("agent-stop", new Error("The original execution stop remains unknown; its reservation is retained."));
         const local = options.store.getTask(owner), web = options.webStore?.getTask(owner);
         if (hasWorktreeIdentity(owner) && web == null && local?.agentControlMode !== "web" && lifecycle()?.archive !== undefined) return;
-        const completedBinding = hasWorktreeIdentity(owner) ? await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), signal) : null;
         options.store.deleteCleanupSchedule(owner);
-        if (hasWorktreeIdentity(owner) && completedBinding !== null) settledMetadata.set(key(owner), completedBinding.worktreePath);
+        if (hasWorktreeIdentity(owner) && completedBinding !== undefined) settledMetadata.set(key(owner), completedBinding.worktreePath);
         selectedWorktrees.release(ending.get(identityKey) ?? owner);
         ending.delete(identityKey);
         cleanupRetries.delete(identityKey);
@@ -1331,6 +1355,29 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       reconcileNeverStarted();
     }
   };
+  const manifestSettled = async (project: WorkerProject, owner: ResourceOwner, binding: WorktreeBinding): Promise<boolean> => {
+    const identity = key(owner), local = options.store.getTask(owner), web = options.webStore?.getTask(owner);
+    if (jobs.has(identity) || ending.has(identity) || options.store.getCleanupSchedule(owner) !== null || local !== null && local.status !== "done") return false;
+    const matchesRetained = (cwd: string): boolean => retainedWorktreePathInScope(project.localPath, owner, cwd)
+      && path.basename(cwd) === path.basename(binding.worktreePath);
+    const nativeResources = (lifecycle()?.archive?.resources() ?? []).filter(resource => key(resource.owner) === identity);
+    const archived = nativeResources.filter(hasConfirmedHerdrResourceDeletion);
+    const retired = (lifecycle()?.neverStarted?.retired() ?? []).filter(record => key(record.owner) === identity);
+    const webDone = web != null && web.status === "done" && web.cleanup?.kind === "terminal";
+    const webCwd = web?.resources.worktree?.worktreePath ?? null;
+    const settledCwd = settledMetadata.get(identity);
+    if (web != null && (nativeResources.length > 0 || retired.length > 0 || responsibilities().some(value => key(value) === identity))) throw new Error("The original claim has conflicting backend responsibilities.");
+    if (settledCwd === undefined && !webDone && archived.length === 0 && retired.length === 0) return false;
+    if (settledCwd !== undefined && !matchesRetained(settledCwd)
+      || webDone && (web!.worktreeId !== owner.worktreeId || webCwd === null || !retainedWorktreePathInScope(web!.repositoryPath, owner, webCwd)
+        || !await sameWorktreeLocation(web!.repositoryPath, project.localPath) || repositoryIdentity(web!.repoUrl) !== repositoryIdentity(project.repoUrl)
+        || path.relative(web!.repositoryPath, webCwd) !== path.relative(project.localPath, binding.worktreePath)
+        || web!.resources.worktree!.branch !== binding.branch
+        || !await sameWorktreeLocation(web!.resources.worktree!.commonDirectory, binding.commonDirectory))
+      || archived.some(resource => resource.owner.worktreeId !== owner.worktreeId || !matchesRetained(resource.worktreePath))
+      || retired.some(record => record.owner.worktreeId !== owner.worktreeId || !matchesRetained(record.cwd))) throw new Error("The settled backend binding conflicts with its worktree manifest.");
+    return true;
+  };
   const retireSettledMetadata = async (inventory: ReadonlyMap<string, Task>, prepared: ReadonlySet<string>): Promise<void> => {
     for (const project of options.store.listProjects()) {
       if (!prepared.has(project.projectId)) continue;
@@ -1344,20 +1391,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       for (const { owner, binding } of manifests) {
         const identity = key(owner);
         if (inventory.has(identity) || jobs.has(identity) || ending.has(identity) || tails.has(taskKey(owner))) continue;
-        const web = options.webStore?.getTask(owner);
-        const matchesRetained = (cwd: string): boolean => retainedWorktreePathInScope(project.localPath, owner, cwd)
-          && path.basename(cwd) === path.basename(binding.worktreePath);
-        const archived = (lifecycle()?.archive?.resources() ?? []).filter(resource => key(resource.owner) === identity && hasConfirmedHerdrResourceDeletion(resource));
-        const retired = (lifecycle()?.neverStarted?.retired() ?? []).filter(record => key(record.owner) === identity);
-        const webDone = web != null && web.status === "done" && web.cleanup?.kind === "terminal";
-        const webCwd = web?.resources.worktree?.worktreePath ?? null;
-        const settledCwd = settledMetadata.get(identity);
-        if (settledCwd === undefined && !webDone && archived.length === 0 && retired.length === 0) continue;
         try {
-          if (settledCwd !== undefined && !matchesRetained(settledCwd)
-            || webDone && (web!.worktreeId !== owner.worktreeId || webCwd === null || !matchesRetained(webCwd))
-            || archived.some(resource => resource.owner.worktreeId !== owner.worktreeId || !matchesRetained(resource.worktreePath))
-            || retired.some(record => record.owner.worktreeId !== owner.worktreeId || !matchesRetained(record.cwd))) throw new Error("The settled backend binding conflicts with its worktree manifest.");
+          if (!await manifestSettled(project, owner, binding)) continue;
           const complete = await serialize(owner, async () => {
             if (jobs.has(identity) || ending.has(identity) || options.store.getCleanupSchedule(owner) !== null) return false;
             const local = options.store.getTask(owner);
@@ -1710,9 +1745,26 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
     reconcileNeverStarted();
+    // A Git mutation may have removed its visible worktree before its owned
+    // process joins. Consult persisted responsibilities too, including before
+    // the first reconciliation after restart. Settled metadata alone is not a barrier.
+    const sameTask = (owner: Pick<ClaimIdentity, "projectId" | "taskId">): boolean => owner.projectId === target.projectId && owner.taskId === target.taskId;
+    if ([...ending.values(), ...options.store.listCleanupSchedules(), ...options.store.listUnfinishedTasks(), ...(options.webStore?.listUnfinishedTasks() ?? [])].some(sameTask)) throw new Error("The original task cleanup remains pending; a new claim cannot be acquired.");
     const retained = responsibilities();
     assertHerdrResourceBudget(lifecycle()?.archive?.resources() ?? [], options.availableDiskBytes?.() ?? 1073741824n);
     if (retained.some(owner => owner.projectId === target.projectId && owner.taskId === target.taskId)) throw new Error("The original Herdr worktree remains reserved until archive finalization; a new claim cannot be acquired.");
+  };
+  const assertCanResume = async (target: Pick<ClaimIdentity, "projectId" | "taskId">, signal: AbortSignal): Promise<void> => {
+    assertCanAcquire(target);
+    const project = projectFor(target);
+    // Management must not clone a missing retained repository.
+    await lstat(project.localPath);
+    await workerOperation(operation => options.git.prepareRepository(project, operation), signal);
+    await ensureHerdr(signal);
+    const resources = await snapshot(signal, new Set([target.projectId]), [], new Set(), new Set(), target.projectId);
+    if (!resources.scannedProjects.has(target.projectId) || resources.unavailableProjects.has(target.projectId)) throw new Error("The original project worktree observation is incomplete; a new claim cannot be acquired.");
+    if ([...resources.owners.values()].some(owner => owner.projectId === target.projectId && owner.taskId === target.taskId)) throw new Error("The original task worktree remains reserved; a new claim cannot be acquired.");
+    assertCanAcquire(target);
   };
   const registerClaim = (task: Task): void => {
     const claim = readWorkerClaim(task.properties);
@@ -1752,6 +1804,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     },
     stopProject,
     assertCanAcquire,
+    assertCanResume,
     registerClaim,
     tick: async (): Promise<void> => {
       if (shuttingDown || ticking) return;
@@ -1803,12 +1856,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const { owner } = await readSource(identity);
       await ensureHerdr(normalSignal);
       await serialize(identity, async () => {
-        await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
+        const binding = await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
         if (settings.deleteWorktree === true) {
           if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
-          const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), normalSignal);
           options.store.deleteCleanupSchedule(owner);
-          if (binding !== null) settledMetadata.set(key(owner), binding.worktreePath);
+          if (binding !== undefined) settledMetadata.set(key(owner), binding.worktreePath);
         }
       });
       return owner;
@@ -1816,11 +1868,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     completeSource: async (owner: ResourceOwner): Promise<void> => {
       await ensureHerdr(normalSignal);
       await serialize(owner, async () => {
-        await runCleanup(owner, true, normalSignal, undefined, true);
+        const binding = await runCleanup(owner, true, normalSignal, undefined, true);
         if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");
-        const binding = await cleanupOperation(operation => options.git.resolveWorktreeBinding(projectFor(owner), owner, operation), normalSignal);
         options.store.deleteCleanupSchedule(owner);
-        if (binding !== null) settledMetadata.set(key(owner), binding.worktreePath);
+        if (binding !== undefined) settledMetadata.set(key(owner), binding.worktreePath);
       });
     },
     shutdown: async (): Promise<boolean> => {

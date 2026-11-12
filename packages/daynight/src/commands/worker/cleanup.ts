@@ -5,13 +5,13 @@ import type { WorkerAgent } from "../../api/types.js";
 import { actualTaskPane, executionContext, liveAgent, observeWorkerPhase, originalWorktreePath, settleWorkerStops } from "./execution.js";
 import type { ExecutionDependencies } from "./execution.js";
 import { workerCleanupPrompt } from "./prompts.js";
-import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { LocalTask, ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import type { CleanupRequest } from "./execution-stop.js";
 
 export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask };
 
 export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask">) => ({
-  advance: async (input: CleanupInput, request: CleanupRequest): Promise<void> => {
+  advance: async (input: CleanupInput, request: CleanupRequest): Promise<WorktreeBinding | undefined> => {
     const { signal, deadline } = request;
     const deleteWorktree = request.kind === "terminal";
     let stage: "agent-stop" | "worktree-removal" = "agent-stop";
@@ -71,9 +71,14 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       stage = "worktree-removal";
       if (deleteWorktree) {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, false);
+        const binding = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
         await cleanupOperation(operation => deps.git.removeWorktree(input.project, input.owner, operation), signal);
         if (await cleanupOperation(operation => deps.git.findWorktree(input.project, input.owner, operation), signal) !== null) throw new Error("The original task worktree resources still exist after cleanup.");
+        const after = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
+        if (binding?.worktreePath !== after?.worktreePath || binding?.repositoryPath !== after?.repositoryPath || binding?.commonDirectory !== after?.commonDirectory || binding?.branch !== after?.branch) throw new Error("The original worktree binding changed during cleanup.");
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, true);
+        deps.emit({ kind: "cleaned", ...(input.task === undefined ? {} : { task: input.task }), message: "Confirmed task resources absent; the branch remains." });
+        return binding ?? undefined;
       }
       deps.emit({ kind: deleteWorktree ? "cleaned" : "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: deleteWorktree ? "Confirmed task resources absent; the branch remains." : "Confirmed task execution stopped and closed; its worktree remains." });
     } catch (error) { throw new WorkerCleanupError(stage, error); }

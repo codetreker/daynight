@@ -42,13 +42,15 @@ const fixture = () => {
   const submitPrompt = vi.fn<WorkerHerdrAdapter["tasks"]["submitPrompt"]>(async () => ({ submission: "submitted" as const, observation: observation("idle") }));
   const stopAndClose = vi.fn<WorkerHerdrAdapter["tasks"]["stopAndClose"]>(async () => { order.push("stop-close"); current = []; });
   const removeWorktree = vi.fn<WorkerGitManager["removeWorktree"]>(async () => { expect(current).toEqual([]); order.push("delete"); worktree = false; });
-  const findWorktree = vi.fn(async () => worktree ? { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` } : null);
+  const originalWorktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` };
+  const findWorktree = vi.fn(async () => worktree ? originalWorktree : null);
+  const resolveWorktreeBinding = vi.fn(async () => originalWorktree);
   const pendingStops = vi.fn(() => []);
   const observeExecutionStop = vi.fn<WorkerHerdrAdapter["tasks"]["observeExecutionStop"]>(async target => stopAndClose.mock.calls.length > 0 && current.length === 0
     ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "fixture" }, observedAt: time }
     : { kind: "unknown", target, error: new Error("Original stop receipt unavailable"), observedAt: time });
   const herdr = { tasks: { pendingStops, listResources, submitPrompt, stopAndClose, observeExecutionStop } } as unknown as WorkerHerdrAdapter;
-  const git = { removeWorktree, findWorktree } as unknown as WorkerGitManager;
+  const git = { removeWorktree, findWorktree, resolveWorktreeBinding } as unknown as WorkerGitManager;
   let time = 1_000;
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = () => createCleanupDriver(deps);
@@ -56,10 +58,19 @@ const fixture = () => {
   const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree
     ? { kind: "terminal", deadline: ensureCleanupSchedule(store, owner, time).deadline, immediateStop: false, scope: { attempt: { owner, attemptId: "fixture" }, onExecutionStopped }, ...(signal === undefined ? {} : { signal }) }
     : { kind: "shutdown", deadline: time + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
-  return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, observeExecutionStop, onExecutionStopped, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
+  return { store, task, owner, herdr, deps, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, observeExecutionStop, onExecutionStopped, removeWorktree, findWorktree, resolveWorktreeBinding, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
 };
 
 describe("cleanup from resource observations", () => {
+  it("does not settle metadata if its original binding changes during removal", async () => {
+    const f = fixture();
+    const binding = await f.resolveWorktreeBinding();
+    f.resolveWorktreeBinding.mockResolvedValueOnce(binding).mockResolvedValueOnce({ ...binding, worktreePath: `${binding.worktreePath}-changed` });
+    await expect(f.advance()).rejects.toThrow("binding changed during cleanup");
+    expect(f.removeWorktree).toHaveBeenCalledOnce();
+    expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
+  });
+
   it("reports progress only after resource absence is confirmed", async () => {
     const f = fixture();
     const observe = vi.fn(); f.deps.observePhase = observe;
@@ -258,7 +269,7 @@ describe("cleanup operation budgets", () => {
     await advanceTime(240_000);
     expect(f.removeWorktree).toHaveBeenCalledOnce();
     await advanceTime(240_000);
-    expect(await completion).toBeUndefined();
+    expect(await completion).toMatchObject({ branch: `daynight/${f.owner.taskId}` });
     expect(f.order).toEqual(["stop-close", "delete"]);
     expect(f.findWorktree).toHaveBeenCalledOnce();
   });
@@ -276,7 +287,7 @@ describe("cleanup operation budgets", () => {
     expect(f.store.getTask(f.task)?.status).toBe("active");
     f.clock(301_000);
     expect(f.store.getCleanupSchedule(f.owner)?.deadline).toBe(601_000);
-    expect(await f.advance()).toBeUndefined();
+    expect(await f.advance()).toMatchObject({ branch: `daynight/${f.owner.taskId}` });
     expect(f.submitPrompt).toHaveBeenCalledOnce();
     expect(f.findWorktree).toHaveBeenCalledOnce();
     expect(f.order).toEqual(["stop-close", "delete"]);

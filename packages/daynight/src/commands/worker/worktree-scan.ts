@@ -85,7 +85,7 @@ export const registrationsFor = async (index: RegistrationIndex, target: string,
 
 export const scanRepositoryWorktrees = async (
   project: WorkerProject, repository: WorkerRepository, index: RegistrationIndex, operation: Operation, readers: Readers,
-  inspect: (owner: ResourceOwner, observedPointer: string | null | undefined) => Promise<OwnedWorktree>, includeOtherProjects: boolean,
+  inspect: (owner: ResourceOwner, observedPointer: string | null | undefined) => Promise<OwnedWorktree>, includeOtherProjects: boolean, settled: readonly OwnedWorktree[] = [],
 ): Promise<WorktreeScan> => {
   const result: WorktreeScan = { enumerationComplete: true, validated: [], quarantined: [], unknown: [] };
   const manifests = createWorktreeManifestStore(repository.commonDirectory).list();
@@ -98,6 +98,7 @@ export const scanRepositoryWorktrees = async (
     operation.check();
     const owner: ResourceOwner = { projectId: manifest.projectId, taskId: manifest.taskId, claimId: manifest.claimId, worktreeId: manifest.worktreeId };
     if (!includeOtherProjects && owner.projectId !== project.projectId) continue;
+    if (settled.some(item => item.owner.projectId === owner.projectId && item.owner.taskId === owner.taskId && item.owner.claimId === owner.claimId && item.owner.worktreeId === owner.worktreeId && path.basename(item.binding.worktreePath) === manifest.directoryName)) continue;
     try {
       const found = await inspect(owner, undefined);
       const leaf = await readers.directory(found.binding.worktreePath);
