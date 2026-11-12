@@ -199,7 +199,7 @@ describe("task execution presentation", () => {
     const unknownIndex = buildGraphIndex({ ...graph, tasks: [task("unknown-running", { status: "in_progress" }), task("unknown-done", { completedAt: start })],
       summary: { ...graph.summary, total: 2, inProgress: 1, done: 1 } });
     const ids = ["unknown-running", "unknown-done"];
-    const view = renderWithLocale(<StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />, { locale, taskCache: true });
+    const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={null}><StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} /></TaskExecutionClockProvider>, { locale, taskCache: true });
     expect(view.container.querySelector(".task-duration, .task-stuck-label")).toBeNull();
   });
 });

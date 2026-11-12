@@ -12,11 +12,11 @@ const messageId = '00000000-0000-4000-8000-000000000051';
 const time = '2026-10-20T09:00:00Z';
 const description = Array.from({ length: 60 }, (_, i) => `## Section ${i + 1}\n\nLong task description remains readable.`).join('\n\n');
 
-async function install(page: Page, timing = false) {
-  const task = detailFixture(projectId, taskId, { title: 'Reading task', description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}) });
-  const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
-  const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' });
-  const details = timing ? [task, successor, standalone] : [task]; const graph = graphFixture(details);
+async function install(page: Page, timing = false, completion = false) {
+  const task = detailFixture(projectId, taskId, { title: 'Reading task', description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
+  const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
+  const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
+  const details = timing || completion ? [task, successor, standalone] : [task]; const graph = graphFixture(details);
   const message = { id: messageId, author: { userId: TEST_VIEWER_ID, displayName: 'Reader', Agent: false }, body: 'Discussion text', createdAt: '2026-10-20T09:00:00.000Z' };
   const state = { writes: [] as string[], holdSync: null as Promise<void> | null, syncReads: 0 };
   await page.context().route('**/api/v1/**', async route => {
@@ -90,6 +90,96 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     } finally { state.holdSync = null; gate.resolve(); }
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`completion hints preserve navigation and focus at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await install(page, false, true);
+    await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    const header = page.locator(`[data-chain-id="${taskId}"] > .goal-header`);
+    const expand = page.locator(`#task-root-${taskId}`);
+    const completionButton = header.getByRole('button', { name: locale === 'en' ? 'View completion time for Reading task' : '查看 Reading task 的完成时间' });
+    const completionLabel = completionButton.locator('time[datetime="2026-10-22T09:59:50Z"]');
+    await expect(completionLabel).toBeVisible();
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await completionButton.focus();
+    const tooltip = header.getByRole('tooltip');
+    await expect(tooltip).toBeVisible();
+    await completionButton.click();
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    const oldButton = await completionButton.elementHandle();
+    const oldText = await completionLabel.textContent();
+    const gate = Promise.withResolvers<void>(); state.holdSync = gate.promise;
+    try {
+      await page.clock.fastForward(61_000);
+      await expect(completionLabel).not.toHaveText(oldText!);
+      await expect(tooltip).toBeVisible();
+      await expect(completionButton).toBeFocused();
+      expect(await completionButton.evaluate((element, old) => element === old, oldButton)).toBe(true);
+      await page.keyboard.press('Escape');
+      await expect(tooltip).toBeHidden();
+      await expect(completionButton).toBeFocused();
+      await expect(expand).toHaveAttribute('aria-expanded', 'false');
+      await page.mouse.move(0, 0);
+      await completionLabel.hover();
+      await expect(tooltip).toBeVisible();
+      await tooltip.hover();
+      await expect(tooltip).toBeVisible();
+      await expand.click();
+      await expect(page.locator(`[data-chain-id="${taskId}"] .goal-children-heading time[datetime="2026-10-22T09:59:30Z"]`)).toBeVisible();
+      const member = page.locator(`#chain-task-${taskId}-${successorId}`);
+      await expect(member.locator('time[datetime="2026-10-22T09:59:50Z"]')).toBeVisible();
+      await member.focus();
+      await expect(page.locator(`[data-chain-id="${taskId}"]`).getByRole('tooltip')).toBeVisible();
+      await page.keyboard.press('Tab');
+      await expect(member).not.toBeFocused();
+      await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+      const row = page.locator(`#standalone-task-${standaloneId}`);
+      await expect(row.locator('time[datetime="2026-10-22T09:59:40Z"]')).toBeVisible();
+      const descriptions = await row.getAttribute('aria-describedby');
+      expect(descriptions?.split(/\s+/).length).toBe(2);
+      const descriptionText = await row.evaluate(element => (element.getAttribute('aria-describedby') ?? '').split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' '));
+      expect(descriptionText).toContain('2026');
+      expect(descriptionText).toContain('40');
+      await row.click();
+      const dialog = page.locator('.task-detail-dialog');
+      const metadata = dialog.locator('.task-detail-metadata');
+      await expect(metadata.getByText(locale === 'en' ? 'Completion time' : '完成时间', { exact: true })).toBeVisible();
+      await expect(metadata.locator('time[datetime="2026-10-22T09:59:40Z"]')).toBeVisible();
+      await expect(metadata.locator('time[datetime="2026-10-22T09:59:40Z"]')).toContainText('2026');
+      await expect(metadata.locator('time[datetime="2026-10-22T09:59:40Z"]')).toContainText('40');
+      expect(await page.locator('button button, button a, a button').count()).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(state.writes).toEqual([]);
+    } finally { state.holdSync = null; gate.resolve(); }
+  });
+}
+
+test.describe('touch completion hints', () => {
+  test.use({ hasTouch: true });
+  test('tapping chain time does not expand or navigate and outside tap retains its action', async ({ page }) => {
+    const state = await install(page, false, true);
+    await page.setViewportSize({ width: 320, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: 'Task chains' }).click();
+    const header = page.locator(`[data-chain-id="${taskId}"] > .goal-header`);
+    const expand = page.locator(`#task-root-${taskId}`);
+    await header.getByRole('button', { name: 'View completion time for Reading task' }).tap();
+    await expect(header.getByRole('tooltip')).toBeVisible();
+    await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await expand.tap();
+    await expect(header.getByRole('tooltip')).toBeHidden();
+    await expect(expand).toHaveAttribute('aria-expanded', 'true');
+    expect(await page.locator('.task-detail-dialog, .task-chain-dialog').count()).toBe(0);
+    expect(state.writes).toEqual([]);
+  });
+});
 
 test('wide discussion keeps its reading widths and draft in modal, fullscreen and standalone views', async ({ page }) => {
   test.setTimeout(120_000);

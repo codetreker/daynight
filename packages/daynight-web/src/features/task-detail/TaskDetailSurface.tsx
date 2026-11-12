@@ -31,6 +31,7 @@ import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
 import { TaskId } from './TaskId';
+import { completedAtFor } from '../task-completion/model';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectMembers } from '../projects/ProjectMembers';
 import { mayWithdrawClaim, matchesWithdrawalReview, TaskClaimSummary, TaskWithdrawalConfirmation, TaskWithdrawalFeedback, type WithdrawalConfirmation } from './TaskClaim';
@@ -330,6 +331,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                     </section>
                     <dl className="task-detail-section task-detail-metadata">
                       <div><dt>{m.created}</dt><dd><time dateTime={detail.createdAt}>{format.dateTime(detail.createdAt)}</time></dd></div>
+                      {completedAtFor(detail) !== null && <div><dt>{messages.completion.field}</dt><dd><time dateTime={detail.completedAt!}>{format.dateTime(detail.completedAt!)}</time></dd></div>}
                       <div><dt>{m.updated}</dt><dd><time dateTime={detail.updatedAt}>{format.dateTime(detail.updatedAt)}</time></dd></div>
                       <div><dt>{m.taskId}</dt><dd className="task-detail-full-id"><TaskId key={`${projectId}/${taskId}`} value={detail.id} /></dd></div>
                     </dl>
