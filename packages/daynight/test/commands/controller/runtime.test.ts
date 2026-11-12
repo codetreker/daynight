@@ -337,13 +337,13 @@ test("commits the captured Controller proof through the journal constructor befo
   const proof = { pid: 321, startedAt: "original-controller" };
   fixture.capture.mockResolvedValue(proof);
   fixture.relayCreate.mockImplementation(() => {
-    expect(storage.open).toHaveBeenCalledWith("/private/controller/journal.sqlite", expect.objectContaining({ launchId: "launch" }), expect.objectContaining({ controllerProcess: proof, storagePermit: expect.objectContaining({ owner: "fixture" }) }));
+    expect(storage.open).toHaveBeenCalledWith(path.join("/private/controller", "journal.sqlite"), expect.objectContaining({ launchId: "launch" }), expect.objectContaining({ controllerProcess: proof, storagePermit: expect.objectContaining({ owner: "fixture" }) }));
   });
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
   try { await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); }
   finally { process.emit("SIGTERM", "SIGTERM"); await running; }
-  expect(storage.prepare).toHaveBeenCalledWith(expect.objectContaining({ mode: "writer", journalFile: "/private/controller/journal.sqlite", ticket: expect.objectContaining({ launchId: "launch" }) }), expect.objectContaining({ owner: "fixture" }));
+  expect(storage.prepare).toHaveBeenCalledWith(expect.objectContaining({ mode: "writer", journalFile: path.join("/private/controller", "journal.sqlite"), ticket: expect.objectContaining({ launchId: "launch" }) }), expect.objectContaining({ owner: "fixture" }));
   expect(storage.order.at(-1)).toBe("permit");
   expect(storage.order.indexOf("journal")).toBeGreaterThan(storage.order.indexOf("relay"));
 });
