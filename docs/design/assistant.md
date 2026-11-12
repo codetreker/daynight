@@ -128,6 +128,8 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 
 ## 扩展约束
 
+独立于项目 Task 的助手任务，其待实现的[认领凭据与转交合同](assistant-task-claims.md)规定跨 Worker 接收、原操作恢复和验证职责。该设计不改变本页已有 Bot 生命周期，也不表示助手任务 API 已交付。
+
 公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
 默认与偏好取舍见[默认解析决策](../../.agents/notes/archived/architecture/2026-11-04-bot-default-resolution.md)及[有界创建选择决策](../../.agents/notes/implemented/architecture/2026-11-07-bounded-bot-creation-selection.md)。管理定义取舍见[管理定义决策](../../.agents/notes/archived/architecture/2026-11-04-bot-definition-storage.md)。
