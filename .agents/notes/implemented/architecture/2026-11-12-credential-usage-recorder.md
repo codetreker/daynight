@@ -24,6 +24,22 @@ owns the lifecycle and diagnostic contract. The
 and capacity, and the [persistence decision](2026-11-12-credential-usage-persistence.md)
 owns transaction outcomes and driver cleanup.
 
+The production App constructs the recorder from its existing persistence backend
+and explicitly starts that single instance. Root cancellation leaves admitted
+requests able to record during HTTP grace; application cancellation separately
+stops database work. The App joins all producers before releasing dependencies.
+Its outer drain and close errors express whole-application completion separately
+from retained failures, so a completed flush failure cannot strand unused
+resources. Runtime retains those causes and continues cleanup when completion is
+confirmed. Persistence joins driver resources through its original close channel.
+
+The HTTP wrapper installs the fixed collector after request correlation. A narrow
+publication helper logs a copied revision before long protocol work, then
+acknowledges only successful output. Completion, panic and abort publish any
+remaining revision without repeating an already confirmed one. Protocol faults
+remain under the request record's credential_usage group; raw errors and request
+data never enter that group.
+
 ## Alternatives
 
 **Write metadata during authentication.** Database pool waits, locks and failures
@@ -35,10 +51,20 @@ subject and failure category during logging backpressure. Per-key summaries
 retain those facts within the sampler's existing memory bound, at the cost of
 admission failures when dirty slots occupy capacity.
 
+**Require a nil drain result before releasing dependencies.** A completed
+recording failure would permanently prevent cleanup. Whole-application completion
+must be explicit: a completed child error cannot prove other producers stopped.
+
+**Publish only when the handler returns.** A long connection would hide an
+admission fault until it disconnects. Explicit publication before long protocol
+handling preserves timely diagnosis, with the wrapper as a fallback.
+
 ## Consequences
 
 A process crash or exhausted retries can lose samples; the recorder is not a
 durable queue. Slow logging can delay shutdown and consume resident capacity,
 but does not serialize request admission or database work. The recorder joins
-its own goroutines, while persistence closes and joins driver resources. App and
-protocol integration are separate responsibilities.
+its own goroutines, while persistence closes and joins driver resources. The App
+owns activation and protocol wrappers own publication. Successful authentication
+and rotation entry points remain responsible for producing events and invoking
+early publication; starting the recorder alone does not produce those events.

@@ -17,6 +17,7 @@ import (
 	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -78,6 +79,7 @@ type TaskStepsOperations interface {
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
+	CredentialUsage  *credentialusage.Recorder
 	Identity         IdentityOperations
 	OAuth            *oauth.Authenticator
 	OAuthGrants      *oauthcore.GrantLifecycle
