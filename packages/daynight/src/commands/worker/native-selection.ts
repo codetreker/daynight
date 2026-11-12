@@ -59,13 +59,15 @@ export const discoverWorkerNativeCapabilities = (options: NativeProbeOptions, op
 
 /** Retain every process scope by canonical resource, including targets no longer desired. */
 export const createNativeSelectionVerifier = () => {
-  type State = { pending: Map<string, BotCliProbeCleanupError>; tail: Promise<void>; revision: number };
+  type State = { pending: Map<string, BotCliProbeCleanupError>; tail: Promise<void>; revision: number; recipes: Set<string> };
   const states = new Map<string, State>(); let closed = false;
+  const recipe = (launch: ResolvedToolLaunch) => probeResourceKey(launch, { cwd: "", environment: {} });
   const key = (options: NativeProbeOptions) => options.toolLaunch ? probeResourceKey(options.toolLaunch, { cwd: options.cwd, environment: options.environment })
     : JSON.stringify([options.native.agent, options.cwd, options.environment]);
   const state = (options: NativeProbeOptions): State => {
     const id = key(options); let value = states.get(id);
-    if (!value) { value = { pending: new Map(), tail: Promise.resolve(), revision: 0 }; states.set(id, value); }
+    if (!value) { value = { pending: new Map(), tail: Promise.resolve(), revision: 0, recipes: new Set() }; states.set(id, value); }
+    if (options.toolLaunch) value.recipes.add(recipe(options.toolLaunch));
     return value;
   };
   const retain = (owner: State, error: unknown, seen = new Set<unknown>()): void => {
@@ -85,8 +87,7 @@ export const createNativeSelectionVerifier = () => {
     }
     if (failures.length) throw new AggregateError(failures, "Native selection probe cleanup remains unconfirmed.");
   };
-  const enqueue = <T>(options: NativeProbeOptions, operation: Operation, invoke: () => Promise<T>): Promise<T> => {
-    const owner = state(options);
+  const enqueueOwner = <T>(owner: State, operation: Operation, invoke: () => Promise<T>): Promise<T> => {
     const running = owner.tail.then(async () => {
       if (closed) throw new Error("Native selection verifier is closed.");
       operation.check(); await cleanup(owner, operation); operation.check();
@@ -95,6 +96,7 @@ export const createNativeSelectionVerifier = () => {
     });
     owner.tail = running.then(() => {}, () => {}); return running;
   };
+  const enqueue = <T>(options: NativeProbeOptions, operation: Operation, invoke: () => Promise<T>): Promise<T> => enqueueOwner(state(options), operation, invoke);
   const settle = async (operation?: Operation): Promise<void> => {
     const errors: unknown[] = [];
     for (const owner of states.values()) {
@@ -108,6 +110,11 @@ export const createNativeSelectionVerifier = () => {
   };
   return {
     reconcile: (options: NativeProbeOptions, operation: Operation): Promise<void> => enqueue(options, operation, async () => {}),
+    reconcileRecipe: async (launch: ResolvedToolLaunch, operation: Operation): Promise<void> => {
+      operation.check(); if (closed) throw new Error("Native selection verifier is closed.");
+      const id = recipe(launch);
+      await Promise.all([...states.values()].filter(owner => owner.recipes.has(id)).map(owner => enqueueOwner(owner, operation, async () => {})));
+    },
     verify: async (options: NativeProbeOptions, operation: Operation): Promise<void> => { await enqueue(options, operation, () => runNativeProbe(options, operation, "verify")); },
     discover: (options: NativeProbeOptions, operation: Operation): Promise<NativeModelObservation> => enqueue(options, operation, () => runNativeProbe(options, operation, "discover")),
     status: (options: NativeProbeOptions, operation: Operation): Promise<string> => enqueue(options, operation, async () => {
@@ -135,9 +142,12 @@ export const createWorkerToolInspector = (options: { cwd: string; environment: N
   const invocation = (launch: ResolvedToolLaunch, scope = options) => ({ file: launch.command.file, toolLaunch: launch, environment: scope.environment, workingDirectory: scope.cwd });
   const modelProbe = <T>(input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation, run: () => Promise<T>): Promise<T> => codex.observe(invocation(input.toolLaunch, input), operation, run);
   return {
-    reconcile: (launch: ResolvedToolLaunch, operation: Operation): Promise<void> => withinOperation(codex.observe(invocation(launch), operation, async () => {
-      if (launch.tool !== "herdr") await verifier.reconcile(request(launch), operation);
-    }), operation),
+    reconcile: async (launch: ResolvedToolLaunch, operation: Operation): Promise<number> => {
+      const receipt = await withinOperation(codex.reconcileRecipe(launch, operation), operation);
+      if (launch.tool !== "herdr") await withinOperation(verifier.reconcileRecipe(launch, operation), operation);
+      return receipt;
+    },
+    admit: (launch: ResolvedToolLaunch, receipt: unknown): void => codex.admitRecipe(launch, receipt),
     discover: (input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation): Promise<NativeModelObservation> => modelProbe(input, operation, () => verifier.discover(input, operation)),
     verify: (input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation): Promise<void> => modelProbe(input, operation, () => verifier.verify(input, operation)),
     check: async (launch: ResolvedToolLaunch, operation: Operation): Promise<{ version: string; checkedAt: string }> => {

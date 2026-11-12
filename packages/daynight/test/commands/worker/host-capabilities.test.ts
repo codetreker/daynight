@@ -289,7 +289,7 @@ describe("assistant host cleanup recovery", () => {
 it("uses the shared frozen inspector for Worker tools and leaves its borrowed cleanup owner with the Worker", async () => {
   const launches = new Map(["codex", "copilot"].map(tool => [tool, { tool, context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch]));
   const check = vi.fn(async (_launch: import("../../../src/platform/tool-executables.js").ResolvedToolLaunch) => ({ version: "1.0.105", checkedAt: new Date().toISOString() })), close = vi.fn(async () => {});
-  const inspector = { check, close, reconcile: vi.fn(async () => {}), assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
+  const inspector = { check, close, reconcile: vi.fn(async () => 1), admit() {}, assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
   const runCommand = vi.fn(output), operation = createOperation();
   const collector = createAssistantHostCollector({ workingDirectory: root, configuration, environment: {}, resolveExecutable: provider => provider, runCommand,
     selectToolLaunch: async provider => launches.get(provider), toolInspector: inspector });
