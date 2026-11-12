@@ -8,8 +8,8 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
 const user = { personalTeam: { id: "00000000-0000-4000-8000-000000000701", kind: "personal" as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
-const grant: OwnerGrant = { id: "00000000-0000-4000-8000-000000000002", clientName: "App", clientId: "https://client.test", resource: "https://daynight.cc/mcp", scope: "daynight:mcp", createdAt: "2026-10-25T10:00:00Z", expiresAt: "2099-10-25T10:00:00Z", revokedAt: null, status: "active" };
-const token = { id: "00000000-0000-4000-8000-000000000005", name: "CLI", createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
+const grant: OwnerGrant = { id: "00000000-0000-4000-8000-000000000002", lastUsedAt: null, clientName: "App", clientId: "https://client.test", resource: "https://daynight.cc/mcp", scope: "daynight:mcp", createdAt: "2026-10-25T10:00:00Z", expiresAt: "2099-10-25T10:00:00Z", revokedAt: null, status: "active" };
+const token = { id: "00000000-0000-4000-8000-000000000005", name: "CLI", lastUsedAt: null, createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const fixture = (items: readonly OwnerGrant[] = [grant]) => ({ list: vi.fn().mockResolvedValue(items), revoke: vi.fn().mockImplementation((_id, _user, _signal, _mismatch, onDispatch?: () => void) => { onDispatch?.(); return Promise.resolve(true); }) });
 const panel = (transport: ReturnType<typeof fixture>) => <OwnerGrantsPanel user={user} onIdentityMismatch={vi.fn()} transport={transport} />;
@@ -19,6 +19,50 @@ beforeEach(() => sessionStorage.clear());
 afterEach(() => invalidateAuthRequests());
 
 describe("application authorizations", () => {
+  it("preserves open details and focus as refreshed usage advances, ignores older values and isolates replacement grants", async () => {
+    const old = "2026-11-12T11:00:00Z", recent = "2026-11-12T12:00:00.123456789Z";
+    const read = deferred<readonly OwnerGrant[]>();
+    const transport = fixture([{ ...grant, lastUsedAt: old }]);
+    transport.list.mockResolvedValueOnce([{ ...grant, lastUsedAt: old }]).mockReturnValueOnce(read.promise)
+      .mockResolvedValueOnce([{ ...grant, lastUsedAt: null }])
+      .mockResolvedValueOnce([{ ...grant, id: "00000000-0000-4000-8000-000000000003", lastUsedAt: null }]);
+    render(panel(transport)); await screen.findByText("App");
+    const summary = document.querySelector(".credential-last-use summary")!;
+    fireEvent.click(summary); expect(summary.parentElement).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    summary.focus(); expect(summary).toHaveFocus();
+    await act(async () => read.resolve([{ ...grant, lastUsedAt: recent }]));
+    expect(document.querySelector(".credential-last-use summary")).toBe(summary);
+    expect(summary).toHaveFocus(); expect(summary.parentElement).toHaveAttribute("open");
+    expect(summary.querySelector("time")).toHaveAttribute("datetime", recent);
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await act(async () => {});
+    expect(summary.querySelector("time")).toHaveAttribute("datetime", recent);
+    expect(summary.parentElement).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await act(async () => {});
+    expect(screen.getByText("最后使用: 暂无使用记录")).toBeInTheDocument();
+    expect(document.querySelector(".credential-last-use")).toBeNull();
+    expect(transport.list).toHaveBeenCalledTimes(4);
+  });
+
+  it("retains the selected grant and dialog focus while an updated list arrives", async () => {
+    const first = fixture([{ ...grant, lastUsedAt: "2026-11-12T11:00:00Z" }]);
+    const read = deferred<readonly OwnerGrant[]>();
+    const next = fixture(); next.list.mockReturnValue(read.promise);
+    const node = (transport: ReturnType<typeof fixture>) => <OwnerGrantsPanel user={user} onIdentityMismatch={vi.fn()} transport={transport} />;
+    const view = render(node(first)); await screen.findByText("App"); open();
+    const dialog = screen.getByRole("dialog"), close = within(dialog).getByRole("button", { name: "关闭对话框" });
+    close.focus(); expect(close).toHaveFocus();
+    view.rerender(node(next));
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(close).toHaveFocus();
+    await act(async () => read.resolve([{ ...grant, lastUsedAt: "2026-11-12T12:00:00Z" }]));
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(close).toHaveFocus();
+    expect(within(dialog).getByText("App")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "撤销授权" }));
+    expect(next.revoke.mock.calls[0]?.[0]).toBe(grant.id);
+  });
+
   it("renders active, expired, revoked and empty states without granting PAT controls", async () => {
     const expired = { ...grant, id: "00000000-0000-4000-8000-000000000003", clientName: "Old", status: "expired" as const };
     const revoked = { ...grant, id: "00000000-0000-4000-8000-000000000004", clientName: "Gone", status: "revoked" as const, revokedAt: "2026-10-26T10:00:00Z" };

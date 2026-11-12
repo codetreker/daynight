@@ -29,7 +29,7 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { taskCach
 let actorRole: 'admin' | 'member' = 'admin';
 
 const user: CurrentUser = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: '00000000-0000-4000-8000-000000000201', name: 'Jianjun', email: 'a@example.com', emailVerified: true, avatarUrl: null };
-const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
+const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', lastUsedAt: null, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
 const member = (id: string, role: 'admin' | 'member' = 'member'): ProjectParticipant => ({ inheritedFrom: null,
   userId: id, profile: { name: id === user.id ? user.name : id, email: `${id}@example.com`, avatarUrl: null }, effectiveRole: role,
   directGrant: { projectId: '00000000-0000-4000-8000-000000000101', userId: id, role, version: 9223372036854775806n, createdAt: '2026-10-22T12:00:00Z', updatedAt: '2026-10-22T12:00:00Z' },

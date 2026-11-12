@@ -37,7 +37,7 @@ const defaults = (url: string): Response => {
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
   if (url === "/api/v1/me/tokens") return json({ items: [] });
-  if (url === "/api/v1/oauth/grants") return json({ userId, grants: [] });
+  if (url === "/api/v2/oauth/grants") return json({ userId, grants: [] });
   if (url === `/api/v1/projects/${projectId}`) return json({ id: projectId, name: "Raw project", repoUrl: "https://example.test/repo", createdAt: timestamp, updatedAt: timestamp, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1n } });
   if (url === `/api/v1/projects/${projectId}/access`) {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
@@ -150,7 +150,7 @@ describe("authentication language changes", () => {
     expect(date).toHaveValue("2099-10-22T12:45");
     expect(creation[1]!.signal!.aborted).toBe(false);
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
-    await act(async () => pending.resolve(json({ id: tokenId, name: "原始 device", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "secret-raw-once" }, 201)));
+    await act(async () => pending.resolve(json({ id: tokenId, name: "原始 device", lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "secret-raw-once" }, 201)));
     const revealed = await screen.findByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle });
     const secret = within(revealed).getByLabelText(zhCN.auth.management.secret.tokenLabel);
     expect(within(revealed).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
@@ -318,7 +318,7 @@ describe("authentication language changes", () => {
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {
     const invitationId = "00000000-0000-4000-8000-000000000005";
     const fetcher = install((url) => {
-      if (url === "/api/v1/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
+      if (url === "/api/v1/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
       if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [{ id: invitationId, projectId, createdBy: userId, createdAt: timestamp, expiresAt: "2099-10-29T12:34:56Z", consumedBy: null, consumedAt: null, revokedAt: null }] });
       return defaults(url);
     });
@@ -398,7 +398,7 @@ describe("authentication language changes", () => {
     let checks = 0;
     const fetcher = install((url, init) => {
       if (url === "/api/v1/me") checks++;
-      if (url === "/api/v1/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
+      if (url === "/api/v1/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
       return defaults(url);
     });
     const interaction = userEvent.setup();

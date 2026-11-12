@@ -4,7 +4,7 @@ import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const otherId = "00000000-0000-4000-8000-000000000003";
-const token = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
+const token = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", lastUsedAt: null, createdAt: "2026-10-25T10:00:00Z", expiresAt: null };
 const exact = "2099-10-25T12:34:56.123456789Z";
 const signal = () => new AbortController().signal;
 const response = (body: unknown, status = 200, principal: string | null = userId) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...(principal === null ? {} : { "Daynight-User-ID": principal }) } });
