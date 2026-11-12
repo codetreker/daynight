@@ -51,5 +51,7 @@ can fail under lock contention and its caller must decide whether to retry; pool
 network and commit failures remain possible. A null value means no use was
 recorded, not that the credential was never used. The writer completion result
 does not prove that pgx has finished asynchronously destroying a failed
-connection; persistence closure owns that resource. Event production, background
-sampling and public presentation remain separate capabilities.
+connection; persistence closure owns that resource. The separate
+[sampling decision](2026-11-12-credential-usage-sampling.md) owns bounded in-memory
+selection; event production, background execution and public presentation remain
+separate capabilities.
