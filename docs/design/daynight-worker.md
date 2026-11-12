@@ -436,6 +436,8 @@ Agent 完成全部交付和证据后，核验原 active claim、Worker 和 workt
 
 人工 retry/release 要求先停止 worker run，取得同一个实例锁后同步处理指定 claim。锁占用时明确提示停止 runner；命令没有后台队列或持久意图。
 
+原冻结 Herdr retry 通过执行级恢复入口重连或恢复原实例，不要求自动项目集合或已停止 daemon 的全局连接先成功。恢复仍核验最新的原 claim、Worker、worktree、Agent、mode、许可、暂停及在途项目停止；自动对账的项目筛选保持独立。共享 backend 继续核验同一冻结 launch 和完整停止证明，机制见[Herdr 工具启动设计](herdr-tool-launch.md#共享实例切换与恢复)。
+
 | 命令 | 同步动作 |
 |---|---|
 | retry | 核验仍属于本 worker 的 active claim，尝试一次重连或恢复；保持 claim、agent、worktree。macOS 不绕过持久 unknown 或缺失原 ID；Linux/Windows legacy NULL 按 info 后新建；Web 仅授权一次原身份恢复，原生 ID 或完整停止证明缺失时拒绝。pending 留给 run 正常调度。 |

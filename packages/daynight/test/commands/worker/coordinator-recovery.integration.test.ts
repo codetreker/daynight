@@ -151,6 +151,32 @@ it.each([{ paused: false, allowed: true }, { paused: true, allowed: true }, { pa
   } finally { running = true; await f.coordinator.shutdown(); }
 });
 
+it("keeps explicit frozen retry behind an in-progress project stop", async () => {
+  const f = await fixture(), candidate = f.candidates[0]!;
+  const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(970), worktreeId: uuid(971) };
+  f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
+  const local = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" })), tools = recordedHerdrTools();
+  const frozen = { ...configuration, toolLaunch: tools.agent, herdrLaunch: tools.herdr };
+  f.store.freezeNativeConfiguration(local, frozen);
+  const originalConfiguration = f.store.getNativeConfiguration(local);
+  f.store.setSessionId(local, uuid(972));
+  f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(f.herdr.ensureInstance).mockImplementation(async () => { await held; return { reconnected: true, version: "0.9.5", protocol: 22, snapshot: {} }; });
+  const restore = vi.fn(async () => ({ reconnected: false, version: "0.9.5", protocol: 22 as const, snapshot: {} }));
+  f.herdr.ensureExecution = restore;
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: frozen });
+  const stopping = coordinator.stopProject(f.project.projectId);
+  try {
+    await eventually(() => expect(f.herdr.ensureInstance).toHaveBeenCalledOnce());
+    await coordinator.advanceRetry(owner);
+    expect(restore).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.store.getTask(owner)).toMatchObject({ status: "active", claimId: owner.claimId, sessionId: uuid(972) });
+    expect(f.store.getNativeConfiguration(owner)).toEqual(originalConfiguration);
+  } finally { release(); await stopping; await coordinator.shutdown(); }
+});
+
 const webOutageFixture = async (platform: "linux" | "windows" = "linux", failure: "ensure" | "list" = "ensure", evidence: "complete" | "missing" | "no-worktree" | "no-execution" = "complete") => {
   const f = await fixture(2), [herdrCandidate, webCandidate] = f.candidates;
   const herdrOwner = { projectId: f.project.projectId, taskId: herdrCandidate!.id, claimId: uuid(960), worktreeId: uuid(961) };

@@ -369,7 +369,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
 
   const mayRestoreHerdr = async (local: LocalTask, owner: ResourceOwner, signal: AbortSignal): Promise<boolean> => {
     const fresh = await options.remote.readTask(local.projectId, local.taskId, signal), claim = readWorkerClaim(fresh.properties);
-    return fresh.id === local.taskId && fresh.projectId === local.projectId && fresh.status === "in_progress" && fresh.allowAgents && !readTaskPaused(fresh.properties)
+    return !projectStops.has(local.projectId) && fresh.id === local.taskId && fresh.projectId === local.projectId && fresh.status === "in_progress" && fresh.allowAgents && !readTaskPaused(fresh.properties)
       && claim?.state === "active" && claim.claimId === local.claimId && claim.workerId === options.workerId && claim.worktreeId === owner.worktreeId && claim.agent === local.agent && claim.agentControlMode === "herdr";
   };
   const ensureHerdr = async (signal?: AbortSignal, sources: readonly Task[] = []): Promise<void> => {
@@ -1780,7 +1780,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
       executionCapacity.invalidate(remoteOwner(remoteTask));
-      if (task.agentControlMode !== "web") await ensureHerdr(normalSignal, [remoteTask]);
+      // Frozen execution recovery performs its own fresh claim checks and does
+      // not require the project to be selected for automatic scheduling.
+      if (task.agentControlMode !== "web" && (options.store.getNativeConfiguration(task)?.herdrLaunch === undefined || options.herdr.ensureExecution === undefined)) await ensureHerdr(normalSignal, [remoteTask]);
       return serialize(identity, async () => {
         if (task.agentControlMode === "web" && options.webStore) {
           let record = options.webStore.getTask(task);

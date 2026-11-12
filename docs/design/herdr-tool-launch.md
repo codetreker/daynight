@@ -76,6 +76,8 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 原 claim 的 `ensureExecution` 只读该 claim 的冻结配置，要求与 journal 的 current selectionKey 相同。原 daemon 仍活时重连；只有原 daemon、两个 endpoint 和全部旧 native 树均已确认关闭，才可用同一冻结 launch 重启。该入口不允许把新目标 B 变成旧 claim A 的恢复工具。协调器在调用前重新读取任务，核对 active claim、Worker、worktree、模式、Agent、许可和暂停状态；已授予的本机 pending 与 active 执行均可恢复原 daemon，但 Agent 启动仍由后续容量和项目准入决定。普通清理仅重连，不因清理启动新 daemon。
 
+显式 retry 在持有原冻结 Herdr launch 且 backend 支持 `ensureExecution` 时，直接进入该原执行的恢复入口。此管理命令不启用自动项目集合，不能先要求仅重连的全局实例入口成功，也不能借此放宽自动对账的项目筛选。恢复前仍重新核验原执行身份、许可、暂停状态和正在执行的项目停止；共享 adapter 仍拥有完整停止证明。缺冻结 recipe 或不支持该入口的 legacy 路径保留原实例前置检查。
+
 混合模式的前置 Herdr 重连或资源读取失败时，协调器仍可调度本轮完整清单覆盖、项目已准备且保留原 worktree 与持久 `webExecution` 的 active Web 执行。该调度继续核对原 claim、许可、暂停和 backend 身份；取消不进入此路径。原 Herdr 错误仍上报，容量保持未知，不进入全局资源结算、pending 启动或新 claim 准入。原 Web 执行的显式 retry、清理和完成也按其冻结模式选择 backend，不以当前工具目标或其它 claim 的 Herdr 责任增加前置依赖。
 
 ## 观察与验证边界

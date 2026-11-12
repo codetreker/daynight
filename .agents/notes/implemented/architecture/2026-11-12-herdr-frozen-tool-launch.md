@@ -129,7 +129,12 @@ only its original frozen daemon after every old process tree is confirmed stoppe
 The [claim tool reservation](2026-11-12-herdr-claim-tool-reservations.md) also
 retains that selection while a claim request is outstanding and transfers it to
 the actual grant atomically. Authorized pending claims can restore the daemon
-without bypassing Agent capacity admission.
+without bypassing Agent capacity admission. Explicit retry enters that execution
+recovery directly when a frozen Herdr recipe and backend capability exist. Its
+management configuration intentionally selects no automatic projects, so global
+reconnection cannot be a prerequisite after normal shutdown. Fresh claim, Worker,
+worktree, Agent, mode, permission, pause and in-progress project-stop checks remain
+required; automatic reconciliation retains its project selection gates.
 Herdr connection and inventory failures do not prevent an independently retained
 active Web execution from being scheduled after its project and claim inventory
 are covered. Its original worktree and persistent Web execution remain required,
@@ -212,6 +217,12 @@ ownership and cleanup requirements.
 **Switch all platforms by draining one shared daemon.** macOS already isolates
 each run and can start a new execution with a different tool while old executions
 remain healthy. Shared drain is needed only for the shared-instance topology.
+
+**Broaden automatic project selection to admit explicit retry.** Explicit retry
+already has an execution-level recovery path with fresh authorization checks.
+Changing global selection would couple a single-claim management command to
+automatic scheduling and risk advancing unrelated work. Entering the existing
+path directly preserves that separation and the shared adapter's stop proof.
 
 **Refresh recipes or helper paths during recovery.** This can use a different
 installation under the same claim and native Session. Recovery retains original
