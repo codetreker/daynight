@@ -165,7 +165,9 @@ A feature may have tests at several layers, but each must prove a different resp
 
 ## Runners and Infrastructure
 
-Module test commands must not invoke another product module's tests or implicitly run product E2E. Installed-artifact validation, module browser tests, Go API integration, product E2E, deployment tests and tool tests each need explicit entries with clear responsibilities.
+Module test commands must not invoke another product module's tests or implicitly run product E2E. Installed-artifact validation, real-shell completion, module browser tests, Go API integration, product E2E, deployment tests and tool tests each need explicit entries with clear responsibilities. Ordinary CLI tests retain completion unit tests without invoking the real-shell matrix; ordinary Web unit and quality commands do not launch browser fixtures.
+
+Real-shell completion and frontend assistant browser validation run in an independent workflow on `main` pushes and manual dispatch, outside the ordinary PR `checks` gate. This scheduling does not reduce their scenarios or change their CLI/Web ownership. The [development guide](development.md#ci-selection) owns the workflow, commands and evidence boundaries.
 
 Product E2E has an independent Linux CI job selected by its framework and actual build inputs. Module tests retain their own jobs. A selected E2E job must actually succeed for the final gate: failure, cancellation or unexpected skipping cannot count as success. Unaffected changes may skip it through change selection.
 
