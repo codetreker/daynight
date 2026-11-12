@@ -68,6 +68,7 @@ const optionalText = (value: unknown, name: string): string | null => value === 
 const optionalBoolean = (value: unknown, name: string): boolean => { if (value === undefined) return false; if (typeof value !== "boolean") throw new TypeError(`${name} must be boolean.`); return value; };
 const pid = (value: unknown): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new TypeError("Herdr process ID must be a positive process identifier."); return value; };
 const counter = (value: unknown, name: string): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`); return value; };
+const diagnosticRemainingMs = (operation: Operation): number | null => { try { return Math.floor(operation.remainingMs()); } catch { return null; } };
 const paneShellNames = new Set(["sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish", "xonsh", "nu", "pwsh", "powershell", "cmd"]);
 const paneShellName = (value: unknown): boolean => typeof value === "string" && paneShellNames.has(value.split(/[\\/]/).at(-1)!.replace(/^-+/, "").replace(/\.exe$/, "").toLowerCase());
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
@@ -257,7 +258,12 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     while (await isExecuting(pid(intent.shellPid))) await wait(operation);
     const processes = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(processes.process_info, "PowerShell root process");
     if (info.pane_id !== binding.paneId) throw new Error("The prepared PowerShell process belongs to another pane.");
-    await mapping.verifyReady(pid(info.shell_pid), operation);
+    const readinessRemainingMs = diagnosticRemainingMs(operation);
+    try { await mapping.verifyReady(pid(info.shell_pid), operation); }
+    catch (cause) {
+      if (cause instanceof HerdrAgentActionError) throw cause;
+      throw new Error(`The original PowerShell root readiness phase failed (startedRemainingMs=${readinessRemainingMs}, remainingMs=${diagnosticRemainingMs(operation)}).`, { cause });
+    }
     await readOwned(context, binding, operation);
     return binding;
   };
@@ -619,7 +625,12 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         if (mapping !== null) {
           const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info"), info = object(result.process_info, "Prepared original shell process");
           if (info.pane_id !== binding.paneId) throw new Error("The prepared shell process belongs to another pane.");
-          await mapping.captureProcesses([pid(info.shell_pid)], operation);
+          const captureRemainingMs = diagnosticRemainingMs(operation);
+          try { await mapping.captureProcesses([pid(info.shell_pid)], operation); }
+          catch (cause) {
+            if (mapping.windowsCommand === undefined || cause instanceof HerdrAgentActionError) throw cause;
+            throw new Error(`The original PowerShell process capture phase failed (startedRemainingMs=${captureRemainingMs}, remainingMs=${diagnosticRemainingMs(operation)}).`, { cause });
+          }
         }
         activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
         return binding;

@@ -16,10 +16,12 @@ import type { WorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
+import { executeRawPreparationProbe, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
 
 const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
 const outputRoot = path.resolve(packageRoot, "../../.tmp/herdr-tools/research-platform");
+let windowsPreparationProbeAttempted = false;
 export const platformSystemEnvironment = (source: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const entries = Object.entries(source);
   return Object.fromEntries(["SystemRoot", "SystemDrive", "ComSpec", "WINDIR", "OS"].flatMap(key => {
@@ -46,6 +48,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const { createWorkerHerdr } = await import(new URL("../../../dist/commands/worker/herdr.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr.js");
   const { createHerdrRpcClient } = await import(new URL("../../../dist/commands/worker/herdr/rpc.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/rpc.js");
   const { createToolLaunchMapping } = await import(new URL("../../../dist/commands/worker/herdr/tool-launch.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/tool-launch.js");
+  const { createHerdrNativeEnvironment } = await import(new URL("../../../dist/commands/worker/herdr/instance.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/instance.js");
   await mkdir(outputRoot, { recursive: true });
   const root = await mkdtemp(path.join(outputRoot, `formal-${agent}-`)), nonce = randomUUID();
   const link = process.platform !== "win32" ? `/tmp/dn-a0bc-platform-${nonce.slice(0, 8)}` : null;
@@ -77,6 +80,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const operations: ReturnType<typeof createOperation>[] = [];
   const operation = (totalMs = 20_000) => { const result = createOperation({ ...(cleaning ? {} : { signal: cancellation.signal }), limits: { totalMs, requestMs: 10_000 } }); operations.push(result); return result; };
   let adapter: ReturnType<typeof createWorkerHerdr> | undefined, binding: HerdrTaskBinding | undefined, daemonPid: number | undefined, linked = false;
+  let preparingWorkspace = false, preparationProbeEnvironment: NodeJS.ProcessEnv | undefined;
   const mac = process.platform === "darwin" ? createMacProcessControl() : null;
   let daemonIdentity: MacProcessIdentity | undefined, originals: MacProcessIdentity[] = [];
   const mock = createServer((request, response) => {
@@ -109,6 +113,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     evidence.frozenArtifacts = { native: launch.artifacts.map(({ sha256 }) => sha256), herdr: herdrLaunch.artifacts.map(({ sha256 }) => sha256) };
     const configuration: ExecutionConfiguration = { agent, model: "gpt-5.4", args: agent === "codex" ? ["--no-alt-screen"] : ["--disable-client-telemetry", "--disable-builtin-mcps"], recoveryLimit: 0, toolLaunch: launch, herdrLaunch };
     const paths: WorkerPaths = { stateDirectory: root, configFile: path.join(root, "config.yml"), workerDirectory: root, databaseFile: path.join(root, "worker.sqlite"), configurationFile: path.join(root, "worker.json"), lockFile: path.join(root, "worker.lock"), herdrDirectory: path.join(route, "h"), logsDirectory: path.join(root, "logs"), temporaryDirectory: path.join(root, "tmp") };
+    preparationProbeEnvironment = { ...createHerdrNativeEnvironment(paths, environment), PATH: environment.PATH };
     adapter = createWorkerHerdr({ paths, homeDirectory: home, environment, agentEnvironment: { PATH: environment.PATH! }, herdrLaunch, readExecutionConfiguration: () => configuration, isolatedRun: process.platform === "darwin", onDaemonSpawn: async pid => { daemonPid = pid; } });
     evidence.ready = await adapter.ensureInstance(operation());
     if (mac && daemonPid) daemonIdentity = await mac.capture(daemonPid, "daemon");
@@ -120,7 +125,9 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       if (agent === "codex") evidence.features = (await execute(binary, ["features", "list"], { cwd, env: environment, timeout: 10_000 })).stdout;
     }
     const startup = adapter.createShellStartup();
+    preparingWorkspace = true;
     binding = await adapter.tasks.prepareWorkspace(context, "Real native platform validation", operation(), startup ? { shellNonce: startup.nonce } : undefined);
+    preparingWorkspace = false;
     const before = await adapter.tasks.processInfo(context, binding, operation()); evidence.shellBefore = before;
     const preparedMapping = await createToolLaunchMapping({ directory: paths.herdrDirectory, owner: context, launch, nativeEnvironment: environment, existingOnly: true }, operation());
     if (preparedMapping) evidence.preparedProcessJournal = await readFile(path.join(path.dirname(preparedMapping.manifestPath), "processes.json"), "utf8").catch(() => null);
@@ -309,10 +316,25 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     await new Promise<void>(resolve => mock.close(() => resolve())); evidence.cleanup.mockClosed = true;
     if (linked) { await unlink(link!); evidence.cleanup.shortLinkRemoved = true; }
     operations.forEach(operation => operation.dispose());
-    process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
-    const closed = !adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited");
+    let closed = !adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited");
+    if (closed && adapter && preparingWorkspace && evidence.error && process.platform === "win32" && !cancellation.signal.aborted && preparationProbeEnvironment && !windowsPreparationProbeAttempted) {
+      windowsPreparationProbeAttempted = true;
+      try {
+        const metadata = await import(new URL("../../../dist/commands/worker/herdr/tool-launch-lifecycle.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/tool-launch-lifecycle.js");
+        const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
+        const inventory = metadata.windowsMappingProcessInventoryCommand(preparationProbeEnvironment);
+        const marker = { ...inventory, args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", `[Console]::Out.Write('${preparationProbeMarker}')`] };
+        evidence.cleanup.preparationProbes = await runPreparationProbeSequence({ marker, inventory }, async (mode, input, active) => {
+          if (mode === "execFile") return executeRawPreparationProbe(input);
+          try { return { ...await metadata.runWindowsToolMetadataCommand(input, active), closed: true }; }
+          catch (error) { return { stdout: "", stderr: "", closed: !command.hasUnconfirmedHerdrCommandCleanup(error), outputCaptured: false, errorType: error instanceof Error ? error.name : "unknown" }; }
+        }, () => cancellation.signal.aborted);
+        if (evidence.cleanup.preparationProbes.some((probe: { closed: boolean }) => !probe.closed)) closed = false;
+      } catch (error) { evidence.cleanup.preparationProbeSetupError = error instanceof Error ? error.name : "unknown"; closed = false; }
+    }
     if (closed) { await rm(root, { recursive: true, force: true }); evidence.cleanup.runtimeDirectoryRemoved = true; }
     else evidence.cleanup.retainedDirectory = root;
+    process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
     await persist();
     const summary = { schemaVersion: 1, agent, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, nativeVersion: evidence.nativeVersion, frozenArtifacts: evidence.frozenArtifacts, expectedArguments: evidence.expectedArguments, argumentRoundTrip: evidence.argumentRoundTrip, externalScript: evidence.externalScript, originalShellPreserved: evidence.originalShellPreserved, platform: process.platform, architecture: process.arch, driverNode: evidence.driverNode, helperExecutable: evidence.helperExecutable, endpoints: adapter ? { api: adapter.paths.apiEndpoint, client: adapter.paths.clientEndpoint } : null, shortLink: link, daemonPid, shellPid: evidence.shellBefore?.shellPid, receipt: evidence.receipt ? { helperPid: evidence.receipt.helperPid, childPid: evidence.receipt.childPid, executable: path.basename(evidence.receipt.file) } : null, processProofCompleted: evidence.processProofCompleted, sameOriginalNativeAfterInput: evidence.sameOriginalNativeAfterInput, beforeInitialInput: evidence.beforeInitialInput, initialInputAttempts: evidence.initialInputAttempts, initialInputReceipt: evidence.initialInputReceipt, observation: evidence.observation, requestsBeforeInitialInput: evidence.requestsBeforeInitialInput, requests: evidence.requests, cleanup: evidence.cleanup, error: evidence.error };
     await writeFile(path.join(outputRoot, `acceptance-${argumentRoundTrip ? "argv-" : ""}${agent}-${nonce}.json`), `${JSON.stringify(summary, null, 2)}\n`);

@@ -16,6 +16,7 @@ import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { mappingFiles } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
+import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -333,9 +334,14 @@ describe("native argument ownership", () => {
     { unknownResponse: false, mismatch: undefined, cwdVariant: "exact" }, { unknownResponse: true, mismatch: undefined, cwdVariant: "exact" },
     ...["workspace_id", "tab_id", "type", "pane_id", "cwd", "command"].map(mismatch => ({ unknownResponse: true, mismatch, cwdVariant: "exact" })),
     ...["trailing", "different", "relative", "missing"].map(cwdVariant => ({ unknownResponse: true, mismatch: cwdVariant === "trailing" ? undefined : "cwd", cwdVariant })),
-  ])("prepares one root PowerShell layout without replay and diagnoses $mismatch ($unknownResponse, $cwdVariant)", async ({ unknownResponse, mismatch, cwdVariant }) => {
+    ...["readiness", "capture", "readiness-aborted", "capture-aborted"].map(phaseFailure => ({ unknownResponse: false, mismatch: undefined, cwdVariant: "exact", phaseFailure })),
+  ])("prepares one root PowerShell layout without replay and diagnoses $mismatch ($unknownResponse, $cwdVariant, $phaseFailure)", async input => {
+    const { unknownResponse, mismatch, cwdVariant } = input;
+    const phaseFailure = "phaseFailure" in input && typeof input.phaseFailure === "string" ? input.phaseFailure : undefined;
+    const cancellation = new AbortController();
+    const prerequisiteFailure = phaseFailure?.endsWith("-aborted") ? new HerdrCommandCleanupError([new Error("isolated unconfirmed close")], new Error("isolated command deadline")) : new Error("isolated prerequisite command timeout");
     let mapping: HerdrToolLaunchMapping;
-    const ready = vi.fn(async (_pid: number) => {});
+    const ready = vi.fn(async (_pid: number) => { if (phaseFailure?.startsWith("readiness")) { if (phaseFailure.endsWith("-aborted")) cancellation.abort(); throw prerequisiteFailure; } });
     const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
     let observedCwd = f.context.cwd;
     if (cwdVariant === "trailing") observedCwd += path.sep;
@@ -344,6 +350,7 @@ describe("native argument ownership", () => {
     if (cwdVariant === "missing") observedCwd = path.join(f.context.cwd, "missing-directory");
     const command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-NoLogo", "-NoExit", "-File", "C:\\owned\\bootstrap.ps1"];
     mapping = { ...mappingLifecycle, manifestPath: path.join(f.context.cwd, "manifest.json"), nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: path.join(f.context.cwd, "manifest.json") }, windowsCommand: command, verifyReady: ready, readReceipt: async () => null, verifyReceipt: async () => { throw new Error("not launched"); } };
+    if (phaseFailure?.startsWith("capture")) mapping.captureProcesses = async () => { if (phaseFailure.endsWith("-aborted")) cancellation.abort(); throw prerequisiteFailure; };
     f.executing.add(100);
     f.hook(async (method, params) => {
       if (method === "layout.apply") {
@@ -365,6 +372,14 @@ describe("native argument ownership", () => {
       if (method === "pane.process_info" && params.pane_id === "prepared-pane") return { type: "pane_process_info", process_info: { pane_id: "prepared-pane", shell_pid: 101, foreground_process_group_id: 101, foreground_processes: [{ pid: 101 }] } };
       return undefined;
     });
+    if (phaseFailure !== undefined) {
+      const active = createOperation({ signal: cancellation.signal }); operations.push(active);
+      const error = await f.manager.prepareWorkspace(f.context, taskTitle, active).catch(error => error);
+      expect(error).toMatchObject({ action: "workspace.create", submission: "unknown", cause: { message: expect.stringContaining(phaseFailure.split("-")[0]!), cause: prerequisiteFailure } });
+      expect(error.cause.message).toMatch(phaseFailure.endsWith("-aborted") ? /startedRemainingMs=\d+, remainingMs=null/ : /startedRemainingMs=\d+, remainingMs=\d+/);
+      expect(f.calls.filter(call => call.method === "layout.apply")).toHaveLength(1);
+      return;
+    }
     if (mismatch !== undefined) {
       for (let attempt = 0; attempt < 2; attempt++) {
         const error = await f.manager.prepareWorkspace(f.context, taskTitle, operation()).catch(error => error);

@@ -18,9 +18,10 @@ for (const file of files) {
   const livePids = pids.filter(pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } });
   const endpointsClosed = run.endpoints ? await Promise.all(Object.values(run.endpoints).map(closed)) : [];
   const shortLinkRemoved = !run.shortLink || await lstat(run.shortLink).then(() => false, error => error.code === "ENOENT");
-  const result = { file, livePids, endpointsClosed, shortLinkRemoved, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
+  const preparationProbesClosed = !run.cleanup.preparationProbeSetupError && (run.cleanup.preparationProbes ?? []).every(probe => probe.closed === true);
+  const result = { file, livePids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
   evidence.runs.push(result);
-  if (livePids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
+  if (livePids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
 }
 for (const agent of ["codex", "copilot"]) if (!files.some(file => file.startsWith(`acceptance-${agent}-`))) evidence.failures.push(`Missing ${agent} completion evidence.`);
 if (process.platform === "win32" && !files.some(file => file.startsWith("acceptance-argv-codex-"))) evidence.failures.push("Missing Windows ExternalScript argument evidence.");
