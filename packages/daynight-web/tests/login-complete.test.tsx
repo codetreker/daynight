@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AccountSessionProvider } from "../src/app/AccountSessionProvider";
 import { LoginCompletePage } from "../src/features/auth/LoginCompletePage";
 import { parseLoginCompletionTarget } from "../src/features/auth/login-completion";
 import { renderWithLocale } from "./helpers/renderWithLocale";
@@ -16,10 +17,10 @@ class Channel extends EventTarget {
   static openError = false;
   postMessage = vi.fn<(message: unknown) => void>();
   close = vi.fn();
-  constructor(_name: string) {
+  constructor(name: string) {
     super();
-    if (Channel.openError) throw new Error("channel unavailable");
-    Channel.instances.push(this);
+    if (name === "daynight-identity" && Channel.openError) throw new Error("channel unavailable");
+    if (name === "daynight-identity") Channel.instances.push(this);
   }
 }
 
@@ -74,7 +75,7 @@ describe("login completion", () => {
   const mount = (target = "/setup?from=login#guide", callback = "/auth/callback") => {
     history.replaceState(null, "", `/auth/complete${query(target, callback)}`);
     const replace = vi.fn();
-    const view = renderWithLocale(<LoginCompletePage replace={replace} />, { locale: "en" });
+    const view = renderWithLocale(<AccountSessionProvider><LoginCompletePage replace={replace} /></AccountSessionProvider>, { locale: "en" });
     return { ...view, replace };
   };
 

@@ -41,6 +41,20 @@ it('blocks an old URL before creating a client after an unknown DELETE, includin
   expect(f.other.api.current).toHaveBeenCalled(); expect(f.api.current).not.toHaveBeenCalled();
 });
 
+it('stops the independent Session synchronously on account pause and keeps its draft', async () => {
+  const f = fixture(); const view = render(f.element());
+  await screen.findByText(`Message ${f.binding.botId}`);
+  const client = f.start.mock.contexts[0] as TaskSessionClient;
+  act(() => client.setDraft('local draft'));
+  let resume = () => {};
+  try {
+    act(() => { resume = pauseAuthRequests(); expect(f.channel.close).toHaveBeenCalledOnce(); });
+    expect(screen.getByText(`Message ${f.binding.botId}`)).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('local draft');
+    expect(f.api.command).not.toHaveBeenCalled();
+  } finally { resume(); view.unmount(); }
+});
+
 it.each([false, true])('closes a live old-URL client and restores drafts after definite rejection (identity pause=%s)', async paused => {
   const f = fixture(), response = Promise.withResolvers<Response>();
   f.fetcher.mockImplementation(async (_url, init) => init?.method === 'DELETE' ? response.promise : botResponse(f.bot));

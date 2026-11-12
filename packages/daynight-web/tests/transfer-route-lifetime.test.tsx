@@ -292,72 +292,69 @@ it("retains independent unknown transfer and invitation results across their rou
   expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith('/invitations') && init?.method === 'POST')).toHaveLength(1);
 });
 
-it.each(["success", "error", "changed"] as const)("holds transfer preview %s through pending identity and access checks", async (outcome) => {
-  const preview = Promise.withResolvers<Response>(), identity = Promise.withResolvers<Response>(), permission = Promise.withResolvers<Response>();
-  let focused = true, meReads = 0, holdPermission = false, permissionReads = 0;
-  vi.mocked(document.hasFocus).mockImplementation(() => focused);
-  const fetcher = vi.fn((url: string) => {
-    if (url === "/api/v1/me") return ++meReads === 1 ? Promise.resolve(json(user)) : identity.promise;
+it.each(["success", "error", "changed"] as const)("retains the transfer editor and rejects an old %s preview after an account change", async (outcome) => {
+  const preview = Promise.withResolvers<Response>();
+  const otherUser = "00000000-0000-4000-8000-000000000099";
+  let meReads = 0, previewSignal: AbortSignal | undefined;
+  const fetcher = vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/v1/me") { meReads++; return Promise.resolve(json(user)); }
     if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
     if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
     if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
-    if (url === `/api/v1/projects/${projectId}/access`) { if (holdPermission) { permissionReads++; return permission.promise; } return Promise.resolve(json(access)); }
-    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return preview.promise;
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) { previewSignal = init?.signal as AbortSignal; return preview.promise; }
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
   fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
-  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
-  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  const input = within(dialog).getByLabelText("Team ID or link");
+  fireEvent.change(input, { target: { value: target } });
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
   fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
-  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith("/transfer-preview"))).toBe(true));
-  holdPermission = true; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-  await waitFor(() => expect(meReads).toBe(2));
-  const result = outcome === "error" ? json({ error: { code: "internal_error", message: "private", requestId: "preview-error" } }, 503) : json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null });
-  await act(async () => preview.resolve(result));
+  await waitFor(() => expect(previewSignal).toBeDefined());
+  const body = outcome === "error" ? { error: { code: "internal_error", message: "private", requestId: "preview-error" } } : { sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null };
+  if (outcome !== "changed") {
+    act(() => { window.localStorage.setItem("daynight.activeUser", JSON.stringify(otherUser)); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
+    expect(previewSignal!.aborted).toBe(true);
+  }
+  const result = outcome === "changed" ? new Response(stringifyWireJson(body), { headers: viewerHeaders(otherUser, { "Content-Type": "application/json" }) }) : json(body, outcome === "error" ? 503 : 200);
+  await act(async () => { preview.resolve(result); await preview.promise; });
+  expect(await within(dialog).findByText("Account changed")).toBeVisible();
   expect(screen.getByRole("dialog", { name: "Transfer project" })).toBe(dialog);
+  expect(input).toHaveValue(target);
   expect(within(dialog).queryByText("After transfer")).toBeNull();
-  expect(within(dialog).queryByRole("alert")).toBeNull();
-  await act(async () => identity.resolve(json(outcome === "changed" ? { ...user, id: "00000000-0000-4000-8000-000000000099" } : user)));
-  if (outcome === "changed") {
-    await waitFor(() => expect(dialog.isConnected).toBe(false));
-    expect(screen.queryByText("After transfer")).toBeNull();
-    return;
-  }
-  if (outcome === "success") {
-    await waitFor(() => expect(permissionReads).toBeGreaterThan(0));
-    expect(within(dialog).queryByText("After transfer")).toBeNull();
-    await act(async () => permission.resolve(json(access)));
-    await within(dialog).findByText("After transfer");
-  } else {
-    await within(dialog).findByText(/preview-error/);
-    await act(async () => permission.resolve(json(access)));
-  }
+  expect(within(dialog).queryByText(/preview-error/)).toBeNull();
+  fireEvent.change(input, { target: { value: target + "?draft" } });
+  expect(input).toHaveValue(target + "?draft");
+  expect(meReads).toBe(1);
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer-preview"))).toHaveLength(1);
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(0);
 });
 
-it("retains transfer choices and permits retry when a background Team reread fails", async () => {
-  let reads = 0;
+it("retains Team choices across focus and account change without rereading", async () => {
+  let reads = 0, meReads = 0;
   const fetcher = vi.fn((url: string) => {
-    if (url === "/api/v1/me") return Promise.resolve(json(user));
-    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(++reads === 2 ? json({ error: { code: "internal_error", message: "private", requestId: "rq-team" } }, 500) : json(personalTeamPage(userId)));
+    if (url === "/api/v1/me") { meReads++; return Promise.resolve(json(user)); }
+    if (url.startsWith("/api/v1/teams?")) { reads++; return Promise.resolve(json(personalTeamPage(userId))); }
     if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
     if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
     if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 20000 }));
-  const dialog = await screen.findByRole("dialog", { name: "Transfer project" }, { timeout: 20000 });
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
   const select = within(dialog).getByLabelText("Your Teams");
-  await within(select).findByRole("option", { name: "Personal · admin" }, { timeout: 20000 });
+  await within(select).findByRole("option", { name: "Personal · admin" });
   fireEvent.change(select, { target: { value: source } });
+  const before = reads;
   vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur")); vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  expect(await within(dialog).findByRole("alert", {}, { timeout: 20000 })).toHaveTextContent("Unable to load your Teams");
+  expect(reads).toBe(before); expect(meReads).toBe(1);
+  act(() => { window.localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000099")); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
+  expect(await within(dialog).findByText("Account changed")).toBeVisible();
   expect(select).toHaveValue(source); expect(within(select).getByRole("option", { name: "Personal · admin" })).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(within(dialog).queryByRole("alert")).toBeNull(), { timeout: 20000 });
-  expect(select).toHaveValue(source); expect(reads).toBe(3);
+  expect(reads).toBe(before); expect(meReads).toBe(1);
 });
 
 it("does not redirect a replacement settings owner when the old source lookup finishes", async () => {

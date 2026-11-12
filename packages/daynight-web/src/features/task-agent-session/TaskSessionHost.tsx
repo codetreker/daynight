@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
 import { sessionFence, sessionFenceKey } from '../../../../daynight/src/session/protocol';
-import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration, subscribeAuthPause } from '../../api/client';
 import type { LoadedSessionArchive } from '../../api/sessions';
 import { createTerminalSessionApi, SessionDenialProtocolError, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -24,6 +24,7 @@ import { useTerminalHostMessages } from './terminal-host-messages';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
 import { useDirectSessionRecords } from './useDirectSessionRecords';
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import './terminal-session.css';
 import './terminal-host.css';
 
@@ -592,7 +593,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
       <button className="button session-refresh-toggle" aria-label={m.refresh} disabled={view.loading || !active || !current || authRequestsPaused()} onClick={() => refresh(value => value + 1)}>
         <span className="session-refresh-label">{m.refresh}</span><svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
       </button>
-    </div></header>
+    </div>{fullscreen.fullscreen && <AccountRefreshNotice />}</header>
     {view.error ? <p role="alert" className="session-error">{recordingError(view.error, m)}</p> : null}
     {loaded?.terminal ? <TerminalRecordingView archive={loaded.terminal} active={active} /> : loaded?.native ? <NativeRecording archive={loaded.native} archiveRevision={loaded.nativeRevision!} api={api} projectId={projectId} rootRef={fullscreen.sectionRef} resourcesRef={nativeResources} onDenied={denyResources} onInvalidImageBindings={invalidImageBindings} active={active} displayMode={display.mode} current={current} /> : !view.error ? <p role="status">{!loaded ? m.loading : loaded.status === 'unavailable' && preparing ? sm.archivePreparing : m[loaded.status === 'pending' ? 'pending' : loaded.status === 'failed' ? 'failed' : 'unavailable']}</p> : null}
   </section>;
@@ -663,9 +664,11 @@ function NativeRecording({ archive, archiveRevision, api, projectId, rootRef, re
   useLayoutEffect(() => {
     resourcesRef.current = lifetime.close;
     lifetime.owners.owners.add(lifetime.suspend);
+    const unsubscribePause = subscribeAuthPause(() => suspendStaticSessionMediaForAccountRefresh(authority));
+    if (authRequestsPaused()) suspendStaticSessionMediaForAccountRefresh(authority);
     if (lifetime.owners.stopped) lifetime.suspend();
-    return () => { lifetime.owners.owners.delete(lifetime.suspend); if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
-  }, [lifetime, resourcesRef]);
+    return () => { unsubscribePause(); lifetime.owners.owners.delete(lifetime.suspend); if (resourcesRef.current === lifetime.close) resourcesRef.current = null; void lifetime.close(); };
+  }, [authority, lifetime, resourcesRef]);
   const state = useMemo(() => ({ ...emptySessionState(), entries: archive.entries, resources: new Map(archive.resources.map(item => [item.resource.resourceId, item.resource])) }), [archive]);
   return <SessionImageScope scope={lifetime.images} rootRef={rootRef} active={active} readAdmitted={current && !authRequestsPaused()}>
     <SessionTimeline state={state} active={active} displayMode={displayMode} canRespond={false} onRespond={async () => {}} hasOlder={false} loadingOlder={false} onLoadOlder={async () => {}} historyReady historyComplete recordIdentity={{ scope: lifetime.images.key, historyEpoch: archiveRevision }} onLoadResource={lifetime.read} onInvalidImageBindings={onInvalidImageBindings} />

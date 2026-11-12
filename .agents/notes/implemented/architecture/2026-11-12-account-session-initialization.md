@@ -10,7 +10,7 @@ steps, while a marker alone cannot establish an authenticated identity.
 
 ## Decision
 
-The independent account session owner subscribes to the
+The document account session owner subscribes to the
 [account signal](2026-11-11-account-change-signal.md) before requesting `/me`.
 It accepts only a current, uncancelled server result, comparing observations
 made during the request with the latest known record before installing identity
@@ -18,7 +18,7 @@ and publishing. An unchanged initial marker may be stale; a newly observed
 conflicting marker requires a reload. Once confirmed, a different known marker
 sets a sticky refresh requirement without replacing the current identity.
 
-The login completion page consumes this owner independently, waits for an
+The login completion page consumes its document owner, waits for an
 authenticated identity and completed publication, then replaces its validated
 local return target. The successful server callback directs every allowed target
 through that page, encoding the complete original target and escaped callback
@@ -61,5 +61,4 @@ A stale initial marker can be corrected while a known concurrent change prevents
 a late response from taking ownership. The storage read and write are not an
 atomic compare-and-swap; the signal does not promise observation of every
 intermediate change. The completion page can publish before returning to public
-or other local targets. The owner is not yet wired into the business root, scopes,
-logout, or request admission.
+or other local targets. The [document account synchronization decision](2026-11-11-document-account-sync.md) owns the business root, scopes, logout and request admission integration.

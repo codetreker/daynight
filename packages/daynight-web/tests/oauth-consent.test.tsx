@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { ApiError, invalidateAuthRequests, pauseAuthRequests, subscribeUnauthorized } from '../src/api/client';
 import { decideConsent, inspectConsent, isLoopbackCallback, parseConsent, parseConsentRedirect, type ConsentView } from '../src/api/oauth-consent';
 import { isLoginReturnPath, parseAuthRoute } from '../src/app/router';
 import { OAuthConsentPage } from '../src/features/auth/OAuthConsentPage';
@@ -107,11 +107,20 @@ describe('OAuth browser authorization', () => {
     expect(sessionStorage.getItem(`daynight.oauth.decision.${id}`)).toBeNull();
     expect(fetcher).toHaveBeenCalledOnce();
   });
-  it('clears the marker before the global unauthorized lifecycle starts', async () => {
+  it('clears the marker after the global unauthorized lifecycle accepts the response', async () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response({ error: 'unauthorized' }, 401));
     const clear = vi.fn();
     await expect(decideConsent(view, 'approve', new AbortController().signal, clear)).rejects.toMatchObject({ status: 401 });
     expect(clear).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('retains the decision marker when the unauthorized listener pauses for a newer account', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response({ error: 'unauthorized' }, 401));
+    const clear = vi.fn(); let resume = () => {};
+    const unsubscribe = subscribeUnauthorized(() => { resume = pauseAuthRequests(); });
+    try {
+      await expect(decideConsent(view, 'approve', new AbortController().signal, clear)).rejects.toMatchObject({ status: 401 });
+      expect(clear).not.toHaveBeenCalled();
+    } finally { unsubscribe(); resume(); }
   });
   it('does not drop a decision during background inspection or publish its stale result', async () => {
     const api = fixture(); let finish!: (value: ConsentView) => void; let signal: AbortSignal | undefined;

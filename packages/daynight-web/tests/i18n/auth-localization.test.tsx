@@ -392,14 +392,12 @@ describe("authentication language changes", () => {
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/invitations/accept")).toHaveLength(0);
   });
 
-  it("retranslates a failed account revalidation without restarting it or removing a revealed token", async () => {
+  it("retranslates an account-change notice without removing a revealed token", async () => {
     const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     window.history.replaceState(null, "", "/account");
-    const pending = deferred<Response>();
-    const retry = deferred<Response>();
     let checks = 0;
     const fetcher = install((url, init) => {
-      if (url === "/api/v1/me" && ++checks > 1) return checks === 2 ? pending.promise : retry.promise;
+      if (url === "/api/v1/me") checks++;
       if (url === "/api/v1/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
       return defaults(url);
     });
@@ -412,41 +410,20 @@ describe("authentication language changes", () => {
     await interaction.click(within(creating).getByRole("button", { name: en.auth.management.account.createToken }));
     const secret = await screen.findByLabelText(en.auth.management.secret.tokenLabel);
     const reveal = screen.getByRole("dialog");
-    focused.mockReturnValue(false);
-    fireEvent(window, new Event("blur"));
-    focused.mockReturnValue(true);
-    fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(checks).toBe(2));
-    expect(screen.queryByRole("dialog", { name: en.auth.shell.revalidationLabel })).toBeNull();
-    expect(screen.getByRole("dialog", { name: en.auth.management.secret.tokenTitle })).toBe(reveal);
-    await act(async () => pending.resolve(failure(503, "internal")));
-    const overlay = await screen.findByRole("dialog", { name: en.auth.shell.revalidationLabel });
+    focused.mockReturnValue(false); fireEvent(window, new Event("blur")); focused.mockReturnValue(true); fireEvent(window, new Event("focus"));
+    expect(checks).toBe(1);
+    act(() => { window.localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000099")); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
+    expect(await within(reveal).findByText("Account changed")).toBeVisible();
     const requests = fetcher.mock.calls.length;
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(en.auth.shell.revalidationError);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
     setLocale("zh-CN");
-    expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationError);
-    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationRetained);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
-    expect(within(overlay).queryByText(zhCN.language.preferenceNotice.write)).toBeNull();
-    expect(within(overlay).queryByRole("button", { name: zhCN.common.retrySave })).toBeNull();
-    expect(document.querySelector(".auth-shell")).toHaveTextContent(zhCN.language.preferenceNotice.write);
-    expect(secret).toHaveValue("kept-raw-secret");
-    expect(secret.closest("[role=dialog]")).toBe(reveal);
-    expect(fetcher).toHaveBeenCalledTimes(requests);
-    expect(checks).toBe(2);
-    await interaction.click(within(overlay).getByRole("button", { name: zhCN.auth.shell.revalidationRetry }));
-    expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
-    expect(document.body).toHaveClass("auth-session-checking");
-    expect(document.querySelector(".auth-shell")).toHaveAttribute("inert");
-    expect(within(overlay).getByRole("status")).toHaveTextContent(zhCN.auth.shell.revalidationLoading);
-    expect(within(overlay).queryByRole("combobox")).toBeNull();
-    expect(checks).toBe(3);
-    await act(async () => retry.resolve(json(user)));
-    expect(screen.queryByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBeNull();
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle })).toBe(reveal);
+    expect(within(reveal).getByText("账户已变化")).toBeVisible();
+    expect(within(reveal).getByRole("button", { name: "刷新页面" })).toBeVisible();
+    expect(within(reveal).queryByRole("combobox")).toBeNull();
+    expect(secret).toHaveValue("kept-raw-secret");
     expect(screen.getByLabelText(zhCN.auth.management.secret.tokenLabel)).toBe(secret);
+    expect(fetcher).toHaveBeenCalledTimes(requests);
+    expect(checks).toBe(1);
   });
 });
 

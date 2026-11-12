@@ -65,11 +65,12 @@ describe("Team members", () => {
       expect(document.querySelectorAll(".empty-inline")).toHaveLength(0); expect(writes(fixture.fetcher)).toHaveLength(0);
     };
     check(); fixture.rerender(panel(true)); check(); fixture.rerender(panel(false));
-    await waitFor(() => { expect(teamReads).toBe(2); expect(rosterReads).toBe(2); expect(invitationReads).toBe(2); }); check();
+    await waitFor(() => { expect(teamReads).toBe(2); expect(rosterReads).toBe(2); expect(invitationReads).toBe(1); }); check();
     await act(async () => teamRead.resolve(response({ id: teamId, kind: "ordinary", name: "Alpha", version: 1n, createdAt: time, updatedAt: time, membership: membership(userId, "admin") }))); check();
     holdReady = true;
     await act(async () => rosterRead.resolve(response({ items: [{ ...membership(userId, "admin"), profile: profile("Alice") }, { ...membership(otherId, "admin", 9007199254740993n), profile: profile(null) }] }))); check();
     holdReady = false; await act(async () => readyGate.resolve()); check();
+    await waitFor(() => expect(invitationReads).toBe(2));
     await act(async () => invitationRead.resolve(response({ items: [{ ...invitation }] }))); check();
     expect(within(dialog).getByRole("button", { name: "Remove member" })).toBeEnabled();
   });
@@ -405,6 +406,7 @@ describe("Team members", () => {
     await waitFor(() => expect(reads).toBe(2)); expect(check).toBeDisabled();
     fixture.rerender(panel(true)); expect(dialog).toBeVisible(); expect(check).toBeDisabled();
     fixture.rerender(panel(false)); await waitFor(() => expect(reads).toBe(3));
+    await act(async () => {}); expect(reads).toBe(3);
     await act(async () => interrupted.resolve(response({ items: [{ ...invitation }] })));
     expect(dialog).toBeVisible(); expect(within(dialog).getByText(/invitation change was not confirmed/)).toBeVisible();
     expect(screen.queryByText(/original result is still unknown/)).toBeNull();

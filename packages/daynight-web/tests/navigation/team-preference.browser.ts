@@ -184,7 +184,7 @@ test('supports keyboard navigation, dismissal, native links and route changes', 
   await expect(menu).toBeHidden();
 });
 
-test('preserves a two-page menu, focus and scroll throughout identity and directory checks', async ({ page }) => {
+test('preserves a two-page menu, focus and scroll on a healthy foreground return', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 500 });
   const api = await install(page); api.paginated = true; api.extraTeams = 16;
   await page.goto('/projects');
@@ -201,17 +201,16 @@ test('preserves a two-page menu, focus and scroll throughout identity and direct
     return element.scrollTop;
   });
   expect(before).toBeGreaterThan(0);
-  const identity = Promise.withResolvers<void>(), list = Promise.withResolvers<void>();
-  api.holdMe = identity.promise; api.holdList = list.promise;
+  const meReads = api.meReads, list = Promise.withResolvers<void>();
+  api.holdList = list.promise;
   await page.evaluate(() => { Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false }); window.dispatchEvent(new Event('blur')); Reflect.deleteProperty(document, 'hasFocus'); window.dispatchEvent(new Event('focus')); });
-  await expect.poll(() => api.meReads).toBe(2);
   const stable = async () => {
     await expect(menu).toBeVisible(); await expect(last).toBeFocused();
     expect(await menu.evaluate(element => [(element as HTMLElement & { marker?: number }).marker, element.scrollTop])).toEqual([42, before]);
   };
   await stable();
-  api.holdMe = null; identity.resolve();
   await expect.poll(() => api.listReads).toBe(3);
+  expect(api.meReads).toBe(meReads);
   await stable();
   const finalPage = page.waitForResponse(response => response.url().includes('cursor=next'));
   api.holdList = null; list.resolve();

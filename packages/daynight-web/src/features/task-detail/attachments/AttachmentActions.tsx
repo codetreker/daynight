@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
@@ -119,7 +120,7 @@ const DeleteDialog = ({ target, busy, paused, error, fallback, onConfirm, onDism
     const box = event.currentTarget.getBoundingClientRect();
     if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) onDismiss();
   }}>
-    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2></header>
+    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2><AccountRefreshNotice /></header>
     <div className="dialog-body attachment-delete-body" tabIndex={0} role="group" aria-labelledby={`${id}-title`}>
       <p id={`${id}-copy`}>{m.deleteConfirmation}</p>
       <p id={`${id}-path`} className="attachment-delete-path">{target.path}</p>

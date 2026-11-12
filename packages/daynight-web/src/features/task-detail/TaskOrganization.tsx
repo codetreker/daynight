@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, authRequestsPaused, createTask, isAbortError } from '../../api/client';
@@ -36,7 +37,7 @@ export const FormDialog = ({ title, onClose, children }: { readonly title: strin
   const opener = useRef<HTMLElement | null>(null);
   if (opener.current === null && document.activeElement instanceof HTMLElement) opener.current = document.activeElement;
   useDetailOverlay({ root, initialFocus: close, modal: true, fullscreen: false, scope: title, blocked: () => false, onEscape: onClose, onRestoreFocus: () => { if (opener.current?.isConnected && !opener.current.closest('[inert], [hidden]')) opener.current.focus(); } });
-  return createPortal(<div className="task-detail-backdrop"><OverlayOwnerContext value={root}><DetailFrame root={root} modal headingId={heading} className="task-organization-dialog"><header className="dialog-header"><h2 id={heading}>{title}</h2><button className="close-button" ref={close} type="button" aria-label={m.close} onClick={onClose}>×</button></header>{children}</DetailFrame></OverlayOwnerContext></div>, document.body);
+  return createPortal(<div className="task-detail-backdrop"><OverlayOwnerContext value={root}><DetailFrame root={root} modal headingId={heading} className="task-organization-dialog"><header className="dialog-header"><h2 id={heading}>{title}</h2><AccountRefreshNotice /><button className="close-button" ref={close} type="button" aria-label={m.close} onClick={onClose}>×</button></header>{children}</DetailFrame></OverlayOwnerContext></div>, document.body);
 };
 
 type CreateState = { readonly title: string; readonly description: string; readonly parent: string; readonly assignee: string; readonly busy: boolean; readonly error: unknown; readonly unknown: boolean };

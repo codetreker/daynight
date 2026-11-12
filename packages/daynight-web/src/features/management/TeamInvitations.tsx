@@ -11,19 +11,20 @@ import { ManagementError, SecretDialog } from './feedback';
 type ReadReason = 'initial' | 'background' | 'reconcile';
 type Action = { readonly kind: 'create' } | { readonly kind: 'revoke'; readonly invitation: TeamInvitation };
 
-export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = false, permissionReady = true, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange }: {
-  readonly teamId: string; readonly teamName: string; readonly active: boolean; readonly admissionBlocked?: boolean; readonly permissionReady?: boolean; readonly onRoute: boolean; readonly editable: boolean; readonly actorRole: 'admin' | 'member' | null; readonly unavailable: boolean;
+export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = false, permissionReady = true, permissionRevision = 0, getPermissionRevision, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange }: {
+  readonly teamId: string; readonly teamName: string; readonly active: boolean; readonly admissionBlocked?: boolean; readonly permissionReady?: boolean; readonly permissionRevision?: number; readonly getPermissionRevision?: () => number | null; readonly onRoute: boolean; readonly editable: boolean; readonly actorRole: 'admin' | 'member' | null; readonly unavailable: boolean;
   readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onPermissionChange: () => void; readonly onGuardChange: (retain: boolean, lock: boolean) => void;
 }) => {
   const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon } } = useI18n();
   const zh = locale === 'zh-CN';
   const [items, setItems] = useState<readonly TeamInvitation[] | null>(null);
   // A retained invitation list does not authorize writes while either read is pending.
-  const loaded = useRef(false), fresh = useRef(false);
+  const loaded = useRef(false), fresh = useRef(false), loadedPermission = useRef<number | null>(null);
   const canRead = active && !unavailable && actorRole === 'admin';
-  if (!canRead || admissionBlocked) fresh.current = false;
+  if (!canRead || admissionBlocked || !permissionReady) fresh.current = false;
   const [reconciling, setReconciling] = useState(false);
   const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(null), [needsRefresh, setNeedsRefresh] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const permissionRef = useRef(false); permissionRef.current = permissionReady && !admissionBlocked;
   const [action, setActionState] = useState<Action | null>(null), [observed, setObserved] = useState(false);
   const actionRef = useRef<Action | null>(null);
@@ -37,7 +38,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const [issue, setIssue] = useState<unknown>(null), [receipt, setReceipt] = useState<'revoked' | 'already' | null>(null);
   // Metadata reads cannot settle dispatched revokes; their IDs retain the owner for this identity scope.
   const [uncertain, setUncertain] = useState<ReadonlySet<string>>(() => new Set());
-  const read = useRef<AbortController | null>(null);
+  const read = useRef<AbortController | null>(null), readPermission = useRef<number | null>(null);
   const permissionNotified = useRef(false);
   const op = useOperation(admission), operation = useRef(op); operation.current = op;
   const permission = useRef(onPermissionChange); permission.current = onPermissionChange;
@@ -52,7 +53,9 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   useEffect(() => { if (!onRoute && !operation.current.guarded()) setAction(null); }, [onRoute]);
   const load = useCallback(async (reason: ReadReason = 'reconcile') => {
     if (!canRead) return false;
-    read.current?.abort(); const controller = new AbortController(); read.current = controller;
+    const permissionToken = getPermissionRevision ? getPermissionRevision() : 0;
+    if (permissionToken === null) { setNeedsRefresh(true); return false; }
+    read.current?.abort(); const controller = new AbortController(); read.current = controller; readPermission.current = permissionToken;
     const signal = AbortSignal.any([controller.signal, admission.signal]); fresh.current = false;
     setReconciling(reason === 'reconcile');
     if (!loaded.current) setLoading(true);
@@ -62,32 +65,44 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
       const invitations = await listTeamInvitations(teamId, signal, { userId: admission.userId, onPrincipalMismatch: onIdentityMismatch });
       await admission.ready(signal);
       if (signal.aborted || admission.isInvalidated) return false;
-      if (!permissionRef.current || authRequestsPaused()) { setNeedsRefresh(true); return false; }
-      permissionNotified.current = false; loaded.current = true; fresh.current = true; setItems(invitations); return true;
+      if (!permissionRef.current || authRequestsPaused() || getPermissionRevision && getPermissionRevision() !== permissionToken) { setNeedsRefresh(true); return false; }
+      permissionNotified.current = false; loadedPermission.current = permissionToken; loaded.current = true; fresh.current = true; setItems(invitations); return true;
     } catch (failure) {
       if (signal.aborted || admission.isInvalidated) return false;
       try { await admission.ready(signal); } catch { return false; }
       if (signal.aborted || admission.isInvalidated) return false;
+      if (!permissionRef.current || authRequestsPaused() || getPermissionRevision && getPermissionRevision() !== permissionToken) { setNeedsRefresh(true); return false; }
       loaded.current = false; setItems(null); setError(failure);
       if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404) && !permissionNotified.current) { permissionNotified.current = true; permission.current(); }
       return false;
-    } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) { setLoading(false); setReconciling(false); } } }
-  }, [canRead, admission, teamId, onIdentityMismatch]);
+    } finally { if (read.current === controller) { read.current = null; readPermission.current = null; if (!signal.aborted && !admission.isInvalidated) { setLoading(false); setReconciling(false); } } }
+  }, [canRead, admission, teamId, onIdentityMismatch, getPermissionRevision]);
   useEffect(() => {
     if (canRead && !admissionBlocked) void load(loaded.current ? 'background' : 'initial');
     return () => read.current?.abort();
   }, [canRead, admissionBlocked, load]);
+  const previousPermission = useRef({ ready: permissionReady, revision: permissionRevision });
+  useEffect(() => {
+    const changed = previousPermission.current.revision !== permissionRevision || !previousPermission.current.ready && permissionReady;
+    previousPermission.current = { ready: permissionReady, revision: permissionRevision };
+    if (changed && permissionReady && canRead && !admissionBlocked && loaded.current && !needsRefresh && !authRequestsPaused()) {
+      const current = getPermissionRevision ? getPermissionRevision() : 0;
+      if (current !== null && (read.current === null || readPermission.current !== current)) void load('background');
+    }
+  }, [permissionRevision, permissionReady, canRead, admissionBlocked, needsRefresh, load, getPermissionRevision]);
   useEffect(() => {
     if (!needsRefresh || !canRead || admissionBlocked || !permissionReady || authRequestsPaused()) return;
-    setNeedsRefresh(false); void load('background');
-  }, [needsRefresh, canRead, admissionBlocked, permissionReady, load]);
+    setNeedsRefresh(false);
+    const current = getPermissionRevision ? getPermissionRevision() : 0;
+    if (current !== null && (read.current === null || readPermission.current !== current)) void load('background');
+  }, [needsRefresh, refreshRevision, canRead, admissionBlocked, permissionReady, load, getPermissionRevision]);
   const check = () => { void load().then((ok) => { if (ok && operation.current.result?.kind === 'unknown') { setIssue(operation.current.result.error); setObserved(true); operation.current.clear(); setAction(null); } }); };
   const open = (next: Action) => {
     if (!active || !editable || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null) return;
     operation.current.clear(); setCompletedAction(null); setAction(next); setReceipt(null);
   };
   const submit = () => {
-    if (!action || action === completedAction || secret !== null || !active || !editable || authRequestsPaused() || !permissionReady || !fresh.current || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || unknown || op.publicationError !== null || error !== null) return;
+    if (!action || action === completedAction || secret !== null || !active || !editable || authRequestsPaused() || !permissionReady || getPermissionRevision && getPermissionRevision() !== loadedPermission.current || !fresh.current || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || unknown || op.publicationError !== null || error !== null) return;
     if (action.kind === 'revoke' && uncertain.has(action.invitation.id)) return;
     guard.current(true, true);
     const submitted = action, routeRevision = route.current.revision;
@@ -95,7 +110,10 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
     const rejected = (failure: unknown) => { if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404)) permission.current(); };
     if (action.kind === 'create') void op.run((signal, dispatched) => createTeamInvitation(teamId, admission.userId, signal, onIdentityMismatch, dispatched), (created) => {
       if (actionRef.current === submitted) setCompletedAction(submitted);
-      setSecrets(previous => [...previous, { action: submitted, link: created.link }]); setNeedsRefresh(true);
+      setSecrets(previous => [...previous, { action: submitted, link: created.link }]);
+      // A read dispatched before this receipt cannot include the confirmed invitation.
+      read.current?.abort(); read.current = null; readPermission.current = null; fresh.current = false;
+      setLoading(false); setReconciling(false); setNeedsRefresh(true); setRefreshRevision(value => value + 1);
       if (ownsPresentation()) { setAction(null); setIssue(null); setObserved(false); }
     }, rejected);
     else void op.run((signal, dispatched) => revokeTeamInvitation(teamId, action.invitation.id, admission.userId, signal, onIdentityMismatch, dispatched), (result) => {

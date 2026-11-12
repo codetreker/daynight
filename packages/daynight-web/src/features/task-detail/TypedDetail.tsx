@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { ApiError } from '../../api/client';
@@ -135,7 +136,7 @@ const TypedDetailLoading = (props: Props & { readonly task: ReturnType<typeof us
   const title = props.task.status === 'deleted' ? messages.inspection.deletion.deleted : props.task.status === 'error' ? m.failed : m.loading;
   const content = <OverlayOwnerContext value={root}><DetailFrame modal={modal} root={root} headingId={heading} className={modal ? 'task-detail-dialog' : 'task-detail-page'}>
     {!modal && <TaskDetailPageBar projectId={props.projectId} />}
-    <header className="task-detail-header"><h2 id={heading} className="task-detail-title">{title}</h2>
+    <header className="task-detail-header"><h2 id={heading} className="task-detail-title">{title}</h2><AccountRefreshNotice />
       {modal && <button className="button task-detail-close" type="button" ref={close} aria-label={m.close} onClick={props.onClose}>×</button>}
     </header>
     {props.task.status === 'loading' && <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>}

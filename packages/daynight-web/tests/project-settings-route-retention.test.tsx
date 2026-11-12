@@ -447,10 +447,9 @@ it("cancels a save waiting for fresh permission when its route is left", async (
 it("invalidates an old account's dispatched save rather than publishing its late result", async () => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
   leave(); expect(app.saveSignal?.aborted).toBe(false);
-  app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
-  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
-  vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  await screen.findByRole("button", { name: "Account menu: Bob" });
+  localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000002"));
+  fireEvent(window, new StorageEvent("storage", { key: "daynight.activeUser" }));
+  await screen.findByText("Account changed");
   expect(app.saveSignal?.aborted).toBe(true);
   await act(async () => app.save.resolve(json(project(90, 2n))));
   expect(screen.queryByText("Settings saved.")).toBeNull();
@@ -675,13 +674,12 @@ it("retires an unsubmitted transfer preview when the account changes", async () 
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
   const dialog = await previewTransfer(true); leave();
   expect(app.saveSignal?.aborted).toBe(false);
-  app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
-  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
-  vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  await screen.findByRole("button", { name: "Account menu: Bob" });
+  localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000002"));
+  fireEvent(window, new StorageEvent("storage", { key: "daynight.activeUser" }));
+  await screen.findByText("Account changed");
   await waitForState(() => expect(app.saveSignal?.aborted).toBe(true));
-  expect(dialog).not.toBeVisible(); expect(screen.queryByText("Destination")).toBeNull();
-  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
+  expect(dialog).not.toBeVisible();
+  expect(within(dialog).getByText("Destination")).toBeInTheDocument();
   expect(app.transfers()).toBe(0);
 });
 
@@ -755,19 +753,17 @@ it("keeps confirmed transfer cleanup retry actionable without exposing a revoked
 it.each(["unknown", "confirmed"] as const)("does not publish an old account's late %s transfer after identity changes", async (result) => {
   const app = setup(); await startTransfer(); await waitForState(() => expect(app.transfers()).toBe(1));
   leave(); expect(app.transferSignal?.aborted).toBe(false);
-  app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
-  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
-  vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  await screen.findByRole("button", { name: "Account menu: Bob" });
+  localStorage.setItem("daynight.activeUser", JSON.stringify("00000000-0000-4000-8000-000000000002"));
+  fireEvent(window, new StorageEvent("storage", { key: "daynight.activeUser" }));
+  await screen.findByText("Account changed");
   expect(app.transferSignal?.aborted).toBe(true);
   if (result === "unknown") await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
   else {
     const ownership = { teamId: targetId, version: 2n }, actorAccess = { ...access, ownerTeam: target, ownership };
     await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess })));
   }
-  expect(screen.queryByText(/transfer result is unknown/i)).toBeNull();
+  expect(screen.getByText(/transfer result is unknown/i)).not.toBeVisible();
   expect(screen.queryByText(/Project transferred to Destination/i)).toBeNull();
-  expect(screen.queryByText("Destination")).toBeNull();
   expect(app.transfers()).toBe(1);
 });
 

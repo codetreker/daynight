@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { TaskPauseControl, TaskPauseFeedback } from "../task-pause/TaskPauseControl";
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { isThreadScopeLoss } from '../task-thread/api';
@@ -244,6 +245,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
             <h2 id={headingId} className="task-detail-title" ref={titleRef} tabIndex={detail === null ? -1 : 0} title={detail?.title}>{detail === null ? status === 'deleted' ? messages.inspection.deletion.deleted : status === 'error' ? m.failed : m.loading : detail.title}</h2>
             {detail !== null && <TaskCopyButton key={`${scope}/${detail.title}`} value={detail.title} label={m.copyTaskTitle} failure={m.copyTitleFailed} />}
           </div>
+          <AccountRefreshNotice />
           <div className="task-detail-header-actions">
             {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`} onClick={followProjectLink}>{m.returnToProject}</a>}
             <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>

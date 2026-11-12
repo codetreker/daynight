@@ -1,3 +1,4 @@
+import { useTeamForeground } from "./useTeamForeground";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, readAuthRequestGeneration, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { browserNavigation } from "../../app/navigation";
@@ -249,6 +250,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
     void load(initial ? "initial" : "background", initial);
     return () => read.current?.abort();
   }, [load, active, admissionBlocked]);
+  useTeamForeground(active && !admissionBlocked, () => { void load("background"); });
   const editable = team?.kind === "ordinary" && team.membership.role === "admin";
   const unknown = op.result?.kind === "unknown";
   const unavailable = accessDenied || preferenceDenied;

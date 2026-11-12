@@ -488,11 +488,17 @@ describe("settings navigation and authenticated identity", () => {
     expect(document.title).toBe("项目设置 · Daynight"); const nav = screen.getByRole("navigation", { name: "项目设置" }); expect(within(nav).getByRole("link", { name: "项目设置" })).toHaveAttribute("aria-current", "page"); expect(screen.getByRole("navigation", { name: "面包屑" })).toHaveTextContent("项目设置");
   });
 
-  it("preserves drafts on same-account foreground confirmation and resets them for a changed account", async () => {
-    let actor = userId; let focused = true; vi.mocked(document.hasFocus).mockImplementation(() => focused);
-    window.history.replaceState(null, "", `/projects/${id}/settings`); const fetcher = install((url) => url === "/api/v1/me" ? json({ ...user, id: actor }) : url.endsWith("/members") ? json(members("admin", actor)) : json(project())); render(<AuthenticatedApp />); await ready(); change("95");
-    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(2)); await act(async () => { await Promise.resolve(); }); expect(screen.getByLabelText("提醒阈值")).toHaveValue(95);
-    actor = other; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(screen.getByLabelText("提醒阈值")).toHaveValue(60)); expect(screen.queryByText(/存在未保存的修改/)).toBeNull();
+  it("preserves drafts through focus and an account change until refresh", async () => {
+    let focused = true; vi.mocked(document.hasFocus).mockImplementation(() => focused);
+    window.history.replaceState(null, "", `/projects/${id}/settings`); const fetcher = install((url) => url === "/api/v1/me" ? json(user) : url.endsWith("/members") ? json(members()) : json(project())); render(<AuthenticatedApp />); await ready(); change("95");
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+    localStorage.setItem("daynight.activeUser", JSON.stringify(other));
+    fireEvent(window, new StorageEvent("storage", { key: "daynight.activeUser" }));
+    await screen.findByText("账户已变化");
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(95);
+    expect(screen.getByText(/存在未保存的修改/)).toBeInTheDocument();
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
   });
 
   it("renders the English form without untranslated feedback", async () => {

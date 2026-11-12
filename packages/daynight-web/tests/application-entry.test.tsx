@@ -48,7 +48,7 @@ describe("public and authenticated entry ownership", () => {
 
   it("shows a local bilingual OAuth error without logging in or retaining request parameters", () => {
     window.history.replaceState(null, "", "/oauth/authorize?client_id=bad&state=private&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback");
-    const fetcher = vi.fn(() => { throw new Error("Error page must not fetch or authenticate"); });
+    const fetcher = vi.fn((_url: string) => Promise.resolve(anonymous()));
     vi.stubGlobal("fetch", fetcher);
     mount();
     expect(screen.getByRole("heading", { name: "Cannot authorize this client" })).toBeVisible();
@@ -58,11 +58,11 @@ describe("public and authenticated entry ownership", () => {
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "zh-CN" } });
     expect(screen.getByRole("heading", { name: "无法授权此客户端" })).toBeVisible();
     expect(screen.getByText("未向此返回地址发送授权信息。")).toBeVisible();
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/v1/me"]);
   });
-  it("reacts to public navigation and history without mounting an authenticated lifecycle", async () => {
+  it("shares one account initialization across public navigation and history", async () => {
     window.history.replaceState(null, "", "/");
-    const fetcher = vi.fn(() => { throw new Error("Public reading must not mount the authenticated application"); });
+    const fetcher = vi.fn((_url: string) => Promise.resolve(anonymous()));
     vi.stubGlobal("fetch", fetcher);
     mount();
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
@@ -72,10 +72,10 @@ describe("public and authenticated entry ownership", () => {
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
     await historyMove("forward");
     expect(screen.getByRole("heading", { name: "Set up your tools and start working" })).toBeVisible();
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/v1/me"]);
   });
 
-  it.each(["/", "/setup"])("clears an invitation on deliberate public departure to %s and aborts old identity work", async (path) => {
+  it.each(["/", "/setup"])("clears an invitation on deliberate public departure to %s while retaining account initialization", async (path) => {
     window.history.replaceState(null, "", "/invitations#pending-invitation");
     const writes = vi.spyOn(history, "replaceState");
     const pending = Promise.withResolvers<Response>();
@@ -88,7 +88,7 @@ describe("public and authenticated entry ownership", () => {
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     await act(async () => navigate(path));
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
-    expect(fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    expect(fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(false);
     await act(async () => pending.resolve(json(user)));
     expect(screen.queryByText("Alice")).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);

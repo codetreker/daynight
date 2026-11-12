@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
-import { authRequestsPaused } from '../../api/client';
+import { authRequestsPaused, subscribeAuthPause } from '../../api/client';
 import { createTestSessionApi } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { TaskSessionClient } from './client';
@@ -23,6 +23,8 @@ export function TestSessionPage({ sessionId }: { readonly sessionId: string }) {
     let storage: Storage | null = null; try { storage = window.sessionStorage; } catch { /* Browser storage is optional. */ }
     const isCurrent = () => !scope.isInvalidated && coordinator.sessionAdmission(sessionId) === 'allowed';
     const next = new TaskSessionClient({ api: createTestSessionApi(sessionId, scope.userId, scope.principalMismatch), userId: scope.userId, testSessionId: sessionId, isCurrent, isPaused: authRequestsPaused, onPrincipalMismatch: scope.principalMismatch, storage });
+    const unsubscribePause = subscribeAuthPause(next.suspendForAccountRefresh);
+    if (authRequestsPaused()) next.suspendForAccountRefresh();
     setOwned({ client: next, scope, sessionId });
     // Close synchronously: retained handlers and requests awaiting identity must
     // lose their lifetime before any deletion observation can publish again.
@@ -35,7 +37,7 @@ export function TestSessionPage({ sessionId }: { readonly sessionId: string }) {
     next.syncAvailability();
     const timer = setInterval(next.syncAvailability, 250);
     const abort = () => next.invalidate(); scope.signal.addEventListener('abort', abort, { once: true });
-    return () => { unsubscribe(); clearInterval(timer); scope.signal.removeEventListener('abort', abort); next.close(); };
+    return () => { unsubscribe(); unsubscribePause(); clearInterval(timer); scope.signal.removeEventListener('abort', abort); next.close(); };
   }, [scope, sessionId, coordinator, admission, record]);
   useEffect(() => {
     if (!record || !['unknown', 'pending', 'failed'].includes(record.phase)) return;
