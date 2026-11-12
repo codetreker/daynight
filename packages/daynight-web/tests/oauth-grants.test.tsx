@@ -27,7 +27,7 @@ describe("application authorizations", () => {
       .mockResolvedValueOnce([{ ...grant, lastUsedAt: null }])
       .mockResolvedValueOnce([{ ...grant, id: "00000000-0000-4000-8000-000000000003", lastUsedAt: null }]);
     render(panel(transport)); await screen.findByText("App");
-    const summary = document.querySelector(".credential-last-use summary")!;
+    const summary = document.querySelector<HTMLElement>(".credential-last-use summary")!;
     fireEvent.click(summary); expect(summary.parentElement).toHaveAttribute("open");
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     summary.focus(); expect(summary).toHaveFocus();
