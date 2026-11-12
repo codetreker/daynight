@@ -139,7 +139,7 @@ Task 包含以下持久化字段：
 
 Task 响应还包含 `dependsOn`、`externalDependsOn`、`blockedBy` 和 `ready`：
 
-- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 15 项，external 不另占额度。
+- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 30 项，external 不另占额度。
 - `externalDependsOn` 是其中标记为外部的 ID 子集，必填、无重复且按 ID 升序；空子集为 `[]`。
 - `blockedBy` 是其中尚未处于done或cancelled的task ID，按 ID 升序返回。
 - `ready` 当且仅当本 task 为 `todo` 且 `blockedBy` 为空时为 `true`。
