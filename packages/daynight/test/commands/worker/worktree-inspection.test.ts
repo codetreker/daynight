@@ -1,7 +1,7 @@
 import path from "node:path";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
@@ -61,8 +61,22 @@ it("keeps real linked-worktree metadata bound to relative pointers and the physi
     const repository = await f.adapter.prepareRepository(f.project, operation);
     const binding = await f.adapter.prepareWorktree(f.project, f.owner, operation);
     const admin = await realpath(git(binding.worktreePath, "rev-parse", "--absolute-git-dir"));
-    await writeFile(path.join(binding.worktreePath, ".git"), `gitdir: ${path.relative(binding.worktreePath, admin)}\n`);
-    await writeFile(path.join(admin, "gitdir"), `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`);
+    for (const [pointer, contents] of [
+      [path.join(binding.worktreePath, ".git"), `gitdir: ${path.relative(binding.worktreePath, admin)}\n`],
+      [path.join(admin, "gitdir"), `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`],
+    ] as const) {
+      const original = await lstat(pointer, { bigint: true });
+      // Git hides .git on Windows; opening the existing file avoids CREATE_ALWAYS's hidden-file refusal.
+      // https://github.com/nodejs/node/blob/f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93/doc/api/fs.md#L9309-L9314
+      const handle = await open(pointer, "r+");
+      try {
+        expect(await handle.stat({ bigint: true })).toMatchObject({ dev: original.dev, ino: original.ino });
+        await handle.truncate(0);
+        await handle.writeFile(contents, "utf8");
+      } finally { await handle.close(); }
+      expect(await lstat(pointer, { bigint: true })).toMatchObject({ dev: original.dev, ino: original.ino, nlink: original.nlink });
+      expect(await readFile(pointer, "utf8")).toBe(contents);
+    }
     git(f.repository, "config", "extensions.worktreeConfig", "true");
     const redirected = path.join(f.root, "foreign worktree"); await mkdir(redirected);
     await writeFile(path.join(redirected, "keep"), "unrelated\n");
