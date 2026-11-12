@@ -10,13 +10,26 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// LockPurposeCredential limits OAuth admission to Task messages and receipts.
-// The DAO retains the token lock and rechecks the grant against the database clock.
+// LockPurposeCredential preserves MCP's Task message and receipt subset.
+// Other user purposes require the fixed API client and audience. The DAO retains
+// the token lock and rechecks the grant against the database clock.
 func (op *Operation) LockPurposeCredential(ctx context.Context, scope store.SessionScope, p model.Principal, purpose BrowserPurpose) error {
-	if p.Kind != model.OAuthCredential || purpose != TaskMessageAccess && purpose != TaskReceiptAccess {
+	if p.Kind != model.OAuthCredential {
 		return op.LockCredential(ctx, scope, p)
 	}
-	err := scope.SessionDAO().LockOAuthCredential(ctx, p, []store.OAuthBinding{{Resource: op.engine.Origin + "/mcp", Scope: oauth.Scope}}, op.engine.now())
+	return op.lockOAuthCredential(ctx, scope, p, purpose == TaskMessageAccess || purpose == TaskReceiptAccess)
+}
+
+func (op *Operation) oauthBindings(allowMCP bool) []store.OAuthBinding {
+	bindings := []store.OAuthBinding{{Resource: op.engine.Origin + "/api/v1", Scope: oauth.APIScope, ClientID: oauth.APIClientID}}
+	if allowMCP {
+		bindings = append(bindings, store.OAuthBinding{Resource: op.engine.Origin + "/mcp", Scope: oauth.Scope})
+	}
+	return bindings
+}
+
+func (op *Operation) lockOAuthCredential(ctx context.Context, scope store.SessionScope, p model.Principal, allowMCP bool) error {
+	err := scope.SessionDAO().LockOAuthCredential(ctx, p, op.oauthBindings(allowMCP), op.engine.now())
 	if errors.Is(err, model.ErrNotFound) {
 		return fault("unauthenticated", "Credential expired or was revoked.")
 	}

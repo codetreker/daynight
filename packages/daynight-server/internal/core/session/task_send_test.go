@@ -51,46 +51,51 @@ func TestTaskOperationRetainsHistoricalReceiptWithoutWrites(t *testing.T) {
 }
 
 func TestTaskSendReauthorizesOriginalOAuthActorBeforeOfferAndBegin(t *testing.T) {
-	for _, stage := range []string{"offer", "begin", "reconcile"} {
-		t.Run(stage, func(t *testing.T) {
-			f, v := connectFixture(t)
-			publishState(t, f, v, idleState())
-			actor := listCredential(t, f, f.p.UserID, model.OAuthCredential)
-			command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"once"}],"expectedTurnId":null}`)}
-			if _, err := fixtureSubmit(f, t.Context(), actor, v, command, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}); err != nil {
-				t.Fatal(err)
-			}
-			f.SelectOperationWrite(t)
-			f.SelectSessionWrite(t)
-			f.data.AcceptedIDs = []string{command.OperationID}
-			if stage != "offer" {
-				if _, err := fixturePoll(f, t.Context(), v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}); err != nil {
+	for _, profile := range []string{"mcp", "api"} {
+		for _, stage := range []string{"offer", "begin", "reconcile"} {
+			t.Run(profile+"/"+stage, func(t *testing.T) {
+				f, v := connectFixture(t)
+				publishState(t, f, v, idleState())
+				actor := listCredential(t, f, f.p.UserID, model.OAuthCredential)
+				if profile == "api" {
+					setAPICredential(f, actor)
+				}
+				command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"once"}],"expectedTurnId":null}`)}
+				if _, err := fixtureSubmit(f, t.Context(), actor, v, command, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}); err != nil {
 					t.Fatal(err)
 				}
-				selectContentOffer(t, f)
-			}
-			revokeContentCredential(t, f, actor)
-			switch stage {
-			case "offer":
-				offers, err := fixturePoll(f, t.Context(), v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "SetSessionOperationReceipt": 1, "SaveSession": 1})
-				if err != nil || len(offers) != 0 {
-					t.Fatalf("revoked actor offered: %v %v", offers, err)
+				f.SelectOperationWrite(t)
+				f.SelectSessionWrite(t)
+				f.data.AcceptedIDs = []string{command.OperationID}
+				if stage != "offer" {
+					if _, err := fixturePoll(f, t.Context(), v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}); err != nil {
+						t.Fatal(err)
+					}
+					selectContentOffer(t, f)
 				}
-			case "begin":
-				_, err := fixtureHandle(f, t.Context(), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1})
-				if err != nil {
-					t.Fatal(err)
+				revokeContentCredential(t, f, actor)
+				switch stage {
+				case "offer":
+					offers, err := fixturePoll(f, t.Context(), v.ControllerFence, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "SetSessionOperationReceipt": 1, "SaveSession": 1})
+					if err != nil || len(offers) != 0 {
+						t.Fatalf("revoked actor offered: %v %v", offers, err)
+					}
+				case "begin":
+					_, err := fixtureHandle(f, t.Context(), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1})
+					if err != nil {
+						t.Fatal(err)
+					}
+				case "reconcile":
+					_, err := fixtureHandle(f, t.Context(), sp.ControllerMessage{Type: "reconcile", ControllerFence: v.ControllerFence, Operations: []sp.Reconciliation{{OperationID: command.OperationID, State: "not_submitted"}}, Final: true}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "UnreconciledSessionOperations": 1, "TouchSession": 1, "SaveSession": 1})
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
-			case "reconcile":
-				_, err := fixtureHandle(f, t.Context(), sp.ControllerMessage{Type: "reconcile", ControllerFence: v.ControllerFence, Operations: []sp.Reconciliation{{OperationID: command.OperationID, State: "not_submitted"}}, Final: true}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "UnreconciledSessionOperations": 1, "TouchSession": 1, "SaveSession": 1})
-				if err != nil {
-					t.Fatal(err)
+				if f.writes.Receipt == nil || f.writes.Receipt.State != "rejected" {
+					t.Fatalf("revoked original Actor was dispatched: %#v", f.writes.Receipt)
 				}
-			}
-			if f.writes.Receipt == nil || f.writes.Receipt.State != "rejected" {
-				t.Fatalf("revoked original Actor was dispatched: %#v", f.writes.Receipt)
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -101,13 +106,13 @@ func TestTaskOAuthPurposeDoesNotAdmitOtherCommandsOrIndependentSessions(t *testi
 			actor := listCredential(t, f, f.p.UserID, model.OAuthCredential)
 			phase := f.dao.ContextPhase(t.Context(), map[string]int{"LockTask": 1})
 			_, err := f.s.Submit(phase, actor, f.project, f.task, v.SessionID, controlCommand(v, kind))
-			assertCommandAuthorization(t, err, "forbidden", nil)
+			assertCommandAuthorization(t, err, "unauthenticated", nil)
 		})
 	}
 	f, v, _ := testSession(t, "none")
 	actor := listCredential(t, f, f.p.UserID, model.OAuthCredential)
 	_, err := f.s.Submit(f.dao.ContextPhase(t.Context(), map[string]int{"SessionBotID": 1, "LockSession": 1}), actor, "", "", v.SessionID, controlCommand(v, "send_message"))
-	assertCommandAuthorization(t, err, "forbidden", nil)
+	assertCommandAuthorization(t, err, "unauthenticated", nil)
 }
 
 func TestTaskOperationRetainsReaderVisibilityAndRejectsChangedAccess(t *testing.T) {

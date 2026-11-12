@@ -43,7 +43,9 @@ existing encoding and admission behavior.
 Archive readers retain the existing preflight, owner and residency reservations
 until response delivery finishes or is cancelled. MCP reserves the large budget
 for reads that can materialize a legacy archive. Every page and chunk rechecks
-authorization, with OAuth admitted only for Task reads.
+authorization. MCP OAuth remains limited to its original Task read subset; the
+fixed API profile also enters existing user content and readable archive paths
+under the [API family decision](../architecture/2026-11-12-api-oauth-family.md).
 Schema3 reads validate the manifest and its independent timeline within the
 same archive operation. The shared archive permit and timeline read lease
 survive through delivery.

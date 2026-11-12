@@ -25,6 +25,7 @@ type fixtureDAO struct {
 	calls                               map[string]int
 	aggregateExpected                   map[string]int
 	phases                              []*fixturePhase
+	OAuthBindings                       map[string]store.OAuthBinding
 	LockCredentialFn                    func(context.Context, model.Principal, time.Time) error
 	ReadCredentialFn                    func(context.Context, model.Principal, time.Time) error
 	ArchiveMetadataFn                   func(context.Context, string) (store.ArchiveMetadata, error)
@@ -190,16 +191,31 @@ func (d *fixtureDAO) invoke(ctx context.Context, name string, configured bool) {
 	}
 }
 
+func (d *fixtureDAO) oauthMatches(p model.Principal, bindings []store.OAuthBinding) bool {
+	actual, ok := d.OAuthBindings[p.CredentialID]
+	if !ok {
+		actual = store.OAuthBinding{Resource: "/mcp", Scope: "daynight:mcp"}
+	}
+	for _, binding := range bindings {
+		if binding.Resource == actual.Resource && binding.Scope == actual.Scope && (binding.ClientID == "" || binding.ClientID == actual.ClientID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *fixtureDAO) LockOAuthCredential(ctx context.Context, p model.Principal, bindings []store.OAuthBinding, now time.Time) error {
-	if len(bindings) != 1 || bindings[0] != (store.OAuthBinding{Resource: "/mcp", Scope: "daynight:mcp"}) {
-		d.t.Fatalf("unexpected OAuth bindings: %+v", bindings)
+	if !d.oauthMatches(p, bindings) {
+		return model.ErrNotFound
 	}
 	return d.LockCredential(ctx, p, now)
 }
 
 func (d *fixtureDAO) ReadOAuthCredential(ctx context.Context, p model.Principal, bindings []store.OAuthBinding, now time.Time) error {
-	d.t.Fatal("unexpected ReadOAuthCredential call")
-	return nil
+	if !d.oauthMatches(p, bindings) {
+		return model.ErrNotFound
+	}
+	return d.ReadCredential(ctx, p, now)
 }
 
 func (d *fixtureDAO) LockCredential(a0 context.Context, a1 model.Principal, a2 time.Time) error {

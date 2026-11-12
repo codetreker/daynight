@@ -31,7 +31,9 @@ CLI runtime 的 known-session-operation 输出与普通读取、confirmed-mutati
 
 原 Task operation 查询按原 project/task/session 读取持久 receipt，验证当前凭据与项目访问，计算 currentBinding；它不依赖原 claim 仍为当前，不执行过期归档写入或队列恢复。原生结果保持原 Session 身份，不能从新的 current 合成。
 
-OAuth 按操作用途进入 Task send_message 或 receipt 作用域。提交与派发均使用真实 Actor，派发还检查持久凭据当前的 token、grant、scope、有效期、撤销、项目成员与 owner。每次凭据检查先取 grant 共享锁，再取 access-token 共享锁，最后用独立语句与数据库时钟重新检查完整凭据状态。准入仍先完成凭据与项目授权，再加载 Session；派发在持有 Session 锁时重新检查原 Actor。
+Session 在原用途检查位置构造固定 OAuth binding。一般用户命令、控制及独立 Session 只允许 API resource、daynight:api scope 和 societas-bot client；原 Task send_message 与 receipt 同时允许原 MCP resource、daynight:mcp scope 和实际记录的 client。提交与派发均使用真实 Actor，派发还检查其原 access UUID 对应的实际 user、token、grant、client/resource/scope、有效期、撤销、项目成员与 owner。持久 Actor 保持 UserID、CredentialID、Kind 三字段；用途来自实际操作，外层 Controller 或请求身份不成为派发凭据。Refresh 保留尚有效的旧 access；新 access 查询 receipt 不会替换原 Actor、恢复队列或重新派发。
+
+每次 family 凭据检查先取 grant 共享锁，再取 access-token 共享锁，最后用独立语句与数据库时钟重新检查完整凭据状态。Task 准入仍先完成凭据与项目授权，再加载 Session；派发在持有 Session 锁时重新检查原 Actor。独立 Session 保留原 Session-first 检查位置及 parent PAT 条件。
 
 Refresh 轮换保留尚未过期的旧 access token。同一 family 内的共享 grant 锁让撤销在删除任何 token 前等待准入事务，避免撤销已经删除旧 token、等待新 token 时与 Session 锁形成循环。排队的撤销不阻止兼容的派发共享锁；撤销提交后，旧、新 token 均不得再次准入。并发回归通过真实轮换与 PostgreSQL 锁等待屏障验证这一协议，具体取舍由[锁决策](../../.agents/notes/implemented/bug-fix/2026-11-10-task-oauth-family-locks.md)记录。
 

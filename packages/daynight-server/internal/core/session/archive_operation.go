@@ -233,10 +233,19 @@ func (s *Execution) SetArchivePreflight(run ArchivePreflightRunner) { s.archiveP
 func (op *Operation) ArchivePreflight(ctx context.Context, scope store.SessionScope, p model.Principal, project, taskID, id string, mode ArchiveMode) (string, error) {
 	dao := scope.SessionDAO()
 	taskRead := project != "" && taskID != "" && mode == ArchiveV1Read
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && !(p.Kind == model.OAuthCredential && taskRead) {
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return "", denied()
 	}
-	if err := dao.ReadCredential(ctx, p, op.engine.now()); err != nil {
+	var credentialErr error
+	if p.Kind == model.OAuthCredential {
+		if mode != ArchiveV1Read && mode != ArchiveV2Read {
+			return "", denied()
+		}
+		credentialErr = dao.ReadOAuthCredential(ctx, p, op.oauthBindings(taskRead), op.engine.now())
+	} else {
+		credentialErr = dao.ReadCredential(ctx, p, op.engine.now())
+	}
+	if err := credentialErr; err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return "", fault("unauthenticated", "Credential expired or was revoked.")
 		}

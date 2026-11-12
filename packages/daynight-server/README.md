@@ -333,8 +333,16 @@ reads an explicit Session's original identity, fence, `currentBinding`, readable
 source and observation. It performs no lifecycle writes and never substitutes
 the current Session for a historical one. Task observation permits effective
 PAT, OAuth and browser Session principals through a dedicated authorization
-purpose; it does not extend Controller, Test, Bot or command admission. OAuth
-tokens continue to enter through the MCP resource's audience and scope checks.
+purpose. Session user operations accept the fixed API OAuth resource, scope and
+Societas client at their existing authorization points. MCP OAuth retains its
+Task message, receipt and supported read subset; MCP archive reads remain limited
+to Task ArchiveV1Read. Independent Test/Bot user access preserves owner and parent
+PAT checks. Controller registration, grants, producer channels, archive uploads
+and finalization retain their original credential requirements. Persisted
+operation Actors retain their original access UUID and are reauthorized for the
+actual operation before dispatch; refreshed access can query an authorized receipt
+without replacing that Actor or replaying the command. Public REST authentication
+still uses PATs or browser Cookies.
 
 Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
 Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)

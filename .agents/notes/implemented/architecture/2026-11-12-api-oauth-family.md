@@ -35,6 +35,23 @@ retains grant-before-access ordering and a fresh check after both locks. This
 extends the [MCP credential decision](2026-11-06-mcp-oauth-credentials.md) without
 replacing the existing business transaction and permission checks.
 
+Session user purposes construct exact API bindings at their existing Core
+authorization points. General user, control, independent and Bot Session paths
+admit only API; original Task message, receipt and supported reads also retain
+MCP. MCP archive access stays limited to Task ArchiveV1Read. Readable archive
+preflight uses the narrow unlocked family reader; actual IO retains its original
+scope and authorization. Producer registration, grants, channels, uploads and
+finalization retain their original credential restrictions, including parent PATs.
+
+Persisted operation Actors remain the original user UUID, access UUID and kind.
+Dispatch derives its purpose from the actual operation and rechecks that original
+access and current permissions. A refreshed access may read an authorized receipt
+but cannot replace the Actor, revive an expired credential or replay a command.
+Session-first Actor checks retain compatible nested shared locks; ordinary
+admission and domain lock positions remain unchanged. The
+[Session lock decision](../bug-fix/2026-11-10-task-oauth-family-locks.md) owns the
+family locking rationale and its PostgreSQL barriers.
+
 API refresh uses the existing grant-update then refresh-update lock order. After
 those locks it obtains a fresh database time, checks the original deadlines and
 bindings, and atomically consumes the submitted refresh, updates the grant

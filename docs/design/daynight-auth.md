@@ -386,6 +386,17 @@ API 内部能力不授予账号根、Worker 或 Controller 生产者权限。授
 原共享锁读取仍只 `FOR SHARE OF access`，业务等待后的期限检查保持；该 helper 不扩展为持有 grant
 锁的通用事务前置检查，也不把 credential 锁跨网络 body IO 保留。
 
+Session 用户用途在原 Core gate 构造固定 binding：一般用户状态、内容、命令、控制、回执、图片与
+独立可读归档仅允许 API；原 Task message/receipt/已支持读取允许 API 和 MCP，MCP 归档仍仅原
+Task ArchiveV1Read。SessionDAO 的 LockOAuthCredential / ReadOAuthCredential 委托同一事务
+family DAO；可读归档预检保留原 WriteSession 的 READ COMMITTED 事务，其中凭据查询无行锁，实际 IO 沿原 scope 重新检查。Task/独立/Bot 的 owner、
+项目权限、claim、fence/generation/epoch、容量、revision、当前绑定与 parent PAT 条件保持。
+生产注册、grant、channel、归档上传及完成保留原凭据条件。持久 operation Actor 仍只有真实
+UserID、CredentialID 和 Kind；派发从实际操作重建用途并复核原 access 与当前用户权限，不能继承
+外层 Controller 身份。新 access 可按原用户/意图规则查询 receipt，不能替换旧 Actor 或重放命令。
+Session-first 原 Actor 的 nested SHARE 与 Task 准入锁位置保持，兼容锁协议由
+[Session 锁决策](../../.agents/notes/implemented/bug-fix/2026-11-10-task-oauth-family-locks.md)所有。
+
 首次 grant / refresh 截止为发行时间加 30 天，access 为 60 分钟。续期沿用 grant `FOR UPDATE`
 → refresh `FOR UPDATE` 锁序；取得锁后读取数据库 UTC 微秒 `renewedAt`，复核实际 binding、撤销、
 消费状态及原 grant / refresh 截止。尚有效的 API refresh 原子消费旧行，把 grant 和新 refresh 截止
