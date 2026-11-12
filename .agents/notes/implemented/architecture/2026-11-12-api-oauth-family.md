@@ -23,9 +23,11 @@ Internal API issuance, authentication, rotation and revocation are real family
 operations. The service issuer confirms its transaction before returning secrets.
 Public REST authentication still uses PATs or browser Cookies. The S2S issuance
 route is not exposed, and existing public OAuth refresh/revoke adapters admit
-only the MCP profile. The API
-profile uses the same real user and access UUIDs and the existing OAuth
-Principal kind; it supplies no independent execution or administrative identity.
+only the MCP profile. User WebSocket marker authentication uses the narrow
+application authentication operation and its effective expiry; the
+[user WebSocket decision](2026-11-12-api-user-websocket.md) owns its carrier,
+Origin and connection lifecycle. The API profile uses the same real user and
+access UUIDs and the existing OAuth Principal kind; it supplies no independent execution or administrative identity.
 
 Binding-aware family operations validate actual access, grant and user facts.
 They return the earlier access/grant deadline. Shared credential readers join

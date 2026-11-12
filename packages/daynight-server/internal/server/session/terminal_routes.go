@@ -426,7 +426,7 @@ func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, 
 		h.Failure(w, r, err)
 		return
 	}
-	if err := h.origin(r, p.Kind == model.SessionCredential); err != nil {
+	if err := h.userChannelOrigin(r, p); err != nil {
 		h.Failure(w, r, err)
 		return
 	}
@@ -473,6 +473,7 @@ func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, 
 	}()
 
 	closed := conn.CloseRead(ctx)
+	defer func() { h.closeUserChannel(ctx, conn, err) }()
 	if err = relayWrite(ctx, conn, state); err != nil {
 		return
 	}
@@ -485,6 +486,7 @@ func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, 
 		case <-tick.C:
 			next, e := h.service.TerminalState(ctx, p, project, task, id)
 			if e != nil {
+				err = e
 				return
 			}
 			if next["claimId"] != claimID || next["connectionEpoch"] != connectionEpoch {
@@ -492,6 +494,7 @@ func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, 
 			}
 			if !reflect.DeepEqual(next, state) {
 				if e = relayWrite(ctx, conn, next); e != nil {
+					err = e
 					return
 				}
 				state = next

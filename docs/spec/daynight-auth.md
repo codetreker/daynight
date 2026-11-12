@@ -543,6 +543,33 @@ CORS 不授予身份或资源权限；主站 Cookie 写 Origin、账号根及生
 S2S issuer 不提供浏览器 CORS，Public OAuth/MCP 保留原独立 CORS，静态资源和健康检查不受影响。
 公开签发和 API token 的 REST 准入分别由其认证入口负责。
 
+## 应用浏览器的用户 Session 通道
+
+应用浏览器可在 Task Session 用户 `/channel`（v1/v2）和独立 Test Session 用户 `/channel`（v1）
+提供一个实际支持的 Session subprotocol，以及唯一的 `daynight.authorization.<accessToken>`。
+v2 的实际协议为 `daynight.session.v2`；[鉴权设计](../design/daynight-auth.md#应用用户-websocket)提供调用示例。
+服务只回显实际 Session 协议，秘密不得进入 URL、frame、日志、错误、trace 或转发 header。
+Controller 和 Worker 生产者通道不获得应用 token 准入。
+
+重复、竞争或畸形 marker、缺少实际支持协议、同时提供明确 `Authorization` 返回 400；
+无效、过期、撤销或错误 profile 的 token 返回 401。应用 Origin 必须唯一并精确等于配置的
+`s2s.allowed_origin`，缺少、错误或配置为空返回 403。marker 明确选择 API OAuth，浏览器 Cookie
+不参与认证，错误 marker 不回退 Cookie。原生 Cookie/PAT 优先级、主站 Origin 和空 offer 的 v1
+行为保持。
+
+握手核验固定 API family 与真实用户，并继续执行原资源、用户权限和 Session 身份检查。
+连接绑定该次认证的 access/grant 较早截止；到期取消受保护 IO 并停止新发布，refresh 不延长旧连接
+或替换持久 Actor。250ms 原 poll 重新检查完整 family 和当前权限，观察到撤销或失权后停止新准入；
+已准入工作和 transfer 保持原有界语义，已发送 bytes 不可撤回。新 token 重连仍遵守原 fence、lease
+和 resume，不迁移命令或控制租约。
+
+API 用户连接到期、撤销和失权选择 `1008` 及固定非秘密原因，基础设施失败选择 `1011`，Routes
+进入关闭状态时选择 `1001`；预期的 `reset_required` 仍发送原控制帧后清理。所有关闭帧只作
+best-effort 尝试，取消、原停机强关或网络失败可能已经断开底层连接。原生用户与生产者连接的关闭
+所有权保持。升级失败、取消、部分启动与断线均由原连接 owner 释放 reservation、viewer lease 和
+handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain 是各阶段界限，不承诺总 5 秒关闭。
+[鉴权设计](../design/daynight-auth.md#应用用户-websocket)拥有载体与生命周期机制。
+
 ## 配置与运行边界
 
 下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，

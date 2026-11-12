@@ -103,7 +103,11 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 		"GET " + sessionBase + "/{sessionId}/channel":                        h.browserChannel,
 	}
 	for route, handler := range handlers {
-		mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+		if route == "GET "+sessionBase+"/{sessionId}/channel" {
+			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(handler), false))
+		} else {
+			mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+		}
 	}
 	for path, methods := range map[string]string{sessionBase: "GET, POST", sessionBase + "/current": "GET", sessionBase + "/{sessionId}/controller-grant": "POST", sessionBase + "/{sessionId}/timeline": "GET", sessionBase + "/{sessionId}/commands": "POST", sessionBase + "/{sessionId}/operations/{operationId}": "GET", sessionBase + "/{sessionId}/resources/{resourceId}/content": "GET", sessionBase + "/{sessionId}/channel": "GET"} {
 		fallback := httpx.MethodNotAllowed(h.logger, methods)
@@ -412,7 +416,7 @@ func (h *Routes) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn
 		return nil, nil, nil, err
 	}
 	conn.SetReadLimit(sp.MaxFrameBytes)
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := connectionContext(r)
 	h.mutex.Lock()
 	h.connections[conn] = cancel
 	closing := h.closing
@@ -659,7 +663,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (h *Routes) browserChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	if err := h.origin(r, p.Kind == model.SessionCredential); err != nil {
+	if err := h.userChannelOrigin(r, p); err != nil {
 		h.Failure(w, r, err)
 		return
 	}
@@ -675,6 +679,7 @@ func (h *Routes) browserChannel(w http.ResponseWriter, r *http.Request, p model.
 		var fault *model.Fault
 		if errors.As(err, &fault) && fault.Code == "reset_required" {
 			reset = true
+			err = nil
 		} else {
 			h.channelAdmissionFailure(w, r, err)
 			return
@@ -689,6 +694,7 @@ func (h *Routes) browserChannel(w http.ResponseWriter, r *http.Request, p model.
 	}
 	defer cleanup()
 	closed := conn.CloseRead(ctx)
+	defer func() { h.closeUserChannel(ctx, conn, err) }()
 	if reset {
 		_ = relayWrite(ctx, conn, map[string]any{"type": "reset_required", "protocol": sp.Protocol, "reason": "Session cursor is no longer available."})
 		return
@@ -734,11 +740,13 @@ func (h *Routes) browserChannel(w http.ResponseWriter, r *http.Request, p model.
 				return
 			}
 		case <-ticker.C:
-			next, batch, position, err := h.service.BrowserPoll(ctx, p, project, task, id, cursor)
-			if err != nil {
+			next, batch, position, pollErr := h.service.BrowserPoll(ctx, p, project, task, id, cursor)
+			if pollErr != nil {
 				var fault *model.Fault
-				if errors.As(err, &fault) && fault.Code == "reset_required" {
+				if errors.As(pollErr, &fault) && fault.Code == "reset_required" {
 					_ = relayWrite(ctx, conn, map[string]any{"type": "reset_required", "protocol": sp.Protocol, "reason": fault.Message})
+				} else {
+					h.closeUserChannel(ctx, conn, pollErr)
 				}
 				return
 			}

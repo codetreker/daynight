@@ -116,6 +116,20 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	if err := json.Unmarshal(initial["cursor"], &cursor); err != nil || cursor == "" || browserUserID != f.userID {
 		t.Fatalf("browser owner/cursor differs: user=%s cursor=%s error=%v", browserUserID, cursor, err)
 	}
+	application := sessionFlowDial(t, f, base+"/"+registered.SessionID+"/channel", &websocket.DialOptions{
+		HTTPHeader:   http.Header{"Origin": {"https://client.example"}},
+		Subprotocols: []string{sp.Protocol, "daynight.authorization." + sessionFlowAPIAccess(t, f)},
+	})
+	applicationInitial := sessionFlowRead(t, f, application)
+	sessionFlowKind(t, applicationInitial, "snapshot")
+	applicationProjection, err := sp.DecodeSnapshot(applicationInitial["snapshot"])
+	var applicationUser string
+	if err := json.Unmarshal(applicationInitial["userId"], &applicationUser); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || applicationProjection.ControllerFence != connected.ControllerFence || applicationUser != f.userID || application.Subprotocol() != sp.Protocol {
+		t.Fatalf("application Session identity differs: snapshot=%+v error=%v", applicationProjection, err)
+	}
 
 	entryID := uuid.NewString()
 	content, err := json.Marshal([]map[string]string{{"type": "text", "text": "Native Session API content"}})
@@ -142,30 +156,36 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	if err := json.Unmarshal(ack["lastAckedSourceSeq"], &acknowledgedSequence); err != nil || acknowledgedBatch != batchID || acknowledgedSequence != "1" {
 		t.Fatalf("source acknowledgement differs: batch=%s sequence=%s error=%v", acknowledgedBatch, acknowledgedSequence, err)
 	}
-	for range 8 {
-		frame := sessionFlowRead(t, f, browser)
-		var kind string
-		if err := json.Unmarshal(frame["type"], &kind); err != nil {
-			t.Fatal(err)
+	for _, viewer := range []*websocket.Conn{browser, application} {
+		found := false
+		for range 8 {
+			frame := sessionFlowRead(t, f, viewer)
+			var kind string
+			if err := json.Unmarshal(frame["type"], &kind); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "snapshot" {
+				continue
+			}
+			sessionFlowKind(t, frame, "event")
+			event, err := sp.DecodeEvent(frame["event"])
+			if err != nil || event.Fence != registered.Fence || event.ConnectionEpoch != connected.ConnectionEpoch {
+				t.Fatalf("browser event identity differs: event=%+v error=%v", event, err)
+			}
+			if event.Kind == "snapshot" {
+				continue
+			}
+			actual, err := sp.DecodeTimeline(event.Payload)
+			if err != nil || event.Kind != "timeline_upsert" || actual.EntryID != entryID || actual.EntrySeq != "1" || actual.Revision != entry.Revision || actual.Kind != entry.Kind || !bytes.Equal(actual.Data["content"], content) {
+				t.Fatalf("browser timeline content differs: event=%+v entry=%+v error=%v", event, actual, err)
+			}
+			found = true
+			break
 		}
-		if kind == "snapshot" {
-			continue
+		if !found {
+			t.Fatal("browser did not receive the controller's timeline entry")
 		}
-		sessionFlowKind(t, frame, "event")
-		event, err := sp.DecodeEvent(frame["event"])
-		if err != nil || event.Fence != registered.Fence || event.ConnectionEpoch != connected.ConnectionEpoch {
-			t.Fatalf("browser event identity differs: event=%+v error=%v", event, err)
-		}
-		if event.Kind == "snapshot" {
-			continue
-		}
-		actual, err := sp.DecodeTimeline(event.Payload)
-		if err != nil || event.Kind != "timeline_upsert" || actual.EntryID != entryID || actual.EntrySeq != "1" || actual.Revision != entry.Revision || actual.Kind != entry.Kind || !bytes.Equal(actual.Data["content"], content) {
-			t.Fatalf("browser timeline content differs: event=%+v entry=%+v error=%v", event, actual, err)
-		}
-		return
 	}
-	t.Fatal("browser did not receive the controller's timeline entry")
 }
 
 func sessionFlowDial(t *testing.T, f *fixture, path string, options *websocket.DialOptions) *websocket.Conn {

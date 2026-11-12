@@ -427,7 +427,9 @@ scope 为 `daynight:mcp`，保留实际客户端、`dnmcp_` / `dnmcr_` 前缀及
 
 `IssueAPIFamily` 是固定 API profile 的事务内发行操作，`service/oauth.NewAPIIssuer` 以配置的
 PublicOrigin 构造资源并拥有发行事务，只有确认提交才返回秘密。Core 的认证、续期与撤销操作可处理
-固定 API profile。公开 REST 认证仍使用 PAT / Cookie，S2S 发行路由尚未暴露；既有 public OAuth
+固定 API profile。用户 WebSocket 的明确 marker 调用同一应用 OAuth service 的窄认证操作，
+返回真实 Principal、grant UUID 与 effective expiry；该操作不注册公开 REST 或发行入口。
+公开 REST 认证仍使用 PAT / Cookie，S2S 发行路由尚未暴露；既有 public OAuth
 refresh/revoke adapter 只准入 MCP profile。
 API 内部能力不授予账号根、Worker 或 Controller 生产者权限。授权列表沿用原 owner 权限和 DTO，
 从实际 snapshot 投影 client ID / name，展示真实 grant 截止与状态。
@@ -477,6 +479,49 @@ created_at 加 720 hours，其余 grant 保持原上界。迁移不重分类历�
 metadata、last_used_at、Actor 或 nullability，不增加外键。
 [固定 API family 决策](../../.agents/notes/implemented/architecture/2026-11-12-api-oauth-family.md)
 记录 profile 隔离与滚动期限的选择。
+
+### 应用用户 WebSocket
+
+仅 `GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/channel` 的 v1/v2
+和 `GET /api/v1/test-sessions/{sessionId}/channel` 的 v1 接受应用浏览器载体。调用者提供一个
+实际支持的 Session subprotocol 和一个唯一授权 marker：
+
+```javascript
+new WebSocket(url, ["daynight.session.v2", `daynight.authorization.${accessToken}`]);
+```
+
+adapter 在 Session 版本选择和 `websocket.Accept` 前解析并剥离 marker，只向协议协商提供实际
+Session subprotocol，响应只回显该协议。重复或竞争 marker、畸形输入、缺少实际支持协议，或同时
+存在明确 `Authorization`，均返回 `400 invalid_input`。无效、过期、撤销或错误 profile 的 token
+返回 `401 unauthenticated`；应用 Origin 缺少、错误、多值或配置为空返回 `403 forbidden`。
+Origin 必须精确等于已验证的 `s2s.allowed_origin`，不从 Host 或请求头推导允许值。
+marker 明确选择 API OAuth 认证，浏览器 Cookie 不参与此分支；错误 marker 不回退 Cookie。
+秘密只属于入站认证载体，不进入 URL、frame、协商回显、日志、错误、trace 或转发 header。
+Controller 和 Worker 生产者 channel 沿用原入口，不解析应用 marker。原生 Cookie/PAT 的优先级、
+主站 Origin 条件及未提供 subprotocol 的 v1 行为保持。
+
+握手的窄认证操作按配置的 API resource、固定 scope/client 读取真实 access、grant 和 user，
+返回真实 Principal、grant UUID 和 access/grant 的较早截止。原 Session 用户用途检查继续核验
+当前资源、owner、项目权限、parent PAT、claim、fence、generation 与 epoch；握手认证不替代它们。
+
+API 连接在原 `accept` 的 cancel、`CloseRead`、poll 和 cleanup 责任内安装本次认证 effective expiry
+的 context deadline。到期取消正在进行的受保护 IO，并阻止新的结果发布；旧连接的期限不随
+refresh 延长，持久 Actor 也不换绑。使用新 token 重连仍遵守原 fence、lease、resume 和原用户意图，
+不迁移命令或控制租约。原 250ms poll 通过原 Session 用户用途重新检查完整 family 和当前权限；
+观察到撤销或失权后停止新准入。此观察周期不承诺撤销瞬间回收此前已准入的工作，已经传送的 bytes
+不可撤回，已准入 transfer 保留其原有界传输和取消语义。
+
+API 用户连接的认证或权限失效选择 `1008`，原因固定为 `unauthenticated` 或 `forbidden`；
+基础设施失败选择 `1011`，Routes 已进入关闭状态时选择 `1001`。预期的 `reset_required` 沿原路径
+发送控制帧后清理，不分类为基础设施失败。所有关闭帧均在传输仍健康时尽力发送；`CloseRead` 的取消、
+原停机取消后强关或 IO 失败可能已经关闭底层连接，因此不保证对端收到关闭帧。原生用户与生产者的
+关闭所有权和生命周期保持。连接升级失败释放原 reservation，cleanup 仍负责 cancel、连接、
+viewer lease 和 handler 收拢，不建立第二个 transport owner。coder/websocket 的关闭分别有 5 秒
+写入、5 秒对端等待及可能 15 秒 goroutine drain；这些是各阶段界限，不是总 5 秒关闭保证。
+
+[应用用户 WebSocket 决策](../../.agents/notes/implemented/architecture/2026-11-12-api-user-websocket.md)
+记录载体与关闭所有权的选择。HTTP/raw WS 测试拥有解析、协商、认证分支、deadline、poll、发布和清理
+证据；OAuth service/family 测试拥有真实 tuple、expiry 与事务事实；正常完整应用协作由原集成入口验证。
 
 ### 凭据使用时间的持久化
 

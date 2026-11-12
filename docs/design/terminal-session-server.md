@@ -28,7 +28,9 @@ Web producer 和既有 v1 archive 继续使用原协议与读取路径。
 Web 与 Herdr 共用 [Session 项目准入](task-session-protocol.md#relay-与恢复)，
 在原事务中读取 canonical `ProjectAccess`，不长期锁定授权来源。
 Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览器 channel 每 250ms
-重验读取资格。其他有项目访问权的成员和管理员只读；人工输入和控制请求必须由
+重验完整凭据与当前读取资格。应用浏览器的 v2 marker、精确 Origin、固定 API profile、连接
+effective-expiry deadline 与 best-effort 关闭遵循[鉴权设计](daynight-auth.md#应用用户-websocket)。
+其他有项目访问权的成员和管理员只读；人工输入和控制请求必须由
 持久 Session owner 提交。项目或 Team 角色不替代原 owner、当前 claim、控制租约
 或 connection epoch 检查。非 owner 状态投影清空 `control.availableActions`，保留
 画面、历史和控制归属。
