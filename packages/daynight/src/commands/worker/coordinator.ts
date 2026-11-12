@@ -224,6 +224,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   class GlobalRecheckError extends Error {}
   class OwnerRecheckConflict extends Error {}
   const settledMetadata = new Map<string, { worktreeId: string; cwd: string; sequence: number }>();
+  const retiredMetadata = new Map<string, { worktreeId: string; cwd: string; sequence: number }>();
+  const forgetSettledMetadata = (identity: string): void => {
+    const settled = settledMetadata.get(identity);
+    if (settled === undefined) return;
+    if (ticking) retiredMetadata.set(identity, settled);
+    else settledMetadata.delete(identity);
+  };
   const cleanupAlreadySettled = async (owner: ResourceOwner, observedBefore: number): Promise<boolean> => {
     const settled = settledMetadata.get(key(owner));
     if (settled?.worktreeId !== owner.worktreeId || settled.sequence <= observedBefore) return false;
@@ -1496,7 +1503,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await workerOperation(operation => options.git.retireWorktreeManifest(projectFor(owner), owner, operation), normalSignal);
       const failure = metadataFailures.get(owner.worktreeId);
       if (failure !== undefined) { observe(m => m.recover(failure)); metadataFailures.delete(owner.worktreeId); }
-      settledMetadata.delete(key(owner));
+      forgetSettledMetadata(key(owner));
     } catch (error) {
       if (isWorkerCancellation(error, normalSignal)) throw error;
       reportMetadataFailure(owner, error);
@@ -1528,7 +1535,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (!complete) continue;
           const failure = metadataFailures.get(owner.worktreeId);
           if (failure !== undefined) { observe(m => m.recover(failure)); metadataFailures.delete(owner.worktreeId); }
-          settledMetadata.delete(identity);
+          forgetSettledMetadata(identity);
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;
           reportMetadataFailure(owner, error);
@@ -1976,7 +1983,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         });
         throw error;
       }
-      finally { updatePromptDemand(); activeCoverage = undefined; ticking = false; }
+      finally {
+        try { updatePromptDemand(); }
+        finally {
+          activeCoverage = undefined; ticking = false;
+          for (const [identity, settled] of retiredMetadata) if (settledMetadata.get(identity) === settled) settledMetadata.delete(identity);
+          retiredMetadata.clear();
+        }
+      }
     },
     advanceRetry: async (identity: ClaimIdentity): Promise<WorkerInputWait | undefined> => {
       const { task, remoteTask } = await readSource(identity);

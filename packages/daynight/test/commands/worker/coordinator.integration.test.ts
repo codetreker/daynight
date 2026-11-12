@@ -1313,6 +1313,32 @@ it("does not recreate cleanup from a stale rowless workspace snapshot", async ()
   } finally { finishRemoval.resolve(); finishScan.resolve(); await f.coordinator.shutdown(); }
 });
 
+it("keeps settlement evidence until an in-flight Herdr observation is processed after metadata retirement", async () => {
+  const f = await fixture();
+  await f.coordinator.tick();
+  await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  const owner = [...f.worktrees.values()][0]!.owner, workspace = structuredClone([...f.resources.values()]);
+  f.grants.clear(); f.candidates.splice(0);
+  const removeEntered = Promise.withResolvers<void>(), finishRemoval = Promise.withResolvers<void>();
+  const observationEntered = Promise.withResolvers<void>(), finishObservation = Promise.withResolvers<void>();
+  const remove = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+  vi.mocked(f.git.removeWorktree).mockImplementation(async (project, target, operation) => { removeEntered.resolve(); await finishRemoval.promise; await remove(project, target, operation); });
+  try {
+    await f.coordinator.tick(); await removeEntered.promise;
+    f.tasks.listResources.mockImplementationOnce(async () => { observationEntered.resolve(); await finishObservation.promise; return workspace; });
+    const nextRound = f.coordinator.tick(); await observationEntered.promise;
+    finishRemoval.resolve();
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(f.manifests.has(owner.claimId)).toBe(true);
+    finishObservation.resolve(); await nextRound;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.git.retireWorktreeManifest).toHaveBeenCalledWith(f.project, owner, expect.anything());
+    expect(f.manifests.has(owner.claimId)).toBe(false);
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+    expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+  } finally { finishRemoval.resolve(); finishObservation.resolve(); await f.coordinator.shutdown(); }
+});
+
 it("keeps a workspace first observed after cleanup while an earlier request is in flight", async () => {
   const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(800), claimId: uuid(801), worktreeId: uuid(802) };
   f.candidates.splice(0);
