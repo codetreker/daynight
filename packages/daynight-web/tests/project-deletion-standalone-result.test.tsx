@@ -128,7 +128,7 @@ it("keeps success reachable without navigating away from a newer task draft", as
   expect(app.writes()).toBe(1);
 });
 
-it("isolates an existing standalone result during failed identity revalidation", async () => {
+it("retains an existing standalone result when focus returns", async () => {
   const app = setup(); await submit(); await waitFor(() => expect(app.writes()).toBe(1));
   act(() => navigate(`/projects/${otherProject}/tasks/${taskId}`));
   await act(async () => app.pending.reject(new TypeError("lost response")));
@@ -136,11 +136,6 @@ it("isolates an existing standalone result during failed identity revalidation",
   app.setIdentityFailure(true);
   vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
   vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
-  expect(await screen.findByRole("heading", { name: "The current account could not be confirmed" })).toBeVisible();
-  const result = document.querySelector(".standalone-deletion-results")!;
-  expect(result).toHaveAttribute("inert"); expect(result).toHaveAttribute("aria-hidden", "true");
-  expect(screen.queryByRole("button", { name: "Check current state" })).toBeNull();
-  app.setIdentityFailure(false); fireEvent.click(screen.getByRole("button", { name: "Confirm account again" }));
-  expect(await screen.findByText(/project deletion result is unknown/i)).toBeVisible();
+  expect(screen.getByText(/project deletion result is unknown/i)).toBeVisible();
   expect(screen.getByRole("button", { name: "Check current state" })).toBeEnabled();
 });

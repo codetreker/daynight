@@ -3,6 +3,7 @@ import type { AuthMessages } from "../auth";
 export const auth: AuthMessages = {
   completion: { title: "正在完成登录", loading: "正在确认账户…", syncError: "登录已完成，但账户同步失败。", retrySync: "重试账户同步", refreshRequired: "请刷新页面后继续。" },
   accountChange: { message: "账户已变化", reload: "刷新页面" },
+  accountSync: { error: "账户同步失败。", retry: "重试账户同步" },
   roles: { admin: "管理员", member: "成员" },
   shell: {
     sidebar: {
@@ -21,8 +22,6 @@ export const auth: AuthMessages = {
     networkRetry: "请检查网络连接后重试。", signOut: "退出登录", retryLogout: "重试退出登录",
     signingOut: "正在退出登录…", invalidLoginTarget: "登录返回地址无效", invalidLoginTargetDetail: "请重新打开登录页，继续进入你的工作台。", startFreshLogin: "重新打开登录页",
     invitationStorageError: "浏览器无法保存邀请。登录后请重新打开邀请链接。", invitationCleanupError: "浏览器无法清除邀请临时数据。请关闭此标签页以清除邀请。",
-    revalidationLabel: "重新确认当前账户", revalidationLoading: "正在确认当前账户…", revalidationError: "暂时无法重新确认当前账户",
-    revalidationRetained: "当前工作已保留。确认账户后可继续。", revalidationRetry: "重新确认账户",
     notice: {
       expired: "登录状态已过期。重新登录后可继续访问项目。", signedOut: "你已退出登录。",
       logoutFailed: "本地账户数据已清除，但服务暂时无法确认退出。请重试退出登录。",

@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotSessionCache } from '../src/features/bots/session-cache';
-import { BotSessionHost } from '../src/features/bots/BotSessionHost';
+import { BotSessionHost, useBotSessionCache } from '../src/features/bots/BotSessionHost';
+import { pauseAuthRequests } from '../src/api/client';
 import { BotsPage } from '../src/features/bots/BotsPage';
 import * as sessions from '../src/api/sessions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
@@ -13,6 +14,27 @@ import type { SessionArchive } from '../../daynight/src/session/archive';
 const render = createLocaleRender('en');
 const caches: BotSessionCache[] = [];
 afterEach(() => { caches.splice(0).forEach(cache => cache.close()); });
+it('stops every Bot Session synchronously and stops panes created during account pause', async () => {
+  const first = botFixture(botBinding(1)), second = botFixture(botBinding(2));
+  const scope = createTaskCacheScope({ userId: botOwner, onIdentityMismatch: vi.fn() });
+  const api = vi.spyOn(sessions, 'createBotSessionApi').mockImplementation(binding => binding.botId === first.binding.botId ? first.api : second.api);
+  let cache!: BotSessionCache;
+  const Owner = () => { cache = useBotSessionCache(); return null; };
+  const view = render(<TaskCacheProvider scope={scope}><Owner /></TaskCacheProvider>);
+  let resume = () => {};
+  try {
+    act(() => cache.select(first.binding, first.binding));
+    await waitFor(() => expect(first.api.channel).toHaveBeenCalledOnce());
+    const pane = cache.snapshot()[0]!;
+    act(() => pane.client.setDraft('local draft'));
+    act(() => { resume = pauseAuthRequests(); expect(first.channel.close).toHaveBeenCalledOnce(); });
+    expect(pane.client.snapshot().draft.text).toBe('local draft');
+    act(() => cache.select(second.binding));
+    const later = cache.snapshot().find(value => value.binding.botId === second.binding.botId)!;
+    expect(later.client.snapshot().authPaused).toBe(true);
+    expect(second.api.current).not.toHaveBeenCalled();
+  } finally { resume(); view.unmount(); scope.dispose(); api.mockRestore(); }
+});
 function fixture() {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api }); caches.push(cache);

@@ -24,6 +24,8 @@ storage arbitration still govern publication and trusted 404 fallback; guarded
 operations retain their outcomes while confirmed denial isolates private content. This extends the [browser preference decision](../../archived/feature/2026-11-04-browser-team-preference.md)
 without treating an incomplete directory as proof of access or revocation.
 
+The later [document account synchronization decision](../architecture/2026-11-11-document-account-sync.md) replaces foreground account revalidation. On a healthy foreground return, the Team owners still reread the current preference, loaded directory prefix and active settings resources after the account marker check. Invitation rereads follow confirmed membership and management permission. A sticky account-change pause prevents these reads.
+
 ## Alternatives
 
 **Reload only the first page.** This does perform a fresh read but discards

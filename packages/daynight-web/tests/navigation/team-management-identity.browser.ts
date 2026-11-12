@@ -9,14 +9,14 @@ const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null
 const otherProfile = { ...profile, id: '00000000-0000-4000-8000-000000000002', name: 'Bob' };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { profile: typeof profile; exists: boolean; lost: boolean; holdMe: Gate | null; holdDetail: Gate | null; holdDelete: Gate | null; writes: number; details: number };
+type State = { profile: typeof profile; exists: boolean; lost: boolean; holdDetail: Gate | null; holdDelete: Gate | null; writes: number; details: number; meReads: number };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { profile, exists: true, lost: false, holdMe: null, holdDetail: null, holdDelete: null, writes: 0, details: 0 };
+  const state: State = { profile, exists: true, lost: false, holdDetail: null, holdDelete: null, writes: 0, details: 0, meReads: 0 };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId: state.profile.id, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': state.profile.id } });
-    if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send(state.profile); }
+    if (path === '/api/v1/me') { state.meReads++; return send(state.profile); }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.exists ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
@@ -40,20 +40,22 @@ const start = async (page: Page) => { await page.goto(`/teams/${teamId}/settings
 const openDelete = async (page: Page) => { await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
 const foreground = async (page: Page, state: State) => {
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
-  const other = await page.context().newPage(); await other.goto('/projects');
+  const other = await page.context().newPage(); await other.goto('about:blank');
   const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
   await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
-  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); state.holdMe = { started: started.resolve, wait: finish.promise };
-  await page.bringToFront(); await started.promise;
-  return { finish: finish.resolve, other };
+  const meReads = state.meReads;
+  await page.bringToFront();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(state.meReads).toBe(meReads);
+  return { other };
 };
 
-test('retains a settings draft and typed confirmation across same-user verification', async ({ page }) => {
+test('retains a settings draft and typed confirmation across foreground resource checks', async ({ page }) => {
   const state = await install(page); await start(page);
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await page.getByRole('dialog').getByLabel('Team name').fill('Unsubmitted draft');
   const first = await foreground(page, state);
-  first.finish(); await expect(page.getByRole('dialog').getByLabel('Team name')).toHaveValue('Unsubmitted draft'); await first.other.close();
+  await expect(page.getByRole('dialog').getByLabel('Team name')).toHaveValue('Unsubmitted draft'); await first.other.close();
   await page.keyboard.press('Escape');
   const dialog = await openDelete(page);
   const name = dialog.getByLabel('Enter the Team name to confirm'); await name.fill('Al');
@@ -62,28 +64,28 @@ test('retains a settings draft and typed confirmation across same-user verificat
   await expect(backdrop).toBeVisible();
   await expect(name).toBeFocused();
   await expect(name).toHaveValue('Al');
-  second.finish(); await expect(name).toHaveValue('Al'); await expect(name).toBeVisible();
+  await expect(name).toHaveValue('Al'); await expect(name).toBeVisible();
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
   expect(state.writes).toBe(0); await second.other.close();
 });
 
-test('preserves unknown through same-user verification without replay', async ({ page }) => {
+test('preserves unknown through foreground resource checks without replay', async ({ page }) => {
   const state = await install(page); await start(page); state.lost = true;
   const dialog = await openDelete(page); await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
   await expect(dialog.getByRole('alert')).toContainText('result is unknown');
-  const check = await foreground(page, state); check.finish();
-  await expect(dialog.getByRole('alert').first()).toContainText('result is unknown');
-  expect(state.writes).toBe(1); await expect(dialog.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
+  const check = await foreground(page, state);
+  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+  expect(state.writes).toBe(1); await expect(page.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
   await check.other.close();
 });
 
-test('preserves an unknown rename across same-user verification and closing the dialog', async ({ page }) => {
+test('preserves an unknown rename across foreground checks and closing the dialog', async ({ page }) => {
   const state = await install(page); await start(page); state.lost = true;
   const edit = page.getByRole('button', { name: 'Edit', exact: true }); await edit.click();
   const dialog = page.getByRole('dialog'); await dialog.getByLabel('Team name').fill('New name');
   await dialog.getByRole('button', { name: 'Save changes' }).click();
   await expect(dialog.getByRole('alert')).toContainText('result is unknown');
-  const check = await foreground(page, state); check.finish();
+  const check = await foreground(page, state);
   await expect(dialog.getByRole('alert').first()).toContainText('result is unknown');
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(edit).toBeDisabled(); expect(state.writes).toBe(1); await check.other.close();
@@ -94,7 +96,7 @@ test('does not navigate on a 404 while the committed delete receipt is delayed',
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); state.holdDelete = { started: started.resolve, wait: finish.promise };
   const dialog = await openDelete(page); await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click(); await started.promise;
   const previousReads = state.details;
-  const check = await foreground(page, state); check.finish();
+  const check = await foreground(page, state);
   await expect.poll(() => state.details).toBeGreaterThan(previousReads);
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/settings`);
   expect(state.writes).toBe(1);
@@ -104,7 +106,7 @@ test('does not navigate on a 404 while the committed delete receipt is delayed',
 });
 
 
-test('retains the create dialog input while identity verification is pending', async ({ page }) => {
+test('retains the create dialog input on foreground return', async ({ page }) => {
   const state = await install(page); await page.goto('/projects');
   await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: 'Create Team', exact: true }).click();
   const backdrop = page.locator('.auth-modal-backdrop'), dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
@@ -115,13 +117,12 @@ test('retains the create dialog input while identity verification is pending', a
   await expect(backdrop).toBeVisible(); await expect(name).toBeFocused();
   expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([before.start, before.end]);
   expect(await name.boundingBox()).toMatchObject({ x: before.box.x, y: before.box.y, width: before.box.width, height: before.box.height });
-  check.finish();
   await expect(name).toHaveValue('Unsubmitted Team'); await expect(name).toBeFocused();
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
   expect(state.writes).toBe(0); await check.other.close();
 });
 
-test('keeps the narrow navigation and focus during a same-user check', async ({ page }) => {
+test('keeps the narrow navigation and focus during foreground checks', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const state = await install(page); await page.goto('/projects');
   await page.getByRole('button', { name: 'Expand sidebar' }).click();
@@ -136,11 +137,11 @@ test('keeps the narrow navigation and focus during a same-user check', async ({ 
   await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
   expect(await drawer.boundingBox()).toEqual(box);
-  check.finish(); await expect(drawer).toBeVisible(); await expect(link).toBeFocused();
+  await expect(drawer).toBeVisible(); await expect(link).toBeFocused();
   await check.other.close();
 });
 
-test('keeps the Chinese narrow create dialog and selection during a same-user check', async ({ page }) => {
+test('keeps the Chinese narrow create dialog and selection during foreground checks', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   const state = await install(page); await page.goto('/projects');
@@ -157,12 +158,12 @@ test('keeps the Chinese narrow create dialog and selection during a same-user ch
   await expect(dialog).toBeVisible(); await expect(name).toBeFocused();
   expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 3]);
   expect(await dialog.boundingBox()).toEqual(box);
-  check.finish(); await expect(name).toHaveValue('未提交草稿'); await expect(name).toBeFocused();
+  await expect(name).toHaveValue('未提交草稿'); await expect(name).toBeFocused();
   expect(state.writes).toBe(0); await check.other.close();
 });
 
 
-test('retains the editor while the same Team is reread after identity confirmation', async ({ page }) => {
+test('retains the editor while the same Team is reread on foreground return', async ({ page }) => {
   const state = await install(page); await start(page);
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
@@ -172,7 +173,7 @@ test('retains the editor while the same Team is reread after identity confirmati
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   state.holdDetail = { started: started.resolve, wait: finish.promise };
   const check = await foreground(page, state);
-  await expect(name).toBeFocused(); check.finish(); await started.promise;
+  await expect(name).toBeFocused(); await started.promise;
   expect(await dialog.evaluate((element, node) => element === node, original)).toBe(true);
   await expect(dialog).toBeVisible(); await expect(name).toBeFocused();
   expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([2, 8]);
@@ -196,7 +197,7 @@ const installClipboardProbe = async (page: Page) => {
 const clipboardCalls = (page: Page) => page.evaluate(() => (window as unknown as { clipboardProbe: ClipboardProbe }).clipboardProbe.calls);
 const resolveClipboard = (page: Page) => page.evaluate(() => (window as unknown as { clipboardProbe: ClipboardProbe }).clipboardProbe.resolve?.());
 
-test('retains a pending Team ID copy through same-user verification', async ({ page }) => {
+test('retains a pending Team ID copy through a foreground return', async ({ page }) => {
   await installClipboardProbe(page);
   const state = await install(page); await start(page);
   const copy = page.getByRole('button', { name: 'Copy Team ID' });
@@ -209,10 +210,8 @@ test('retains a pending Team ID copy through same-user verification', async ({ p
   await page.keyboard.press('Space');
   expect(await clipboardCalls(page)).toEqual([teamId]);
   await resolveClipboard(page);
-  await expect(copy).toHaveAttribute('aria-disabled', 'true');
-  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeVisible();
   await expect(copy).toBeFocused();
-  check.finish();
   await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeVisible();
   await expect(copy).toHaveAttribute('aria-disabled', 'false');
   await expect(copy).toBeFocused();
@@ -220,14 +219,16 @@ test('retains a pending Team ID copy through same-user verification', async ({ p
   await check.other.close();
 });
 
-test('discards a pending Team ID copy after an account switch', async ({ page }) => {
+test('retains a pending Team ID copy after an account switch', async ({ page }) => {
   await installClipboardProbe(page);
   const state = await install(page); await start(page);
   const copy = page.getByRole('button', { name: 'Copy Team ID' });
   await copy.click(); await expect(copy).toHaveAttribute('aria-disabled', 'true');
   const check = await foreground(page, state);
-  state.profile = otherProfile; check.finish();
-  await expect(page.getByText('Bob', { exact: true }).first()).toBeVisible();
+  await check.other.route('**/api/v1/me', route => route.fulfill({ json: profile, headers: { 'Daynight-User-ID': userId } }));
+  await check.other.goto('/projects');
+  await check.other.evaluate(id => localStorage.setItem('daynight.activeUser', JSON.stringify(id)), otherProfile.id);
+  await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
   await resolveClipboard(page);
   await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
   expect(state.writes).toBe(0);

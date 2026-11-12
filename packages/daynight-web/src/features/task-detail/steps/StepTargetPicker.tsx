@@ -1,3 +1,4 @@
+import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
@@ -67,7 +68,7 @@ export const StepMoveDialog = ({ step, steps, available, onCancel, onConfirm }: 
     const items = dialogFocusables(event.currentTarget); const first = items[0]; const last = items[items.length - 1];
     if (first && last && (!items.includes(document.activeElement as HTMLElement) || document.activeElement === (event.shiftKey ? first : last))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
   }}>
-    <header className="dialog-header"><h2 id={titleId}>{m.moveTitle}</h2></header>
+    <header className="dialog-header"><h2 id={titleId}>{m.moveTitle}</h2><AccountRefreshNotice /></header>
     <div className="dialog-body step-move-body"><strong>{step.title}</strong><code className="step-id">{step.id}</code>
       <StepTargetPicker steps={steps} excludeId={step.id} selectedId={selectedId} onSelect={setSelectedId} />
       {missing && <p role="alert">{m.targetMissing}</p>}
@@ -94,7 +95,7 @@ export const StepAddTargetDialog = ({ steps, selected, onSelect, onCancel, onCon
     const items = dialogFocusables(event.currentTarget); const first = items[0]; const last = items[items.length - 1];
     if (first && last && (!items.includes(document.activeElement as HTMLElement) || document.activeElement === (event.shiftKey ? first : last))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
   }}>
-    <header className="dialog-header"><h2 id={titleId}>{m.selectTarget}</h2></header>
+    <header className="dialog-header"><h2 id={titleId}>{m.selectTarget}</h2><AccountRefreshNotice /></header>
     <div className="dialog-body step-move-body"><StepTargetPicker steps={steps} selectedId={selected?.id ?? null} onSelect={(id) => { const step = steps.find((item) => item.id === id); if (step !== undefined) onSelect(id, step.createdAt); }} />{missing && <p role="alert">{m.targetMissing}</p>}</div>
     <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancel}</button><button className="button primary" type="button" disabled={selected === null || selected.createdAt === null || missing} onClick={() => { if (selected !== null && selected.createdAt !== null && !missing) onConfirm(selected.id, selected.createdAt); }}>{m.confirmTarget}</button></footer>
   </dialog>;

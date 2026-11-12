@@ -4,6 +4,7 @@ import { canonicalId } from "../../api/validation";
 import type { TeamRef } from "../../api/auth-types";
 import { getTeam, type Team } from "../../api/teams";
 import { replaceRoute } from "../../app/router";
+import { useTeamForeground } from "./useTeamForeground";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 
 type Detail = { readonly id: string; readonly status: "loading" | "ready" | "error"; readonly team?: TeamRef; readonly error?: unknown; readonly storageError?: boolean };
@@ -54,6 +55,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   const [saveError, setSaveError] = useState(false);
   const [revision, setRevision] = useState(0);
   const retry = useCallback(() => setRevision((value) => value + 1), []);
+  useTeamForeground(requestKey !== null && !blocked, retry);
   const save = useCallback((team: TeamRef, replaces: string | null = null) => {
     if (replaces !== null && pendingSave.current !== null && pendingSave.current.team.id !== replaces && pendingSave.current.replaces !== replaces) return;
     try {

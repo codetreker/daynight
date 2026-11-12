@@ -10,13 +10,13 @@ const project = { id: projectId, name: 'Alpha project', repoUrl: 'https://exampl
 type Gate = { started: () => void; wait: Promise<void> };
 const gate = () => { const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); return { value: { started: started.resolve, wait: finish.promise }, started: started.promise, finish: finish.resolve }; };
 const install = async (page: Page) => {
-  const state: { me: Gate | null; config: Gate | null; projects: Gate | null; writes: string[]; configReads: number; projectReads: number; revision: string; projectName: string } = { me: null, config: null, projects: null, writes: [], configReads: 0, projectReads: 0, revision: '1', projectName: project.name };
+  const state: { config: Gate | null; projects: Gate | null; writes: string[]; meReads: number; configReads: number; projectReads: number; revision: string; projectName: string } = { config: null, projects: null, writes: [], meReads: 0, configReads: 0, projectReads: 0, revision: '1', projectName: project.name };
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (request.method() !== 'GET') state.writes.push(`${request.method()} ${path}`);
     const send = (json: unknown, extra: Record<string, string> = {}) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, ...extra } });
-    const wait = async (name: 'me' | 'config' | 'projects') => { const current = state[name]; state[name] = null; if (current) { current.started(); await current.wait; } };
-    if (path === '/api/v1/me') { await wait('me'); return send(profile); }
+    const wait = async (name: 'config' | 'projects') => { const current = state[name]; state[name] = null; if (current) { current.started(); await current.wait; } };
+    if (path === '/api/v1/me') { state.meReads++; return send(profile); }
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') {
@@ -31,20 +31,17 @@ const install = async (page: Page) => {
 };
 // Headless Chromium does not consistently transfer focus between tabs. Simulate
 // visibility events while retaining the browser's real active element and layout.
-const revalidate = async (page: Page, state: Awaited<ReturnType<typeof install>>) => {
-  const identity = gate(); state.me = identity.value;
+const foreground = async (page: Page) => {
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
     delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState;
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await identity.started;
-  return identity;
 };
 
 for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choose projects', done: 'Done' }, { width: 390, height: 844, locale: 'zh-CN', choose: '选择项目', done: '完成' }]) {
-  test(`${scenario.locale} ${scenario.width}px retains unsubmitted configuration through identity and resource checks`, async ({ page }) => {
+  test(`${scenario.locale} ${scenario.width}px retains unsubmitted configuration through foreground resource checks`, async ({ page }) => {
     await page.setViewportSize({ width: scenario.width, height: scenario.height });
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
     const state = await install(page);
@@ -69,9 +66,10 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
       await expect(dialog.locator('.configuration-project-loading')).toHaveCount(0);
     };
     const config = gate(), projects = gate(); state.config = config.value; state.projects = projects.value;
-    const identity = await revalidate(page, state);
+    const meReads = state.meReads;
+    await foreground(page);
     await assertStable(); expect(state.writes).toEqual([]);
-    identity.finish(); await Promise.all([config.started, projects.started]);
+    await Promise.all([config.started, projects.started]); expect(state.meReads).toBe(meReads);
     await assertStable(); expect(state.writes).toEqual([]);
     const configResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/me/workers/${target}/configuration` && response.request().method() === 'GET');
     const projectsResponse = page.waitForResponse(response => { const url = new URL(response.url()); return url.pathname === '/api/v1/projects' && url.searchParams.get('limit') === '100'; });
@@ -87,8 +85,8 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
     // response verifies that both readers can publish after the stable wait.
     state.revision = '2'; state.projectName = 'Alpha updated';
     const changedConfig = gate(), changedProjects = gate(); state.config = changedConfig.value; state.projects = changedProjects.value;
-    const changedIdentity = await revalidate(page, state);
-    await assertStable(); changedIdentity.finish(); await Promise.all([changedConfig.started, changedProjects.started]);
+    await foreground(page);
+    await assertStable(); await Promise.all([changedConfig.started, changedProjects.started]); expect(state.meReads).toBe(meReads);
     changedConfig.finish(); changedProjects.finish();
     await expect(dialog.getByText('Alpha updated')).toBeVisible();
     await expect(page.locator('.configuration-summary').getByText('2', { exact: true })).toBeVisible();

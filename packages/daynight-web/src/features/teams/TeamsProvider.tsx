@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { isAbortError } from "../../api/client";
 import { listTeams, type Team } from "../../api/teams";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
+import { useTeamForeground } from "./useTeamForeground";
 import type { TeamPreference } from "./useTeamPreference";
 
 type List = { readonly items: readonly Team[]; readonly cursor: string | null; readonly status: "loading" | "ready" | "error"; readonly more: boolean; readonly moreError: unknown; readonly error: unknown };
@@ -89,6 +90,7 @@ const useTeamsState = (preference: TeamPreference, admission: TaskCacheScope, ad
       }
     };
   }, [load, admissionBlocked]);
+  useTeamForeground(!admissionBlocked, () => { void load({ kind: "revalidate", cursor: null }); });
   return { list, detail: preference.detail, visibilityTeamId: preference.visibilityTeamId, forgetUnavailable: preference.forgetUnavailable, leaveTeam: preference.leaveTeam, refreshList: () => { void load({ kind: "refresh", cursor: null }); }, revalidateList: () => { void load({ kind: "revalidate", cursor: null }); }, loadMore: () => { if (list.cursor !== null && (listRequest.current === null || listRequest.current.operation.kind === "revalidate")) void load({ kind: "more", cursor: list.cursor }, listRequest.current?.operation.kind === "revalidate"); }, refreshDetail: preference.retry, acceptTeam: preference.acceptTeam };
 };
 export const TeamsProvider = ({ preference, admission, admissionBlocked, children }: { readonly preference: TeamPreference; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly children: ReactNode }) => {

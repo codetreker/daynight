@@ -1,3 +1,5 @@
+import { AccountSyncNotice } from "../auth/AccountSyncNotice";
+import { AccountRefreshNotice } from "../auth/AccountRefreshNotice";
 import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { LanguageSelector } from "../../i18n/LanguageSelector";
@@ -17,9 +19,9 @@ export const SetupGuideShell = () => {
       <a className="skip-link" href="#main-content">{app.skipToContent}</a>
       <header className="topbar">
         <nav className="crumb" aria-label={app.breadcrumb}><a href="/projects">{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{setup.navigation}</span></nav>
-        <div className="account-actions"><LanguageSelector /></div>
+        <AccountRefreshNotice /><div className="account-actions"><LanguageSelector /></div>
       </header>
-      <main className="content" id="main-content" ref={content} tabIndex={-1}><SetupGuidePage /></main>
+      <AccountSyncNotice /><main className="content" id="main-content" ref={content} tabIndex={-1}><SetupGuidePage /></main>
     </div>
   </div>;
 };

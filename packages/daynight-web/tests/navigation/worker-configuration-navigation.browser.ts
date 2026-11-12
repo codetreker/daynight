@@ -127,20 +127,22 @@ for (const width of [1360, 390]) {
       await expect(page.locator('#config-maxConcurrent')).toBeFocused();
     });
 
-    test('account replacement clears private input and pending confirmation immediately', async ({ page }) => {
+    test('account replacement retains private input and pending confirmation', async ({ page, context }) => {
       const state = await install(page); await open(page); await page.locator('#config-native-args').fill('[private');
-      await back(page); await expect(dialog(page)).toBeVisible(); state.userId = workerId(88);
-      // Exercise the real revalidation lifecycle with a controlled visibility event.
-      await page.evaluate(() => {
-        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
-        document.dispatchEvent(new Event('visibilitychange'));
-        delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState;
-        document.dispatchEvent(new Event('visibilitychange'));
-      });
-      await expect(dialog(page)).toHaveCount(0);
-      expect(await page.locator('input, textarea').evaluateAll(elements => elements.some(element => (element as HTMLInputElement).value === '[private'))).toBe(false);
-      await page.locator('[data-worker-tab="configuration"]:visible').click();
-      await expect(page.locator('#config-native-args')).toHaveValue('[]'); expect(state.writes).toEqual([]);
+      await back(page); await expect(dialog(page)).toBeVisible(); await expect(keep(page)).toBeFocused();
+      const original = await dialog(page).elementHandle();
+      const other = await context.newPage();
+      try {
+        await other.route('**/api/v1/me', route => route.fulfill({ json: { id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': WORKER_USER } }));
+        await other.goto('/');
+        await expect.poll(() => other.evaluate(() => localStorage.getItem('daynight.activeUser'))).toBe(JSON.stringify(WORKER_USER));
+        await other.evaluate(user => localStorage.setItem('daynight.activeUser', JSON.stringify(user)), workerId(88));
+        await expect(dialog(page).getByText('账户已变化', { exact: true })).toBeVisible();
+        expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+        await expect(keep(page)).toBeFocused();
+        await expect(page.locator('#config-native-args')).toHaveValue('[private');
+        expect(state.writes).toEqual([]);
+      } finally { await original!.dispose(); await other.close(); }
     });
 
     test('removal links dismiss the management dialog before the leave confirmation', async ({ page }) => {

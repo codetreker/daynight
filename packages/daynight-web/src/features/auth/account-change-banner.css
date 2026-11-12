@@ -40,3 +40,12 @@
   overflow: hidden;
   clip-path: inset(50%);
 }
+
+.account-refresh-notice { min-width: 0; max-width: 100%; }
+.account-refresh-notice[data-active="false"] { position: absolute; }
+@media (max-width: 600px) {
+  .topbar > .account-refresh-notice[data-active="true"] { order: 3; flex-basis: 100%; }
+  .topbar > .account-refresh-notice .account-change-banner { justify-content: space-between; }
+}
+
+.session-header-default > .account-refresh-notice[data-active="true"] { grid-column: 1 / -1; }

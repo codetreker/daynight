@@ -3,6 +3,7 @@ import type { AuthMessages } from "../auth";
 export const auth: AuthMessages = {
   completion: { title: "Completing sign-in", loading: "Confirming your account…", syncError: "Sign-in completed, but account synchronization failed.", retrySync: "Retry account synchronization", refreshRequired: "Refresh this page to continue." },
   accountChange: { message: "Account changed", reload: "Refresh page" },
+  accountSync: { error: "Account synchronization failed.", retry: "Retry account synchronization" },
   roles: { admin: "Administrator", member: "Member" },
   shell: {
     sidebar: {
@@ -36,11 +37,6 @@ export const auth: AuthMessages = {
     startFreshLogin: "Open sign-in",
     invitationStorageError: "This browser could not save the invitation. Open the invitation link again after signing in.",
     invitationCleanupError: "This browser could not clear the temporary invitation. Close this tab to clear it.",
-    revalidationLabel: "Confirm current account",
-    revalidationLoading: "Confirming current account…",
-    revalidationError: "The current account could not be confirmed",
-    revalidationRetained: "Your work is preserved. Confirm your account to continue.",
-    revalidationRetry: "Confirm account again",
     notice: {
       expired: "Your session has expired. Sign in again to access your projects.",
       signedOut: "You have signed out.",
