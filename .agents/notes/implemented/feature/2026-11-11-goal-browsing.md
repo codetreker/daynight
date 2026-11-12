@@ -26,7 +26,9 @@ only its explicit members for progress, while the full component supplies worker
 indication, the representative supplies its title and a scoped member supplies
 the graph witness.
 Instance identities also separate DOM associations and Session visibility keys,
-without starting Session reads where no provider exists. Project Goal rows
+without starting Session reads where no provider exists. Project Goal scoped
+chains use the existing page Session store and visibility registration, without
+additional HTTP reads. Project Goal rows
 share the same projection between summary and inline contents. Each row owns
 its Goal disclosure and retained chain disclosures, while the active category
 hosts one graph. The original source Goal and trigger remain separate from the

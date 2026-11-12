@@ -18,6 +18,8 @@ const childId = id(2);
 const otherId = id(3);
 const externalId = id(4);
 const bridgeId = id(5);
+const goalId = id(10);
+const otherGoalId = id(11);
 const worker: WorkerClaim = { claimId: id(201), state: 'active', userId: TEST_VIEWER_ID, workerId: id(202), worktreeId: id(203),
   machine: { id: id(202), name: 'Test host' }, platform: 'linux', agent: 'codex', agentControlMode: 'web',
   phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: '2026-10-22T10:00:00Z' };
@@ -28,11 +30,12 @@ const task = (taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => 
 const scopes: TaskCacheScope[] = [];
 const stores: TaskSessionSummaryStore[] = [];
 afterEach(() => { stores.splice(0).forEach((store) => store.dispose()); scopes.splice(0).forEach((scope) => scope.dispose()); });
-async function fixture(sessions: TaskSync['sessions'], rootActive = false) {
-  const tasks = [task(rootId, rootActive ? {} : { status: 'done', completedAt: '2026-10-22T10:00:01Z', properties: {} }),
-    task(childId, { dependsOn: [rootId], ...(rootActive ? { status: 'todo' as const, startedAt: null, properties: {} } : {}) }),
-    task(otherId, { dependsOn: [rootId], ...(rootActive ? { status: 'todo' as const, startedAt: null, properties: {} } : {}) }),
+async function fixture(sessions: TaskSync['sessions'], rootActive = false, goalMode = false) {
+  const tasks = [task(rootId, { ...(rootActive ? {} : { status: 'done', completedAt: '2026-10-22T10:00:01Z', properties: {} }), ...(goalMode ? { parentId: goalId } : {}) }),
+    task(childId, { dependsOn: [rootId], ...(goalMode ? { parentId: goalId } : {}), ...(rootActive ? { status: 'todo' as const, startedAt: null, properties: {} } : {}) }),
+    task(otherId, { dependsOn: [rootId], ...(goalMode ? { parentId: otherGoalId } : {}), ...(rootActive ? { status: 'todo' as const, startedAt: null, properties: {} } : {}) }),
     task(externalId), task(bridgeId, { status: 'todo', startedAt: null, properties: {}, dependsOn: [childId, externalId], externalDependsOn: [externalId] })];
+  if (goalMode) tasks.push(task(goalId, { type: 'goal', status: 'todo', startedAt: null, properties: {} }), task(otherGoalId, { type: 'goal', status: 'todo', startedAt: null, properties: {} }));
   vi.stubGlobal('IntersectionObserver', class {
     constructor(private readonly callback: IntersectionObserverCallback) {}
     observe(target: Element) { this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
@@ -49,15 +52,16 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false) {
     workerMachines: result.project.workerMachines, observedAt: sync.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 };
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
-  const view = renderWithLocale(<ProjectTaskWorkspace pausedTaskCount={0} projectId={projectId} snapshot={snapshot} sessionStore={store}
-    goalCount={0} goals={{ projectId, goals: [], total: 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
-    activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+  const workspace = (active = true) => <ProjectTaskWorkspace pausedTaskCount={0} projectId={projectId} snapshot={snapshot} sessionStore={store} active={active}
+    goalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
+    activeView={goalMode ? 'goals' : 'chains'} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
     chains={{ projectId, representativeIds: [rootId], allRepresentativeIds: [rootId], openChainId: null, onOpenChain, onCloseChain: noop, onOpenTask, onOpenSession }}
-    standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} />, { taskCache: { scope }, locale: 'zh-CN' });
+    standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
+  const view = renderWithLocale(workspace(), { taskCache: { scope }, locale: 'zh-CN' });
   const replace = (next: TaskSync['sessions']) => act(() => store.replace({ project: result.project,
     observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: next, receivedMonotonic: performance.now() }));
   const header = () => document.querySelector<HTMLElement>(`[data-chain-id="${rootId}"] > .goal-header`)!;
-  return { view, store, fetch, replace, header, onOpenTask, onOpenSession, onOpenChain };
+  return { view, workspace, store, fetch, replace, header, onOpenTask, onOpenSession, onOpenChain };
 }
 
 it('includes an active root in its collapsed chain aggregate', async () => {
@@ -114,4 +118,39 @@ it('keeps focused shortcut nodes and expanded state through Session updates, wit
   await user.keyboard('{Enter}'); expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   value.replace({}); expect(row.querySelector('.session-status-action')).toBeNull();
   expect(document.getElementById(`task-root-${rootId}`)).toHaveAttribute('aria-expanded', 'true'); expect(value.fetch).not.toHaveBeenCalled();
+});
+
+it('projects existing Session observations into independent Goal chain instances and hides them with the workspace', async () => {
+  const value = await fixture({ [childId]: 'warning', [otherId]: 'working', [externalId]: 'warning' }, false, true);
+  const firstGoal = document.querySelector<HTMLElement>(`[data-goal-id="${goalId}"]`)!;
+  const secondGoal = document.querySelector<HTMLElement>(`[data-goal-id="${otherGoalId}"]`)!;
+  const firstToggle = firstGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+  const secondToggle = secondGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+  fireEvent.click(firstToggle); fireEvent.click(secondToggle);
+  const indicator = (goal: HTMLElement) => goal.querySelector('.goal-header [data-session-indicator]');
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'warning');
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  value.replace({ [childId]: 'notice', [otherId]: 'working', [externalId]: 'warning' });
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'notice');
+  value.replace({ [childId]: 'working', [otherId]: 'warning' });
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'working');
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'warning');
+  value.replace({ [childId]: 'pending', [otherId]: 'working' });
+  fireEvent.click(firstGoal.querySelector<HTMLButtonElement>('.goal-toggle')!);
+  const row = firstGoal.querySelector<HTMLElement>(`.goal-task-main[id$="-${childId}"]`)!.closest<HTMLElement>('.goal-task-row')!;
+  const shortcut = within(row).getByRole('button', { name: /当前会话可访问.*打开 Session/ });
+  fireEvent.click(shortcut);
+  expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
+  expect(value.onOpenTask).not.toHaveBeenCalled();
+  fireEvent.click(firstToggle);
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  expect(value.store.snapshot().has(otherId)).toBe(true);
+  fireEvent.click(firstToggle);
+  expect(value.store.snapshot().has(childId)).toBe(true);
+  value.view.rerender(value.workspace(false));
+  expect(value.store.snapshot().size).toBe(0);
+  expect(secondGoal.querySelector('[data-session-indicator]')).toBeNull();
+  value.view.rerender(value.workspace());
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  expect(value.fetch).not.toHaveBeenCalled();
 });
