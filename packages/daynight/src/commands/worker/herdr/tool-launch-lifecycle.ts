@@ -6,9 +6,10 @@ import { replaceFileAtomically } from "../../../platform/files.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { inspectControllerJob } from "../../controller/windows-job.js";
 import { runHerdrCommand } from "./command.js";
-import { optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
+import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
+import { readToolStartRequest } from "./tool-launch-start.js";
 
 type Inventory = { pid: number; parentPid: number; group: number | null };
 type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
@@ -49,9 +50,29 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
   const frozen = new Map<number, ProcessProof>();
   const read = async (): Promise<ProcessRecord | null> => { const value = await optionalOwnedJson(file); return value === null ? null : parse(value, manifest.nonce); };
   const save = async (proofs: ProcessProof[]): Promise<void> => { const row = parse({ nonce: manifest.nonce, proofs }, manifest.nonce); await replaceFileAtomically(file, JSON.stringify(row), 0o600); syncDurableDirectory(directory); };
+  const assertDeclaredLaunchProofs = async (record: ProcessRecord | null): Promise<void> => {
+    const files = mappingFiles(manifestPath), intentValue = await optionalOwnedJson(files.intent), receiptValue = await optionalOwnedJson(files.receipt);
+    const request = await readToolStartRequest(manifestPath, { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner });
+    if (intentValue === null && receiptValue === null) {
+      if (request?.state === "reserved") throw new Error("The original native launch RPC has no complete helper receipt; process ownership remains unknown.");
+      return;
+    }
+    if (request?.state === "rejected") throw new Error("The rejected native launch request conflicts with a helper launch intent; process ownership remains unknown.");
+    const intent = parseToolReceipt(intentValue, manifest, false);
+    if (receiptValue === null) throw new Error("The original launch intent has no matching receipt; complete native process ownership remains unknown.");
+    const receipt = parseToolReceipt(receiptValue, manifest), { childPid: _child, ...original } = receipt;
+    if (JSON.stringify(original) !== JSON.stringify(intent)) throw new Error("The original launch receipt has no matching intent; process ownership remains unknown.");
+    if (request !== null && receipt.logicalArgvDigest !== request.logicalArgvDigest) throw new Error("The original helper receipt differs from the reserved native launch arguments; process ownership remains unknown.");
+    const ids = new Set(record?.proofs.map(proof => proof.pid));
+    for (const [role, id] of [["helper", receipt.helperPid], ["native child", receipt.childPid]] as const) {
+      if (!ids.has(id)) throw new Error(`The declared original ${role} has no durable birth proof; complete native process ownership remains unknown.`);
+    }
+  };
   const captureProcesses = async (pids: readonly number[], operation: Operation, freeze = false): Promise<number[]> => {
     operation.check();
     const previous = await read(), proofs = new Map((previous?.proofs ?? []).map(proof => [proof.pid, proof]));
+    // Receipt PIDs alone cannot establish the birth of a process found during cleanup.
+    if (freeze) await assertDeclaredLaunchProofs(previous);
     const freezeOriginal = async (proof: ProcessProof): Promise<void> => {
       if (!freeze || process.platform === "win32" || frozen.has(proof.pid)) return;
       const state = await inspectProcessProof(proof);
@@ -103,17 +124,20 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
   const confirmStopped = async (operation: Operation): Promise<boolean> => {
     const record = await read();
     if (record === null) throw new Error("The original Herdr process tree has no stopped identity proof.");
+    await assertDeclaredLaunchProofs(record);
     operation.check();
     // Zombies have exited and cannot execute or spawn, even before an adopter reaps them.
     const rows = await inventory(environment, operation), ids = new Set(record.proofs.map(proof => proof.pid)), groups = new Set(record.proofs.map(proof => proof.processGroupId).filter(group => group !== null));
     if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) return false;
     if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null && (await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`)).length !== 0) return false;
+    await assertDeclaredLaunchProofs(record);
     return true;
   };
   const stopProcesses = async (operation: Operation): Promise<void> => {
     operation.check();
     const record = await read();
     if (record === null) throw new Error("The original Herdr process tree has no termination identity proof.");
+    await assertDeclaredLaunchProofs(record);
     if (process.platform === "win32" && await optionalOwnedJson(path.join(directory, "launch-intent.json")) !== null) await inspectControllerJob(`Local\\Daynight-${manifest.nonce}`, true);
     const current = new Set((await inventory(environment, operation)).map(row => row.pid));
     for (const proof of [...record.proofs].reverse()) {

@@ -32,7 +32,7 @@ export type HerdrToolLaunchIntent = {
 };
 export type HerdrToolLaunchReceipt = HerdrToolLaunchIntent & { childPid: number };
 export const launchArgvDigest = (agent: string, args: readonly string[]): string => createHash("sha256").update(JSON.stringify([agent, ...args])).digest("hex");
-export const mappingFiles = (manifestPath: string) => ({ intent: path.join(path.dirname(manifestPath), "launch-intent.json"), receipt: path.join(path.dirname(manifestPath), "launch-receipt.json"), ready: path.join(path.dirname(manifestPath), "shell-ready.json"), layout: path.join(path.dirname(manifestPath), "layout-intent.json"), initialInput: path.join(path.dirname(manifestPath), "initial-input.json") });
+export const mappingFiles = (manifestPath: string) => ({ nativeStart: path.join(path.dirname(manifestPath), "native-start.json"), intent: path.join(path.dirname(manifestPath), "launch-intent.json"), receipt: path.join(path.dirname(manifestPath), "launch-receipt.json"), ready: path.join(path.dirname(manifestPath), "shell-ready.json"), layout: path.join(path.dirname(manifestPath), "layout-intent.json"), initialInput: path.join(path.dirname(manifestPath), "initial-input.json") });
 const missing = (cause: unknown) => (cause as NodeJS.ErrnoException)?.code === "ENOENT";
 export const assertOwnedDirectory = async (directory: string, create = false): Promise<void> => {
   if (!path.isAbsolute(directory)) throw new Error("A Herdr tool mapping directory must be absolute.");

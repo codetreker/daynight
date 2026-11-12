@@ -138,6 +138,8 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       assert.equal(receipt.childPid, evidence.argumentRoundTrip.pid);
       assert.equal(receipt.helperPid, evidence.argumentRoundTrip.parent);
       evidence.receipt = receipt;
+      await preparedMapping.verifyReceipt([script, ...args], operation());
+      await preparedMapping.verifyProcesses({ shellPid: before.shellPid, receipt }, operation());
       const powershell = path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
       const scriptCommand = `$c=Get-Command -CommandType ExternalScript -Name '${path.join(path.dirname(preparedMapping.manifestPath), "codex.ps1").replaceAll("'", "''")}'; @{version=$PSVersionTable.PSVersion.ToString();type=$c.CommandType.ToString();source=$c.Source} | ConvertTo-Json -Compress`;
       evidence.externalScript = JSON.parse((await execute(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(scriptCommand, "utf16le").toString("base64")], { env: environment, timeout: 10_000 })).stdout);

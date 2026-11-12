@@ -29,7 +29,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 进程身份包含 boot identity、PID、微秒出生标识、audit token、父进程、进程组与 session。PID 或命令行相同不能代替出生身份；同一出生进程的 exec 也可能改变 audit identity。原始证明不可被后来观察的 foreground 进程覆盖，只能按已验证的连续父子关系追加证据。
 
-lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际观察，旧缺失字段保持 null，禁止从当前目标补造历史身份。该格式延续格式 3 为每代保留的 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；requested、observed 或 unknown 不能返回 not_submitted。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
+lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际观察，旧缺失字段保持缺失，禁止从当前目标补造历史身份。该格式延续格式 3 为每代保留的 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；requested、observed 或 unknown 不能返回 not_submitted。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
 
 只有本次明确成功取得的新 claim，或同次人工 resume 经精确读回确认的新 grant，能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 
@@ -86,7 +86,7 @@ Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdow
 
 Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽，本地封段及 ledger 确认后可以结束本机执行行；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
 
-`worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再校验并使用原实例目录及冻结 Herdr launch 打开 client。缺少原工具身份或文件变化时拒绝新 client，不使用当前目标替代；已有 endpoint 的停止和归档不依赖 executable 仍可启动。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
+`worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再校验并使用原实例目录及冻结 Herdr launch 打开 client。缺少原工具身份或文件变化时拒绝新 client，不使用当前目标替代；已有 endpoint 的停止和归档不依赖 executable 仍可启动。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 lifecycle journal 时只读共享实例的原 launch 和 daemon 证明；缺历史工具身份时拒绝新 client。
 
 ## 实现接口与验证
 

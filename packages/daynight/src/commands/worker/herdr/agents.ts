@@ -20,6 +20,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
 import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch.js";
 import type { HerdrToolLaunchMapping, HerdrToolLaunchReceipt } from "./tool-launch.js";
+import { advanceToolStartRequest, nativeStartRejectionCodes, reserveToolStartRequest, type ToolStartRequest } from "./tool-launch-start.js";
 
 export type { HerdrAgentConfiguration } from "./arguments.js";
 export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
@@ -110,7 +111,7 @@ export class HerdrInputBlockedError extends HerdrInputWaitingError {
   }
 }
 const rejectionCodes: Readonly<Record<string, ReadonlySet<string>>> = {
-  "agent.start": new Set(["invalid_agent_name", "unsupported_agent_kind", "invalid_agent_argument", "invalid_agent_timeout", "agent_pane_not_found", "agent_pane_busy", "agent_pane_unavailable", "agent_name_taken"]),
+  "agent.start": nativeStartRejectionCodes,
   "agent.prompt": new Set(["empty_agent_prompt", "agent_blocked", "agent_not_ready", "agent_not_found", "ambiguous_agent_target"]),
 };
 const classifyMutationError = (action: string, cause: unknown): HerdrAgentActionError => {
@@ -297,6 +298,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   };
   const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, cwd: string, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
     let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
+    let request: ToolStartRequest | undefined;
+    const mapping = await mappingFor(context, operation);
     while (true) {
       operation.check();
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
@@ -315,8 +318,19 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
       if (timeout <= 3000) throw readiness === undefined ? new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted") : readiness.rejection;
+      if (mapping !== null) {
+        try {
+          request = request === undefined
+            ? await reserveToolStartRequest(mapping.manifestPath, { nonce: mapping.nonce, selectionKey: mapping.selectionKey, owner: context }, binding, context.agent, args)
+            : await advanceToolStartRequest(mapping.manifestPath, request);
+        } catch (cause) { throw new HerdrAgentActionError("The original native launch request is already reserved or its durable outcome is unknown; agent.start cannot be repeated.", "agent.start", "unknown", { cause }); }
+      }
       try { return await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation); }
       catch (error) {
+        if (mapping !== null && request !== undefined && error instanceof HerdrAgentActionError && error.submission === "rejected" && error.cause instanceof HerdrRpcError && error.cause.code !== null && nativeStartRejectionCodes.has(error.cause.code)) {
+          try { request = await advanceToolStartRequest(mapping.manifestPath, request, error.cause.code); }
+          catch (cause) { throw new HerdrAgentActionError("The native launch rejection could not be durably settled; agent.start cannot be repeated.", "agent.start", "unknown", { cause }); }
+        }
         if (!(error instanceof HerdrAgentActionError) || error.submission !== "rejected" || !(error.cause instanceof HerdrRpcError) || error.cause.method !== "agent.start" || error.cause.code !== "agent_pane_busy") throw error;
         // A new shell can still be running its startup scripts. Herdr's CLI retries
         // this definite rejection with the same terminal and shell-process proof.

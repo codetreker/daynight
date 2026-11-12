@@ -8,6 +8,7 @@ import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { createMappingProcessLifecycle } from "./tool-launch-lifecycle.js";
 import { mappingFiles, optionalOwnedJson, parseToolManifest, parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest } from "./tool-launch-protocol.js";
+import { parseToolStartRequest } from "./tool-launch-start.js";
 
 export type HerdrToolLaunchMappingFact = { owner: HerdrExecutionOwner; launch: ResolvedToolLaunch; nonce: string; manifestPath: string; started: boolean; retired: boolean };
 const missing = (cause: unknown): boolean => (cause as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -46,14 +47,15 @@ const generations = (directory: string): { fact: HerdrToolLaunchMappingFact; man
       const manifestPath = path.join(root, "manifest.json"), manifest = parseToolManifest(read(manifestPath));
       const expectedKey = createHash("sha256").update(resourceOwnerKey(manifest.owner)).update(manifest.launch.selectionKey).digest("hex");
       if (expectedKey !== key) throw new Error("The original Herdr registry belongs to another execution owner or selection.");
-      const files = mappingFiles(manifestPath), intent = read(files.intent), receipt = read(files.receipt), retired = read(path.join(root, "retired.json"));
+      const files = mappingFiles(manifestPath), intent = read(files.intent), receipt = read(files.receipt), retired = read(path.join(root, "retired.json")), requestValue = read(files.nativeStart);
+      const request = requestValue === null ? null : parseToolStartRequest(requestValue, { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner });
       if (intent !== null) parseToolReceipt(intent, manifest, false);
       if (receipt !== null) {
         const { childPid: _child, ...original } = parseToolReceipt(receipt, manifest);
         if (intent === null || JSON.stringify(original) !== JSON.stringify(intent)) throw new Error("The original Herdr inventory receipt has no matching launch intent.");
       }
       if (retired !== null && JSON.stringify(retired) !== JSON.stringify({ nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner })) throw new Error("The original Herdr inventory retirement proof is invalid.");
-      result.push({ fact: { owner: manifest.owner, launch: manifest.launch, nonce: manifest.nonce, manifestPath, started: intent !== null, retired: retired !== null }, manifest });
+      result.push({ fact: { owner: manifest.owner, launch: manifest.launch, nonce: manifest.nonce, manifestPath, started: intent !== null || request?.state === "reserved", retired: retired !== null }, manifest });
     }
   }
   return result;

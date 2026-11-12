@@ -20,6 +20,13 @@ to the controlled parent shell; native PATH and internal CLI aliases retain thei
 original meaning. The [tool launch design](../../../../docs/design/herdr-tool-launch.md)
 owns the protocol, storage and platform details.
 
+A durable reservation precedes each native start RPC. Only the original caller's
+explicit rejection can advance its initialization retry; unknown results retain
+the reservation across calls and restarts. Helper intent and receipt also block
+replay when they predate that reservation format. Cleanup cannot retire a launch
+whose declared helper or native process lacks its original birth proof, even if
+the recorded shell has already exited.
+
 POSIX uses non-exported functions in the existing managed Bash without replacing
 its process. Windows creates a system PowerShell 5 root pane through structured
 layout argv, then uses owned ExternalScript files and a JSON/base64 argument

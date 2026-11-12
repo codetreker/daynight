@@ -1,5 +1,5 @@
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
@@ -15,6 +15,7 @@ import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders
 import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+import { mappingFiles } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -184,6 +185,70 @@ const mappedFixture = async () => {
 };
 
 describe("native argument ownership", () => {
+  it.each(["unknown", "acknowledged"] as const)("persists a mapped launch reservation before RPC and never replays it after %s", async outcome => {
+    const f = await mappedFixture(), file = mappingFiles(f.mapping.manifestPath).nativeStart;
+    f.hook(async (method, params) => {
+      if (method !== "agent.start") return undefined;
+      expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, binding: f.binding, attempt: 0, state: "reserved" });
+      if (outcome === "unknown") throw new HerdrRpcError("Original start response lost before native discovery.", { method, requestId: "lost", submission: "unknown" });
+      return { type: "agent_started", agent: f.launch(params), argv: ["copilot", ...params.args as string[]] };
+    });
+    const launch = () => f.manager.launch(f.context, f.binding, { configuration: f.config }, operation());
+    if (outcome === "unknown") await expect(launch()).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    else { await launch(); f.agents.splice(0); }
+    const original = await readFile(file, "utf8");
+    f.hook(async () => undefined);
+    await expect(launch()).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    const recovered = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: async () => f.mapping });
+    await expect(recovered.launch(f.context, f.binding, { configuration: f.config }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    expect(await readFile(file, "utf8")).toBe(original);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each(["intent", "receipt"] as const)("keeps a legacy helper %s from admitting another native start RPC", async evidence => {
+    const f = await mappedFixture(), files = mappingFiles(f.mapping.manifestPath);
+    const { childPid: _child, ...intent } = f.receipt;
+    await writeFile(files[evidence], JSON.stringify(evidence === "intent" ? intent : f.receipt), { mode: 0o600 });
+    await expect(f.manager.launch(f.context, f.binding, { configuration: f.config }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    await expect(readFile(files.nativeStart, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(0);
+  });
+
+  it("durably settles a mapped pane-busy rejection before reserving its same-call retry", async () => {
+    const f = await mappedFixture(), file = mappingFiles(f.mapping.manifestPath).nativeStart, states: unknown[] = [];
+    let attempts = 0, rejectedObserved = false;
+    f.hook(async (method, params) => {
+      if (method === "pane.process_info") {
+        try { const row = JSON.parse(await readFile(file, "utf8")); if (row.state === "rejected") { expect(row).toMatchObject({ attempt: 0, rejectionCode: "agent_pane_busy" }); rejectedObserved = true; } } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        return { type: "pane_process_info", process_info: { pane_id: f.binding.paneId, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "/bin/bash", argv: ["-bash"] }] } };
+      }
+      if (method !== "agent.start") return undefined;
+      states.push(JSON.parse(await readFile(file, "utf8")));
+      if (++attempts === 1) throw new HerdrRpcError("Original shell is initializing.", { method, requestId: "busy", code: "agent_pane_busy", submission: "unknown" });
+      expect(rejectedObserved).toBe(true);
+      return { type: "agent_started", agent: f.launch(params), argv: ["copilot", ...params.args as string[]] };
+    });
+    const admitted = vi.fn(async () => {});
+    await f.manager.launch(f.context, f.binding, { configuration: f.config, beforeStart: admitted }, operation());
+    expect(states).toMatchObject([{ state: "reserved", attempt: 0 }, { state: "reserved", attempt: 1 }]);
+    expect((states[0] as { requestId: string }).requestId).toBe((states[1] as { requestId: string }).requestId);
+    expect(admitted).toHaveBeenCalledTimes(2);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not retry a rejected mapped launch when its durable reservation changes", async () => {
+    const f = await mappedFixture(), file = mappingFiles(f.mapping.manifestPath).nativeStart;
+    f.hook(async method => {
+      if (method !== "agent.start") return undefined;
+      const row = JSON.parse(await readFile(file, "utf8")); row.attempt++;
+      await writeFile(file, JSON.stringify(row), { mode: 0o600 });
+      throw new HerdrRpcError("Original shell is initializing.", { method, requestId: "busy", code: "agent_pane_busy", submission: "unknown" });
+    });
+    await expect(f.manager.launch(f.context, f.binding, { configuration: f.config }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+  });
+
   it("waits for the caller's final shell readiness before registering its process proof", async () => {
     let mapping: HerdrToolLaunchMapping, ready = false;
     const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });
@@ -246,6 +311,8 @@ describe("native argument ownership", () => {
     const mapping = { ...mappingLifecycle, manifestPath: "/owned/manifest.json", nonce: nativeId, selectionKey: "a".repeat(64), environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: "/owned/manifest.json" }, verifyReady: async () => {}, verifyReceipt, readReceipt: async () => null } satisfies HerdrToolLaunchMapping;
     const callback = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation, _existingOnly?: boolean) => mapping);
     const f = await fixture("codex", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: callback });
+    mapping.manifestPath = path.join(f.context.cwd, "manifest.json");
+    mapping.environment.DAYNIGHT_HERDR_TOOL_MANIFEST = mapping.manifestPath;
     const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     expect(f.calls.find(call => call.method === "workspace.create")!.params.env).toMatchObject(mapping.environment);
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "never submit" }, operation())).rejects.toMatchObject({ submission: "unknown" });

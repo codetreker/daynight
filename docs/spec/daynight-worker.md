@@ -145,7 +145,7 @@ Web backend 的人工输入通过 Task Session；macOS Herdr 支持 Task Session
 
 macOS 任务暂停不禁止有效 owner 获取、续约和释放人工 lease，或按原 lease、epoch、目标与进程规则发送 paste/keys；首次未知结果的独立处置仍按原协议。manual 或释放后的 suspended 期间自动巡查正常等待，不消耗失败预算、不自动交还。`resume_automation` 须先解除任务暂停，并独立满足显式确认、草稿处置与原生 readiness；解除任务属性不会释放 lease、解决 unknown 或自行交还。
 
-- 等待人工时保留 claim、worktree、原会话和名额，显示 worker attach。Attach 只连接既有私有 Herdr，要求交互式终端，不读 Daynight 凭据、不取 worker 锁、不启动 daemon 或 agent。macOS 有 lifecycle journal 时只读校验当前版本并选择未停止原运行，核对原 daemon 与两个端点；不迁移、恢复或提升 epoch，暂停任务仍可接入。冻结实例的 attach client 必须校验并使用原 Herdr launch，缺失历史身份或原文件变化时拒绝新 client，不替换为当前目标。不可读 journal 不回退未知实例；无 journal 保留 legacy attach。Detach 保留执行；不可用或非零退出明确报错。
+- 等待人工时保留 claim、worktree、原会话和名额，显示 worker attach。Attach 只连接既有私有 Herdr，要求交互式终端，不读 Daynight 凭据、不取 worker 锁、不启动 daemon 或 agent。macOS 有 lifecycle journal 时只读校验当前版本并选择未停止原运行，核对原 daemon 与两个端点；不迁移、恢复或提升 epoch，暂停任务仍可接入。冻结实例的 attach client 必须校验并使用原 Herdr launch，缺失历史身份或原文件变化时拒绝新 client，不替换为当前目标。不可读 journal 不回退未知实例；无 lifecycle journal 时只读共享实例原 launch 和 daemon 证明，缺历史身份时同样拒绝新 client。Detach 保留执行；不可用或非零退出明确报错。
 - retry/release/resume 先停止 runner，再取得同一实例锁同步处理指定 claim。锁占用时明确提示停止 runner；没有持久管理意图或后台管理队列。
 - Retry 核验仍属于本 worker 的 active claim，尝试一次重连或恢复，保持 claim/agent/worktree。Pending 由 run 经正常名额与旧执行门槛启动。macOS Herdr 不绕过持久 unknown 或缺失原 native ID；Linux/Windows legacy NULL 路径可以新建。Herdr 的计数和额外尝试只在当前调用或进程内；Web 使用持久的单次 retry 授权，必须验证原 nativeSessionId、generation 与完整停止证明，缺失证据或 claim 失效时拒绝恢复，不能新建替代会话或重发初始 assignment。授权本身不表示恢复成功；就绪观察后恢复正常阶段，初始化期间仍显示等待；跨 tick 或重启不得把已换代的单次 retry 当成新授权，失败再次暂停。
 - Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。按 backend 停止原运行后提交远端变更；legacy 通知、关闭并删除，Web 遵守归档门槛，macOS Herdr 不发送 cleanup prompt 且停止、封段及同步确认后可结束本机执行行，但归档条件满足前保留工作区与独立 archive 责任。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。

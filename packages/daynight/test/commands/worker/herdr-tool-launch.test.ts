@@ -8,7 +8,8 @@ import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { createToolLaunchMapping, posixToolMappingRc } from "../../../src/commands/worker/herdr/tool-launch.js";
 import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch-inventory.js";
-import { parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
+import { advanceToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
+import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const operation = (): Operation => { const value = createOperation({ limits: { totalMs: 10_000 } }); operations.push(value); return value; };
@@ -49,10 +50,13 @@ describe("owned Herdr launch mapping", () => {
     const f = await fixture(), args = ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"];
     const script = "const {spawn}=require('node:child_process');process.stdin.once('data',()=>{const child=spawn(process.execPath,JSON.parse(process.argv[1]),{stdio:['ignore','inherit','inherit']});child.on('close',code=>process.exit(code??1));});";
     const shell = spawn(process.execPath, ["-e", script, JSON.stringify([childEntry, f.mapping.manifestPath, "codex", "--", ...args])], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
-    const closed = once(shell, "close"), timer = setTimeout(() => { if (shell.pid !== undefined) process.kill(-shell.pid, "SIGKILL"); }, 8_000);
+    let errors = ""; shell.stderr!.on("data", chunk => { errors += chunk; });
+    const closed = once(shell, "close");
+    const kill = () => { try { if (shell.pid !== undefined) process.kill(-shell.pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } };
+    const timer = setTimeout(kill, 4_000);
     try {
       await f.mapping.captureProcesses([shell.pid!], operation());
-      const ready = once(shell.stdout!, "data"); shell.stdin!.write("go"); await ready;
+      const ready = Promise.race([once(shell.stdout!, "data"), closed.then(() => { throw new Error(`The mapped native process exited before readiness: ${errors}`); })]); shell.stdin!.write("go"); await ready;
       const receipt = await f.mapping.verifyReceipt(args, operation());
       await f.mapping.verifyProcesses({ shellPid: shell.pid!, receipt, foregroundPids: [receipt.helperPid, receipt.childPid] }, operation());
       const recovered = (await createToolLaunchMapping({ ...f.input, existingOnly: true }, operation()))!;
@@ -61,7 +65,44 @@ describe("owned Herdr launch mapping", () => {
       await expect(recovered.verifyProcesses({ shellPid: receipt.helperPid }, operation())).rejects.toThrow("original shell");
       await expect(recovered.verifyProcesses({ shellPid: shell.pid!, receipt, foregroundPids: [process.pid] }, operation())).rejects.toThrow("foreground");
       await expect(recovered.verifyProcesses({ shellPid: shell.pid!, receipt: { ...receipt, helperPid: process.pid } }, operation())).rejects.toThrow("helper");
-    } finally { clearTimeout(timer); if (shell.exitCode === null && shell.signalCode === null && shell.pid !== undefined) { process.kill(-shell.pid, "SIGKILL"); await closed; } }
+    } finally { clearTimeout(timer); if (shell.exitCode === null && shell.signalCode === null) kill(); await closed; }
+  });
+
+  it.skipIf(process.platform === "win32").each(["intent", "receipt", "helper-only", "native-orphan"] as const)("keeps an orphan launch unknown when its declared roles lack durable birth proofs (%s)", async evidence => {
+    const f = await fixture(), args = ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"];
+    const script = "const {spawn}=require('node:child_process');process.stdin.once('data',()=>{spawn(process.execPath,JSON.parse(process.argv[1]),{detached:true,stdio:['ignore','inherit','inherit']});});setInterval(()=>{},1000);";
+    const shell = spawn(process.execPath, ["-e", script, JSON.stringify([childEntry, f.mapping.manifestPath, "codex", "--", ...args])], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const exited = once(shell, "exit"), closed = once(shell, "close"); let helper: number | undefined;
+    const timer = setTimeout(() => { shell.kill("SIGKILL"); if (helper !== undefined) process.kill(-helper, "SIGKILL"); }, 8_000);
+    try {
+      await f.mapping.captureProcesses([shell.pid!], operation());
+      const journal = path.join(path.dirname(f.mapping.manifestPath), "processes.json"); let original = await readFile(journal, "utf8");
+      const ready = once(shell.stdout!, "data"); shell.stdin!.write("go"); await ready;
+      const receipt = await f.mapping.verifyReceipt(args, operation()); helper = receipt.helperPid;
+      if (evidence === "intent") await rm(path.join(path.dirname(f.mapping.manifestPath), "launch-receipt.json"));
+      if (evidence === "helper-only") {
+        const partial = JSON.parse(original) as { nonce: string; proofs: unknown[] };
+        partial.proofs.push(await captureMappingProcessProof(receipt.helperPid));
+        original = JSON.stringify(partial); await writeFile(journal, original, { mode: 0o600 });
+      }
+      shell.kill("SIGKILL"); await exited;
+      if (evidence === "native-orphan") process.kill(receipt.helperPid, "SIGKILL");
+      else expect(() => process.kill(receipt.helperPid, 0)).not.toThrow();
+      expect(() => process.kill(receipt.childPid, 0)).not.toThrow();
+      const recovered = (await createToolLaunchMapping({ ...f.input, existingOnly: true }, operation()))!;
+      await expect(recovered.confirmStopped(operation())).rejects.toThrow(/receipt|durable birth proof/);
+      await expect(launchInventory.confirmToolLaunchMappingsStopped(f.directory, process.env, operation())).rejects.toThrow(/receipt|durable birth proof/);
+      await expect(recovered.retire(operation())).rejects.toThrow(/receipt|durable birth proof/);
+      await expect(recovered.stopProcesses(operation())).rejects.toThrow(/receipt|durable birth proof/);
+      await expect(recovered.captureProcesses([receipt.helperPid, receipt.childPid], operation(), true)).rejects.toThrow(/receipt|durable birth proof/);
+      expect(await readFile(journal, "utf8")).toBe(original);
+      if (evidence !== "native-orphan") expect(() => process.kill(receipt.helperPid, 0)).not.toThrow();
+      expect(() => process.kill(receipt.childPid, 0)).not.toThrow();
+    } finally {
+      clearTimeout(timer); shell.kill("SIGKILL");
+      if (helper !== undefined) { try { process.kill(-helper, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
+      await closed;
+    }
   });
 
   it.skipIf(process.platform === "win32")("stops a registered detached descendant after its original parent exits and the mapping reconnects", async () => {
@@ -143,6 +184,28 @@ describe("owned Herdr launch mapping", () => {
       await writeFile(retired, JSON.stringify({ nonce: owner.taskId, selectionKey: f.mapping.selectionKey, owner }), { mode: 0o600 });
       await expect(launchInventory.confirmToolLaunchMappingsStopped(f.directory, process.env, operation())).rejects.toThrow("retirement");
     } finally { clearTimeout(timer); native.kill("SIGKILL"); await closed; }
+  });
+
+  it("retains an unknown start RPC without a helper intent until its definite rejection is durably settled", async () => {
+    const f = await fixture(), shell = spawn(process.execPath, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const closed = once(shell, "close"), timer = setTimeout(() => shell.kill("SIGKILL"), 4_000);
+    try {
+      await once(shell.stdout!, "data");
+      await f.mapping.captureProcesses([shell.pid!], operation());
+      const request = await reserveToolStartRequest(f.mapping.manifestPath, { nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, owner }, { session: "original-session", workspaceId: "original-workspace", paneId: "original-pane", terminalId: "original-terminal" }, "codex", ["original-argument"]);
+      expect(launchInventory.readToolLaunchMappingInventory(f.directory)).toMatchObject([{ started: true, retired: false }]);
+      shell.kill("SIGKILL"); await closed;
+      await expect(f.mapping.confirmStopped(operation())).rejects.toThrow("launch RPC");
+      await expect(launchInventory.confirmToolLaunchMappingsStopped(f.directory, process.env, operation())).rejects.toThrow("launch RPC");
+      await expect(f.mapping.stopProcesses(operation())).rejects.toThrow("launch RPC");
+      await expect(f.mapping.retire(operation())).rejects.toThrow("launch RPC");
+      await expect(reserveToolStartRequest(f.mapping.manifestPath, request, request.binding, "codex", ["original-argument"])).rejects.toMatchObject({ code: "EEXIST" });
+      await advanceToolStartRequest(f.mapping.manifestPath, request, "agent_pane_busy");
+      expect(launchInventory.readToolLaunchMappingInventory(f.directory)).toMatchObject([{ started: false, retired: false }]);
+      expect(await launchInventory.confirmToolLaunchMappingsStopped(f.directory, process.env, operation())).toBe(true);
+      await f.mapping.retire(operation());
+      expect(launchInventory.readToolLaunchMappingInventory(f.directory)).toMatchObject([{ retired: true }]);
+    } finally { clearTimeout(timer); shell.kill("SIGKILL"); await closed; }
   });
 
   it("keeps incomplete orphan generations as cleanup responsibilities", async () => {

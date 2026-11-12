@@ -2633,8 +2633,10 @@ worker lock or start a replacement daemon. On macOS with a lifecycle journal,
 it reads the current schema without migration or recovery, selects among
 unfinished recorded runs, and verifies the original daemon plus both socket
 peers before connecting. Paused tasks remain attachable. An unreadable journal
-or missing runtime is an error; only installations without a journal use the
-legacy shared session. Detaching preserves execution. Task panes retain their
+or missing runtime is an error. Without a lifecycle journal, attach reads the
+shared instance journal. Both paths verify and use the original frozen Herdr
+client recipe; missing historical identity or changed files prohibit a new client.
+Detaching preserves execution. Task panes retain their
 native XDG and private HISTFILE; client routing uses the original instance's
 attachment descriptor.
 
