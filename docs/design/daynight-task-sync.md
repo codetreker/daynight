@@ -1,15 +1,15 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 10、权威依赖状态及本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch、认证响应归属和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 10、权威依赖状态及本地图投影、可见 15 秒、隐藏 5 分钟增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
-[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由。
+[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。[轻量 Session 投影决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)保存完整状态集合与窄读取的职责及取舍；[列表接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存本页唯一生产者、请求绑定基线与 body receipt 的理由；[后台同步决策](../../.agents/notes/implemented/feature/2026-11-11-task-sync-background-polling.md)保存隐藏时调度的取舍。
 
 ## 1. 总体方案
 
 服务端实现入口为 `internal/service/task/task_sync.go` 的 `TaskSync.Get`、
 `internal/core/store/postgres/task/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
 与应用共享 Engine 提供的 `service/task.SessionStateReader` 一起显式传给 `NewTaskSync(database, engine, overlap)`。`015_task_sync.sql` 提供 epoch 和更新时间索引。
-浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：可见页面每 15 秒自动读取，隐藏暂停，首次读取、显式刷新和恢复可见立即触发；自动触发遇到活动读取时跳过。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
+浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：按 `document.visibilityState` 选择唯一 interval：可见每 15 秒、隐藏每 5 分钟自动读取，窗口失焦不改变周期。首次挂载（包括初始隐藏）、显式刷新和恢复可见立即尝试；隐藏转换只从转换时刻重建 interval，不发请求或取消在途读取。每次可见性转换清除旧 interval 并从转换时刻重新计时；自动触发遇到活动读取时跳过，显式刷新取消并替换。浏览器节流或冻结使后台周期仅为名义值。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
 
 ```text
 首次完整任务摘要 → IndexedDB → 本地图 / 列表 / 统计
@@ -17,7 +17,7 @@
 客户端摘要最大 updatedAt → 服务端减去配置窗口 → 返回匹配任务摘要
 ```
 
-同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map；Task 水位不筛选该集合。`useTaskGraph` 在同一次同步接纳后将它发布到稳定的页面 Session store，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
+同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map；Task 水位不筛选该集合。`useTaskGraph` 在同一次同步接纳后将它交给稳定的页面 Session store；该 store 仍拒绝隐藏时的 Session 观察，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
 
 客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
 
@@ -189,8 +189,8 @@ actorAccess 发布给同一项目的内存权限 Provider；持久 applySync 仍
 摘要和详情。provider 覆盖项目弹层、设置/成员以及独立 Task/附件路径，绑定既有
 TaskCacheScope 和用户/项目生命周期，不增加第二份持久缓存或单独更改缓存 schema。
 
-图页面的首次及每 15 秒 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
-GET access；每次成功观察重置可见三十秒 fallback。隐藏暂停，恢复可见、focus 和管理
+图页面的首次和周期 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
+GET access；每次成功观察重置可见三十秒 fallback。该 fallback 隐藏时暂停，恢复可见、focus 和管理
 操作前重验；并发 GET 合并。每个实际读取在派发前捕获观察顺序与作用域，迟到的 GET
 或 sync 不得替换较新成功观察，管理重验期间旧观察也不能解除提交限制。
 
@@ -244,7 +244,7 @@ Session 记录目录复用共享 scope 的事务及身份准入，按用户、�
 
 ### 多标签页与广播
 
-各可见页面独立维持 15 秒轮询，无选主。IDB 写事务排序与当前集合的 version 合并防止自身字段被较旧版本回退；同一版本的依赖状态不具备跨响应全序。只在任务自身内容、依赖状态、设置、归属或生命周期实际变化后广播轻量提示；重复结果、显示时钟、纯读取不广播，也不转发提示。
+各挂载项目页面独立维持可见 15 秒、隐藏 5 分钟轮询，无选主。IDB 写事务排序与当前集合的 version 合并防止自身字段被较旧版本回退；同一版本的依赖状态不具备跨响应全序。只在任务自身内容、依赖状态、设置、归属或生命周期实际变化后广播轻量提示；重复结果、显示时钟、纯读取不广播，也不转发提示。
 
 普通变更提示在提交后触发，接收方重读当前持久集合，不仅因提示再发网络。它不授予首次访问或提供可复用的时钟锚；已打开页沿用本页样本，下一正常周期重新同步。负向撤权提示在确认可信 not_found 后立即发送，不等待持久清理；其匹配、暂停期间处理和 CAS 清理见第 7 节。两类提示都不转发，不包含任务正文。
 

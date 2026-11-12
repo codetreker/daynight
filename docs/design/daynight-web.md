@@ -50,7 +50,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 ## 看板基线与附件扩展
 
 原看板交付两个页面、一个详情侧栏和一个新增只读 API。该基线使用手动刷新，保持
-原有写入接口、依赖规则与本机监听方式。当前项目任务页使用每 15 秒的可见页面自动刷新，
+原有写入接口、依赖规则与本机监听方式。当前项目任务页使用可见时每 15 秒、隐藏时每 5 分钟的自动刷新，
 延续完整快照替换与资源隔离；[自动刷新决策](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md)
 部分取代原基线的手动触发策略。附件是独立的文件资源扩展，使用自己的
 元数据、HTTP 接口和局部状态，不把文件写入混入 task PATCH 或图快照。
@@ -208,7 +208,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 └ 实线：普通依赖；虚线：外部依赖；虚线卡片：链外前置       ┘
 ```
 
-- `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的七项统计和整体进度；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此 15 秒同步按页面可见性运行，不按外层选择创建第二套请求或缓存。
+- `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的七项统计和整体进度；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此同步按页面可见性选择 15 秒或 5 分钟周期，不按外层选择创建第二套请求或缓存。
 - `ProjectSectionTabs` 拥有外层导航的呈现与键盘方向，`ProjectOverview` 呈现统计与进度列表，`ProjectTaskWorkspace` 组合既有内层列表与任务时钟。两个面板复用 `.project-section-heading`；概览的标题与说明以 flex 单行、基线对齐，间隔 12px，任务列表只保留标题。标题不收缩且无下边距，概览说明允许收缩并在溢出时显示省略号，完整文案保留在文本节点及原生 `title` 提示中。标题/说明的桌面字号为 16px/12px，740px 及以下为 15px/11px，字重、颜色和标题区下方间距沿用各自规则。独立任务与任务链的工具栏直接衔接列表或空态，不渲染说明段落及其占位。共用项目标题区以 `.project-title-line` 将项目名与唯一的仓库地址按文字基线排列，横向间隔 14px，空间不足时整项换行；子项允许收缩并在长文本内部换行，项目名不保留下边距，仓库地址沿用原有次要文字样式。桌面导航列宽 150px、间距 28px，1000px 及以下为 130px/20px；740px 及以下改为上方横排。统计默认三列，1500px 起六列，740px 及以下两列。
 - `ProjectView`从完整精确服务顺序生成展示副本，按普通分量的UI汇总状态稳定排序，再分类并生成近期投影；列表筛选不改变完整图。`overview-progress.ts`保留所有未结束组和近期结束组。进度分子为done+cancelled，分母为普通成员总数；done/cancelled数量分别保留。全部done为done，全部cancelled为cancelled，混合终态为UI-only ended；ended不是TaskStatus。未结束但已有终态或进行中成员为in_progress，全部普通成员为proposed时汇总为proposed，其余未开始分量为todo。独立汇总使用近期done/cancelled数加全部未结束数构造范围，全部结束显示100%并保留结果拆分。`OverviewProgressCount.status`携带UI汇总状态，概要与ChainRow使用相同排序、标签和颜色，七项统计保持完整项目口径；已结束数不标为交付完成。详情机制由[状态架构](daynight-task-status.md)拥有，列表范围由[需求](../spec/daynight-web.md#项目整体进度)拥有。原近期聚合的历史取舍保留在[进度决策](../../.agents/notes/archived/feature/2026-10-26-project-overview-progress.md)。
 - `task-status-rows.css` 通过 `data-task-status` 提供待办、进行中、完成、取消及UI汇总结束的底色及同色系悬停变量。`ProjectOverview` 直接使用既有 `OverviewProgressCount.status`，独立行、子任务和图卡片传自身状态，链标题使用分量状态。列表行由 `task-status-surface` 消费背景、边框及可读辅助文字；标题内展开按钮透明以覆盖完整标题行，展开容器保持中性。`TaskNode` 直接引入共享样式并由 `graph.css` 消费背景变量，保留图自身的状态边框、文字、虚线及检查轮廓；选中、前置检查和无关节点不写背景色。独立行及图卡片的卡住提醒共享橙色背景及悬停变量，各自保留告警边框和文字。详情不消费该属性，概览定位仅设置紫色轮廓和阴影。行为由[条目背景需求](../spec/daynight-web.md#任务条目状态背景)拥有，列表聚合取舍见[状态背景决策](../../.agents/notes/archived/feature/2026-10-28-task-status-backgrounds.md)，图卡片复用及检查表达见[图卡片背景决策](../../.agents/notes/archived/feature/2026-11-04-graph-status-backgrounds.md)。
@@ -698,7 +698,7 @@ flowchart LR
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
 - 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；范围切换或刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
-- `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。成功 task-sync API reader 在 body 读取完成后、JSON 解码/source scan/校验前立即捕获 receivedMonotonic，以本地 TaskSyncRead 交给 hook，历史和 IDB 应用及索引计算沿用同一 receipt；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
+- `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与按可见性调整的页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。成功 task-sync API reader 在 body 读取完成后、JSON 解码/source scan/校验前立即捕获 receivedMonotonic，以本地 TaskSyncRead 交给 hook，历史和 IDB 应用及索引计算沿用同一 receipt；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `useTaskGraph` 同时拥有稳定的页面 TaskSessionSummaryStore 和唯一 Session 发布权，经 ProjectPage、ProjectTaskWorkspace、TaskSessionSummaryProvider 传给列表。完整四态 map 使用同事务请求 Task binding 基线与当前结果/作用域核验，值及缺席共同抵御旧执行；30 秒从 body receipt 起算。Provider 与链可见性只控制展示，不建立请求。状态仅通知其内存消费者，不写 Task 缓存、广播或普通通知，不增加正文读取和图构建；[Session 状态设计](task-session-status.md)拥有完整绑定、期限、聚合和快捷入口。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。`ProjectTaskWorkspace` 为普通项目任务区提供时钟；`GoalDetailSurface` 在非空快照的任务链对话框分支为整张图提供时钟，涵盖图 portal 和直接外部前置。Goal 弹窗与独立页都使用自身完整项目快照，不依赖任务区的兄弟 Provider。仅图打开时挂载时钟，同项目快照更新保留 store 与图状态，Goal 其余内容的挂载边界不变。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。挂载边界的取舍见[Goal 图执行时钟决策](../../.agents/notes/implemented/bug-fix/2026-11-12-goal-graph-execution-clock.md)。
 - `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、概览近期投影、共享负责人及状态筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览的 `listTarget` 经 `componentByTask` 解析到最新代表，再按完整筛选序列定位目标页、滚动与焦点，必要时调整遮挡筛选；它不承担图打开操作。external 卡片的多成员目标直接更新 `openChainWitness`，单成员目标关闭原图并进入既有任务详情。图 witness 从完整索引解析且须属于多成员分量，不因代表变化覆盖有效任务，也不受列表筛选/当前页约束。图资源与列表定位各有状态所有者；`ChainList` 的最初入口及原列表 witness 持续到该图会话关闭。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
@@ -997,8 +997,7 @@ type TaskGraph = {
 
 ## 请求、刷新与故障
 
-项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与项目列表共享该请求所有者。图、详情和附件请求分别归属其页面或选择。项目任务页在 document 可见时
-每 15 秒读取 task-sync 并原子合并摘要；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
+项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与项目列表共享该请求所有者。图、详情和附件请求分别归属其页面或选择。项目任务页保持挂载时按 document 可见性选择唯一 interval，可见每 15 秒、隐藏每 5 分钟读取 task-sync 并原子合并摘要。隐藏转换不发请求，重新可见时立即尝试读取；每次转换从该时刻重建计时。失焦不改变周期，浏览器节流或冻结时后台周期仅为名义值。自动
 触发遇到活动同步请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动同步请求并
 立即开始新读取。隐藏不取消已发出的读取。导航和卸载清除定时器并取消所属请求，
 请求序号和资源身份检查阻止晚到结果覆盖当前数据；取消不展示失败通知。
