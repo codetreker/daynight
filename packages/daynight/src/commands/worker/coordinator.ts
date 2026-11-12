@@ -1432,8 +1432,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     reconciliationPhase = "resource-observation";
     observe(m => m.setPhase("resource-observation"));
-    await ensureHerdr(normalSignal, [...inventory.values()]);
-    const observed = await listHerdr(normalSignal);
+    let observed: HerdrOwnedWorkspace[];
+    try {
+      await ensureHerdr(normalSignal, [...inventory.values()]);
+      observed = await listHerdr(normalSignal);
+    } catch (error) {
+      if (normalSignal.aborted) throw error;
+      // Existing Web reservations can advance independently; missing Herdr
+      // observations still prohibit admission and retain unknown capacity.
+      const retainedOwners = [...responsibilities(), ...pendingStops().map(stop => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
+      for (const remoteTask of inventory.values()) {
+        const local = options.store.getTask(remoteOwner(remoteTask));
+        if (local === null || local.agentControlMode !== "web" || local.status !== "active" || !coveredProjects.has(local.projectId) || !prepared.has(local.projectId)
+          || remoteTask.status !== "in_progress" || !remoteTask.allowAgents || readTaskPaused(remoteTask.properties) || blockedByOldClaim(local, retainedOwners)) continue;
+        const record = options.webStore?.getTask(local);
+        if (record?.resources.worktree == null || record.webExecution === null) continue;
+        schedule(local, remoteTask);
+      }
+      throw error;
+    }
     const knownOwners = [...responsibilities(), ...observed.map((workspace) => workspace.owner), ...pendingStops().map((stop) => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? [])];
     for (const owner of knownOwners) {
       if (!coveredProjects.has(owner.projectId) || options.store.getProject(owner) === null || inventory.has(key(owner)) || isStopped(owner)) continue;
@@ -1763,7 +1780,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
       executionCapacity.invalidate(remoteOwner(remoteTask));
-      await ensureHerdr(normalSignal, [remoteTask]);
+      if (task.agentControlMode !== "web") await ensureHerdr(normalSignal, [remoteTask]);
       return serialize(identity, async () => {
         if (task.agentControlMode === "web" && options.webStore) {
           let record = options.webStore.getTask(task);
@@ -1776,8 +1793,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       });
     },
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
-      const { owner } = await readSource(identity);
-      await ensureHerdr(normalSignal);
+      const { owner, task } = await readSource(identity);
+      if (task.agentControlMode !== "web" && options.webStore?.getTask(owner) == null) await ensureHerdr(normalSignal);
       await serialize(identity, async () => {
         await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
         if (settings.deleteWorktree === true) {
@@ -1788,7 +1805,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       return owner;
     },
     completeSource: async (owner: ResourceOwner): Promise<void> => {
-      await ensureHerdr(normalSignal);
+      if (options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null) await ensureHerdr(normalSignal);
       await serialize(owner, async () => {
         await runCleanup(owner, true, normalSignal, undefined, true);
         if (!executionCapacity.stopped(owner)) throw new Error("The original execution stop remains unknown; its reservation is retained.");

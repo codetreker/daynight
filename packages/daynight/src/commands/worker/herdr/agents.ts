@@ -128,7 +128,7 @@ const processExecuting = async (processId: number): Promise<boolean> => {
   catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false; throw cause; }
 };
 
-export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; nativeEnvironment?: NodeJS.ProcessEnv; toolMapping?: (context: HerdrExecutionContext, operation: Operation, existingOnly?: boolean) => Promise<HerdrToolLaunchMapping | null>; readCodexConfig?: (args: readonly string[], cwd: string, operation: Operation, toolLaunch?: ResolvedToolLaunch) => Promise<unknown>; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
+export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; nativeEnvironment?: NodeJS.ProcessEnv; toolMapping?: (context: HerdrExecutionContext, operation: Operation, existingOnly?: boolean) => Promise<HerdrToolLaunchMapping | null>; stopToolMapping?: (context: HerdrExecutionOwner & { cwd: string }, operation: Operation) => Promise<HerdrToolLaunchMapping | null>; readCodexConfig?: (args: readonly string[], cwd: string, operation: Operation, toolLaunch?: ResolvedToolLaunch) => Promise<unknown>; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
   const session = text(options.session, "Herdr session");
   const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
@@ -145,13 +145,25 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const stoppedRuns = new Map<string, HerdrTaskBinding>();
   const activeBindings = new Map<string, { binding: HerdrTaskBinding; agent: WorkerAgent }>();
   const mappings = new Map<string, HerdrToolLaunchMapping | null>();
+  const rememberMapping = (key: string, mapping: HerdrToolLaunchMapping | null): HerdrToolLaunchMapping | null => {
+    if (mapping !== null && (!path.isAbsolute(mapping.manifestPath) || mapping.environment.DAYNIGHT_HERDR_TOOL_MANIFEST !== mapping.manifestPath || canonicalId(mapping.nonce) !== mapping.nonce || !/^[a-f0-9]{64}$/.test(mapping.selectionKey))) throw new Error("The registered Herdr tool mapping has invalid execution identity.");
+    mappings.set(key, mapping);
+    return mapping;
+  };
   const mappingFor = async (context: HerdrExecutionContext, operation: Operation, existingOnly = true): Promise<HerdrToolLaunchMapping | null> => {
     const key = resourceOwnerKey(context);
     if (mappings.has(key)) return mappings.get(key)!;
     const mapping = await options.toolMapping?.(context, operation, existingOnly) ?? null;
-    if (mapping !== null && (!path.isAbsolute(mapping.manifestPath) || mapping.environment.DAYNIGHT_HERDR_TOOL_MANIFEST !== mapping.manifestPath || canonicalId(mapping.nonce) !== mapping.nonce || !/^[a-f0-9]{64}$/.test(mapping.selectionKey))) throw new Error("The registered Herdr tool mapping has invalid execution identity.");
-    mappings.set(key, mapping);
-    return mapping;
+    return rememberMapping(key, mapping);
+  };
+  const stopMappingFor = async (context: HerdrExecutionOwner & { cwd: string }, operation: Operation, observedAgent: WorkerAgent | undefined): Promise<HerdrToolLaunchMapping | null> => {
+    const key = resourceOwnerKey(context), cached = mappings.get(key);
+    if (options.stopToolMapping === undefined) return cached ?? (observedAgent === undefined ? null : mappingFor({ ...context, agent: observedAgent }, operation));
+    // A prepared pane may not have a native agent yet. Its persisted owner still
+    // determines the mapping, including after this manager's caches are lost.
+    const restored = await options.stopToolMapping(context, operation);
+    if (mappings.has(key) && (cached === null ? restored !== null : restored === null || cached!.nonce !== restored.nonce || cached!.selectionKey !== restored.selectionKey || cached!.manifestPath !== restored.manifestPath)) throw new Error("The original Herdr stop mapping differs from its frozen execution identity.");
+    return rememberMapping(key, cached ?? restored);
   };
   const runKey = (binding: HerdrTaskBinding): string => JSON.stringify([workerRun, binding.session, binding.workspaceId, binding.paneId, binding.terminalId]);
   const serialized = async <T>(key: string, operation: Operation, action: () => Promise<T>): Promise<T> => {
@@ -757,7 +769,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       pending.originalBindingObserved ||= originalBindingObserved;
       const observedAgent = activeBindings.get(identity)?.agent ?? [...currentPanes, ...before.agents.filter(value => value.pane_id === binding.paneId), context].map(value => (value as RecordValue).agent).find(value => value === "codex" || value === "copilot" || value === "claude");
-      const mapping = mappings.get(identity) ?? (observedAgent === undefined ? null : await mappingFor({ ...context, agent: observedAgent as WorkerAgent }, operation));
+      const mapping = await stopMappingFor(context, operation, observedAgent as WorkerAgent | undefined);
       if (mapping !== null) {
         pending.mapping = mapping;
         const receipt = await mapping.readReceipt(operation);

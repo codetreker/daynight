@@ -397,7 +397,7 @@ export const runWorker = async (options: {
     };
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
-    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionContext): ExecutionConfiguration | null => {
+    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionOwner): ExecutionConfiguration | null => {
       const frozen = getStore().getNativeConfiguration(context);
       return frozen === null ? null : { ...frozen, agentControlMode: "herdr", recoveryLimit: configuration?.current().effective.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit };
     };
@@ -1078,7 +1078,7 @@ export const runWorkerControl = async (options: {
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit) });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
-    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionContext): ExecutionConfiguration | null => {
+    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionOwner): ExecutionConfiguration | null => {
       const frozen = store!.getNativeConfiguration(context);
       return frozen === null ? null : { ...frozen, agentControlMode: "herdr", recoveryLimit: configurationManager?.current().effective.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit };
     };

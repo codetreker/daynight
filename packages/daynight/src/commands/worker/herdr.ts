@@ -11,6 +11,8 @@ import type { ExecutionConfiguration } from "./types.js";
 import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { ToolSelectionError } from "../../platform/tool-executables.js";
 import { createToolLaunchMapping } from "./herdr/tool-launch.js";
+import { readToolLaunchMappingInventory } from "./herdr/tool-launch-inventory.js";
+import { canonicalResourceOwner, sameResourceOwner } from "./resource-owner.js";
 
 export type {
   HerdrExecutionContext,
@@ -35,7 +37,7 @@ export const createWorkerHerdr = (options: {
   homeDirectory: string;
   executable?: string;
   herdrLaunch?: ResolvedToolLaunch | undefined;
-  readExecutionConfiguration?: (context: HerdrExecutionContext) => ExecutionConfiguration | null;
+  readExecutionConfiguration?: (context: HerdrExecutionOwner) => ExecutionConfiguration | null;
   environment?: NodeJS.ProcessEnv;
   agentEnvironment?: Readonly<{ PATH?: string; DN_CONFIG_DIR?: string }>;
   onDaemonSpawn?: (pid: number) => Promise<void>;
@@ -60,20 +62,25 @@ export const createWorkerHerdr = (options: {
     homeDirectory: options.homeDirectory,
     ...(options.selectionVerifier === undefined ? {} : { selectionVerifier: options.selectionVerifier }),
   });
+  const toolMapping = async (context: HerdrExecutionOwner & { agent?: HerdrExecutionContext["agent"] }, operation: Operation, existingOnly = true) => {
+    const owner = canonicalResourceOwner(context), configuration = options.readExecutionConfiguration?.(owner) ?? null;
+    if (configuration !== null && (configuration.agentControlMode !== "herdr" || context.agent !== undefined && configuration.agent !== context.agent)) throw new Error("The frozen Herdr execution configuration belongs to another provider or mode.");
+    if (configuration?.toolLaunch === undefined) {
+      if (existingOnly && readToolLaunchMappingInventory(options.paths.herdrDirectory).some(mapping => sameResourceOwner(mapping.owner, owner) && !mapping.retired)) throw new Error("The original Herdr mapping has no frozen execution recipe; process ownership remains unknown.");
+      if (existingOnly || context.agent === "claude") return null;
+      if (context.agent === undefined) throw new Error("A new Herdr mapping requires its original native provider.");
+      throw new ToolSelectionError(context.agent, "herdr", "launch", "legacy_tool_identity_missing");
+    }
+    if (configuration.toolLaunch.tool !== configuration.agent || configuration.toolLaunch.context !== "herdr") throw new Error("The original Herdr tool recipe differs from its execution owner.");
+    return createToolLaunchMapping({ directory: options.paths.herdrDirectory, owner, launch: configuration.toolLaunch, nativeEnvironment, ...instance.toolMappingRuntime(), existingOnly }, operation);
+  };
   const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight: {
     verifyStart: (input, operation) => {
       return preflight.verifyStart({ ...input, configuration: { ...input.configuration, agent: input.configuration.agent } }, operation);
     },
   }, workspaceEnvironment, nativeEnvironment,
-    ...(options.readExecutionConfiguration === undefined ? {} : { toolMapping: async (context: HerdrExecutionContext, operation: Operation, existingOnly?: boolean) => {
-      const configuration = options.readExecutionConfiguration!(context);
-      if (configuration?.toolLaunch === undefined) {
-        if (existingOnly || context.agent === "claude") return null;
-        throw new ToolSelectionError(context.agent, "herdr", "launch", "legacy_tool_identity_missing");
-      }
-      if (configuration.toolLaunch.tool !== context.agent || configuration.toolLaunch.context !== "herdr") throw new Error("The original Herdr tool recipe differs from its execution owner.");
-      return createToolLaunchMapping({ directory: options.paths.herdrDirectory, owner: context, launch: configuration.toolLaunch, nativeEnvironment, ...instance.toolMappingRuntime(), ...(existingOnly === undefined ? {} : { existingOnly }) }, operation);
-    } }),
+    ...(options.readExecutionConfiguration === undefined ? {} : { toolMapping }),
+    stopToolMapping: (context, operation) => toolMapping(context, operation),
     readCodexConfig: (args, cwd, operation, toolLaunch) => readCodexConfiguration({ args, cwd, environment: nativeEnvironment, ...(toolLaunch === undefined ? {} : { toolLaunch }) }, operation) });
   return {
     createShellStartup: instance.createShellStartup,

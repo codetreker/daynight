@@ -239,7 +239,7 @@ export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & 
     return mappings.filter(mapping => mapping.started && !mapping.retired).map(mapping => {
       let observed: ReturnType<typeof parseFrozenToolObservation> | null = null;
       try {
-        const configuration = base.readExecutionConfiguration?.({ ...mapping.owner, agent: mapping.launch.tool === "codex" ? "codex" : "copilot", cwd: base.paths.herdrDirectory });
+        const configuration = base.readExecutionConfiguration?.(mapping.owner);
         if (configuration?.agentControlMode === "herdr" && configuration.agent === mapping.launch.tool && configuration.toolLaunch?.selectionKey === mapping.launch.selectionKey && configuration.toolObservation !== undefined) observed = parseFrozenToolObservation(configuration.toolObservation);
       } catch { /* Missing historical configuration cannot supply a new observation. */ }
       // A synchronous retained intent proves responsibility, not process liveness.

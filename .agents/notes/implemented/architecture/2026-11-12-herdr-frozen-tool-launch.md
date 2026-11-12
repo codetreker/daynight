@@ -35,7 +35,13 @@ original shell. Shutdown keeps responsibility for native descendants after their
 helper exits.
 
 Missing mapping indexes for frozen executions reject recovery instead of
-selecting legacy behavior. Windows reopens the original validated manifest's
+selecting legacy behavior. Owner-only stop reads the original persistent
+configuration to recover the mapping, even after caches are lost and before an
+empty pane reports an Agent. Existing mapping evidence with missing or conflicting
+configuration rejects cleanup; only an execution lacking both a frozen recipe
+and an unretired mapping can use legacy stop. Restored mappings must agree with any
+cached nonce and selection key before process proof and retirement proceed.
+Windows reopens the original validated manifest's
 Node/helper paths; POSIX also checks the retained shell runtime. An installation
 change cannot replace the helper in an existing generation.
 
@@ -123,6 +129,13 @@ The [claim tool reservation](2026-11-12-herdr-claim-tool-reservations.md) also
 retains that selection while a claim request is outstanding and transfers it to
 the actual grant atomically. Authorized pending claims can restore the daemon
 without bypassing Agent capacity admission.
+Herdr connection and inventory failures do not prevent an independently retained
+active Web execution from being scheduled after its project and claim inventory
+are covered. Its original worktree and persistent Web execution remain required,
+and normal execution admission rechecks identity and authorization. The original
+Herdr error still leaves global capacity unknown and blocks pending activation
+and new claims. Explicit retry, cleanup and completion use the original
+execution's backend rather than the current target configuration.
 Attach uses the original Herdr client recipe. Legacy endpoints remain usable for
 existing operations, while missing historical recipes cannot authorize new spawn.
 
@@ -203,6 +216,17 @@ remain healthy. Shared drain is needed only for the shared-instance topology.
 installation under the same claim and native Session. Recovery retains original
 metadata and fails if a required original dependency cannot be verified.
 
+**Infer stop mapping identity from the live pane or Agent cache.** Neither exists
+after a restart before native startup. Treating that absence as legacy would
+close the workspace without retiring its frozen mapping, preserving stale shell
+and Windows layout evidence for a later attempt. The original stored
+configuration supplies the owner-bound identity independently of live detection.
+
+**Treat an unavailable Herdr snapshot as empty to continue Web work.** Empty
+resources would admit new work without accounting for retained native processes.
+Scheduling only independently proven active Web executions preserves their
+progress while leaving global admission and Herdr responsibility unresolved.
+
 **Trust parent PID links and verify each descendant only at shutdown.** A birth
 proof can faithfully identify the wrong descendant. Windows retains stale parent
 IDs, so shutdown identity checks alone cannot repair mistaken enrollment.
@@ -256,6 +280,8 @@ Tool observations can distinguish the latest target from multiple retained runni
 selections. Unknown startup, stopping, input and process facts remain explicit
 responsibilities, which may delay new shared-instance admission. Retaining those
 records costs disk space and requires conservative cleanup across generations.
+Backend fault isolation preserves existing Web progress but cannot establish
+free capacity or allow new work while Herdr resource observation remains unknown.
 
 Private mapping files and process proofs add a separate evidence path alongside
 macOS lifecycle records; neither substitutes for the other's input or stop rules.

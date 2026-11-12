@@ -18,6 +18,8 @@ macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选
 
 `herdr/tool-launch.ts` 在实例私有目录的 `tool-launch/` 下维护 owner 与 selectionKey 对应的 generation。manifest 保存 canonical owner、随机 nonce、冻结 Agent launch、native 原 PATH、Node/helper 绝对路径与平台。当前 generation 索引只指向完整发布的 manifest；旧 generation 仅在全部原进程确认停止并写入 retirement 证明后才能替换。重连只读原索引和 manifest，缺失、损坏、错 owner 或改变选择均拒绝。有冻结 launch 的执行不能因索引丢失被解释为 legacy，输入和停止不能跳过原映射证明。
 
+停止入口只需原 owner 与 cwd。生产适配层按 canonical owner 读取原持久执行配置，从该配置恢复 Agent 和冻结映射，并核对模式、Agent 与 recipe 的 tool/context；不依赖进程内缓存或当前 pane 是否已经报告 Agent。已存在映射而原配置或 recipe 缺失时保持错误；只有原配置没有 recipe 且没有未退休映射的执行可采用 legacy 停止。恢复的映射还须与已缓存 generation 的 nonce 和 selectionKey 一致，停止和 retirement 继续使用原进程证明。重启后的空 pane 因此仍保留映射的停止责任，只有确认退休后才允许创建新 generation。
+
 `tool-launch-protocol.ts` 通过有界普通文件读取、独占临时文件、同步及 create-only 发布保存证据；POSIX 同时要求 owner-only 权限。manifest、启动 intent、receipt、初始输入 intent 和进程 journal 分别承担自己的事实，不能用某个文件存在推断其它步骤完成。
 
 Herdr 的 `agent.start` 仍接收原 kind 与逻辑参数，回执必须精确等于 `[kind,...args]`，没有新增 executable RPC。只有受控 pane 的裸命令经过映射；版本、模型、help、能力与配置探测直接消费 `toolCommand`，不依赖 shell 发现。
@@ -73,6 +75,8 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 `shared.ts` 的新目标准入依序核验候选、保留切换 intent、停止原实例、确认 API/client 两个 endpoint 关闭及原 daemon 和全部 mapping 进程树停止，再核验并启动新 launch。已验证的文件 recipe 不能证明 daemon 仍存活；新 Herdr 准入仍重入实例检查。运行循环只在配置选择 Herdr 时定期刷新该候选，并唤醒对账，使无旧 claim 的空闲实例退出后也能按同一规则恢复，纯 Web 不因此启动 Herdr。spawn 前保存 starting，取得原 daemon proof 后才接受实际握手并提交 ready/applied。旧执行、未确认 probe、启动/停止未知和遗留 native 都使新目标保持 pending；原执行的 RPC 和健康 Web 执行继续可用。首次迁移旧非受控实例也遵守这些规则，缺原 daemon 身份不能用 RPC 回执冒充完整停止证明。
 
 原 claim 的 `ensureExecution` 只读该 claim 的冻结配置，要求与 journal 的 current selectionKey 相同。原 daemon 仍活时重连；只有原 daemon、两个 endpoint 和全部旧 native 树均已确认关闭，才可用同一冻结 launch 重启。该入口不允许把新目标 B 变成旧 claim A 的恢复工具。协调器在调用前重新读取任务，核对 active claim、Worker、worktree、模式、Agent、许可和暂停状态；已授予的本机 pending 与 active 执行均可恢复原 daemon，但 Agent 启动仍由后续容量和项目准入决定。普通清理仅重连，不因清理启动新 daemon。
+
+混合模式的前置 Herdr 重连或资源读取失败时，协调器仍可调度本轮完整清单覆盖、项目已准备且保留原 worktree 与持久 `webExecution` 的 active Web 执行。该调度继续核对原 claim、许可、暂停和 backend 身份；取消不进入此路径。原 Herdr 错误仍上报，容量保持未知，不进入全局资源结算、pending 启动或新 claim 准入。原 Web 执行的显式 retry、清理和完成也按其冻结模式选择 backend，不以当前工具目标或其它 claim 的 Herdr 责任增加前置依赖。
 
 ## 观察与验证边界
 
