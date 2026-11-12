@@ -435,17 +435,28 @@ records its separate scheduling and build inputs, and the
 records the complete product runtime.
 
 CLI has ordinary and installed phases on Linux, Windows and macOS ARM64, a Node
-runtime matrix and shell-completion checks. Go module validation owns its
+runtime matrix and completion unit tests. Go module validation owns its
 ordinary tools and coverage. The independent Go server startup & shutdown job
 owns command lifecycle tests and their command-package coverage, using the same
 Go directory selection. Go API integration owns an independent Linux job
 that checks its Linux runtime tools, prepares production Web resources and runs
-the real Server with its own database and auth. Web owns independent quality and frontend browser jobs.
+the real Server with its own database and auth. Web quality owns its type, build,
+tooling and coverage checks.
 Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected Go module, Go server startup &
-shutdown, API, Web and product E2E jobs to succeed. A newer PR run cancels its
-older run; main runs queue without cancelling an active run.
+shutdown, API, Web quality and product E2E jobs to succeed. A newer PR run cancels
+its older run; main runs queue without cancelling an active run.
+
+The independent [`shell and browser acceptance` workflow](.github/workflows/shell-browser.yml)
+runs real shell completion and the frontend assistant browser suite on every
+`main` push and through `workflow_dispatch`. Ordinary module commands and the
+PR `checks` gate do not invoke or depend on these two jobs. Both retain their
+complete suites, fresh source checkout, toolchains and evidence. Product E2E
+keeps its own Chromium installation, path selection and required result. The
+[workflow decision](.agents/notes/implemented/testing/2026-11-12-shell-browser-workflow.md)
+records the cost of checking these specialized suites after integration or by
+explicit dispatch instead of on every affected PR.
 
 ## Validation
 
