@@ -776,11 +776,18 @@ diagnostics and cause categories.
 
 `s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` accepts one canonical exact
 HTTPS origin: lowercase host, no default port, userinfo, path, query, fragment or
-wildcard. HTTP requires `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` and a literal localhost or
-numeric loopback application host. Invalid values fail
-startup. An explicit empty value disables application browser CORS while leaving
-no-Origin REST, internal issuance and existing public refresh available. Restart
-after changing it. The outer user REST adapter decorates success and error
+wildcard. HTTP requires `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` and a literal localhost
+or numeric loopback application host. Invalid values fail startup. If the environment
+variable is absent, the loaded YAML value remains effective. The supplied
+localhost and dev-ci Compose configurations preserve that distinction: an absent
+variable in both the host environment and private environment file retains YAML;
+an explicitly empty value overrides YAML and disables application browser CORS;
+a nonempty value overrides YAML with that origin. The blank entry in
+[localhost .env.example](../../deployment/localhost/.env.example) deliberately
+disables browser CORS when copied unchanged without a host override. The host
+environment takes precedence over the private environment file. An empty origin
+leaves no-Origin REST, internal issuance and existing public refresh available.
+Restart after changing it. The outer user REST adapter decorates success and error
 responses and handles registered-method preflight without credentials or business
 work. It echoes the exact origin, merges Vary and sends no
 Access-Control-Allow-Credentials. Native Cookie mutation, account-root and
