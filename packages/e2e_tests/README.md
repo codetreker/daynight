@@ -68,7 +68,9 @@ are not inserted directly to bypass these flows.
 
 ## Scenarios and fixtures
 
-`tests/main-flow.spec.ts` verifies browser login, CLI device login, CLI project
+`tests/main-flow.spec.ts` verifies browser login, CLI device login, the same
+device-issued PAT's initially empty and subsequently recorded usage in the
+production Web account list after a successful CLI request, CLI project
 and task creation, default proposed readback, explicit todo creation for confirmed
 reference work, project detail and attachment-tab Back/Forward, direct Web proposed-to-in_progress modification, CLI readback and
 completion, and Web reload. A second Task is claimed, registered, released and
