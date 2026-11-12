@@ -2,7 +2,7 @@ import type { GraphIndex } from '../task-graph/model';
 import type { TaskScope } from '../task-graph/scope';
 import { scopedChainProgress, type ScopedChainProgress } from '../task-graph/scoped-chain-progress';
 import { compareTaskStatus } from './task-order';
-import { timestampNanoseconds } from './task-visibility';
+import { timestampNanoseconds } from '../../time/timestamp';
 
 export type GoalChainItem = {
   readonly representativeId: string;

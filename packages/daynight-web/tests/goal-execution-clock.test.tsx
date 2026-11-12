@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { TaskDetail } from '../src/api/types';
+import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { installGraphMeasurements } from './graph-measurements';
@@ -33,9 +34,10 @@ const tasks = [goal,
 const noop = () => {};
 const surface = (items: TaskDetail[], presentation: 'dialog' | 'page', observed = 59_000) => {
   const snapshot = snapshotFixture(items);
-  return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={goal} resourceState={resourceState}
-    snapshot={{ ...snapshot, observedAt: at(observed), receivedMonotonic: 0, receivedAt: Date.parse(at(observed)) }} presentation={presentation}
-    fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} />;
+  const sample = { ...snapshot, observedAt: at(observed), receivedMonotonic: 0, receivedAt: Date.parse(at(observed)) };
+  return <TaskExecutionClockProvider projectId={projectId} snapshot={sample}><GoalDetailSurface projectId={projectId} taskId={goalId} detail={goal} resourceState={resourceState}
+    snapshot={sample} presentation={presentation}
+    fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} /></TaskExecutionClockProvider>;
 };
 const duration = (n: number) => document.querySelector(`[data-id="${id(n)}"] .task-duration`)!;
 let root: HTMLDivElement;

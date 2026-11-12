@@ -2,7 +2,6 @@ import { TaskSessionSummaryProvider } from "../task-session-summary/TaskSessionS
 import { TaskPauseCount, TaskPauseProvider } from "../task-pause/TaskPause";
 import type { ComponentProps, ReactNode } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
-import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { ChainList } from "../task-graph/ChainList";
 import { ProjectTaskTabs } from "./ProjectTaskTabs";
 import { StandaloneList } from "./StandaloneList";
@@ -11,8 +10,7 @@ import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 import type { TaskSessionSummaryStore } from "../task-session-summary/store";
 
-export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active = true, activeView, pausedTaskCount, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, goalCount, onViewChange, filter, chains, standalone, goals }: {
-  readonly projectId: string;
+export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, activeView, pausedTaskCount, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, goalCount, onViewChange, filter, chains, standalone, goals }: {
   readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
@@ -30,7 +28,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
     <div className="project-section-heading"><h2>{sections.tasks}</h2><TaskPauseCount count={pausedTaskCount} /></div>
-      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}><TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
+      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
           unfinishedChainTaskCount={unfinishedChainTaskCount} goalCount={goalCount} onViewChange={onViewChange} />
         {filter}
@@ -43,6 +41,6 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active
         <div role="tabpanel" id="project-task-panel-goals" aria-labelledby="project-task-tab-goals" hidden={activeView !== "goals"} tabIndex={-1}>
           {activeView === "goals" && <GoalList index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
         </div>
-      </TaskExecutionClockProvider></TaskSessionSummaryProvider></TaskPauseProvider>
+      </TaskSessionSummaryProvider></TaskPauseProvider>
   </>;
 };

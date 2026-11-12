@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { overviewProgress, type OverviewProgress } from "./overview-progress";
-import { timestampNanoseconds } from "./task-visibility";
+import { timestampNanoseconds } from "../../time/timestamp";
 import type { GraphSnapshot } from "./useTaskGraph";
 
 const emptyProgress: OverviewProgress = { chains: [], standalone: null, recentStandaloneIds: [], nextUpdateAt: null };

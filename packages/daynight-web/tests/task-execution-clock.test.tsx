@@ -1,12 +1,14 @@
 import { summariesForGraph } from './helpers/taskSync';
-import { StrictMode, type ReactNode } from "react";
-import { act, renderHook } from "@testing-library/react";
+import { StrictMode, Suspense, type ReactNode } from "react";
+import { act, render, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskGraph } from "../src/api/types";
 import { buildGraphIndex } from "../src/features/task-graph/model";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
 import { createTaskExecutionClock, taskExecution, type ClockEnvironment, type ClockInput, type ExecutionTask } from "../src/features/task-execution/clock";
 import { TaskExecutionClockProvider, useTaskExecution } from "../src/features/task-execution/TaskExecutionClock";
+import { useCompletionTime } from "../src/features/task-completion/useCompletionTime";
+import { LocaleProvider } from "../src/i18n/LocaleProvider";
 
 const start = "2026-10-23T00:00:00Z";
 const epoch = Date.parse(start);
@@ -87,7 +89,7 @@ describe("project execution clock ownership", () => {
     expect(platform.api.schedule).toHaveBeenCalledTimes(1);
     expect(platform.api.listen).toHaveBeenCalledTimes(1);
     platform.advance(2_500);
-    expect(clock.getSnapshot().serverMilliseconds).toBe(epoch + 2_500);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBe(epoch + 2_500);
     expect(first).toHaveBeenCalledTimes(1); expect(second).toHaveBeenCalledTimes(1);
     expect(settings).not.toHaveBeenCalled();
     expect(clock.getWarningSnapshot()).toBe(warning);
@@ -95,7 +97,7 @@ describe("project execution clock ownership", () => {
     removeSecond(); expect(platform.ticks.size).toBe(0); expect(platform.release).toHaveBeenCalledTimes(1);
     platform.elapse(5_000);
     const removeLate = clock.subscribeRunning(vi.fn());
-    expect(clock.getSnapshot().serverMilliseconds).toBe(epoch + 7_500);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBe(epoch + 7_500);
     stop(); expect(platform.ticks.size).toBe(0); expect(platform.release).toHaveBeenCalledTimes(2);
     removeLate(); removeSettings();
   });
@@ -107,9 +109,9 @@ describe("project execution clock ownership", () => {
     platform.visibility(false);
     expect(platform.ticks.size).toBe(0);
     platform.elapse(30_000);
-    expect(clock.getSnapshot().serverMilliseconds).toBe(epoch);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBe(epoch);
     platform.visibility(true);
-    expect(clock.getSnapshot().serverMilliseconds).toBe(epoch + 30_000);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBe(epoch + 30_000);
     expect(change).toHaveBeenCalledTimes(1);
     expect(platform.ticks.size).toBe(1);
     remove(); stop();
@@ -119,8 +121,8 @@ describe("project execution clock ownership", () => {
     const platform = environment();
     const clock = createTaskExecutionClock(input(), platform.api);
     const observations: Array<{ clock: number; warning: number; elapsed: number }> = [];
-    const remove = clock.subscribeRunning(() => observations.push({ clock: clock.getSnapshot().warningMinutes,
-      warning: clock.getWarningSnapshot().warningMinutes, elapsed: clock.getSnapshot().serverMilliseconds! - epoch }));
+    const remove = clock.subscribeRunning(() => observations.push({ clock: clock.getSnapshot()!.warningMinutes,
+      warning: clock.getWarningSnapshot()!.warningMinutes, elapsed: clock.getSnapshot()!.serverMilliseconds! - epoch }));
     const settings = vi.fn(); const removeSettings = clock.subscribeSettings(settings);
     platform.elapse(700);
     clock.update({ observedAt: new Date(epoch + 5_000).toISOString(), receivedMonotonic: 300, warningMinutes: 2 });
@@ -221,4 +223,100 @@ it("stops cancellation reminders and preserves only a known historical execution
   expect(taskExecution(cancelled, clock)).toBeNull();
   expect(taskExecution({ ...cancelled, completedAt: "2026-10-23T01:00:00Z" }, clock))
     .toMatchObject({ kind: "completed", elapsedMilliseconds: 3_600_000, completedAt: "2026-10-23T01:00:00Z", overdue: false });
+});
+
+
+describe("completion clock", () => {
+  it("shares one interval across completion and running subscribers and handles cache, live and empty samples", () => {
+    const platform = environment();
+    const clock = createTaskExecutionClock(null, platform.api);
+    const stop = clock.mount();
+    const completion = vi.fn(); const runningChange = vi.fn(); const settings = vi.fn();
+    const removeCompletion = clock.subscribeCompletion(completion);
+    const removeRunning = clock.subscribeRunning(runningChange);
+    const removeSettings = clock.subscribeSettings(settings);
+    expect(clock.getCompletionNow()).toBeNull();
+    expect(clock.getSnapshot()).toBeNull();
+    expect(clock.getWarningSnapshot()).toBeNull();
+    expect(platform.ticks.size).toBe(0);
+    clock.update({ observedAt: null, localTime: epoch, receivedMonotonic: 100, warningMinutes: 60 });
+    expect(clock.getCompletionNow()).toBe(BigInt(epoch) * 1_000_000n);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBeNull();
+    expect(platform.ticks.size).toBe(1);
+    platform.advance(2_500);
+    expect(clock.getCompletionNow()).toBe(BigInt(epoch + 2_500) * 1_000_000n);
+    expect(runningChange).toHaveBeenCalledTimes(1);
+    expect(settings).toHaveBeenCalledTimes(1);
+    clock.update({ observedAt: "2026-10-23T00:00:10.123456789Z", receivedMonotonic: 2_600, warningMinutes: 1 });
+    expect(clock.getCompletionNow()).toBe(BigInt(epoch + 10_123) * 1_000_000n + 456_789n);
+    expect(clock.getSnapshot()!.serverMilliseconds).toBe(epoch + 10_123);
+    expect(clock.getWarningSnapshot()!.warningMinutes).toBe(1);
+    expect(platform.ticks.size).toBe(1);
+    platform.visibility(false); expect(platform.ticks.size).toBe(0);
+    platform.elapse(3_000); platform.visibility(true);
+    expect(clock.getCompletionNow()).toBe(BigInt(epoch + 13_123) * 1_000_000n + 456_789n);
+    expect(platform.ticks.size).toBe(1);
+    clock.update(null);
+    expect(clock.getCompletionNow()).toBeNull(); expect(clock.getSnapshot()).toBeNull();
+    expect(clock.getWarningSnapshot()).toBeNull(); expect(platform.ticks.size).toBe(0);
+    expect(platform.release).toHaveBeenCalledTimes(1);
+    removeCompletion(); removeRunning(); removeSettings(); stop();
+  });
+
+  it("runs for completed-only subscribers and releases each resource on removal or owner unmount", () => {
+    const platform = environment(); const clock = createTaskExecutionClock(input(), platform.api);
+    const stop = clock.mount(); const remove = clock.subscribeCompletion(vi.fn());
+    expect(platform.ticks.size).toBe(1);
+    remove(); expect(platform.ticks.size).toBe(0); expect(platform.release).toHaveBeenCalledTimes(1);
+    const removeAgain = clock.subscribeCompletion(vi.fn());
+    expect(platform.ticks.size).toBe(1);
+    stop(); expect(platform.ticks.size).toBe(0); expect(platform.release).toHaveBeenCalledTimes(2);
+    removeAgain();
+  });
+
+  it("changes React output only when the reading changes and keeps the child mounted as samples arrive", () => {
+    vi.useFakeTimers();
+    let monotonic = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+    let current: GraphSnapshot | null = null;
+    const wrapper = ({ children }: { children: ReactNode }) => <LocaleProvider initial={{ locale: "en", issue: null }}>
+      <TaskExecutionClockProvider projectId={projectId} snapshot={current}>{children}</TaskExecutionClockProvider>
+    </LocaleProvider>;
+    const renders = vi.fn();
+    const { result, rerender, unmount } = renderHook(() => { renders(); return useCompletionTime(start); }, { wrapper });
+    expect(result.current).toBeNull(); expect(vi.getTimerCount()).toBe(0);
+    current = snapshot(start); rerender();
+    const first = result.current;
+    expect(first?.timestamp).toBe(start); expect(vi.getTimerCount()).toBe(1);
+    const count = renders.mock.calls.length;
+    monotonic = 1_000; act(() => vi.advanceTimersByTime(1_000));
+    expect(result.current).toBe(first); expect(renders).toHaveBeenCalledTimes(count);
+    monotonic = 60_000; act(() => vi.advanceTimersByTime(1_000));
+    expect(result.current).not.toBe(first);
+    expect(result.current?.label).toContain("1 minute");
+    current = null; rerender(); expect(result.current).toBeNull(); expect(vi.getTimerCount()).toBe(0);
+    unmount(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not acquire a ticker from an uncommitted render", () => {
+    vi.useFakeTimers();
+    const pending = new Promise<never>(() => {});
+    const Suspended = () => { useCompletionTime(start); throw pending; };
+    const view = render(<LocaleProvider initial={{ locale: "en", issue: null }}>
+      <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot()}>
+        <Suspense fallback={<span>Loading</span>}><Suspended /></Suspense>
+      </TaskExecutionClockProvider>
+    </LocaleProvider>);
+    expect(view.getByText("Loading")).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(0);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects missing clock for a known completion and keeps unknown completion inactive", () => {
+    const wrapper = ({ children }: { children: ReactNode }) => <LocaleProvider initial={{ locale: "en", issue: null }}>{children}</LocaleProvider>;
+    const { result, unmount } = renderHook(() => useCompletionTime(null), { wrapper });
+    expect(result.current).toBeNull(); unmount();
+    expect(() => renderHook(() => useCompletionTime(start), { wrapper })).toThrow("requires TaskExecutionClockProvider");
+  });
 });

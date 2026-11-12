@@ -10,17 +10,16 @@ must display their timing without making the Goal page fail to render.
 
 ## Decision
 
-`GoalDetailSurface` supplies `TaskExecutionClockProvider` around its existing
-chain-dialog branch once the complete project snapshot is available. The context
-reaches every graph node through the React portal and uses the snapshot's server
-sample, monotonic receipt and project warning threshold. The provider mounts with
-the graph and retains its store across snapshots of the same project.
+The original fix supplied `TaskExecutionClockProvider` around the Goal chain
+dialog after a complete project snapshot arrived. The portal inherited its
+context and the timed-task hook exposed missing assembly instead of inventing a
+clock.
 
-The rest of the Goal content keeps its existing mounting boundary. The timing
-hook still rejects a timed task without its provider, exposing missing assembly
-rather than substituting a local clock or suppressing timing. The
-[execution timing design](../../../../docs/design/daynight-task-timing.md)
-owns the clock and subscription rules.
+The [shared completion clock](../architecture/2026-11-12-shared-completion-clock.md)
+now moves that ownership to stable project and standalone resource page roots,
+covering the Goal graph and its siblings without remounting content on the first
+snapshot. The [execution timing design](../../../../docs/design/daynight-task-timing.md)
+owns the current clock and subscription rules.
 
 ## Alternatives
 
@@ -40,6 +39,6 @@ Goal surface.
 ## Consequences
 
 Both Goal entry points display timing for ordinary and external nodes. Closing
-the graph releases its timer and visibility subscriptions. Regression coverage
+the graph removes its subscriptions; the page owns the shared clock. Regression coverage
 uses real Goal surfaces with non-null execution timestamps instead of adding a
 provider in the test wrapper, so it can detect this assembly failure.
