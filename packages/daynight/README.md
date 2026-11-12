@@ -2986,8 +2986,10 @@ the owned execution. Once the service confirms shutdown, the launcher uploads
 its recorded timeline and resources to file storage for read-only access. The
 service database stores archive metadata, not conversation payloads. Service
 unavailability does not prevent local process cleanup; failed uploads retain
-their private local source. The current directory and user files are never
-removed by the launcher.
+their private local source. The Controller stores resource descriptors, blobs,
+pins and leases through its resource file owner. The pending-content composition
+checks timeline and native input references before removing a resource. The
+current directory and user files are never removed by the launcher.
 
 Retry a failed upload without starting or resuming the Agent:
 

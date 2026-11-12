@@ -157,7 +157,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   });
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
-  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
+  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
   const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
     metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
     const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
