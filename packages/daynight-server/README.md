@@ -1135,6 +1135,15 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   ./internal/server/worker ./internal/core/worker
 ```
 
+Real HTTP request-size boundaries for configuration protocols 1 and 2, the
+ordinary report limit, and a native application with 128 maximally sized escaped
+arguments are exercised separately from routine CI:
+
+```bash
+go test -tags=stress ./internal/server/worker \
+  -run '^TestStressWorkerReport(BodyLimits|LargeNativeApplication)$' -count=1 -timeout=5m
+```
+
 The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
 and [Configuration capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-capacity-test-owners.md)
 record their protocol, rule and projection proof owners. Other root HTTP tests
@@ -2428,6 +2437,14 @@ payloads. Write ingress owns structure, field, normalization and existing
 capacity checks; snapshot reads consume saved canonical data without repeating
 those checks or applying a domain response-byte budget. Normal scan, decode and
 output errors propagate.
+
+A report with valid `Daynight-Worker-Configuration: 1` or `2` has a 9 MiB
+UTF-8 JSON body limit; a report without the configuration protocol retains
+1 MiB. Unknown or repeated configuration headers are rejected before business
+processing. Deploy the server and ingress with the 9 MiB limit before upgrading
+Workers; a 413 from an older server or ingress indicates a capacity or version
+mismatch. The separate 4 MiB telemetry, final Worker and accepted configuration
+observation storage limits and transactional rollback remain in force.
 
 Reports use closed Probe states, explicit unknown inventory and a full task
 reference array. A known empty array is distinct from inventory that has never

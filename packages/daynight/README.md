@@ -1976,7 +1976,11 @@ The [reporting requirements](../../docs/spec/daynight-worker-reporting.md) and
 [design](../../docs/design/daynight-worker-reporting.md) define sampling,
 bounded attempts, cancellation and sanitized diagnostics. Reporting uses the
 existing service credentials and stable worker identity, with no separate
-command or configuration switch.
+command or configuration switch. Configuration reports use a 9 MiB UTF-8 JSON
+body limit; ordinary reports retain 1 MiB. Optional observations are fitted to
+the selected limit without truncating required inventory or configuration. Deploy
+servers and ingress that accept 9 MiB before upgrading Workers. A 413 from an
+older server or ingress is a capacity or version mismatch, not confirmation.
 
 The cloud target owns concurrency, polling and recovery limits, platform-specific
 acquisition preference, control mode, Project selection, and global/per-Project

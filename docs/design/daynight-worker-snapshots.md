@@ -16,6 +16,8 @@ flowchart LR
 
 `api/workers.go` 定义公开 DTO；`internal/server/worker` 注册报告、快照和[配置](daynight-worker-configuration.md)认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service/worker` 选择事务作用域并组合任务清单与项目准入；`core/worker` 处理报告校验、任务匹配、时效及配置规则。报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存由写入入口校验、规范化并编码的 JSONB。读取直接消费该表示，正常扫描、解码及输出错误沿原错误链传播。
 
+报告 HTTP 先严格解析配置协议头，仅有效协议 1/2 使用 9 MiB 的 `DecodeObjectLimit`，未携带协议头使用普通 1 MiB 限额；未知或重复头在读取业务正文和调用业务前拒绝。实际字节计量、读取期限、取消及超限连接处理沿用共享 HTTP 机制。扩大传输额度不改变 telemetry、最终 Worker 或已接纳配置观测各 4 MiB 的存储预算与事务回滚。 [报告额度决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-configuration-report-budget.md)记录单个合法配置结果的传输原因及部署约束。
+
 机器信息不授予身份。资源由 `(principal.UserID,workerId)` 定位，Cookie 写入的 Origin、PAT、身份响应标头及 no-store 复用既有认证。报告日志使用 `component=worker_report`，关联 user_id、已验证 worker_id、request_id 与处理阶段；正文和原生命令内容不进入日志。
 
 ## 独立持久化

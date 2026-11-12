@@ -184,41 +184,6 @@ it.each([String.raw`\\?\C:\tools\codex.exe`, String.raw`\\.\C:\tools\codex.exe`]
   expect(parseToolPathTelemetry(report, "windows")).toEqual(report);
 });
 
-it.each([{ omitted: true, fail: false, asynchronous: false }, { omitted: false, fail: false, asynchronous: true }, { omitted: true, fail: true, asynchronous: false }])("exposes request-time tool budgeting without changing the report outcome ($omitted/$fail/$asynchronous)", async ({ omitted, fail, asynchronous }) => {
-  const user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", operation = createOperation();
-  const notices: unknown[] = [], requests: RequestInit[] = [];
-  const native = (length: number) => ({ agent: "codex" as const, model: null, args: Array<string>(length).fill("x".repeat(4096)) });
-  const first = native(128), second = native(127);
-  const outcome = (key: { kind: "native" } | { kind: "projectNative"; projectId: string }, appliedValue: typeof first) => ({ key, targetRevision: "1", appliedValue, state: "applied" as const, error: null, lastFailure: null, nextAttemptAt: null });
-  const configuration = { bootstrap: null, toolPathsBootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [outcome({ kind: "native" }, first), outcome({ kind: "projectNative", projectId: worker }, second)] } };
-  const required = { ...workerTelemetry, taskInventory: null };
-  const spare = 1_048_576 - Buffer.byteLength(JSON.stringify({ ...required, configuration })) - (omitted ? 16 : 600) - 3;
-  expect(spare).toBeGreaterThan(0); expect(spare).toBeLessThanOrEqual(4096);
-  second.args.push("x".repeat(spare));
-  const client = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation,
-    onToolPathsBudget: result => { notices.push(result); if (asynchronous) return Promise.reject(new Error("observer-private-content")); throw new Error("observer-private-content"); },
-    fetch: async (_url, init) => {
-      requests.push(init!); const get = init!.method === "GET";
-      if (!get && fail) throw new Error("transport failed");
-      return new Response(JSON.stringify(get ? { desired: null, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "1" } });
-    },
-  });
-  try {
-    await client.getWorkerConfiguration(worker);
-    const pending = client.reportWorkerConfiguration(worker, { ...required, toolPaths: telemetry() }, configuration);
-    if (fail) await expect(pending).rejects.toMatchObject({ phase: "request", outcomeUnconfirmed: true });
-    else await expect(pending).resolves.toMatchObject({ observedAt: time });
-    expect(notices).toEqual([{ code: "report_budget_exceeded", omitted }]);
-    expect(requests).toHaveLength(2);
-    const body = JSON.parse(requests[1]!.body as string);
-    expect(body.taskInventory).toBeNull(); expect(body.configuration).toEqual(configuration);
-    expect(Buffer.byteLength(requests[1]!.body as string)).toBeLessThanOrEqual(1_048_576);
-    if (omitted) expect(body).not.toHaveProperty("toolPaths");
-    else expect(body.toolPaths.entries[0]).toMatchObject({ state: "pending", reason: "report_budget_exceeded" });
-    expect(requests[1]!.body).not.toContain("observer-private-content");
-  } finally { operation.dispose(); }
-});
-
 it("retains a rejected foreign-platform desired target without accepting foreign actual paths", () => {
   const target = { kind: "path" as const, path: String.raw`C:\tools\codex.exe` };
   const failure = { ...entry(), target, state: "error" as const, error: { code: "invalid_path" as const, occurredAt: time }, actual: null };

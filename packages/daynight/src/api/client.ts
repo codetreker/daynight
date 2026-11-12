@@ -7,7 +7,7 @@ import { parseTaskWorkPage } from "./task-work.js";
 import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
 import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
 import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
-import { workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
+import { WORKER_CONFIGURATION_REPORT_BYTES, workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
 import { parseMonitoringRead, parseMonitoringReceipt } from "./worker-monitoring.js";
 import type { MonitoringRead, MonitoringReceipt } from "./worker-monitoring.js";
 import type { Observation } from "../commands/worker/monitoring/types.js";
@@ -283,8 +283,8 @@ export const createApiClient = (options: {
     const { toolPaths: _toolPaths, ...legacy } = input;
     return legacy;
   };
-  const reportBody = (input: Parameters<typeof workerReportBody>[0]) => {
-    const body = workerReportBody(input);
+  const reportBody = (input: Parameters<typeof workerReportBody>[0], maxBytes?: number) => {
+    const body = workerReportBody(input, maxBytes);
     let notified = false;
     return {
       kind: body.kind, maxBytes: body.maxBytes,
@@ -1213,7 +1213,7 @@ export const createApiClient = (options: {
           } catch { prompts = { ok: false }; }
           return { ...receipt, prompts };
         },
-      }, [200], reportBody({ ...projectToolReport(input, toolsSupported), configuration: parsed }), true);
+      }, [200], reportBody({ ...projectToolReport(input, toolsSupported), configuration: parsed }, WORKER_CONFIGURATION_REPORT_BYTES), true);
     },
     createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);

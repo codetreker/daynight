@@ -174,56 +174,16 @@ describe("Worker cloud configuration client", () => {
     if (prompts) expect(result.prompts).toEqual({ ok: true, results: [] });
   });
 
-  it("rejects an oversized complete observation at the body envelope without dropping applied values", async () => {
-    const native = { agent: "codex" as const, model: null, args: Array(128).fill("x".repeat(4096)) };
-    const input: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [
-      { ...item, key: { kind: "native" }, appliedValue: native },
-      { ...item, key: { kind: "projectNative", projectId: workerId }, appliedValue: native },
-    ] } };
-    const before = JSON.stringify(input), fetch = vi.fn<typeof globalThis.fetch>();
-    await expect(api(fetch).reportWorkerConfiguration(workerId, report, input)).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "request_limit" } });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(JSON.stringify(input)).toBe(before);
-  });
-  it("omits the whole optional source observation when it exceeds the complete report budget", async () => {
-    const projectIds = Array.from({ length: 512 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
-    const native = { agent: "codex" as const, model: "gpt-6-astra", args: ["--add-dir", "/" + "a".repeat(1580)] };
-    const observation: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: projectIds.flatMap(projectId => [
-      { ...item, key: { kind: "projectNative" as const, projectId }, appliedValue: native },
-      { ...item, key: { kind: "projectPreparation" as const, projectId }, appliedValue: true },
-    ]) } };
-    const source = { agent: "codex" as const, model: { value: "gpt-6-astra", source: "cloud" as const }, reasoningEffort: { value: "high", source: "local" as const } };
-    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: source, projects: projectIds.slice(0, 128).map(projectId => ({ projectId, native: source })) };
-    const required = { ...report, taskInventory: { observedAt: time, claims: [{ projectId: workerId, taskId: userId, claimId: workerId }] } };
-    const input = { ...required, runtimeConfiguration };
-    expect(Buffer.byteLength(stringifyApiJson({ ...required, configuration: observation }))).toBeLessThan(1_048_576);
-    expect(Buffer.byteLength(stringifyApiJson({ ...input, configuration: observation }))).toBeGreaterThan(1_048_576);
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual(receipt);
+  it("reports an older server's 413 as a capacity refusal", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code: "payload_too_large", message: "Request body too large.", requestId: workerId } }), { status: 413, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } }));
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration)).rejects.toMatchObject({ status: 413, outcomeUnconfirmed: false });
     expect(fetch).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ ...required, configuration: observation });
-    expect(input.runtimeConfiguration.projects).toHaveLength(128);
   });
 
-  it("retains source observations at the exact encoded byte limit and omits them one byte above", async () => {
-    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
-    const base = { ...report, runtimeConfiguration, workingDirectory: "" };
-    const padding = 1_048_576 - Buffer.byteLength(stringifyApiJson({ ...base, configuration }));
-    const input = { ...base, workingDirectory: "中".repeat(Math.floor(padding / 3)) + "a".repeat(padding % 3) };
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(receipt));
-    const client = api(fetch);
-    await expect(client.reportWorkerConfiguration(workerId, input, configuration)).resolves.toEqual(receipt);
-    expect(Buffer.byteLength(String(fetch.mock.calls[0]![1]!.body))).toBe(1_048_576);
-    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).runtimeConfiguration).toEqual(runtimeConfiguration);
-    await expect(client.reportWorkerConfiguration(workerId, { ...input, workingDirectory: input.workingDirectory + "a" }, configuration)).resolves.toEqual(receipt);
-    expect(JSON.parse(String(fetch.mock.calls[1]![1]!.body))).not.toHaveProperty("runtimeConfiguration");
-  });
-
-  it("still rejects a required report that exceeds the budget after optional sources are omitted", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
-    await expect(api(fetch).reportWorkerConfiguration(workerId, { ...report, workingDirectory: "x".repeat(1_048_576), runtimeConfiguration }, configuration)).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "request_limit" } });
-    expect(fetch).not.toHaveBeenCalled();
+  it("retains the capacity status and unknown outcome for a non-JSON proxy 413", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("<h1>Too large</h1>", { status: 413, headers: { "Content-Type": "text/html" } }));
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration)).rejects.toMatchObject({ operation: "worker.configuration.report", status: 413, outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("applies the complete byte budget to legacy reports without configuration observations", async () => {

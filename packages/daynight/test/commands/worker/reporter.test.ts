@@ -173,6 +173,17 @@ it.each(["codex", "assistantHost_codex", "assistantHost_claude", "assistantHost_
   await reporter.stop();
 });
 
+it.each([false, true])("identifies a configuration report capacity failure while preserving uncertainty (%s)", async outcomeUnconfirmed => {
+  const f = fixture();
+  const error = new ApiError({ operation: "worker.configuration.report" }, "protocol", { status: 413, outcomeUnconfirmed, cause: new Error("private proxy response") });
+  const configuration = { capture: () => ({ bootstrap: null, observation: null }), send: vi.fn().mockRejectedValue(error), accept: vi.fn() };
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration });
+  await settle();
+  expect(f.emit.mock.calls[0]![0].message).toContain(`"category":"configuration_report_capacity_413${outcomeUnconfirmed ? "_outcome_unconfirmed" : ""}"`);
+  expect(configuration.accept).not.toHaveBeenCalled();
+  await reporter.stop();
+});
+
 it("logs changed failure categories without changing claim state", async () => {
   const f = fixture(); f.collect.mockRejectedValueOnce(new TypeError("private")).mockRejectedValueOnce(new RangeError("private"));
   const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(30_000);

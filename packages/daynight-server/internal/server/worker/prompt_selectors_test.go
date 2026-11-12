@@ -105,6 +105,18 @@ func TestInvalidPromptHeadersRejectBeforeReport(t *testing.T) {
 	}
 }
 
+func TestInvalidConfigurationProtocolRejectsBeforeReport(t *testing.T) {
+	for _, versions := range [][]string{{"3"}, {"1", "1"}, {"1, 2"}, {""}} {
+		t.Run(strings.Join(versions, "/"), func(t *testing.T) {
+			f := newCapacityReportOperationFixture(t, "11111111-1111-4111-8111-111111111111")
+			response := controlModeRequest(t, f, http.MethodPost, "/report", "{}", http.Header{workerConfigurationHeader: versions})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("protocol %q: status=%d body=%s", versions, response.Code, response.Body)
+			}
+		})
+	}
+}
+
 func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	const user = "22222222-2222-4222-8222-222222222222"
 	const workerID = "11111111-1111-4111-8111-111111111111"
@@ -119,7 +131,6 @@ func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	body := workerSnapshotReportBody()
 	body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
 	encoded := jsonBody(t, body)
-	encoded += strings.Repeat(" ", (1<<20)-len(encoded))
 	r := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded))
 	r.SetPathValue("workerId", strings.ToUpper(workerID))
 	r.Header.Set("Content-Type", "application/json")
@@ -134,17 +145,6 @@ func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
 	}
 	if mock.calls != 1 || mock.principal != principal || mock.workerID != workerID || mock.input.Configuration == nil || mock.input.TaskInventory == nil || len(mock.selectors) != 1 || mock.selectors[0].Key.Scope != model.PromptScopeUser || mock.selectors[0].KnownRevision != nil {
 		t.Fatalf("report arguments: %+v", mock)
-	}
-
-	r = httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded+" "))
-	r.SetPathValue("workerId", workerID)
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set(workerConfigurationHeader, "2")
-	r.Header.Set(workerPromptsHeader, `[]`)
-	w = httptest.NewRecorder()
-	h.report(w, r, principal)
-	if w.Code != http.StatusRequestEntityTooLarge || mock.calls != 1 {
-		t.Fatalf("oversize: status=%d calls=%d", w.Code, mock.calls)
 	}
 }
 

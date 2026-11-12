@@ -72,7 +72,7 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 ### 配置报告
 
-Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告和协议 1 保留各自的既有合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
+Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2。该标记选择配置交换格式和 9 MiB 报告正文上限，不改变任务或 inventory 协议。协议 1 同样使用 9 MiB，未携带配置协议的报告保持 1 MiB。重复或未知协议头在业务调用前拒绝。未携带标记的报告和协议 1 保留各自的既有字段与回执合同。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
 扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。托管模式能力确认后还必填 controlModeBootstrap，为 herdr、web 或 null；工具能力确认后必填 toolPathsBootstrap，为完整三项 choice 或 null。即使已有云端 desired，仍可提交独立采纳候选。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
 
@@ -119,7 +119,7 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 云端目标尚未建立、Worker 按本地候选运行可访问项目时，报告该本地全局配置及当前可运行项目；本地候选中明确的旧 model/args 也标记 local，不能冒充 cloud。云端目标建立后报告切换为云端有效配置与本地覆盖的组合。
 
-不可用原生配置用 native:null 表示。旧合法云端模型超过来源报告上限时该项也报告 null；超过项目上限时省略整个可选对象，不截断并假称完整，也不让可选观测阻断心跳。完整报告（含配置观测、任务清单和遥测）按 UTF-8 JSON 编码共同受 1 MiB 请求上限约束；仅来源对象使原本合法的完整报告超限时，整份省略 runtimeConfiguration。必需内容本身超限仍明确拒绝，不截断清单，也不隐藏序列化错误。字段存在时不得为 null，必须满足 schemaVersion=1 的闭合结构。新服务接受旧客户端省略字段，新客户端发送该对象需要支持它的服务；旧严格服务的拒绝不能被解释为已保存来源。
+不可用原生配置用 native:null 表示。旧合法云端模型超过来源报告上限时该项也报告 null；超过项目上限时省略整个可选对象，不截断并假称完整，也不让可选观测阻断心跳。完整报告（含配置观测、任务清单和遥测）按 UTF-8 JSON 编码共同受所选请求上限约束：配置协议报告为 9 MiB，普通报告为 1 MiB；仅来源对象使原本合法的完整报告超限时，整份省略 runtimeConfiguration。必需内容本身超限仍明确拒绝，不截断清单，也不隐藏序列化错误。字段存在时不得为 null，必须满足 schemaVersion=1 的闭合结构。新服务接受旧客户端省略字段，新客户端发送该对象需要支持它的服务；旧严格服务的拒绝不能被解释为已保存来源。
 
 服务器按完整 telemetry 替换存储。移除本地覆盖后的新报告更新有效值及来源；后续报告省略整个字段也必须移除旧观测，不保留过时的 local 标签。该对象不会写入 desired、改变目标版本或取得执行资格。字段归属和组合规则由 [Worker 需求](daynight-worker.md#本地模型与推理强度覆盖)拥有。
 

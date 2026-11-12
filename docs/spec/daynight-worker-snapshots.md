@@ -18,7 +18,7 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 
 ## 上报结构
 
-请求为 UTF-8 `application/json`，最多 1 MiB。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
+请求为 UTF-8 `application/json`；带有效 `Daynight-Worker-Configuration: 1` 或 `2` 的报告正文最多 9 MiB，未带配置协议的普通报告最多 1 MiB。未知或重复配置协议头在业务调用前拒绝。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
 
 以下顶层字段必填；`assistantHost` 为可选扩展，旧报告省略该字段仍有效。选择配置协议时另外要求其定义的 `configuration` 字段，未选择时该字段仍属于未知输入：
 
@@ -85,7 +85,7 @@ activeSelections 由原 Task/Bot/Herdr 责任按选择聚合，不逐 Task 枚�
 
 错误 code 只接受 not_found、permission_denied、not_executable、invalid_path、unsupported_launcher、unrecognized_output、incompatible_runtime、probe_timeout、cleanup_unknown、tool_identity_changed、legacy_tool_identity_missing、io_error、unavailable。它们保留路径、权限、启动器、输出、协议、期限、回收和原身份故障，原始命令输出及 cause 只留本地。not_checked 是状态而非异常。
 
-工具扩展受 256 KiB UTF-8 JSON 编码子预算、完整请求 1 MiB 和已存 telemetry/Worker 4 MiB 预算共同约束，不保证所有字段可同时取最大值。生产者预算不足时省略完整运行组，并在仍不能容纳时降为有界 pending/report_budget_exceeded 观察，保留本地完整事实和普通心跳；不能删掉必需任务清单或未确认配置结果制造成功。若必需内容占用的剩余预算连保留完整 target 的降级条目也无法容纳，则省略可选工具扩展，保留本地 report_budget_exceeded 结果；缺少扩展不能继续展示上次成功。服务继续严格拒绝超限或格式错误输入，不替客户端截断数据。
+工具扩展受 256 KiB UTF-8 JSON 编码子预算、所选完整请求预算（配置报告 9 MiB，普通报告 1 MiB）和已存 telemetry/Worker 4 MiB 预算共同约束，不保证所有字段可同时取最大值。生产者预算不足时省略完整运行组，并在仍不能容纳时降为有界 pending/report_budget_exceeded 观察，保留本地完整事实和普通心跳；不能删掉必需任务清单或未确认配置结果制造成功。若必需内容占用的剩余预算连保留完整 target 的降级条目也无法容纳，则省略可选工具扩展，保留本地 report_budget_exceeded 结果；缺少扩展不能继续展示上次成功。服务继续严格拒绝超限或格式错误输入，不替客户端截断数据。
 
 服务只验证结构、来源时间、版本关系、路径语法、预算和账号归属，不运行工具。工具状态由 Worker 运行管理器提供；未接入该管理器的 Worker 不得从 bare 版本字符串生成工具实际路径或 applied。
 
@@ -120,7 +120,7 @@ model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数�
 
 服务端根据这些引用读取当前任务，只接受认证账号与 workerId 拥有的相同 active claim，且 task 为 in_progress、未删除、账号仍有项目权限。任务标题、项目名、status、phase 和 agent 均取服务端数据，客户端不能提供这些权威字段。已完成、已撤回、转交或失权的普通竞态省略对应引用；不存在与不可访问的目标不通过省略差异泄漏给调用者。
 
-报告发送的是完整观测清单，不按 maxConcurrent 截断。恢复清单可以大于当前并发设置；既有 1 MiB 传输上限仍适用，超限明确失败。
+报告发送的是完整观测清单，不按 maxConcurrent 截断。恢复清单可以大于当前并发设置；所选报告传输上限仍适用，超限明确失败。
 
 ## 最新快照与时间
 
