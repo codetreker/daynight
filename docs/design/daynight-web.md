@@ -224,7 +224,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - 项目任务搜索独立持有草稿、已应用表达式、筛选和游标栈，不从摘要匹配或重新排序。非空输入变化只更新草稿；输入原始值变为空字符串或点击 × 时，`TaskSearchWorkspace` 共用清空处理，撤销待处理提交、调用 controller 的 `clear()` 并聚焦输入框。清空复位搜索状态、取消在途请求并推进 generation，迟到响应不能恢复结果；普通列表的筛选、页码和滚动位置独立保留。`api/task-search.ts` 校验主体、项目、搜索投影和固定错误详情，包括按 `id`、`title`、`description` 顺序且不重复的命中字段与描述摘录的一致性；Unicode 错误位置只转换为输入控件的 UTF-16 选择范围。每页请求服务端，首页成功重读退休后续游标，续页变化时清栈并有界重读首页。请求绑定项目、身份、历史、generation 和取消信号；可见时周期重读，后台检查保持既有界面，历史或访问退休撤回结果。命中仅选择 `direct` 详情观察，不制造完整 Task 或缓存资格；详情从实时读取准入。搜索决策见[Web 搜索记录](../../.agents/notes/implemented/feature/2026-11-06-web-task-search.md)，接口机制见[任务搜索设计](daynight-task-search.md)。
 - `ProjectView` 的 `openChainWitness` 初始为 null，列表“查看依赖关系”按钮打开图，链外卡片导航直接更新它；Goal 主体展开操作不写该状态。通过完整 `componentByTask` 解析其当前普通分量与代表，有效定位任务不随代表变化而覆盖。图有效性要求任务存在、`component.memberIds.size > 1` 且外层/内层仍为任务列表/任务链，不依赖匹配筛选或当前页。任务被移除、成为单成员或离开相应视图时，关闭图并清除定位，不选择其他条目；返回视图等待新的显式打开。真正空项目、类别为空与筛选无匹配有不同状态；入口消失时焦点恢复到仍可用的控件或列表区域。
 - 项目 `ChainList` 的根行从完整 `component.memberIds` 查询既有 `workerMachines` 投影，任一 claim 为 `active` 即渲染非交互状态文字；外部依赖不在普通分量内。完整范围行放在负责人元信息后，跨范围行保留无负责人规则并放在任务数旁。它与范围进度、许可和 Session 汇总独立，随快照重绘，不发起额外请求。
-- 完整图索引保留服务端 `(createdAt,id)` 顺序；展示从完整代表倒序副本按汇总状态稳定排序，再分类、筛选和分页。范围内任务链使用自己的成员计算进度和状态；不可见前置不制造图节点，完整图行动使用原 witness。行内展开与图浮层分别管理，标题和按钮在窄屏自然换行。
+- 完整图索引保留服务端 `(createdAt,id)` 顺序；展示从完整代表倒序副本按汇总状态稳定排序，再分类、筛选和分页。范围内任务链使用自己的成员计算进度和状态；不可见前置不制造图节点，图入口使用范围内真实成员作为 witness。`ScopedTaskChainRow` 接受完整索引、显式成员、进度及受控展开状态，`ChainMemberRow` 和 `StandaloneTaskRow` 分别共享任务行；列表保留定位与图浮层所有权。每个展示实例提供独立身份，派生 DOM 关联与 Session 可见性登记；没有 Session provider 时不登记观察。行内展开与图浮层分别管理，标题和按钮在窄屏自然换行。
 - 图节点使用固定尺寸和两行标题；省略内容在详情对话框中完整展示。
 - 图工具栏提供水平/垂直方向选择并显示选中态；缺省水平，前置在左、后续在右，垂直时前置在上、后续在下。方向按项目和代表任务独立保存在当前浏览器。主动切换仅重新挂载 `InitialViewport`，保持 React Flow、S、展开结果和检查选择，并按首屏规则为新布局重新定位可读视口；不变数据的后台核验保持方向、几何和视口。
 - 图内提供缩放、平移、适应画布，触屏和窄屏可滚动。初始缩放范围为 0.8–1；若此缩放无法容纳当前可见图，沿当前方向在最上游层边缘留 32px；代表任务位于该层时在交叉轴居中，否则交叉轴以最靠边的上游节点留 32px。折叠图锚定代表任务。显式适应画布允许缩小至 0.2，保留平移查看。初始化仅执行一次，详情选择与平移不重新居中或计算布局；显式展开和reset可改变可见布局，reset重新定位概览。
@@ -620,9 +620,9 @@ packages/daynight-web/
   src/app/                          认证外壳、路由、sidebar 组件、侧栏偏好与滚动锁
   src/api/{types,client,parse}.ts    DTO、请求、运行时解析与错误
   src/i18n/                         语言目录、格式化器、生产根 Provider 与共享选择器
-  src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、偏好 hooks、统计卡
+  src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、StandaloneTaskRow、偏好 hooks、统计卡
   src/features/task-cache/         五个 store、身份 scope、原子摘要合并、人员内容及完整本地图投影
-  src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、TaskGraph、TaskNode
+  src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、ScopedTaskChainRow、ChainMemberRow、TaskGraph、TaskNode
   src/features/task-detail/         TaskDetailDialog、TaskDetailSession、详情请求 hook、PR 展示及 focus helper
   src/features/task-detail/attachments/  路径树、附件 hook、操作和内容预览
   src/features/task-thread/         持久讨论的页面controller、传输和消息呈现
