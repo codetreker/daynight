@@ -297,14 +297,22 @@ const AuthenticatedAppContent = ({ navigateToLogin = assignLogin }: { readonly n
   const cancelInvitation = useCallback(() => { discardInvitation(); navigate("/projects"); }, [discardInvitation]);
   const unavailableInvitation = discardInvitation;
   useEffect(() => { if (!invitationFlow && invitation.token !== null) discardInvitation(); }, [invitationFlow, invitation.token, discardInvitation]);
-  const signOut = useCallback((continuation: string | null = null) => {
-    logoutContinuation.current = continuation;
+  const persistActiveInvitation = useCallback(() => {
     if (invitationFlowRef.current && invitationRef.current.token !== null) {
       const pending = persistInvitation(invitationRef.current);
       invitationRef.current = pending; setInvitation(pending);
     }
+  }, []);
+  useLayoutEffect(() => {
+    // The owner accepts a 401 only after checking the shared account marker.
+    // Preserve the memory-only invitation before navigating to login.
+    if (session.status === "anonymous" && session.notice === "expired") persistActiveInvitation();
+  }, [session, persistActiveInvitation]);
+  const signOut = useCallback((continuation: string | null = null) => {
+    logoutContinuation.current = continuation;
+    persistActiveInvitation();
     ownerSignOut(continuation);
-  }, [ownerSignOut]);
+  }, [ownerSignOut, persistActiveInvitation]);
   useLayoutEffect(() => {
     if (returnPath === null || logoutPending || requiresRefresh) return;
     if (session.status === "authenticated" && route.kind === "login") replaceRoute(returnPath);
