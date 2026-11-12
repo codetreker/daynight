@@ -1,9 +1,14 @@
 import { useState } from 'react';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ChainList } from '../src/features/task-graph/ChainList';
+import { ScopedTaskChainRow } from '../src/features/task-graph/ScopedTaskChainRow';
+import { scopedChainProgress } from '../src/features/task-graph/scoped-chain-progress';
+import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskSessionSummaryProvider } from '../src/features/task-session-summary/TaskSessionSummaryProvider';
+import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { buildGraphIndex, type GraphIndex } from '../src/features/task-graph/model';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
@@ -32,7 +37,7 @@ const indexOf = (items = seeds): GraphIndex => {
     tasks,
     summary: { proposed: 0,
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0,
+      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,
     },
   };
@@ -248,4 +253,132 @@ describe('Goal task lists', () => {
     expect(children()).toHaveTextContent('Tasks · 3');
     expect(within(children()).getAllByText('Done')).toHaveLength(1);
   });
+});
+
+
+describe('shared scoped chain presentation', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const items = [
+    task('Outside', 'done'),
+    { ...task('Older', 'done', ['Outside']), completedAt: '2026-10-21T12:00:00.123456788Z' },
+    { ...task('Newer', 'cancelled', ['Outside']), cancelledAt: '2026-10-21T12:00:00.123456789Z' },
+    task('Unknown', 'done', ['Outside']),
+  ];
+  const index = indexOf(items);
+  const members = ['Older', 'Newer', 'Unknown'];
+  const progress = scopedChainProgress(index, members);
+  const projectId = '00000000-0000-4000-8000-000000000101';
+  const machines = new Map();
+  const onOpenTask = vi.fn();
+  const onOpenChain = vi.fn();
+
+  const Instance = ({ id }: { readonly id: string }) => {
+    const [expanded, setExpanded] = useState(false);
+    return <ScopedTaskChainRow projectId={projectId} index={index} rootId="Outside" memberIds={members} progress={progress}
+      workerMachines={machines} instanceId={id} expanded={expanded} onExpandedChange={setExpanded} open={false}
+      onOpenTask={onOpenTask} onOpenChain={onOpenChain} />;
+  };
+
+  it('keeps duplicate resource instances independent and opens the graph at a scoped witness', () => {
+    onOpenChain.mockClear(); onOpenTask.mockClear();
+    render(<ul><Instance id="goal-a-chain" /><Instance id="goal-b-chain" /></ul>);
+    const first = document.getElementById('task-root-goal-a-chain')!;
+    const second = document.getElementById('task-root-goal-b-chain')!;
+    const firstChildren = document.getElementById('goal-children-goal-a-chain')!;
+    const secondChildren = document.getElementById('goal-children-goal-b-chain')!;
+    expect(first).toHaveAttribute('aria-controls', firstChildren.id);
+    expect(second).toHaveAttribute('aria-controls', secondChildren.id);
+    expect(first).toHaveTextContent('Outside');
+    expect(first).toHaveTextContent('3/3');
+    expect(first.parentElement).toHaveAttribute('data-task-status', 'ended');
+    fireEvent.click(first);
+    expect(firstChildren).toBeVisible();
+    expect(secondChildren).not.toBeVisible();
+    expect(second).toHaveAttribute('aria-expanded', 'false');
+    expect([...firstChildren.querySelectorAll('.goal-task-main .root-title')].map((node) => node.textContent)).toEqual(['Newer', 'Older', 'Unknown']);
+    expect(within(firstChildren).queryByText('Outside')).toBeNull();
+    fireEvent.click(second);
+    expect(secondChildren).toBeVisible();
+    const firstTask = document.getElementById('chain-task-goal-a-chain-Older')!;
+    const secondTask = document.getElementById('chain-task-goal-b-chain-Older')!;
+    expect(firstTask).not.toBe(secondTask);
+    fireEvent.click(secondTask);
+    expect(onOpenTask).toHaveBeenLastCalledWith('Older', secondTask);
+    const graph = document.getElementById('task-chain-graph-goal-b-chain')!;
+    fireEvent.click(graph);
+    expect(onOpenChain).toHaveBeenLastCalledWith('Older', graph);
+    const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('registers each visible instance independently and does not observe without a provider', () => {
+    const observers: { callback: IntersectionObserverCallback; element: Element | null; disconnect: ReturnType<typeof vi.fn<() => void>> }[] = [];
+    class Observer {
+      record: typeof observers[number];
+      constructor(callback: IntersectionObserverCallback) { this.record = { callback, element: null, disconnect: vi.fn() }; observers.push(this.record); }
+      observe(element: Element) { this.record.element = element; }
+      disconnect() { this.record.disconnect(); }
+    }
+    vi.stubGlobal('IntersectionObserver', Observer);
+    const without = render(<ul><Instance id="plain" /></ul>);
+    expect(observers).toHaveLength(0);
+    without.unmount();
+
+    const scope = createTaskCacheScope({ userId: '00000000-0000-4000-8000-000000000201', onIdentityMismatch: vi.fn() });
+    const store = new TaskSessionSummaryStore(scope, projectId);
+    const setChain = vi.spyOn(store, 'setChain');
+    const removeChain = vi.spyOn(store, 'removeChain');
+    const Host = ({ showFirst }: { readonly showFirst: boolean }) => <TaskSessionSummaryProvider store={store}><ul>
+      {showFirst && <Instance id="goal-a-chain" />}<Instance id="goal-b-chain" />
+    </ul></TaskSessionSummaryProvider>;
+    const view = render(<Host showFirst />);
+    expect(observers).toHaveLength(2);
+    act(() => observers.forEach((record) => record.callback([{ target: record.element!, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)));
+    expect(setChain).toHaveBeenCalledWith('goal-a-chain', members.toSorted(), true);
+    expect(setChain).toHaveBeenCalledWith('goal-b-chain', members.toSorted(), true);
+    removeChain.mockClear();
+    view.rerender(<Host showFirst={false} />);
+    expect(removeChain).toHaveBeenCalledWith('goal-a-chain');
+    expect(removeChain).not.toHaveBeenCalledWith('goal-b-chain');
+    expect(observers[0]!.disconnect).toHaveBeenCalled();
+    expect(observers[1]!.disconnect).not.toHaveBeenCalled();
+    view.unmount();
+    expect(removeChain).toHaveBeenCalledWith('goal-b-chain');
+    store.dispose(); scope.dispose();
+  });
+
+  it('retains the full chain visibility registration during disclosure and snapshot rerenders', () => {
+    const observers: { callback: IntersectionObserverCallback; element: Element | null; disconnect: ReturnType<typeof vi.fn<() => void>> }[] = [];
+    class Observer {
+      record: typeof observers[number];
+      constructor(callback: IntersectionObserverCallback) { this.record = { callback, element: null, disconnect: vi.fn() }; observers.push(this.record); }
+      observe(element: Element) { this.record.element = element; }
+      disconnect() { this.record.disconnect(); }
+    }
+    vi.stubGlobal('IntersectionObserver', Observer);
+    const scope = createTaskCacheScope({ userId: '00000000-0000-4000-8000-000000000201', onIdentityMismatch: vi.fn() });
+    const store = new TaskSessionSummaryStore(scope, projectId);
+    const setChain = vi.spyOn(store, 'setChain');
+    const removeChain = vi.spyOn(store, 'removeChain');
+    const Host = ({ graph }: { readonly graph: GraphIndex }) => <TaskSessionSummaryProvider store={store}>{list(graph)}</TaskSessionSummaryProvider>;
+    const view = render(<Host graph={indexOf()} />);
+    expect(observers).toHaveLength(1);
+    const observer = observers[0]!;
+    act(() => observer.callback([{ target: observer.element!, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(setChain).toHaveBeenCalledWith('Goal', ['Acceptance', 'Goal', 'Implementation', 'Other root'], true);
+    removeChain.mockClear();
+    fireEvent.click(disclosure());
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
+    view.rerender(<Host graph={indexOf(seeds.map((item) => item.id === 'Implementation' ? { ...item, titlePreview: 'Updated' } : item))} />);
+    expect(within(children()).getByText('Updated')).toBeVisible();
+    expect(observers).toHaveLength(1);
+    expect(observer.disconnect).not.toHaveBeenCalled();
+    expect(removeChain).not.toHaveBeenCalled();
+    view.unmount();
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+    expect(removeChain).toHaveBeenCalledWith('Goal');
+    store.dispose(); scope.dispose();
+  });
+
 });
