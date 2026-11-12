@@ -1282,11 +1282,12 @@ including multi-day values on narrow screens. Rows share the existing project
 clock without per-row timers or requests. Chain headers never claim an individual
 task's duration as aggregate execution time.
 
-While membership loads, the project heading reserves complete action geometry,
-including localized links and the wider administrator badge. Its inaccessible
-placeholder is replaced by authorized actions without narrowing the title or
-moving the restored page position. The
-[header-layout decision](../../.agents/notes/archived/bug-fix/2026-10-23-project-header-layout-shift.md) records the rationale for that geometry; the existing
+While access initially loads, the project heading reserves the geometry of the
+localized members and settings links. Its inaccessible placeholder is replaced
+by the links without narrowing the title or moving the restored page position.
+The header does not display the current user's role; the members page retains
+role details. The
+[header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
 
 ## Languages

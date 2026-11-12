@@ -1,9 +1,9 @@
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
-import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
+import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
-import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
+import { createTaskCacheScope, TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import type { TaskGraph } from '../src/api/types';
 import { stringifyWireJson } from "./helpers/wireJson";
@@ -683,13 +683,62 @@ describe("authenticated application shell", () => {
     expect(graphReads()).toBe(2);
   });
 
-  it("shows the authoritative live access independently of the member roster", async () => {
+  it.each([
+    { role: "admin", locale: "zh-CN", members: "项目成员", settings: "项目设置" },
+    { role: "member", locale: "zh-CN", members: "项目成员", settings: "项目设置" },
+    { role: "admin", locale: "en", members: "Project members", settings: "Project settings" },
+    { role: "member", locale: "en", members: "Project members", settings: "Project settings" },
+  ] as const)("shows project actions without a role for $role in $locale", async ({ role, locale, members, settings }) => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    install((url) => isTaskSync(url) ? taskSyncResponse({ observedAt: now, project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, { viewerId: userId, versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, "member") }) : defaults(url));
+    const snapshot: TaskGraph = { observedAt: now, project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const signal = new AbortController().signal;
+    const ticket = await scope.beginSync(projectId, signal);
+    await scope.applySync(ticket, taskSyncFromGraph(snapshot, { versionForTask: () => 1n }), signal);
+    scope.dispose();
+    const pending = Promise.withResolvers<Response>();
+    let syncUrl = "";
+    install((url) => { if (isTaskSync(url)) { syncUrl = url; return pending.promise; } return defaults(url); });
+    createLocaleRender(locale)(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "私有项目" }, { timeout: 5000 });
+    const actions = document.querySelector<HTMLElement>(".project-title-actions")!;
+    const placeholder = actions.querySelector<HTMLElement>(".project-title-actions-placeholder")!;
+    expect(placeholder).toHaveAttribute("aria-hidden", "true");
+    expect(placeholder.textContent).toBe(`${members}${settings}`);
+    expect(within(actions).queryByRole("link", { name: members })).toBeNull();
+    await waitForState(() => expect(syncUrl).not.toBe(""));
+    await act(async () => pending.resolve(taskSyncResponse(snapshot, { viewerId: userId, query: taskSyncQuery(new URL(syncUrl, window.location.origin)), versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, role) })));
+    expect(await within(actions).findByRole("link", { name: members })).toHaveAttribute("href", `/projects/${projectId}/members`);
+    expect(within(actions).getByRole("link", { name: settings })).toHaveAttribute("href", `/projects/${projectId}/settings`);
+    for (const view of ["overview", "tasks"]) {
+      if (view === "tasks") await selectTaskList();
+      expect(document.querySelector(".project-heading .badge, .project-heading .project-title-role, .project-heading .project-title-role-measure")).toBeNull();
+      expect([...actions.children].map(element => element.textContent)).not.toContain(locale === "zh-CN" ? (role === "admin" ? "管理员" : "成员") : (role === "admin" ? "Administrator" : "Member"));
+      expect(within(actions).getByRole("link", { name: members })).toBeVisible();
+      expect(within(actions).getByRole("link", { name: settings })).toBeVisible();
+    }
+  });
+
+  it("retains project links and focus through access revalidation, failure and retry", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}`);
+    const pending = Promise.withResolvers<Response>();
+    let accessReads = 0;
+    const fetcher = install((url) => url.endsWith("/access") ? ++accessReads === 1 ? pending.promise : json(directAccessFixture(projectId, userId, "admin")) : defaults(url));
     render(<AuthenticatedApp />);
-    await screen.findByRole("heading", { name: "私有项目" });
-    expect(await screen.findByText("成员", { selector: ".badge" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "项目成员" })).toHaveAttribute("href", `/projects/${projectId}/members`);
+    const members = await screen.findByRole("link", { name: "项目成员" });
+    members.focus();
+    returnFromAnotherWindow();
+    await waitForState(() => expect(accessReads).toBe(1));
+    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
+    expect(members).toHaveFocus();
+    await act(async () => pending.resolve(fail(503, "internal")));
+    expect(await screen.findByText("暂时无法读取项目权限。")).toBeVisible();
+    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
+    expect(members).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "重试读取权限" }));
+    await waitFor(() => expect(screen.queryByText("暂时无法读取项目权限。")).toBeNull());
+    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(2);
   });
 
   it("submits task status through the core API and retains pending ownership across standalone attachment navigation", async () => {
