@@ -34,6 +34,11 @@ channel. Node, helper and native processes must remain attributable to the
 original shell. Shutdown keeps responsibility for native descendants after their
 helper exits.
 
+Private PowerShell 5 process queries reconstruct their system module search path
+so an intermediate Node process cannot carry incompatible PowerShell 7 modules
+into inspection. Query errors and incomplete inventories retain unknown ownership;
+this isolation does not alter the native environment.
+
 Before first input, launch, receipt, kind, readiness, binding and the complete
 original process chain must agree. Official Codex and Copilot integration can
 report a new Session only after the first input triggers SessionStart. A durable

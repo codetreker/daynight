@@ -10,6 +10,7 @@ import { createToolLaunchMapping, posixToolMappingRc } from "../../../src/comman
 import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch-inventory.js";
 import { advanceToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
+import { parseWindowsMappingProcessInventory, windowsMappingProcessInventoryCommand } from "../../../src/commands/worker/herdr/tool-launch-lifecycle.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const operation = (): Operation => { const value = createOperation({ limits: { totalMs: 10_000 } }); operations.push(value); return value; };
@@ -36,6 +37,39 @@ const execute = async (file: string, args: string[], environment = process.env) 
 afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned Herdr launch mapping", () => {
+  it("isolates system PowerShell metadata queries from inherited module paths without changing the native environment", () => {
+    const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules", pSmOdUlEpAtH: "C:\\OtherModules", PATH: "/frozen/native/path", CODEX_HOME: "/native/home" };
+    const command = windowsMappingProcessInventoryCommand(environment);
+    expect(command.file).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(command.environment).toEqual({ SystemRoot: environment.SystemRoot, PATH: environment.PATH, CODEX_HOME: environment.CODEX_HOME });
+    expect(environment.PSModulePath).toBe("C:\\PowerShell7\\Modules");
+    expect(environment.pSmOdUlEpAtH).toBe("C:\\OtherModules");
+  });
+
+  it.each(["", " \r\n", "null", "[]", "{}", '[{"ProcessId":0,"ParentProcessId":0}]', '[{"ProcessId":2,"ParentProcessId":-1}]', '[{"ProcessId":2,"ParentProcessId":0},{"ProcessId":2,"ParentProcessId":0}]', '[{"ProcessId":"2","ParentProcessId":0}]', '[{"ProcessId":2}]', '[{"ProcessId":2,"ParentProcessId":0}] trailing diagnostic'])("keeps invalid Windows process output unknown: %j", stdout => {
+    expect(() => parseWindowsMappingProcessInventory(stdout)).toThrow("Windows process inventory");
+  });
+
+  it("accepts complete Windows process arrays and excludes only the idle pseudo-process", () => {
+    expect(parseWindowsMappingProcessInventory('[{"ProcessId":0,"ParentProcessId":0},{"ProcessId":12,"ParentProcessId":4},{"ProcessId":4,"ParentProcessId":0}]')).toEqual([{ pid: 12, parentPid: 4, group: null }, { pid: 4, parentPid: 0, group: null }]);
+    expect(parseWindowsMappingProcessInventory('[{"ProcessId":12,"ParentProcessId":4}]')).toEqual([{ pid: 12, parentPid: 4, group: null }]);
+  });
+
+  it.skipIf(process.platform !== "win32")("reads the real Windows process inventory despite inherited incompatible PowerShell module paths", async () => {
+    const f = await fixture(), native = spawn(process.execPath, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const closed = once(native, "close"), timer = setTimeout(() => native.kill("SIGKILL"), 8_000);
+    try {
+      await once(native.stdout!, "data");
+      const environment = { ...f.input.nativeEnvironment, PSModulePath: path.join(f.directory, "incompatible-modules"), pSmOdUlEpAtH: path.join(f.directory, "other-incompatible-modules") };
+      const mapping = (await createToolLaunchMapping({ ...f.input, nativeEnvironment: environment, existingOnly: true }, operation()))!;
+      expect(await mapping.captureProcesses([native.pid!], operation())).toContain(native.pid);
+      native.kill("SIGKILL"); await closed;
+      expect(await mapping.confirmStopped(operation())).toBe(true);
+      expect(environment.PSModulePath).toBe(path.join(f.directory, "incompatible-modules"));
+      expect(environment.PATH).toBe("/native/path");
+    } finally { clearTimeout(timer); native.kill("SIGKILL"); await closed; }
+  });
+
   it("distinguishes Linux process births within one wall-clock second and rejects malformed proc identities", () => {
     const boot = "12345678-1234-4234-8234-123456789abc";
     const stat = (start: string) => `23 (native name (child)) S 17 23 23 0 -1 4194304 12 0 0 0 0 0 0 0 20 0 1 0 ${start} 123456 42`;

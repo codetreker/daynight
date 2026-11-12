@@ -30,6 +30,8 @@ Herdr 的 `agent.start` 仍接收原 kind 与逻辑参数，回执必须精确�
 
 bootstrap 将私有映射目录置于父 pane 的 PATH，并验证 `Get-Command` 命中原 `ExternalScript`。`codex.ps1`、`copilot.ps1` 将参数数组编码为 JSON/base64，再由 Node 解码后 `spawn(..., shell:false)`，避免 PowerShell 5 的 native 参数拼接改变空字符串、引号和反斜线。调用 helper 前恢复 native 原 PATH，Codex 内部 CLI 环境同样使用原 PATH。执行策略、系统 PowerShell、脚本发现或 readiness 验证失败均明确拒绝；不改用任意 shell，不宣称 PowerShell 7 支持。
 
+独立进程清单查询只在自己的 PowerShell 5 子环境移除继承的 `PSModulePath`，由系统重建模块路径，避免经 Node 传入 PowerShell 7 的模块。查询将命令错误作为终止错误，必须返回有效的非空 JSON 数组；空白、空数组、损坏或不完整输出均保持进程归属未知。该环境处理不改变 native 子进程环境。
+
 ## 启动、输入与 Session 确认
 
 manager 在 `agent.start` RPC 前持久保存原 request、binding、逻辑 argv 摘要及 attempt；未知结果跨调用与重启禁止再次 RPC。只有当前调用取得明确未启动的拒绝并持久确认后，才能在原初始化重试规则内推进下一 attempt。helper 核验原 manifest 和 recipe，先 create-only 保存 intent，再启动冻结命令并保存 child receipt。intent/receipt 关联 owner、nonce、selectionKey、逻辑 argv 摘要、实际 file/prefixArgs 及 helper/native PID。未知启动结果保留原 intent，不重发 `agent.start`。

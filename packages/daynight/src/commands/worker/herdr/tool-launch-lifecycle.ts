@@ -5,7 +5,7 @@ import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { inspectControllerJob } from "../../controller/windows-job.js";
-import { runHerdrCommand } from "./command.js";
+import { runHerdrCommand, type HerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
@@ -13,14 +13,30 @@ import { readToolStartRequest } from "./tool-launch-start.js";
 
 type Inventory = { pid: number; parentPid: number; group: number | null };
 type ProcessRecord = { nonce: string; proofs: ProcessProof[] };
+export const windowsMappingProcessInventoryCommand = (environment: NodeJS.ProcessEnv): HerdrCommand => {
+  const root = environment.SystemRoot ?? environment.SYSTEMROOT;
+  if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required to inspect the original Herdr process tree.");
+  // An intermediate Node process inherits PowerShell 7 module paths unchanged.
+  // PS5 must reconstruct its own paths before loading its system CIM/JSON modules.
+  // https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath#starting-windows-powershell-from-powershell-7
+  const metadataEnvironment = Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
+  return { file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; [Console]::Out.Write((ConvertTo-Json -InputObject @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | Select-Object ProcessId,ParentProcessId) -Compress))"], environment: metadataEnvironment };
+};
+export const parseWindowsMappingProcessInventory = (stdout: string): Inventory[] => {
+  let value: unknown;
+  try { value = JSON.parse(stdout); }
+  catch (cause) { throw new Error("The Windows process inventory produced no complete JSON; original process ownership remains unknown.", { cause }); }
+  const ids = new Set<number>();
+  if (!Array.isArray(value) || value.length === 0 || value.some(row => {
+    if (row === null || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join() !== "ParentProcessId,ProcessId" || !Number.isSafeInteger(row.ProcessId) || row.ProcessId < 0 || !Number.isSafeInteger(row.ParentProcessId) || row.ParentProcessId < 0 || ids.has(row.ProcessId)) return true;
+    ids.add(row.ProcessId); return false;
+  }) || !value.some(row => row.ProcessId > 0)) throw new Error("The Windows process inventory could not be established; original process ownership remains unknown.");
+  return value.filter(row => row.ProcessId > 0).map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, group: null }));
+};
 const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
   if (process.platform === "win32") {
-    const root = environment.SystemRoot ?? environment.SYSTEMROOT;
-    if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required to inspect the original Herdr process tree.");
-    const result = await runHerdrCommand({ file: path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), args: ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId) | ConvertTo-Json -Compress"], environment }, operation);
-    const rows = JSON.parse(result.stdout) as unknown;
-    if (!Array.isArray(rows) || rows.some(row => !Number.isSafeInteger(row?.ProcessId) || !Number.isSafeInteger(row?.ParentProcessId))) throw new Error("The Windows process inventory could not be established.");
-    return rows.filter(row => row.ProcessId > 0).map(row => ({ pid: row.ProcessId, parentPid: row.ParentProcessId, group: null }));
+    const result = await runHerdrCommand(windowsMappingProcessInventoryCommand(environment), operation);
+    return parseWindowsMappingProcessInventory(result.stdout);
   }
   const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
   return result.stdout.split("\n").filter(row => row.trim() !== "").flatMap(row => {

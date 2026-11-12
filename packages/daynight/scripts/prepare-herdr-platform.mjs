@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { promisify } from "node:util";
-import { appendFile, chmod, mkdir, open, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -36,9 +37,8 @@ for (const [tool, repository, version, asset, expectedHash, executableName] of e
   await rm(directory, { recursive: true, force: true }); await mkdir(directory);
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok || !response.body) throw new Error(`Cannot download ${url}: ${response.status}.`);
-  const hash = createHash("sha256"), file = await open(download, "w", 0o600);
-  try { await pipeline(Readable.fromWeb(response.body), async function* (chunks) { for await (const chunk of chunks) { hash.update(chunk); yield chunk; } }, file.createWriteStream({ autoClose: false })); }
-  finally { await file.close(); }
+  const hash = createHash("sha256");
+  await pipeline(Readable.fromWeb(response.body), async function* (chunks) { for await (const chunk of chunks) { hash.update(chunk); yield chunk; } }, createWriteStream(download, { mode: 0o600 }));
   const actualHash = hash.digest("hex");
   if (actualHash !== expectedHash) throw new Error(`Official ${tool} asset digest differs: ${actualHash}.`);
   let executable;
