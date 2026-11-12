@@ -14,7 +14,7 @@ had been removed could lose the main Session entry despite retaining history.
 ## Decision
 
 The main entry follows the actual task lifecycle. Active claims retain their
-existing Web or Herdr reader. Completed and released claims resolve their original Session
+existing Web or Herdr reader. Completed claims resolve their original Session
 with the corresponding read-only current API and use the fixed archive reader.
 A missing current registration remains a recoverable state, never a reason to
 substitute another claim's history. With no claim, the latest actual catalogue
@@ -22,7 +22,7 @@ entry is read-only history. Only a complete empty observation permits hiding the
 Session tab; loading, failure and denial remain separate states.
 
 The registry enforces one Session per project/task/claim across both backends.
-Current reads bind that identity even after the Worker is completed or released.
+Current reads bind that identity after the Worker is completed. Release removes current ownership; the [release decision](2026-11-12-release-clears-ownership.md) leaves its Session in history.
 They require the selected Task Session tab and a visible document under the
 [current-read visibility decision](../architecture/2026-11-08-task-current-read-visibility.md);
 no-claim catalogue discovery remains independently responsible for entry presence. Native

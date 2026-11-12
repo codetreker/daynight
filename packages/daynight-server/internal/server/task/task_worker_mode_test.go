@@ -35,7 +35,7 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 		operation, mode string
 		state           model.WorkerState
 	}{
-		{"claim", "web", model.WorkerActive}, {"update", "web", model.WorkerActive}, {"release", "web", model.WorkerReleased}, {"complete", "web", model.WorkerCompleted},
+		{"claim", "web", model.WorkerActive}, {"update", "web", model.WorkerActive}, {"release", "web", model.WorkerActive}, {"complete", "web", model.WorkerCompleted},
 	} {
 		t.Run(tc.operation, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
@@ -67,6 +67,8 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 					return returned, nil
 				}
 			case "release":
+				returned.Status = model.TaskTodo
+				returned.Properties = workerHTTPProperties(t, returned.Properties, nil)
 				path += "/release"
 				body = map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "stoppedConfirmed": true}
 				h.Tasks.ReleaseWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ReleaseWorker) (model.Task, error) {
@@ -90,6 +92,12 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 			}
 			response := protocolRequest(h, method, path, jsonBody(t, body), "2")
 			got := decodeResponse[api.Task](t, response, http.StatusOK)
+			if tc.operation == "release" {
+				if apiWorker(t, got.Properties) != nil {
+					t.Fatal("release retained worker")
+				}
+				return
+			}
 			assertHTTPWorkerMode(t, got, tc.mode)
 			if got.Version != returned.Version || apiWorker(t, got.Properties).ClaimID != worker.ClaimID || apiWorker(t, got.Properties).Agent != "claude" {
 				t.Fatal("HTTP response changed mode or ownership facts")

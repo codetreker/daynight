@@ -48,7 +48,7 @@ func workerPropertiesJSON(t *testing.T, worker map[string]json.RawMessage) []byt
 }
 
 func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
-	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased, model.WorkerCompleted} {
+	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerCompleted} {
 		for _, platform := range []model.TaskPlatform{model.PlatformWindows, model.PlatformLinux, model.PlatformMacOS} {
 			for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentClaude, model.AgentCopilot} {
 				for _, phase := range []model.WorkerPhase{model.WorkerPreparing, model.WorkerExecuting, model.WorkerVerifying, model.WorkerCompleting, model.WorkerWaiting, model.WorkerPaused} {

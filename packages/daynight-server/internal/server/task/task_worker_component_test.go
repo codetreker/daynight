@@ -583,12 +583,10 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	after, secondClaim := claimResult(current, body, member.principal.UserID)
 	apply(member, model.ProjectMemberRole, 1, http.MethodPost, path, body, after, &claimedAt)
 	current = after
-	released := secondClaim
-	released.State = model.WorkerReleased
 	after = current
 	after.Status, after.Ready, after.StartedAt = model.TaskTodo, true, nil
 	after.Version, after.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Microsecond)
-	after.Properties = workerHTTPProperties(t, current.Properties, &released)
+	after.Properties = workerHTTPProperties(t, current.Properties, nil)
 	apply(admin, model.ProjectAdmin, 2, http.MethodPost, path+"/release", map[string]any{"version": current.Version, "claimId": secondClaim.ClaimID, "stoppedConfirmed": true}, after, nil)
 	current = after
 	claimedAt = current.UpdatedAt.Add(time.Minute)

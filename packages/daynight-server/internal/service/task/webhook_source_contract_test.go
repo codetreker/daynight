@@ -421,12 +421,12 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 				updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
 			case "reclaim":
 				current.Status = model.TaskTodo
-				current.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
+				current.Properties = model.TaskProperties{}
 				descriptor.ClaimID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 				updated.Properties = sourceWorker(t, model.WorkerActive, descriptor.ClaimID, descriptor.WorktreeID, model.WorkerPreparing, current.UpdatedAt.Add(time.Second))
 			case "release":
 				updated.Status = model.TaskTodo
-				updated.Properties = sourceWorker(t, model.WorkerReleased, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
+				updated.Properties = model.TaskProperties{}
 			case "withdraw":
 				updated.Status, updated.AllowAgents, updated.Properties = model.TaskTodo, false, model.TaskProperties{}
 			case "phase":

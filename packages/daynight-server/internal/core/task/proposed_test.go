@@ -66,7 +66,7 @@ func TestProposedRetainsDependencyAndExecutionGuards(t *testing.T) {
 	current.Status = model.TaskProposed
 	current.BlockedBy = nil
 	faultCode(t, WorkerReady(current), "invalid_transition")
-	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased} {
+	for _, state := range []model.WorkerState{model.WorkerActive} {
 		current.Status = model.TaskInProgress
 		_, _, err := StatusCandidate(t.Context(), nil, model.Principal{}, current, SetTaskStatus{Status: model.TaskProposed}, &model.WorkerClaim{State: state})
 		faultCode(t, err, "invalid_transition")

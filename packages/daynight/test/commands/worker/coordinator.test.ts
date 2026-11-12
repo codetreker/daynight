@@ -651,7 +651,7 @@ describe("minimal worker resource reconciliation", () => {
   it("admits a released task after its retained archive and worktree responsibility ends", async () => {
     const f = await fixture(2);
     const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(951), worktreeId: uuid(952) };
-    f.candidates[0] = { ...f.candidates[0]!, properties: { worker: { ...owner, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", state: "released", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    f.candidates[0] = { ...f.candidates[0]!, properties: {} };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     let retained = true;

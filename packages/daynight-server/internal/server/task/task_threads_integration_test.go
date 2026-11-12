@@ -687,14 +687,9 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 	if observed.Version != current.Version || observed.UpdatedAt != current.UpdatedAt {
 		t.Fatal("Thread Task observation changed metadata")
 	}
-	releasedClaim := claim
-	releasedClaim.State = model.WorkerReleased
-	releasedWorker, err := taskproperty.EncodeWorker(&releasedClaim)
-	if err != nil {
-		t.Fatal(err)
-	}
 	released := current
-	released.Properties = model.TaskProperties{"worker": releasedWorker}
+	released.Status = model.TaskTodo
+	released.Properties = model.TaskProperties{}
 	f.expectPost(released, model.ThreadMessage{}, nil)
 	f.request(member, http.MethodPost, path, body, bearer, 409, "claim_conflict", taskCredentialCalls("write", "presence", "credential", "access", "author", "source"))
 	f.expectThreadRead(released, messages, nil)

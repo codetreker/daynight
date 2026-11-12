@@ -147,10 +147,10 @@ macOS 任务暂停不禁止有效 owner 获取、续约和释放人工 lease，�
 - 等待人工时保留 claim、worktree、原会话和名额，显示 worker attach。Attach 只连接既有私有 Herdr，要求交互式终端，不读 Daynight 凭据、不取 worker 锁、不启动 daemon 或 agent。macOS 有 lifecycle journal 时只读校验当前版本并选择未停止原运行，核对原 daemon 与两个端点；不迁移、恢复或提升 epoch，暂停任务仍可接入。不可读 journal 不回退未知实例；无 journal 保留 legacy attach。Detach 保留执行；不可用或非零退出明确报错。
 - retry/release 先停止 runner，再取得同一实例锁同步处理指定 claim。锁占用时明确提示停止 runner；没有持久管理意图或后台管理队列。
 - Retry 核验仍属于本 worker 的 active claim，尝试一次重连或恢复，保持 claim/agent/worktree。Pending 由 run 经正常名额与旧执行门槛启动。macOS Herdr 不绕过持久 unknown 或缺失原 native ID；Linux/Windows legacy NULL 路径可以新建。Herdr 的计数和额外尝试只在当前调用或进程内；Web 使用持久的单次 retry 授权，必须验证原 nativeSessionId、generation 与完整停止证明，缺失证据或 claim 失效时拒绝恢复，不能新建替代会话或重发初始 assignment。授权本身不表示恢复成功；就绪观察后恢复正常阶段，初始化期间仍显示等待；跨 tick 或重启不得把已换代的单次 retry 当成新授权，失败再次暂停。
-- Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。按 backend 停止原运行并再次检查取消后提交一次远端变更；仅有效 200 后完成原资源收尾。Legacy 通知、关闭并删除，Web 遵守归档门槛，macOS Herdr 不发送 cleanup prompt 且停止、封段及同步确认后可结束本机执行行，但归档条件满足前保留工作区与独立 archive 责任。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。
-- Web 详情显示当前 active claim 的用户、机器、agent 和阶段，released 明确标识；completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active/released 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed 或缺失 worker 不提供该操作。
+- Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。按 backend 停止原运行并再次检查取消后提交一次远端变更；仅有效 200 后完成原资源收尾。Legacy 通知、关闭并删除，Web 遵守归档门槛，macOS Herdr 不发送 cleanup prompt 且停止、封段及同步确认后可结束本机执行行，但归档条件满足前保留工作区与独立 archive 责任。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时并删除 worker 和 sessionStartup；原 Session/archive 保存历史。
+- Web 详情显示当前 active claim 的用户、机器、agent 和阶段，completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed 或缺失 worker 不提供该操作。
 - 撤回确认说明所有重置结果以及远端 agent 不保证立即停止，取消不写入，冲突重新审阅，未知结果只读核对。撤回无需 stoppedConfirmed 或源机器在线，不撤销外部凭据；原 worker 下次成功完整自有清单发现原 claim 缺席后进入既有终止清理。自动再次领取需要明确重新开启许可。
-- 符合普通资格的 released 任务与其他候选按服务端顺序参与调度；原 Worker 仍受本机旧资源和归档责任屏障约束。专用 Worker resume 不提供，也不提供绕过普通认领资格的替代入口。
+- 释放后符合普通资格的任务与其他候选按服务端顺序参与调度；原 Worker 仍受本机旧资源和归档责任屏障约束。专用 Worker resume 不提供，也不提供绕过普通认领资格的替代入口。
 - 用户给定 --if-version 不替换。Release 的未知结果保留原错误和资源责任，不通过 GET 推断请求成功、不重放；确认后收尾失败明确报告释放已确认并保留原因。命令不承诺跨进程续接原管理意图。
 - Transfer API、typed operation、CLI 命令及 target descriptor 已移除；没有目标执行移交。服务端继续保留 release 的 stoppedConfirmed、普通认领资格、唯一归属、权限及旧 claim fencing。
 
@@ -174,7 +174,7 @@ macOS 任务暂停不禁止有效 owner 获取、续约和释放人工 lease，�
 
 Web 与 Herdr 共用 claim 结束和工作区删除门槛。两种模式保留首个期限和资源身份，每次从权威来源观察剩余资源；清理完成必须由本次实际观察证明。Linux/Windows legacy Herdr 的 idle 仅决定何时开始停止，Web 的清理回执从 Controller journal 读取；两者均须确认原生停止后才能删除 worktree。进程退出直接停止所拥有执行，不派发清理 prompt。
 
-- Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker不重复解释或提交业务done。取消是非交付终态；已取消的released历史不能认领或withdraw恢复。
+- Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker不重复解释或提交业务done。取消是非交付终态；已取消的任务不能认领或 withdraw 恢复。
 - Linux/Windows legacy Herdr 与 Web 正常对账发现原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待首个清理期限内的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。清理资源观察、通知、停止/关闭及 worktree 核验与删除的单次操作预算统一为 5 分钟，内部 RPC、Controller 清理请求与 Git 命令受同一预算约束；通知还受原 10 分钟期限的剩余时间限制。普通执行操作的预算保持各自语义。Web 模式在确认停止后上传只读 Session 文件归档，ready 前保留 worktree 与待归档源；上传失败只重试归档，不重启 Agent 或重跑任务。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
 - Linux/Windows legacy Herdr 在一次有界清理调用内向仍存活的原 agent 发送一次建议性清理消息，随后重新读取 Herdr；通知后的新观察为 idle、资源已消失或原期限届满允许开始停止，不要求序列计数递增或 interactiveReady。通知失败或结果未知时保留错误并沿用原期限，在同一次调用内不重发。Herdr 没有可查询的逐输入操作身份，Worker 不另建通知台账，因此调用中断或重启后，下一次尝试可能再次通知仍存活的原 agent。Idle 和递交回执都不证明资源已清理；停止后仍须实际确认进程和 workspace 消失。Worker 进程退出遵循 W-09 的直接停止规则。
 - 终态清理保留首个期限；失败重试和重启不重新计时，不为清理新建 agent。Web 以同一 cleanupOperationId 查询 Controller 拥有的原生操作回执，未知结果通过该操作身份核对。Legacy Herdr 的建议性通知遵守前述重复边界。重启恢复原 claim 的清理责任并重新核对资源归属；已经确认结束的责任可在后续服务轮询失败时继续，不能恢复为业务执行。

@@ -950,8 +950,7 @@ requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
 validated before configuration or network access, is rejected for other targets,
 and is never inferred from a task or environment. Without it, ordinary status
-setting is unchanged. Release and continuation of released work use their protected
-operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
+setting is unchanged. Release uses its protected operation; a later execution uses ordinary claim eligibility. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
 without it, the CLI reads the target before submitting. No write retries
 occur. A controller-bounded worker assignment executes its supplied claim in the
@@ -1059,8 +1058,7 @@ The permission switch has confirmation in both directions, remains false by
 default and is locked against actual changes while in_progress. It governs
 automatic discovery; explicit task execution may use either value. Rows and graph
 nodes display each task's own permission. Permission does not control worker
-ownership; ordinary status setting cannot release active execution or resume
-released resources. Claim-bound done validates ownership. None of these
+ownership; ordinary status setting cannot release active execution. Claim-bound done validates ownership. None of these
 operations stops a remote process or replaces PR review and delivery authority.
 The [status decision](../../.agents/notes/archived/architecture/2026-10-24-task-status-assignment.md)
 records migration and shared-session trade-offs.
@@ -2353,8 +2351,7 @@ false application value means disabled; null means no confirmed application.
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
 only acquires ready, permitted tasks compatible with its actual platform; WSL is
-Linux. It never enables permission itself. Eligible released tasks participate in
-ordinary acquisition. The original Worker remains subject to its own retained
+Linux. It never enables permission itself. Released tasks return to ordinary acquisition. The original Worker remains subject to its own retained
 resource barriers.
 
 ```bash
@@ -3138,8 +3135,8 @@ daynight worker release <task-id> --claim-id <claim-id> --if-version <version> \
   --project <project-id>
 ```
 
-Release returns the task to todo, clears its execution interval and retains the
-released record. Eligible tasks participate in ordinary automatic acquisition,
+Release returns the task to todo, clears its execution interval and removes
+worker and sessionStartup. Session and archive history retain their original identities. Eligible tasks participate in ordinary automatic acquisition,
 with the usual assignee, permission, platform, dependency and Goal checks.
 Remote Worker control reads the caller's current `/projects/{id}/access`
 projection for administrator authority and verifies its project/principal binding;
@@ -3153,8 +3150,7 @@ only after a valid response. If completion fails, release remains confirmed and
 the original resources need cleanup by a later run.
 
 Web task details show the current claiming user, machine, agent and phase. The
-original owner or a project admin can confirm **Force withdraw** for active or
-released ownership. This submits the reviewed claim ID and exact version,
+original owner or a project admin can confirm **Force withdraw** for active ownership. This submits the reviewed claim ID and exact version,
 atomically clears worker ownership, returns the task to `todo`, clears both
 execution timestamps and sets `allowAgents=false`. Other task materials remain.
 It requires no stopped confirmation and does not guarantee that the remote agent

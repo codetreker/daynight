@@ -384,13 +384,16 @@ func TestThreadAgentSourceRequiresCurrentExecutionOwnerAndFreezesDetails(t *test
 			case "wrong_claim":
 				claimID = uuid.NewString()
 			case "released":
-				worker.State = model.WorkerReleased
+				source.Status = model.TaskTodo
 			}
 			value, err := taskproperty.EncodeWorker(&worker)
 			if err != nil {
 				t.Fatal(err)
 			}
 			source.Properties = model.TaskProperties{"worker": value}
+			if test.name == "released" {
+				source.Properties = model.TaskProperties{}
+			}
 			f.taskWrite.SourceTaskFn = func(context.Context, string, string) (model.Task, error) { return source, nil }
 			_, err = f.service.Post(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "refused attribution", ClaimID: &claimID})
 			requireThreadFault(t, err, test.code)

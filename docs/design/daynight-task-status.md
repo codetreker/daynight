@@ -63,7 +63,7 @@ status 输入接受五态，不增加审批动作或阶段顺序。claimId 仅�
 | done | 检查后继 | 检查后继 | 检查前置与后继 | 无修改 | 允许 |
 | cancelled | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 无修改 |
 
-表中实际转换还受 Worker 归属保护。released 历史只允许保留在 todo/cancelled；退回 proposed 不绕过归属保护。active claim 不能取消，须先完成现有 release 或合法解除归属，再读取新版本。released→cancelled 是归属保护中的明确例外，保留 released 历史而无需新执行。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
+表中实际转换还受 Worker 归属保护。active claim 不能取消，须先完成 release 或合法解除归属，再读取新版本。release 清除当前归属后，任务遵循普通状态规则。done→cancelled 不撤销依赖满足，保留 completed 历史和原 completedAt。
 
 退出 cancelled 的拒绝必须在所有业务入口成立。WithdrawableWorker/WithdrawCandidate 是独立于状态 setter 的 todo-producing 路径，因此明确拒绝 cancelled；不能依赖数据库时间约束报存储错误。认领与 claim-bound 完成也拒绝取消任务。Web 对取消记录不提供对应恢复动作。
 
@@ -105,7 +105,7 @@ CLI 通过既有 set-status 提交 cancelled，继续支持 daynight/dn、项目
 
 MCP 创建普通 Task 接受 proposed/todo，创建 Goal 接受其四态；task_list/task_set_status 识别相应状态，状态写入复用同一 service 事务，claimId⇒done 条件保持。普通 Task 的取消不增加新的工具或操作流程往返。
 
-CLI/Web 解析器接受 released+cancelled 并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
+服务端不再产生 released；现有 CLI/Web 读端仍接受旧 released 表示，并拒绝 active+cancelled。Worker Task query 识别远端五态，本地 pending/active/done 仍是执行清理状态，不新增本地 cancelled。
 
 仓库流程默认登记 proposed；内部已确认的方案后继和交付拆分显式创建 todo。明确授权的普通执行可从 proposed 直接进入 in_progress，不要求先确认到 todo；自动调度仍只选择 ready todo。仓库流程把取消视为无需执行或交接的终态，但不把它当作交付接受。普通执行只处理明确指定任务，取消任务不可重开；Goal 的结束与完整需求交付分别判断。状态与 ready 不授予权限或使技能自动选择后继。
 
@@ -133,6 +133,6 @@ Worker 仅凭成功完整自有 inventory 中 claim 缺席确认所有权丢失�
 
 ## 验证与发布边界
 
-真实数据库验证默认 proposed 与显式 todo 创建、迁移资料保全、五态组合、blocked 取消、released 取消、active/claim/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
+真实数据库验证默认 proposed 与显式 todo 创建、迁移资料保全、五态组合、blocked 取消、release 后取消、active/claim/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
 
 CLI native 验证两种 launcher 与严格解析，Web验证显式schema重建、双图投影、持久读取、ended统计、取消确认/筛选、active项禁派发、未知结果及旧历史保护。服务端与第一方读取必要修改以同一可运行修订交付，配套server、CLI和内置Web组合验收。普通实现不隐含npm发布或生产部署权限，不回退新状态以兼容旧客户端。模块门禁、覆盖率、必要CI和真实独立批准保持。
