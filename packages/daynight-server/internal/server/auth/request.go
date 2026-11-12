@@ -12,6 +12,7 @@ import (
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
@@ -30,7 +31,7 @@ type RequestAuthentication struct {
 	apiOrigin    string
 }
 
-// BindAPIAccess configures the application verifier for explicit browser channel credentials.
+// BindAPIAccess configures the application verifier and the browser channel Origin.
 func (h *RequestAuthentication) BindAPIAccess(authenticate AuthenticateAPIAccess, origin string) {
 	h.apiAccess, h.apiOrigin = authenticate, origin
 }
@@ -47,7 +48,16 @@ func (h *RequestAuthentication) AuthenticateAPIAccess(request *http.Request, tok
 	if h.apiOrigin == "" || len(origins) != 1 || origins[0] != h.apiOrigin {
 		return store.OAuthAccessIdentity{}, &model.Fault{Code: "forbidden", Message: "Application channels require the configured application Origin."}
 	}
+	h.observeAPIAccess(request.Context(), identity)
 	return identity, nil
+}
+
+func (h *RequestAuthentication) observeAPIAccess(ctx context.Context, identity store.OAuthAccessIdentity) {
+	if h.observeUsage != nil {
+		event := model.CredentialUsageEvent{Kind: model.UsageSubjectOAuthGrant, UserID: identity.Principal.UserID, SubjectID: identity.GrantID, At: time.Now().UTC().Truncate(time.Microsecond)}
+		_ = h.observeUsage(ctx, usage.SourceHTTPOAuth, event)
+		_ = httpx.PublishCredentialUsageFaults(h.logger, ctx)
+	}
 }
 
 func NewRequestAuthentication(authenticate AuthenticateCredential, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*RequestAuthentication, error) {
@@ -96,6 +106,17 @@ func (h *RequestAuthentication) AuthenticateRequest(request *http.Request) (mode
 		parts := strings.Fields(values[0])
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			return model.Principal{}, Failure()
+		}
+		if strings.HasPrefix(parts[1], oauth.APIAccessPrefix) {
+			if h.apiAccess == nil {
+				return model.Principal{}, Failure()
+			}
+			identity, err := h.apiAccess(request.Context(), parts[1])
+			if err != nil {
+				return model.Principal{}, err
+			}
+			h.observeAPIAccess(request.Context(), identity)
+			return identity.Principal, nil
 		}
 		principal, err := h.authenticate(request.Context(), model.PATCredential, parts[1])
 		if err != nil {

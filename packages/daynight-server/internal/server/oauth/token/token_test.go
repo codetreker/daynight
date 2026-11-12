@@ -180,6 +180,7 @@ func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 		name, target, contentType, body string
 	}{
 		{"query", "https://server.test/oauth/token?extra=1", "application/x-www-form-urlencoded", valid},
+		{"empty query", "https://server.test/oauth/token?", "application/x-www-form-urlencoded", valid},
 		{"media type", "https://server.test/oauth/token", "application/json", valid},
 		{"charset", "https://server.test/oauth/token", "application/x-www-form-urlencoded; charset=latin-1", valid},
 		{"malformed encoding", "https://server.test/oauth/token", "application/x-www-form-urlencoded", valid + "&x=%zz"},
@@ -260,7 +261,7 @@ func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 	}
 }
 
-func TestPublicRevocationAdmitsOnlyCanonicalMCPSecrets(t *testing.T) {
+func TestPublicRevocationAdmitsCanonicalOAuthSecrets(t *testing.T) {
 	for _, prefix := range []string{core.APIAccessPrefix, core.APIRefreshPrefix, model.OAuthAccessPrefix, core.RefreshPrefix, "unknown_"} {
 		t.Run(prefix, func(t *testing.T) {
 			stub := &tokenStub{}
@@ -268,7 +269,7 @@ func TestPublicRevocationAdmitsOnlyCanonicalMCPSecrets(t *testing.T) {
 			form := url.Values{"token": {secret.Random(prefix)}, "client_id": {"societas-bot"}}
 			response := tokenRequest(handler.Revoke, form.Encode())
 			calls := 0
-			if prefix == model.OAuthAccessPrefix || prefix == core.RefreshPrefix {
+			if prefix != "unknown_" {
 				calls = 1
 			}
 			if response.Code != http.StatusOK || response.Body.Len() != 0 || stub.calls != calls || response.Header().Get("Cache-Control") != "no-store" {

@@ -17,6 +17,7 @@ const (
 	SourceMCPPAT
 	SourceMCPOAuth
 	SourceOAuthRefresh
+	SourceHTTPOAuth
 )
 
 // Observation pairs an event with bounded request-local correlation data.
@@ -60,7 +61,7 @@ func validRequestID(id string) bool {
 }
 func validObservation(o Observation) bool {
 	t := o.Event.At
-	return validKey(o.Key()) && !t.IsZero() && t.Location() == time.UTC && t.Nanosecond()%1000 == 0 && validRequestID(o.RequestID) && o.Source >= SourceHTTPPAT && o.Source <= SourceOAuthRefresh
+	return validKey(o.Key()) && !t.IsZero() && t.Location() == time.UTC && t.Nanosecond()%1000 == 0 && validRequestID(o.RequestID) && o.Source >= SourceHTTPPAT && o.Source <= SourceHTTPOAuth
 }
 
 func cloneObservation(o Observation) Observation {
@@ -232,6 +233,8 @@ func (s Source) String() string {
 		return "mcp_oauth"
 	case SourceOAuthRefresh:
 		return "oauth_refresh"
+	case SourceHTTPOAuth:
+		return "http_oauth"
 	}
 	return ""
 }

@@ -47,7 +47,11 @@ func (s *GrantLifecycle) SetRotationObserver(observer RotationObserver) {
 func (s *GrantLifecycle) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 func lifecycleCompletion(c store.Completion, err error) error {
 	if c.Outcome == store.TransactionUnknown {
-		return fmt.Errorf("%w: transaction not confirmed", ErrAuthorizationUnknown)
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return errors.Join(ErrAuthorizationUnknown, err)
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: errors.Join(ErrAuthorizationUnknown, err)}
 	}
 	if err != nil {
 		return err
@@ -56,6 +60,45 @@ func lifecycleCompletion(c store.Completion, err error) error {
 		return fmt.Errorf("OAuth lifecycle transaction not committed")
 	}
 	return nil
+}
+
+func invalidGrantRefusal() error {
+	return &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: ErrInvalidGrant}
+}
+
+// A missing family is a refusal only when every retained cause confirms a clean lookup miss.
+func missingGrant(err error) bool {
+	if err == model.ErrNotFound {
+		return true
+	}
+	switch failure := err.(type) {
+	case *model.Fault:
+		return false
+	case *store.TransactionError:
+		if failure.Phase != "operation" || failure.Outcome != store.TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
+			return false
+		}
+	case *store.Error:
+		if failure.DatabaseFailure {
+			return false
+		}
+		if failure.MissingRow && errors.Is(failure, model.ErrNotFound) {
+			return true
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !missingGrant(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	return err != nil && errors.Unwrap(err) != nil && missingGrant(errors.Unwrap(err))
 }
 
 // Rotate consumes a refresh token once. admit is called only after the client
@@ -80,12 +123,12 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 			return e
 		}
 		if r.GrantID != g.ID || r.ClientID != clientID || g.ClientID != clientID || g.Resource != resource || g.Scope != profile.scope {
-			return ErrInvalidGrant
+			return invalidGrantRefusal()
 		}
 		return nil
 	})
-	if c.Outcome != store.TransactionUnknown && errors.Is(err, model.ErrNotFound) {
-		return RotatedTokens{}, ErrInvalidGrant
+	if c.Outcome == store.TransactionNotCommitted && missingGrant(err) {
+		return RotatedTokens{}, errors.Join(ErrInvalidGrant, err)
 	}
 	if e := lifecycleCompletion(c, err); e != nil {
 		return RotatedTokens{}, e
@@ -110,14 +153,14 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 			return e
 		}
 		if r.GrantID != grant.ID || r.ClientID != clientID || grant.ClientID != clientID || grant.Resource != resource || grant.Scope != profile.scope {
-			return ErrInvalidGrant
+			return invalidGrantRefusal()
 		}
 		now, e := d.FreshTime(ctx, s.clock())
 		if e != nil {
 			return e
 		}
 		if grant.RevokedAt != nil || !grant.ExpiresAt.After(now) || !r.ExpiresAt.After(now) {
-			return ErrInvalidGrant
+			return invalidGrantRefusal()
 		}
 		if r.ConsumedAt != nil {
 			if _, e = d.RevokeFamily(ctx, grant.ID, now); e != nil {
@@ -145,8 +188,8 @@ func (s *GrantLifecycle) Rotate(ctx context.Context, token, clientID, resource s
 	if candidate != nil && s.observeRotation != nil {
 		s.observeRotation(ctx, RotationObservation{Event: *candidate, Outcome: c.Outcome, Cause: err})
 	}
-	if c.Outcome != store.TransactionUnknown && errors.Is(err, model.ErrNotFound) {
-		return RotatedTokens{}, ErrInvalidGrant
+	if c.Outcome == store.TransactionNotCommitted && missingGrant(err) {
+		return RotatedTokens{}, errors.Join(ErrInvalidGrant, err)
 	}
 	if e := lifecycleCompletion(c, err); e != nil {
 		return RotatedTokens{}, e

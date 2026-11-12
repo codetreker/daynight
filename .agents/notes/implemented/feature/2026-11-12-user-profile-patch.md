@@ -32,9 +32,9 @@ a dedicated IdentityDAO reader check using FOR SHARE. This admits sibling
 credential readers while excluding revocation and expiry writes. Finite expiry
 is rechecked after acquiring the credential lock against database and application
 time. The injected same-transaction family DAO checks the fixed API
-tuple for internal API principals, preserving the existing oauth-to-identity
-implementation dependency direction. Public OAuth admission keeps its existing
-scope.
+tuple for API principals, preserving the existing oauth-to-identity
+implementation dependency direction. Public API admission is owned by the
+[application authorization decision](../architecture/2026-11-13-public-api-authorization.md).
 
 The [authentication design](../../../../docs/design/daynight-auth.md#完整用户初始化与本人资料更新)
 owns input, encoding, transaction and response contracts. The

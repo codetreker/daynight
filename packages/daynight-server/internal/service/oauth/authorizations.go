@@ -68,7 +68,11 @@ func NewAuthorizations(writer store.AuthorizationWriter, clients *Clients, admis
 func (s *Authorizations) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 func completionError(c store.Completion, e error) error {
 	if c.Outcome == store.TransactionUnknown {
-		return fmt.Errorf("%w: transaction not confirmed", core.ErrAuthorizationUnknown)
+		var transaction *store.TransactionError
+		if errors.As(e, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return errors.Join(core.ErrAuthorizationUnknown, e)
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: errors.Join(core.ErrAuthorizationUnknown, e)}
 	}
 	if e != nil {
 		return e
@@ -213,6 +217,13 @@ func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (Decision
 
 var errRetryCode = errors.New("retry code after releasing lock")
 
+func grantRefusal(err error) error {
+	if err == core.ErrInvalidGrant {
+		return &model.Fault{Code: "invalid_grant", Message: "Invalid OAuth grant.", Cause: err}
+	}
+	return err
+}
+
 func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenResult, error) {
 	if !s.operations.validCodeInput(in.Code, in.ClientID, in.Resource, s.resource, in.Verifier) {
 		return TokenResult{}, core.ErrInvalidGrant
@@ -229,7 +240,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 				return err
 			}
 			if err = s.operations.checkBinding(a, core.CodeBinding{ClientID: in.ClientID, RedirectURI: in.RedirectURI, Resource: in.Resource, Verifier: in.Verifier}); err != nil {
-				return err
+				return grantRefusal(err)
 			}
 			verified = a.ClientID
 			return nil
@@ -266,7 +277,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 				return errRetryCode
 			}
 			if initial.GrantID != a.GrantID {
-				return core.ErrInvalidGrant
+				return grantRefusal(core.ErrInvalidGrant)
 			}
 			now, err := dao.FreshTime(ctx, s.clock())
 			if err != nil {
@@ -274,7 +285,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 			}
 			replayCode, err := s.operations.checkCode(a, core.CodeBinding{ClientID: in.ClientID, RedirectURI: in.RedirectURI, Resource: in.Resource, Verifier: in.Verifier}, now)
 			if err != nil {
-				return err
+				return grantRefusal(err)
 			}
 			if replayCode {
 				grant, err := scope.CredentialFamilyDAO().InspectGrant(ctx, a.GrantID, false)
@@ -282,7 +293,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 					return err
 				}
 				if !grant.ExpiresAt.After(now) {
-					return core.ErrInvalidGrant
+					return grantRefusal(core.ErrInvalidGrant)
 				}
 				_, err = scope.CredentialFamilyDAO().RevokeFamily(ctx, a.GrantID, now)
 				if err != nil {
@@ -293,7 +304,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 			}
 			var client core.ValidatedClient
 			if json.Unmarshal(a.Client, &client) != nil {
-				return core.ErrInvalidGrant
+				return grantRefusal(core.ErrInvalidGrant)
 			}
 			if client.Provenance == "dcr" {
 				if _, err = scope.OAuthClientDAO().PinClient(ctx, a.ClientID, now); err != nil {
@@ -304,7 +315,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 					return err
 				}
 				if err = s.operations.checkExpiry(a, now); err != nil {
-					return err
+					return grantRefusal(err)
 				}
 			}
 			issued, err := s.operations.issueFamily(ctx, scope.CredentialFamilyDAO(), core.IssueInput{UserID: a.UserID, ClientID: a.ClientID, Resource: a.Resource, ClientSnapshot: a.Client}, now)

@@ -11,8 +11,10 @@ completion.
 
 ## Decision
 
-HTTP PAT and MCP PAT/OAuth admission record once after successful credential validation,
-before business processing. OAuth uses the grant identity. The refresh lifecycle observes
+HTTP PAT/API OAuth and MCP PAT/OAuth admission record once after successful
+credential validation, before business processing. API user WebSocket marker
+admission records at that same HTTP boundary; internal polls and rechecks do not.
+OAuth uses the actual grant identity. The refresh lifecycle observes
 its real rotation candidate after the final transaction returns: a confirmed commit records
 it even with a cleanup error, a known non-commit does not, and an unknown outcome produces
 only a safe correlated fault. Both production lifecycle instances share the App recorder.

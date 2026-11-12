@@ -698,7 +698,7 @@ Web 的受控浏览器 fixture 使用完整 Chromium 检查 PDF iframe composito
 数据库或部署行为，也不能代替安装 CLI 的同数据组合验证。[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
 记录了旧跨产品验收的选择理由，其结果只属于实际测试的源码。
 
-MCP 附件列表使用普通批量数据库读取及完整项的条数分页；cursor 指向最后返回路径，不使用元数据字段或编码响应字节准入。REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
+MCP 附件列表使用普通批量数据库读取及完整项的条数分页；cursor 指向最后返回路径，不使用元数据字段或编码响应字节准入。REST 接受 PAT、浏览器会话或固定 API OAuth；MCP OAuth 凭据不能用于 REST。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
 
 ## MCP 私有传输内容
 

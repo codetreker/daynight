@@ -345,6 +345,39 @@ func TestAPIUserChannelPreservesNativeCookieAndPATSelection(t *testing.T) {
 	}
 }
 
+func TestAPIUserChannelRejectsBearerWithoutAuthorizationMarker(t *testing.T) {
+	for _, c := range []struct {
+		name, protocol string
+		test           bool
+	}{
+		{name: "task v1", protocol: sp.Protocol},
+		{name: "task v2", protocol: v2.Protocol},
+		{name: "test v1", protocol: sp.Protocol, test: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, origin := range []string{"", nativeChannelOrigin, apiChannelOrigin} {
+				t.Run(origin, func(t *testing.T) {
+					f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
+					headers := http.Header{"Authorization": {"Bearer " + f.token}, "Cookie": {"__Host-daynight_session=native-secret"}}
+					if origin != "" {
+						headers.Set("Origin", origin)
+					}
+					conn, response, err := f.dial(f.path(c.protocol, c.test), []string{c.protocol}, headers)
+					if conn != nil {
+						conn.CloseNow()
+					}
+					if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized || f.apiCalls.Load() != 0 || f.nativeCalls.Load() != 0 || f.polls.Load() != 0 {
+						t.Fatalf("non-marker API channel=%v response=%v API=%d native=%d polls=%d", err, response, f.apiCalls.Load(), f.nativeCalls.Load(), f.polls.Load())
+					}
+					if strings.Contains(f.logs.text(), f.token) {
+						t.Fatal("non-marker API refusal logged its secret")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestAPIUserChannelDeadlineCancelsAdmittedPollAndReleasesConnection(t *testing.T) {
 	for _, protocol := range []string{sp.Protocol, v2.Protocol} {
 		t.Run(protocol, func(t *testing.T) {

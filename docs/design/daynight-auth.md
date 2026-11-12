@@ -60,7 +60,7 @@ core 分别表达用户、凭据、独立项目授权和当前项目准入；cor
 事务合同，PostgreSQL 后端实现迁移和查询，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
 复用一个 store 和既有文件存储，不复制业务实现或增加通用权限引擎。
 
-Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码
+Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 为 session/PAT/OAuth。认证代码
 产生可信身份，handler 传给 service；请求 JSON 不能指定调用者或角色。service 在
 业务边界授权，不提供可信用户捷径。PAT 不能管理个人令牌，会话可以管理自己的 PAT；
 CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理能力。
@@ -200,7 +200,7 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 canonical HTTPS origin；host 小写、默认端口省略，无 userinfo、路径、query、fragment
 或通配符。隔离测试须启用 `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1`，且 HTTP 应用 origin 的 host 仅限
 literal localhost 或数值 loopback IP。空值关闭应用浏览器的 CORS，保留无
-Origin 的 REST 认证、内部签发能力和原 public refresh。配置在启动时加载并校验，修改后重启。
+Origin 的 REST 认证、受信签发和 public refresh。配置在启动时加载并校验，修改后重启。
 
 HTTP 外层 CORS adapter 位于普通认证与 PathGuard 外，合法 Origin 的成功、401、403、
 409、路径拒绝、404 和 405 都带相同的浏览器可读头。它精确回显配置 Origin，合并
@@ -325,7 +325,7 @@ name/avatarUrl；外部键禁止 control 字符、最多 1024 bytes，并复用 
 
 `PATCH /api/v1/me` 仅接受非空的 `{name:string|null,avatarUrl:string|null}` subset，无 query、version、
 目标 ID 或其他资料字段。缺省保留、null 清除、string 原样保存；身份、email、emailVerified 与
-Personal Team 保持不变。Cookie 写请求仍校验精确主站 Origin，原生 Session/PAT 仅能修改本人。
+Personal Team 保持不变。Cookie 写请求仍校验精确主站 Origin，Session/PAT/API OAuth 仅能修改本人。
 HTTP body 读取使用原 1 MiB、15 秒预算，decode 完成后另设继承父取消的 15 秒 operation deadline。
 body 超限返回 413；解码字段和完整候选资料的容量拒绝返回 400 invalid_input，并保留原容量错误链。
 
@@ -333,7 +333,7 @@ PATCH 在同一严格 identity 事务内复核实际凭据，再由 DAO 仅更�
 UPDATE 的自然 user 行锁串行化并发写入；不预读全量资料回写，不使用 CAS。
 `IdentityScope.CredentialFamilyDAO()` 由根 PostgreSQL 装配注入同事务实例；
 `identity.NewScope(tx,family)` 保持 oauth→identity 依赖方向，OAuth owner-session 检查传入其自身 DAO。
-内部 API principal 使用固定 API resource/scope/client tuple 执行原 `LockAccess`。resource 取自启动配置的
+API principal 使用固定 API resource/scope/client tuple 执行原 `LockAccess`。resource 取自启动配置的
 可信 callback URL 的 scheme/host，加 `/api/v1`；scope/client 使用既有固定 API profile，拒绝无效配置。
 原生凭据使用 `IdentityDAO.LockProfileCredential`，对 Session/PAT 取得与其他凭据读者兼容的 `FOR SHARE` 锁，
 排除撤销和到期时间写入，并在取锁后按新鲜数据库时间与调用时钟复核有限期限。资料更新可能等待 user 行；
@@ -346,7 +346,7 @@ PAT 管理的 `LockActivePAT` 和既有 Session 管理检查保持各自原锁�
 SQL 与清理失败保留原错误优先级。确认提交后的响应取消或写入失败记录 response unknown，
 不重做资料写入，也不在部分响应后补写错误正文。
 GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETag；普通认证读取不改资料，
-后续原生 UniAuth 登录仍按上游姓名与头像覆盖本地两字段。公开 API OAuth 准入和 S2S 发行保持各自入口的现有范围。
+后续原生 UniAuth 登录仍按上游姓名与头像覆盖本地两字段；API OAuth 使用同一本人更新用例。
 [用户初始化与资料更新决策](../../.agents/notes/implemented/feature/2026-11-12-user-profile-patch.md)记录事务与稀疏更新的取舍。
 
 ### 主站 session 与 PAT
@@ -354,7 +354,7 @@ GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETa
 秘密至少 32 随机字节，仅持久化 SHA-256 摘要。生产会话 Cookie 为
 __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain。
 会话绝对有效期七天，不后台续期；注销删除当前会话。Session 的有限到期和 PersonalAccessToken
-的可空到期由独立领域记录表达，Principal 仍区分 session/PAT。PAT 默认永不过期，
+的可空到期由独立领域记录表达，OAuth family 使用自己的有效期限。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
 1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI (<hostname>)` 凭据。
 明文只交付一次。列表、创建与期限修改的元数据均返回 ID、名称、创建时间及必填的可空
@@ -413,7 +413,7 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 同源预览使用同一 Cookie 和授权规则，没有第二种浏览器凭据。
 
-### OAuth family 的固定 profile 与内部 API 能力
+### OAuth family 的固定 profile 与 API 授权
 
 `core/oauth` 集中 MCP 与 API 的固定 profile。MCP resource 为 `PublicOrigin + "/mcp"`，
 scope 为 `daynight:mcp`，保留实际客户端、`dnmcp_` / `dnmcr_` 前缀及原授权码、S256 PKCE
@@ -426,13 +426,27 @@ scope 为 `daynight:mcp`，保留实际客户端、`dnmcp_` / `dnmcr_` 前缀及
 稳定 family 标识仍是 grant UUID。
 
 `IssueAPIFamily` 是固定 API profile 的事务内发行操作，`service/oauth.NewAPIIssuer` 以配置的
-PublicOrigin 构造资源并拥有发行事务，只有确认提交才返回秘密。Core 的认证、续期与撤销操作可处理
-固定 API profile。用户 WebSocket 的明确 marker 调用同一应用 OAuth service 的窄认证操作，
-返回真实 Principal、grant UUID 与 effective expiry；该操作不注册公开 REST 或发行入口。
-公开 REST 认证仍使用 PAT / Cookie，S2S 发行路由尚未暴露；既有 public OAuth
-refresh/revoke adapter 只准入 MCP profile。
-API 内部能力不授予账号根、Worker 或 Controller 生产者权限。授权列表沿用原 owner 权限和 DTO，
-从实际 snapshot 投影 client ID / name，展示真实 grant 截止与状态。
+PublicOrigin 构造资源并拥有发行事务，只有确认提交才返回秘密。HTTP S2S adapter 在任何用户初始化前
+校验唯一 S2S Authorization 和严格 JSON；service 先调用完整用户初始化，再调用独立 family issuer。
+账号初始化与 family 提交分属事务，后者失败可以保留完整账号；unknown 不能返回秘密或重复调用。
+`internal/config.S2SConfig` 组合既有 CORS origin 与独立 shared_key 设置；YAML、local YAML 与显式环境变量
+依序覆盖，空 key 只关闭发行。key 非空时验证 32–256 visible ASCII bytes，启动校验不记录秘密；HTTP 准入
+恒定时间比较，变更配置后重启，旧 family 不因换钥撤销。
+
+REST 认证对 `dnapi_` 分派到固定 API verifier；明确 Authorization 优先、重复/畸形/失败不回退 Cookie，
+PAT 与主站 Cookie 保持原路径。API verifier 返回真实 Principal、grant UUID 与 effective expiry，同一应用
+OAuth 实例同时提供 REST、用户 WebSocket 与 readonly 回查。公开 refresh/revoke adapter 识别 API profile，
+refresh 固定 client/resource/scope 并沿用 public-none；authorization_code 仍仅 MCP。
+S2S issuer 与 API refresh 使用共同精确 token DTO，MCP 保留原五字段 DTO；字段和输入由
+[应用授权 API 需求](../spec/daynight-auth.md#用户应用授权-api)拥有。issuer/refresh 在 body decode 后建立 15 秒
+operation context，并继承请求/停机取消；JSON 为 1 MiB/15 秒读，OAuth form 为 64 KiB/15 秒读。
+成功仅在确认提交后编码秘密并设置 no-store/no-cache；unknown 保留实际 completion 和错误链，不重做操作。
+
+API 不授予账号根、Worker 或 Controller 生产者权限。授权列表沿用原 owner 权限和 DTO，
+从实际 snapshot 投影 client ID / name，展示真实 grant 截止与状态；主站会话撤销和 public self-revoke
+复用原 family 用例。明确新申请建立独立 grant，撤销不级联删除用户资源或取消已派发业务。
+[公开应用授权决策](../../.agents/notes/implemented/architecture/2026-11-13-public-api-authorization.md)
+记录入口及复用边界。
 
 `store.OAuthBinding` 表达精确 resource、scope 和可选固定 client ID；MCP 的空 client ID 表示
 不额外限制已记录的客户端。`AuthenticateAccess` 验证实际 access、grant 与 user 关联、binding、
@@ -555,8 +569,9 @@ bundle 请求不支持 v2 的实例。旧页面仍可通过 v1 读取新 backend
 
 ### 真实凭据使用事件
 
-HTTP 的 PAT 认证成功后立即以服务端 UTC 微秒时间记录该 PAT；直接调用
-`AuthenticateRequest` 也经过这一边界。MCP 在 PAT 或 OAuth 凭据、resource 和 scope
+HTTP 的 PAT 或固定 API OAuth 认证成功后立即以服务端 UTC 微秒时间记录一次；PAT 使用实际 PAT ID，
+API 使用实际 grant ID 和 `http_oauth` 来源，用户 WebSocket 的成功 marker 认证也经过这一边界。直接调用
+`AuthenticateRequest` 同样记录，poll 和内部 family/权限复核不重复记录。MCP 在 PAT 或 OAuth 凭据、resource 和 scope
 验证成功后、解析正文和业务处理前记录一次；OAuth 事件归属 grant ID。后续业务拒绝、
 响应失败或客户端断开不撤回已发生的事件。浏览器 Session、内部父凭据重验和纯心跳不产生事件。
 
@@ -732,7 +747,7 @@ Personal 不可创建邀请。inspect 仅返回 Team 引用和当前主体关系
 joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，失效原因统一为
 invitation_unavailable；[Team 邀请决策](../../.agents/notes/archived/architecture/2026-11-04-team-invitations.md)记录了接收入口及交付边界的历史取舍。
 
-HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
+HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员。直接成员与本人资料更新在自己的写事务内额外复核凭据，并在可能的行锁等待后
 再次检查新鲜期限；其他资源操作保留凭据认证与业务事务各自的准入时点。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更取得 Task SHARE 锁后，
 通过 `pg.ReadProjectAccess` 在单条语句中重新读取当前 ownership、owner Team member 和 direct grant
@@ -754,7 +769,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET /api/v1/auth/login?provider=... | 校验输入；无有效 scope 时初始化并返回同一 URL，否则按容量创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET/HEAD /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin，认证及完整资料读取后以强 ETag 重验，成功 200/304 使用 private, no-cache。 |
-| PATCH /api/v1/me | 当前 Session/PAT 本人，仅提交 name/avatarUrl 的非空 subset；缺省保持、null 清除，确认提交后返回原完整 api.User 与 no-store。 |
+| PATCH /api/v1/me | 当前 Session/PAT/API OAuth 本人，仅提交 name/avatarUrl 的非空 subset；缺省保持、null 清除，确认提交后返回原完整 api.User 与 no-store。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
 | GET/PATCH/DELETE /api/v1/teams/{teamId} | 详情含本人真实 membership；当前 admin 按元数据 version 改名或删除空普通 Team，删除另匹配名称原文。 |
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
@@ -767,8 +782,8 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
-| 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
-| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与五状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| 现有 project/task/graph/property/attachment API | session、PAT 或固定 API OAuth；业务 service 检查当前项目成员。 |
+| PUT .../tasks/{taskId}/status | session/PAT/API OAuth；成员写权限，正 int64 version 与五状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
 | POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |

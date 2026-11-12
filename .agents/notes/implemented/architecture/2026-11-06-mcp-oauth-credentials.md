@@ -16,7 +16,7 @@ OAuth grants, access tokens and initial refresh tokens are stored as a family.
 Only secret hashes are persisted. Issuance and revocation use caller-bound
 transaction DAOs, allowing code consumption and family creation to commit or
 roll back together. The grant retains the validated client snapshot, resource,
-scope and absolute expiry for MCP. The internal
+scope and absolute expiry for MCP. The
 [fixed API profile](2026-11-12-api-oauth-family.md) shares these family records
 with a separate binding and rolling deadline policy. Access authentication checks
 its resource, scope and any fixed client binding;

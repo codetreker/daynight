@@ -133,7 +133,7 @@ Authentication and user-read failures retain no-store errors and cannot return
 browser-managed revalidation across reloads without a custom identity store.
 `PATCH /api/v1/me` accepts a nonempty subset of nullable `name` and `avatarUrl`.
 Omission preserves a field, null clears it, and strings retain their exact text.
-Session and PAT callers update only their own profile; Cookie writes retain the
+Session, PAT and fixed API OAuth callers update only their own profile; Cookie writes retain the
 main-site Origin check. Unknown or repeated fields, query parameters, invalid
 Unicode and NUL fail. Name is bounded at 1024 UTF-8 bytes and avatarUrl at 512 KiB;
 the request retains the 1 MiB/15-second read limit, followed by a separate
@@ -143,8 +143,7 @@ columns, validates the complete profile, response and Personal Team, then checks
 fresh credential time after user-row waits. Success returns the existing complete
 `api.User` with no-store and `Daynight-User-ID` only after confirmed commit.
 Email, verification, identity and Personal Team are preserved. Native UniAuth
-login continues to replace the upstream name and avatar. Public OAuth admission
-retains its existing scope.
+login continues to replace the upstream name and avatar.
 
 The internal `Identity.EnsureUser` operation canonicalizes an exact external key,
 then inserts or reads its actual user without replacing existing profile fields.
@@ -342,7 +341,7 @@ and finalization retain their original credential requirements. Persisted
 operation Actors retain their original access UUID and are reauthorized for the
 actual operation before dispatch; refreshed access can query an authorized receipt
 without replacing that Actor or replaying the command. Public REST authentication
-still uses PATs or browser Cookies. Task user WebSockets (v1/v2) and Test user
+admits fixed API OAuth tokens alongside PATs and browser Cookies. Task user WebSockets (v1/v2) and Test user
 WebSockets (v1) accept one actual Session subprotocol with one
 `daynight.authorization.<accessToken>` marker. They authenticate the fixed API
 family against the exact configured application Origin, echo only the Session
@@ -612,11 +611,39 @@ OAuth grant families store only 32-byte SHA-256 hashes of canonical secrets with
 32 random bytes. MCP retains its actual client, `/mcp` resource, `daynight:mcp`
 scope and `dnmcp_` / `dnmcr_` prefixes. Its grant and refresh have an absolute
 30-day limit; access lasts at most one hour and never exceeds that grant deadline.
-The internal API profile fixes `societas-bot` / `Societas Bot`, `/api/v1`,
+The API profile fixes `societas-bot` / `Societas Bot`, `/api/v1`,
 `daynight:api` and `dnapi_` / `dnapr_`. Its issuer returns secrets only after a
-confirmed family commit. Public REST authentication still uses PATs or browser
-Cookies. The S2S issuance route is not exposed; existing public OAuth
-refresh/revoke adapters admit only the MCP profile.
+confirmed family commit. `POST /api/v1/oauth/s2s/token` accepts one
+`Authorization: S2S <shared-key>` and strict `{externalUserId,profile?}` JSON. The
+adapter rejects invalid or disabled credentials before user initialization. The
+service commits a complete user/Personal Team before independently issuing the
+family; a later failure can retain the complete account. Only a confirmed family
+commit returns the exact API token DTO, including actual user/grant IDs and
+access/grant deadlines. Body reads are limited to 1 MiB and 15 seconds, with a
+separate 15-second operation deadline after decoding.
+
+REST `Bearer dnapi_...` authentication validates the actual fixed API tuple,
+family, user, revocation and expiry before ordinary user business operations.
+Explicit Authorization retains precedence; malformed, duplicate or invalid
+credentials never fall back to Cookies. Existing account-root, browser consent,
+PAT management and producer restrictions remain. Public `/oauth/token` accepts
+API refresh with the fixed client/resource and optional exact scope using public
+client authentication, without another S2S key. API authorization-code exchange
+is unavailable. Refresh form reads retain 64 KiB/15-second limits; API refresh
+gets a separate 15-second operation deadline. API refresh returns the same token
+DTO as issuance, while MCP retains its original five fields. Public
+`/oauth/revoke` recognizes matching API access/refresh families; native owner
+lists and revoke expose the real application and rolling deadline. Explicit
+reconnection issues a new grant; ordinary failures never reissue automatically.
+Revoking a family does not delete user resources or cancel dispatched work.
+
+Successful REST and user WebSocket API authentication record `http_oauth` once
+against the actual grant; confirmed refresh records `oauth_refresh`. Issuance,
+internal rechecks, polls and unknown outcomes do not manufacture usage. Metadata
+faults preserve the original authentication/business result. Unknown commit
+returns no secrets, and lost committed responses cannot recover plaintext or
+prove rollback. The [application authorization contract](../../docs/spec/daynight-auth.md#用户应用授权-api)
+owns exact inputs, token fields and failure semantics.
 
 API rotation locks the grant and refresh before reading a fresh database time.
 A valid rotation atomically consumes the old refresh, sets the grant and new
@@ -633,7 +660,7 @@ returns the earlier access/grant deadline. Family checks retain grant-share then
 access-share locking; the existing CredentialReader keeps its snapshot behavior,
 access-only shared locks and checks after lock waits while joining the actual
 family and user. Revocation invalidates access rows in the same transaction.
-The [authentication design](../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与内部-api-能力)
+The [authentication design](../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与-api-授权)
 owns fixed profiles, rolling deadlines and reader contracts.
 
 The OAuth public profile supports browser-bound requests, account-checked
@@ -763,6 +790,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
+| `DAYNIGHT_S2S_SHARED_KEY` | Server-only S2S issuer key; empty disables issuance, otherwise 32–256 visible ASCII bytes | Empty (disabled) |
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
@@ -783,6 +811,14 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
+`s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
+disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
+bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop
+startup without exposing the key. It is loaded on startup and compared in
+constant time. Restart after replacement; existing families and refresh remain
+independent of the key. Both Compose templates preserve absent, explicitly empty
+and nonempty values, as described below for the optional origin.
+
 `s2s.allowed_origin` / `DAYNIGHT_S2S_ALLOWED_ORIGIN` accepts one canonical exact
 HTTPS origin: lowercase host, no default port, userinfo, path, query, fragment or
 wildcard. HTTP requires `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` and a literal localhost
@@ -795,7 +831,7 @@ a nonempty value overrides YAML with that origin. The blank entry in
 [localhost .env.example](../../deployment/localhost/.env.example) deliberately
 disables browser CORS when copied unchanged without a host override. The host
 environment takes precedence over the private environment file. An empty origin
-leaves no-Origin REST, internal issuance and existing public refresh available.
+leaves no-Origin REST, trusted issuance and public refresh available.
 Restart after changing it. The outer user REST adapter decorates success and error
 responses and handles registered-method preflight without credentials or business
 work. It echoes the exact origin, merges Vary and sends no
@@ -2414,7 +2450,7 @@ suffix. Trusted HTML preview runs with the application origin permissions.
 Relative CSS, scripts, images and data URLs resolve under the fixed preview
 path; ordinary query parameters do not change the file name. The
 [authentication architecture](../../docs/design/daynight-auth.md) requires a fresh
-session/PAT check at HTTP admission and project membership in the pre-I/O
+session/PAT or fixed API OAuth family check at HTTP admission and project membership in the pre-I/O
 snapshot. An admitted file operation may finish; membership is not rechecked
 after file I/O. These checks retain trusted same-origin execution, existing
 preview routes and K1 filesystem/PostgreSQL non-atomicity.

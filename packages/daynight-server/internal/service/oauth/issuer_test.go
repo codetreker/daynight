@@ -75,6 +75,8 @@ func TestAPIIssuerReturnsFamilyOnlyAfterConfirmedTransaction(t *testing.T) {
 		{name: "operation rejected", outcome: store.TransactionCommitted, operationErr: operationFailure},
 		{name: "rolled back", outcome: store.TransactionNotCommitted},
 		{name: "unknown", outcome: store.TransactionUnknown},
+		{name: "unknown retains completion cause", outcome: store.TransactionUnknown, writerErr: writerFailure},
+		{name: "unknown retains cleanup and refusal", outcome: store.TransactionUnknown, writerErr: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.Join(writerFailure, core.ErrInvalidGrant)}},
 		{name: "completion failure", outcome: store.TransactionCommitted, writerErr: writerFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -114,8 +116,11 @@ func TestAPIIssuerReturnsFamilyOnlyAfterConfirmedTransaction(t *testing.T) {
 				if test.writerErr != nil && !errors.Is(err, test.writerErr) {
 					t.Fatalf("writer cause lost: %v", err)
 				}
-				if test.outcome == store.TransactionUnknown && !errors.Is(err, core.ErrAuthorizationUnknown) {
-					t.Fatalf("unknown result reported incorrectly: %v", err)
+				if test.outcome == store.TransactionUnknown {
+					var transaction *store.TransactionError
+					if !errors.Is(err, core.ErrAuthorizationUnknown) || !errors.As(err, &transaction) || transaction.Outcome != store.TransactionUnknown {
+						t.Fatalf("unknown result reported incorrectly: %v", err)
+					}
 				}
 			}
 		})

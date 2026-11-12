@@ -22,7 +22,7 @@ and adds or reads the membership with eligibility in the same transaction.
 
 TeamWriteScope binds the existing identity and credential-family DAOs to its
 transaction while preserving the Team prelock. Native Session/PAT admission uses
-the existing reader-compatible SHARE capability; internal API admission uses the
+the existing reader-compatible SHARE capability; API admission uses the
 fixed API resource/scope/client tuple. A fresh credential check after member and
 eligibility contention prevents expiry during those waits from authorizing the
 commit. The initial refusal creates no target account. A later refusal may retain
