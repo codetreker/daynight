@@ -49,7 +49,8 @@ The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)
 uses the Goal's own state for its list heading while keeping scoped progress
 independent. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md)
 makes the heading body the disclosure and keeps detail and graph as separate
-actions.
+actions. The [Goal execution summary decision](2026-11-13-goal-execution-summary.md)
+uses direct children for the heading's status count and Worker claim indicator.
 
 ## Alternatives
 
