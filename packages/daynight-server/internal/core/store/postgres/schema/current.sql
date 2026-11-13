@@ -1,4 +1,4 @@
--- Schema snapshot version: 68
+-- Schema snapshot version: 69
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -325,6 +325,16 @@ CREATE TABLE "project_github" (
     "claim_kind" "text",
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL
+);
+
+CREATE TABLE "project_github_pending_prs" (
+    "project_id" "uuid" NOT NULL,
+    "number" bigint NOT NULL,
+    "generation" bigint NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "delivery_id" "text" NOT NULL,
+    "received_at" timestamp with time zone NOT NULL,
+    "next_attempt_at" timestamp with time zone NOT NULL
 );
 
 CREATE SEQUENCE "project_grant_versions"
@@ -1336,6 +1346,9 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "private_upload_chunks"
     ADD CONSTRAINT "private_upload_chunks_transfer_id_object_id_key" UNIQUE ("transfer_id", "object_id");
 
+ALTER TABLE ONLY "project_github_pending_prs"
+    ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
+
 ALTER TABLE ONLY "project_github"
     ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
 
@@ -1608,6 +1621,8 @@ CREATE INDEX "private_transfers_retention" ON "private_transfers" USING "btree" 
 CREATE INDEX "project_github_access_due" ON "project_github" USING "btree" ("next_access_check_at", "project_id") WHERE "enabled";
 
 CREATE INDEX "project_github_binding" ON "project_github" USING "btree" ("app_id", "installation_id", "repository_id");
+
+CREATE INDEX "project_github_pending_prs_due" ON "project_github_pending_prs" USING "btree" ("next_attempt_at", "project_id");
 
 CREATE INDEX "project_github_poll_due" ON "project_github" USING "btree" ("next_poll_at", "project_id") WHERE "enabled";
 

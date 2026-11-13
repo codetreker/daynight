@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -94,14 +95,28 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 		sql = `UPDATE project_github SET version=$2, generation=$3, revision=$4, enabled=$5, app_id=$6,
 		 installation_id=$7, repository_id=$8, installation_account_login=$9, repository_full_name=$10,
 		 repository_private=$11, poll_interval_minutes=$12, access_state=$13, access_reason=$14,
-		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17, updated_at=statement_timestamp()
+		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17,
+         claim_token=CASE WHEN generation<>$3 THEN NULL ELSE claim_token END,
+         claim_until=CASE WHEN generation<>$3 THEN NULL ELSE claim_until END,
+         claim_kind=CASE WHEN generation<>$3 THEN NULL ELSE claim_kind END,
+         access_hint_id=CASE WHEN generation<>$3 THEN NULL ELSE access_hint_id END,
+         access_delivery_id=CASE WHEN generation<>$3 THEN NULL ELSE access_delivery_id END,
+         updated_at=statement_timestamp()
 		 WHERE project_id=$1 AND version=$18`
 	}
 	result, err := w.tx.Exec(ctx, sql, args...)
 	if err != nil {
 		return false, pg.QueryError("save github configuration", err)
 	}
-	return result.RowsAffected() == 1, nil
+	if result.RowsAffected() != 1 {
+		return false, nil
+	}
+	// The Project and connection locks precede pending-row deletion. Keeping
+	// only this generation makes management writes and signals serialize.
+	if _, err := w.tx.Exec(ctx, `DELETE FROM project_github_pending_prs WHERE project_id=$1 AND generation<>$2`, w.projectID, c.Generation); err != nil {
+		return false, pg.QueryError("clear old github pending requests", err)
+	}
+	return true, nil
 }
 
 const summaryFields = `project_id::text, number, github_id, url, title, author_id, author_login,
@@ -113,6 +128,33 @@ func summaryTargets(p *githubpr.PullRequestSummary) []any {
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID}
 }
+func (r *reader) Bindings(ctx context.Context, q store.GitHubBindingsQuery) ([]githubpr.Connection, error) {
+	if q.Limit < 1 || q.Limit > 100 {
+		return nil, fmt.Errorf("github binding limit must be 1..100")
+	}
+	rows, err := r.tx.Query(ctx, `SELECT `+connectionFields+` FROM project_github g
+ WHERE app_id=$1 AND installation_id=$2 AND ($3::bigint IS NULL OR repository_id=$3)
+ AND ($4::uuid IS NULL OR project_id>$4) AND EXISTS
+ (SELECT 1 FROM projects p WHERE p.id=g.project_id AND p.deleted_at IS NULL)
+ ORDER BY project_id LIMIT $5`, q.AppID, q.InstallationID, q.RepositoryID, q.AfterProjectID, q.Limit)
+	if err != nil {
+		return nil, pg.QueryError("read github bindings", err)
+	}
+	defer rows.Close()
+	out := []githubpr.Connection{}
+	for rows.Next() {
+		c, err := scanConnection(rows)
+		if err != nil {
+			return nil, pg.QueryError("read github bindings", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, pg.QueryError("read github bindings", err)
+	}
+	return out, nil
+}
+
 func (r *reader) PullRequest(ctx context.Context, id string, number int64) (githubpr.PullRequest, error) {
 	var p githubpr.PullRequest
 	targets := append(summaryTargets(&p.PullRequestSummary), &p.Description)
