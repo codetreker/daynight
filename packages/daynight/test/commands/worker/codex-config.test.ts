@@ -5,10 +5,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { readCodexConfiguration } from "../../../src/commands/worker/herdr/codex-config.js";
-import { removeFixtureRoot } from "../../helpers/tool-fixture-cleanup.js";
 
 const directories: string[] = [], operations: Operation[] = [];
-afterEach(async () => { operations.splice(0).forEach(op => op.dispose()); await Promise.all(directories.splice(0).map(dir => removeFixtureRoot(dir))); });
+afterEach(async () => { operations.splice(0).forEach(op => op.dispose()); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 const fixture = async (mode?: string, requestMs = 5000) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/codex-config-tests"); await mkdir(parent, { recursive: true });
   const cwd = await mkdtemp(path.join(parent, "test-")); directories.push(cwd);
