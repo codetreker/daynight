@@ -48,11 +48,17 @@ describe("workspace sidebar", () => {
     const groups = nav.querySelectorAll(".sidebar-group");
     expect(groups).toHaveLength(3);
     expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Projects", "Team settings"]);
-    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Shared with me", "My Workers", "Assistants"]);
+    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["In-progress tasks", "Shared with me", "My Workers", "Assistants"]);
     expect(within(groups[2] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Webhooks", "Test Sessions"]);
     expect(screen.getByRole("link", { name: "Webhooks" })).toHaveAttribute("href", "/webhooks?owner=personal");
     view.rerender(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" webhooksAvailable={false} />);
     expect(screen.queryByRole("link", { name: "Webhooks" })).toBeNull();
+  });
+
+  it("keeps the account task overview available independently of Team selection", () => {
+    render(<Harness selectedTeamId={null} visibilityTeamId={null} route={{ kind: "myTasks" }} />);
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("href", "/my-tasks");
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("aria-current", "page");
   });
 
   it("keeps unconfirmed Team links disabled while independent navigation remains available", () => {
