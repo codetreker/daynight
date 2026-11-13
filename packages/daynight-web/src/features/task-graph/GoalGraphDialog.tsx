@@ -7,6 +7,7 @@ import { useGraphDirection } from '../projects/useProjectViewPreferences';
 import { TaskPauseCount, usePausedTaskIds } from '../task-pause/TaskPause';
 import { pausedSummaryTaskIds } from '../task-pause/paused-summary';
 import { projectTaskScope } from './scope';
+import { completionProgress } from './completion-progress';
 import type { GraphIndex } from './model';
 import { GoalTaskGraph } from './GoalTaskGraph';
 import { TaskGraphDialogShell } from './TaskGraphDialogShell';
@@ -28,6 +29,7 @@ export const GoalGraphDialog = ({ projectId, index, summaries, goalId, onOpenTas
   const { direction, onDirectionChange, issue } = useGraphDirection(projectId, goalId);
   const goal = summaries.get(goalId)!;
   const scope = useMemo(() => projectTaskScope(index, goalId), [index, goalId]);
+  const displayProgress = completionProgress(scope.progress);
   const paused = usePausedTaskIds();
   const pausedCount = pausedSummaryTaskIds(scope.taskIds.map((id) => index.nodes.get(id)!), paused).size;
   const titleId = useId();
@@ -38,7 +40,7 @@ export const GoalGraphDialog = ({ projectId, index, summaries, goalId, onOpenTas
       <div className="task-chain-heading"><p className="task-chain-eyebrow">{m.goalTitle}</p>
         <h2 id={titleId}>{goal.titlePreview}{goal.titleTruncated ? '…' : ''}</h2>
         <p className="task-chain-meta"><span>{m.rootSummary({ total: scope.progress.total, remaining: scope.progress.unfinished })}</span>
-          <span>{m.progress(scope.progress)}</span><TaskPauseCount count={pausedCount} /><span className={`graph-status graph-status-${goal.status}`}>{common.status[goal.status]}</span></p>
+          <span>{m.progress({ done: displayProgress.displayDone, total: displayProgress.displayTotal })}</span><TaskPauseCount count={pausedCount} /><span className={`graph-status graph-status-${goal.status}`}>{common.status[goal.status]}</span></p>
       </div>
       <AccountRefreshNotice /><button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
     </header>}>

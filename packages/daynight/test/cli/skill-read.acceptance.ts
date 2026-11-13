@@ -20,6 +20,7 @@ it("reads the packed standalone manual through both aliases without configuratio
   expect(await readFile(manual())).toEqual(contents);
   const bundle = path.join(path.dirname(installed.receipt.entryPath), "commands/skill/skills/using-daynight");
   for (const [filename, original] of sources) expect(await readFile(path.join(bundle, filename))).toEqual(original);
+  expect(contents.toString("utf8")).toContain("daynight tag delete <tag-id>");
   expect(contents.toString("utf8")).toContain("--assigned-to");
   expect(contents.toString("utf8")).toContain("--clear-assigned-to");
   const alias = path.join(path.dirname(installed.receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");

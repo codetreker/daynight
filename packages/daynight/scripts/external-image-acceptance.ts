@@ -131,7 +131,7 @@ try {
   // production decoder settings without changing shared E2E runtime behavior.
   const binary = path.join(artifacts.directory, "daynight-server");
   await rename(binary, `${binary}.bin`);
-  await writeFile(binary, '#!/bin/sh\nset -eu\nexport DAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node\nexport DAYNIGHT_IMAGE_HELPER_PATH=/opt/e2e/image-validator/image-validation-helper.js\nexport DAYNIGHT_IMAGE_MANIFEST_PATH=/opt/e2e/image-validator/image-validation-manifest.json\nexport DAYNIGHT_IMAGE_TEMP_DIRECTORY=/run/private/image-validation\nexec /opt/e2e/daynight-server.bin\n', { mode: 0o755 });
+  await writeFile(binary, '#!/bin/sh\nset -eu\nexport DAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node\nexport DAYNIGHT_IMAGE_HELPER_PATH=/opt/e2e/image-validator/image-validation-helper.js\nexport DAYNIGHT_IMAGE_MANIFEST_PATH=/opt/e2e/image-validator/image-validation-manifest.json\nexport DAYNIGHT_IMAGE_TEMP_DIRECTORY=/run/private/image-validation\nexec /opt/e2e/daynight-server.bin "$@"\n', { mode: 0o755 });
   await mkdir(path.join(runtimeDirectory, "private/image-validation"), { mode: 0o700 });
   const { startEnvironment } = await e2e<{ startEnvironment(options: { repository: string; runDirectory: string; artifactsDirectory: string; signal: AbortSignal }): Promise<Environment> }>("environment");
   record.phase = "environment"; await persist(path.join(runDirectory, "run.json"), record);

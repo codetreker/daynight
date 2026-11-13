@@ -65,16 +65,28 @@ type run struct {
 // Execute attempts one bounded access or hint job, or one complete poll. The
 // caller owns its context and may call it again after the persisted next time.
 func (e *Executor) Execute(ctx context.Context, project string) error {
+	return e.ExecuteWithClaimContext(ctx, ctx, project)
+}
+
+// ExecuteWithClaimContext cancels admission independently from already claimed
+// work, allowing shutdown to stop new claims before draining existing work.
+func (e *Executor) ExecuteWithClaimContext(ctx, claimCtx context.Context, project string) error {
 	if project == "" {
 		return errors.New("github project ID is required")
 	}
 	r := &run{e: e, project: project, lease: store.GitHubLease{Token: uuid.NewString()}}
 	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token)
-	claimed, err := r.claim(ctx)
+	claimed, err := r.claim(claimCtx)
 	if err != nil || !claimed {
 		return err
 	}
 	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token, "generation", r.lease.Generation, "installation_id", *r.connection.InstallationID, "repository_id", *r.connection.RepositoryID, "trigger", r.kind)
+	if r.kind == core.WorkAccess && r.connection.AccessHintID != nil {
+		r.log = r.log.With("hint_id", *r.connection.AccessHintID)
+		if r.connection.AccessDeliveryID != nil {
+			r.log = r.log.With("delivery_id", *r.connection.AccessDeliveryID)
+		}
+	}
 	started := time.Now()
 	r.log.InfoContext(ctx, "github sync started", "phase", "claim")
 	err = r.execute(ctx)
@@ -207,13 +219,7 @@ func (r *run) runtime(ctx context.Context, change func(*store.GitHubRuntimeWrite
 	return committed(c, e)
 }
 func (r *run) execute(ctx context.Context) error {
-	ctx = remote.WithRequestCheckpoint(ctx, func(ctx context.Context) error {
-		r.log.DebugContext(ctx, "github request checkpoint", "phase", "fetch")
-		if err := r.renew(ctx); err != nil {
-			return errors.Join(errCheckpoint, err)
-		}
-		return nil
-	})
+	ctx = r.checkpointContext(ctx)
 	if *r.connection.AppID != r.e.appID {
 		return r.runtime(ctx, func(w *store.GitHubRuntimeWrite, c githubpr.Connection, now time.Time) {
 			core.AccessUnavailable(w, c, now, "app_changed", true)
@@ -227,6 +233,15 @@ func (r *run) execute(ctx context.Context) error {
 		return r.poll(ctx)
 	}
 	return r.hints(ctx)
+}
+func (r *run) checkpointContext(ctx context.Context) context.Context {
+	return remote.WithRequestCheckpoint(ctx, func(ctx context.Context) error {
+		r.log.DebugContext(ctx, "github request checkpoint", "phase", "fetch")
+		if err := r.renew(ctx); err != nil {
+			return errors.Join(errCheckpoint, err)
+		}
+		return nil
+	})
 }
 func (r *run) release(ctx context.Context) error {
 	return r.runtime(ctx, func(w *store.GitHubRuntimeWrite, _ githubpr.Connection, _ time.Time) { w.ReleaseClaim = true })

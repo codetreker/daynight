@@ -64,6 +64,36 @@ or explicit `--repo` (also outside Git):
 
 Retain the returned ID; read back the Project to verify repository and name.
 
+## Project tag catalog
+
+Select the Project explicitly or through [Project discovery](#project-discovery).
+Writes also require [write safety](write-safety.md).
+
+```bash
+daynight tag list --query bug --limit 50 --project <project-id> --json
+daynight tag show <tag-id> --project <project-id> --json
+daynight tag create "backend" --project <project-id> --json
+daynight tag rename <tag-id> "platform" --if-version <version> --project <project-id> --json
+daynight tag delete <tag-id> --if-version <version> --project <project-id> --confirm --json
+```
+
+Tag IDs are stable UUIDs; names are display values, not target identities. List
+collects all pages with the same query and limit and returns the catalog epoch;
+a page failure emits no partial result. Text distinguishes an empty catalog
+from no query match; an empty result starting from a cursor describes only the
+remaining pages. Show, create and rename return the complete Tag, version and
+visible Task/Goal usage. The service validates names and Project access.
+
+Rename retains an explicit `--if-version` exactly; omission reads the current
+Tag version before writing. Delete always reads the complete Tag and previews its
+name and visible usage. Interactive deletion requires its displayed JSON string
+literal even with `--confirm`; noninteractive deletion requires `--confirm`.
+The preview counts are hints: confirmation covers all associations at deletion,
+including those added after the read. An explicit version is preserved; otherwise
+the preview version is used. Cancellation sends no DELETE. The service receipt
+identifies the deleted Tag and Project. Refusals and unknown outcomes remain
+distinct; never automatically replay an uncertain mutation.
+
 ## Team context
 
 `team list` reads joined Teams, `team show` one Team, `team projects` its Projects.

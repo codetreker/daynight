@@ -24,8 +24,9 @@ export function SessionActivity({ snapshot, connected, active, suppressStatus = 
   const elapsed = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}m`;
   const label = !connected || snapshot?.connectionState === 'disconnected' ? sessionNativeLabels.disconnected : !snapshot?.synchronized || snapshot.connectionState === 'synchronizing' ? sessionNativeLabels.synchronizing : commandPending && !working ? sessionNativeLabels.executingCommand : sessionNativeLabels[snapshot.activity];
   const visible = working || commandPending || interruptPending;
+  const activity = connected && snapshot?.connectionState === 'connected' && snapshot.synchronized ? snapshot.activity : undefined;
   const status = visible && !suppressStatus ? <div className="session-activity-summary">
-    <span className={`session-activity-dot ${working && connected ? 'working' : ''}`} aria-hidden="true" /><span aria-live="polite" lang="en">{label}</span>
+    <span className="session-activity-dot" data-activity={activity} aria-hidden="true" /><span aria-live="polite" lang="en">{label}</span>
     {timed ? <time aria-label={m.elapsedTime} dateTime={`PT${seconds}S`}>{elapsed}</time> : null}
     {working && !Number.isFinite(startedAt) && connected ? <span className="session-control-note">{m.startTimeUnknown}</span> : null}
     </div> : null;

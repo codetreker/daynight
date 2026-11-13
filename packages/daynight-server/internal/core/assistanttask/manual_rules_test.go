@@ -95,7 +95,7 @@ func TestAppendixUserEditReplacesReferencesOnlyWhenProvided(t *testing.T) {
 			case "clear":
 				input.SourceRecords, want = []string{}, []string{}
 			case "delete":
-				input.State, want = "deleted", nil
+				input.State, want = "deleted", []string{}
 			}
 			if name == "replace" {
 				d.record = func(_ context.Context, owner, task, record string) (model.AssistantTaskRecord, error) {

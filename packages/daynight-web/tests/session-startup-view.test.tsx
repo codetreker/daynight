@@ -28,7 +28,7 @@ it.each(['en', 'zh-CN'] as const)('shows a single blocked-startup status and saf
   expect(screen.queryByText('正在恢复会话')).toBeNull();
   expect(screen.queryByText('Restoring session')).toBeNull();
   expect(f.api.timeline).not.toHaveBeenCalled();
-  const input = screen.getByRole('textbox'); input.focus(); fireEvent.change(input, { target: { value: 'retain draft' } });
+  const input = screen.getByRole('textbox'); await waitFor(() => expect(input).not.toHaveAttribute('readonly')); input.focus(); fireEvent.change(input, { target: { value: 'retain draft' } });
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(f.api.command).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();

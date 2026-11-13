@@ -21,6 +21,7 @@ import (
 func TestSessionImageStore(t *testing.T) {
 	suite := newSessionStoreSuite(t)
 	suite.run(t, "ExternalCaptureWritesCompareExactObservedState", testExternalCaptureWritesCompareExactObservedState)
+	suite.run(t, "FailedCaptureIdentityPersistsAndRollsBack", testFailedCaptureIdentityPersistsAndRollsBack)
 	suite.run(t, "FailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement", testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlement)
 	suite.run(t, "ExternalSourceHashPrunesExplicitBoundaryAndOldEpoch", testExternalSourceHashPrunesExplicitBoundaryAndOldEpoch)
 	suite.run(t, "ExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies", testExternalResourceVolumeIncludesTemporaryHistoryAndTimelineCopies)
@@ -53,6 +54,39 @@ func TestSessionImageStore(t *testing.T) {
 	suite.run(t, "SavedResourceVisibilityRequiresActorOrPublishedReference", testSavedResourceVisibilityRequiresActorOrPublishedReference)
 	suite.run(t, "ExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion", testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion)
 	suite.run(t, "ExternalMediaLedgerReconnectCaptureAndAdmission", testExternalMediaLedgerReconnectCaptureAndAdmission)
+}
+
+func testFailedCaptureIdentityPersistsAndRollsBack(t *testing.T, db *postgres.Store) {
+	id, _ := prepareImageSession(t, db)
+	request := sp.ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "content", SourceKey: uuid.NewString()}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
+	row := store.SessionCaptureRecord{SessionID: id, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: request.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "failed", Error: &sp.ImageError{Code: "quota_exceeded", Message: "Capacity exhausted."}}}
+	rejected := errors.New("rollback failure receipt")
+	completion, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+		if err := scope.SessionDAO().(store.SessionResourceDAO).SaveSessionCapture(t.Context(), row); err != nil {
+			return err
+		}
+		return rejected
+	})
+	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, rejected) {
+		t.Fatalf("failed receipt rollback: %+v %v", completion, err)
+	}
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		_, err := d.(store.SessionResourceDAO).SessionCapture(t.Context(), id, request.CaptureID)
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("rolled back receipt was visible: %v", err)
+		}
+		return nil
+	})
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		return d.(store.SessionResourceDAO).SaveSessionCapture(t.Context(), row)
+	})
+	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
+		got, err := d.(store.SessionResourceDAO).SessionCapture(t.Context(), id, request.CaptureID)
+		if err == nil && !reflect.DeepEqual(got, row) {
+			t.Fatalf("failed receipt changed on readback: got=%+v want=%+v", got, row)
+		}
+		return err
+	})
 }
 
 func testExternalCaptureWritesCompareExactObservedState(t *testing.T, db *postgres.Store) {

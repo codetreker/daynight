@@ -84,5 +84,16 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	if hasMore {
 		items = items[:limit]
 	}
+	ids := make([]string, len(items))
+	for i := range items {
+		ids[i] = items[i].Task.ID
+	}
+	tags, err := pg.LoadTaskTagsBatch(ctx, s.tx, projectID, ids)
+	if err != nil {
+		return store.TaskPriorityPage{}, err
+	}
+	for i := range items {
+		items[i].Task.Tags = tags[items[i].Task.ID]
+	}
 	return store.TaskPriorityPage{Items: items, HasMore: hasMore}, nil
 }

@@ -82,7 +82,9 @@ remain enforced; database and backup readers can read retained credentials.
 
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
-The [single-Project executor](../../docs/design/github-sync-executor.md) provides callable synchronization; the service does not yet expose a connection endpoint or schedule it.
+The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
+the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
+describes management, scheduling and resource lifecycle.
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
@@ -201,6 +203,18 @@ Worker administrator checks consume access, while claim ownership and acquisitio
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
+Project members manage the tag catalog through `/api/v1/projects/{projectId}/tags`:
+list, create, read, rename and confirmed deletion use stable IDs and original
+versions. List cursors bind the project, principal, query, page size and catalog
+epoch; `/tags/resolve` validates the complete selection within a bounded response.
+Visible Task and Goal usage counts are snapshot hints, while deletion removes all
+associations under the Project write lock. Task and Goal PATCH accepts the complete
+`tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
+and tag changes commit atomically with one version increment. Full, list, ready,
+search and sync results contain the current `tags` array, including `[]` when
+empty. Tag rename and deletion reach associated Tasks through ordinary sync
+without rotating the task cache epoch. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
+and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph, attachment and Worker route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing
@@ -253,7 +267,7 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
-one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact
 version, retained unsatisfied prerequisites and ready state in snapshots; deltas
 patch owners whose own or direct prerequisite's update falls in the window.
@@ -547,7 +561,7 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing, removal,
+and writes, Project tag catalog management, Task discussion reads and posts, and attachment listing, removal,
 bounded reads and inline or resumable upload. The [attachment design](../../docs/design/daynight-task-attachments.md)
 owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
@@ -575,6 +589,15 @@ states. Team and membership versions are decimal strings, and list results use
 scoped cursors. Team, member, scoped Project, invitation and attachment pages
 use ordinary candidate batches and item-count continuation. Reads preserve full
 items without field-budget admission or repeated prefix encoding.
+
+`tag_list`, `tag_show`, `tag_create`, `tag_rename` and `tag_delete` use the
+shared Project tag service and Control permits. Catalog pages default to 50
+items (maximum 100), return `catalogEpoch` and bind the cursor to the Project,
+principal, query, limit and epoch. Tag versions are exact positive decimal
+strings; rename and deletion require the observed `ifVersion`, and deletion
+also requires `confirm: true`. Usage counts are snapshot hints, not a deletion
+condition. Mutation results retain confirmed, not committed or unknown completion;
+an unknown creation or deletion must not be replayed blindly.
 
 `project_resolve` reads the unique accessible Project for a supplied repository
 address, returning its ID in `data.id`. Equivalent HTTPS, SSH and SCP addresses
@@ -822,8 +845,15 @@ diagnostics and cause categories.
 GitHub App settings are validated locally on startup when enabled; invalid keys or
 missing credentials stop startup without exposing their contents. Relative key paths
 resolve from the configuration root. The [remote design](../../docs/design/github-app-remote.md)
-describes token handling and the read contract. These settings alone do not start a
-synchronization worker or expose a connection endpoint.
+describes token handling and the read contract. When enabled, the server starts
+the bounded synchronization worker and exposes Project administrator connection
+and settings operations. Configure the GitHub App with Pull requests read access
+and install it on the target repository. Set the App's HTTPS webhook URL to
+`/api/v1/github/webhook`, configure the same webhook secret, and subscribe to
+pull request and installation lifecycle events. The reverse proxy must allow a
+26,214,400-byte request body. The receiver persists refresh hints before
+acknowledging relevant deliveries; polling repairs missed deliveries. See the
+[connection and scheduler design](../../docs/design/github-connection-runtime.md).
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
@@ -3610,3 +3640,7 @@ success, do not restore the old release writer. Existing Web readers accept a
 missing worker, but an old CLI cannot validate the new release response. The
 migration preserves task status, timing, ordinary materials and Session/archive
 history while updating affected task versions and project cache epochs.
+
+## Account in-progress Task reads
+
+`GET /api/v1/me/in-progress-tasks` returns a lightweight, authenticated cross-project page of the caller's in-progress ordinary Tasks, with complete project counts, actual Parent Goal context and existing Session observations. The [API contract](../../docs/spec/daynight-personal-in-progress-tasks.md) defines ordering, cursor, revision, errors and partial observation semantics. The [server design](../../docs/design/daynight-server.md#账号进行中任务读取) describes snapshot and authorization checks and the cost of aggregating all Task history in active projects.

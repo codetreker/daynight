@@ -17,6 +17,7 @@ current authorization.
 | Operation | Read |
 | --- | --- |
 | Connect; select a Project; manage Teams, Projects or invitations | [Setup and projects](references/setup-and-projects.md) |
+| Manage the Project tag catalog | [Project tag catalog](references/setup-and-projects.md#project-tag-catalog) |
 | Create/query/change Tasks, status, properties or dependencies | [Tasks](references/tasks.md) |
 | Read/maintain ordered Task Steps | [Steps](references/steps.md) |
 | Organize Goal outcomes and progress; read/write descriptions, attachments or discussion Threads | [Materials](references/materials.md) |
@@ -25,3 +26,4 @@ current authorization.
 | Send an authorized message; recover its original result | [Session messages](references/session-messages.md); also Session reads if target/execution identity is unknown |
 | Configure Webhooks; inspect deliveries or receipts | [Webhooks](references/webhooks.md) |
 | Manage Workers; pause execution; complete an assigned claim | [Worker operations](references/worker-operations.md) |
+| Collaborate on assistant tasks, claims, manuals, records, inquiries and events | [Assistant tasks](references/assistant-tasks.md) |

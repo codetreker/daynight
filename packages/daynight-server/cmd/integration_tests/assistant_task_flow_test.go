@@ -276,6 +276,22 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if readTask().State != "active" {
 		t.Fatal("resume did not persist")
 	}
+	editedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodPatch, base+"/appendix/"+appendix.ID, map[string]any{
+		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.",
+	}, http.StatusOK)
+	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) {
+		t.Fatalf("appendix edit differs: %+v", editedAppendix)
+	}
+	deletedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodDelete, base+"/appendix/"+appendix.ID, map[string]any{
+		"ifVersion": strconv.FormatInt(readTask().Version, 10),
+	}, http.StatusOK)
+	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 {
+		t.Fatalf("appendix deletion differs: %+v", deletedAppendix)
+	}
+	deletedAppendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, f, http.MethodGet, base+"/appendix?state=deleted", nil, http.StatusOK)
+	if value := expectID(t, deletedAppendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != "" || len(value.SourceRecords) != 0 || value.Version != deletedAppendix.Version {
+		t.Fatalf("appendix deletion did not persist: %+v", value)
+	}
 	deleted := requestJSON[api.AssistantTask](t, f, http.MethodDelete, base, map[string]any{"ifVersion": strconv.FormatInt(readTask().Version, 10)}, http.StatusOK)
 	if deleted.ID != id || deleted.State != "deleted" {
 		t.Fatalf("deletion differs: %+v", deleted)

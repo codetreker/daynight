@@ -207,11 +207,16 @@ export class TaskDetailSessions {
           continue;
         }
         if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
-          entry.directAccessPending = false; entry.admitted = true;
-          if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
-          else if (entry.listeners.size > 0) queueMicrotask(() => {
-            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
-          });
+          if (event.error !== undefined) {
+            if (!event.scopeSuspended) entry.admitted = true;
+            this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          }
+          else {
+            entry.directAccessPending = false; entry.admitted = true;
+            if (entry.listeners.size > 0) queueMicrotask(() => {
+              if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+            });
+          }
           continue;
         }
         if (entry.source === "direct" && event.accessRevoked && entry.directAccessPending) {
@@ -368,6 +373,12 @@ export class TaskDetailSessions {
     entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.directAccessPending = false; entry.receipt = null; entry.admitted = true;
     entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
     entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
+    const isolation = this.scope.enrollDirectProject(projectId);
+    if (isolation !== null) {
+      entry.directAccessPending = true; entry.admitted = false;
+      this.publish(entry, { ...initialState(), revision: 1, status: isolation.error === null ? "loading" : "error", error: isolation.error });
+      return;
+    }
     this.publish(entry, { ...initialState(), revision: 1 });
     this.load(projectId, taskId, 1, "open");
   }
@@ -774,6 +785,10 @@ export class TaskDetailSessions {
   load(projectId: string, taskId: string, revision: number, mode: "open" | "refresh" | "automatic" = "refresh"): void {
     const entry = this.entry(projectId, taskId);
     if (authRequestsPaused()) return;
+    if (mode === "refresh" && entry.source === "direct" && entry.directAccessPending) {
+      this.scope.retryProjectVerification(projectId);
+      return;
+    }
     if (mode === "refresh") {
       for (const [operation, retired] of this.retiredMutations) if (retired.projectId === projectId && retired.taskId === taskId && retired.phase !== "pending" && !retired.reconciling) this.finishRetiredMutation(operation, retired.phase === "confirmed", retired.error);
     }
@@ -958,6 +973,9 @@ export class TaskDetailSessions {
       }
       const detail = await this.getParent(entry, ticket, signal);
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
+      if (openingGeneration === entry.openingGeneration && entry.admitted && !this.scope.hasIdentityMismatch &&
+        entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
+        this.scope.canRevokeProject(ticket)) this.scope.markProjectReadable(projectId);
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || this.scope.hasIdentityMismatch || !retain && !reconciliation && isAbortError(error)) return;
@@ -1014,6 +1032,7 @@ export class TaskDetailSessions {
         throw new ApiError("protocol");
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
+      this.scope.markProjectReadable(projectId);
       entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const currentMutation = entry.state.mutation;
       const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);

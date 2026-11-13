@@ -11,9 +11,11 @@ the members page already provides the role and its source.
 ## Decision
 
 The shared project header displays the members and settings links without a
-current-user role badge. Pending access reserves the geometry of those localized
-links outside the accessibility tree. The members page retains effective roles,
-their sources and permission controls; access checks remain unchanged.
+current-user role badge. Until the independent Project read supplies the links,
+the header reserves their localized geometry outside the accessibility tree.
+The members page retains effective roles, their sources and permission controls.
+The [project read decision](../architecture/2026-11-13-project-page-independent-read.md)
+records its separate admission and withdrawal boundary.
 
 The [earlier header decision](../../archived/bug-fix/2026-10-23-project-header-layout-shift.md)
 records why asynchronous access must not move restored content. Its role-width
@@ -30,5 +32,5 @@ would leave unused space and unnecessarily constrain long project titles.
 ## Consequences
 
 Admin and member headers use the same action geometry in both languages.
-Access loading can preserve title wrapping and restored scroll position without
-reserving role width. Users consult the members page for role details.
+The link reservation preserves title wrapping and restored scroll position
+without reserving role width. Users consult the members page for role details.

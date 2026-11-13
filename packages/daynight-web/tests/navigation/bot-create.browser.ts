@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId, botWorkerDefaults } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId, botWorkerDefaults } from '../helpers/bots';
 import type { CreateBotInput } from '../../src/api/bots';
 
 const workerName = '工作站 Workstation '.repeat(8), directory = '/projects/' + '很长的目录-long-directory/'.repeat(8);
@@ -10,10 +10,11 @@ async function install(page: Page, options: { nativeDefault?: boolean; hiddenDef
   let unknown = false, noWorker = false, capabilityError = false, paginated = false;
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     if (path === '/api/v1/me') return send({ id: BOT_USER, personalTeam: personal, name: 'Creation fixture', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personal.id}`) return send({ ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personal.id, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } });
+    if (path === '/api/v1/assistant-tasks') return send({items:[],nextCursor:null,observedAt:BOT_TIME});
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/bots/defaults') {
       if (noWorker) return send({ ...botDefaults(), workerId: null, configuration: null, workers: [], reason: 'no_available_worker' });

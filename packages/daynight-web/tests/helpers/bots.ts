@@ -19,3 +19,6 @@ export const botResponse = (value: unknown, principal: string | null = BOT_USER,
   status, headers: { 'Content-Type': 'application/json', 'Daynight-Bot-Attention': '1', ...(principal === null ? {} : { 'Daynight-User-ID': principal }) },
 });
 export const botError = (status: number, code: string, principal: string | null = BOT_USER) => botResponse({ error: { code, message: 'Bot request failed.', requestId: 'bot-request' } }, principal, status);
+
+export const botAttentionHeaders = (requestHeaders: Readonly<Record<string, string>>, status = 200): Record<string, string> =>
+  status === 200 && requestHeaders['daynight-bot-attention'] === '1' ? { 'Daynight-Bot-Attention': '1' } : {};

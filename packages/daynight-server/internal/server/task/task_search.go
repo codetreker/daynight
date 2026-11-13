@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -100,7 +101,7 @@ func searchResponse(page tasksearch.Page) api.TaskSearchPage {
 		if item.Context != nil {
 			c = &api.TaskSearchContext{TaskID: item.Context.TaskID, Title: item.Context.Title}
 		}
-		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, Type: string(item.Type), ParentID: item.ParentID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
+		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, Type: string(item.Type), ParentID: item.ParentID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}, Tags: taskprotocol.RESTTags(item.Tags)})
 	}
 	return out
 }

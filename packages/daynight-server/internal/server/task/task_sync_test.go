@@ -39,7 +39,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	result := syncModel()
 	result.Tasks = []model.TaskViewRecord{
-		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&标签"}}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
 		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
 	result.DependencyStates = map[string]model.TaskDependencyState{
@@ -89,7 +89,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		}
 	}
 	for _, item := range raw.Tasks {
-		if len(item) != 18 {
+		if len(item) != 19 {
 			t.Fatalf("unexpected summary fields: %+v", item)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {
@@ -97,6 +97,9 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 				t.Fatalf("summary exposes %s", field)
 			}
 		}
+	}
+	if string(raw.Tasks[0]["tags"]) != `[{"id":"tag-id","name":"\u003c\u0026标签"}]` || string(raw.Tasks[1]["tags"]) != `[]` {
+		t.Fatalf("sync tags: %s %s", raw.Tasks[0]["tags"], raw.Tasks[1]["tags"])
 	}
 	if string(raw.Tasks[0]["type"]) != `"task"` || string(raw.Tasks[0]["parentId"]) != `"`+parent+`"` || string(raw.Tasks[1]["parentId"]) != "null" {
 		t.Fatalf("typed sync fields: %+v %+v", raw.Tasks[0], raw.Tasks[1])

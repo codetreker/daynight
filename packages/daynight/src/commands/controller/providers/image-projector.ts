@@ -2,6 +2,7 @@ import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt,
 import type { MarkdownTimelineMetadata, NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
 import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
+import { ImageCapturePrerequisiteError, ImageCaptureRequestError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 
 export type NativeImagePayload =
   | { kind: "resource"; resourceId: string }
@@ -30,6 +31,7 @@ const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.o
 export class ProviderImageProjector {
   private readonly pending = new Map<string, Pending>();
   private readonly cleanup = new Set<NativeImagePayload>();
+  private readonly registerRetryAt = new Map<string, number>();
   private work: Promise<void> = Promise.resolve();
   private scheduled = false;
   private requested = false;
@@ -247,10 +249,14 @@ export class ProviderImageProjector {
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "component_unsupported", message: "The native image capture component is unavailable." });
       this.emitPart(pending); this.release(pending); this.pending.delete(request.occurrence.imageId); return;
     }
+    let registerRefusal = false;
+    let controlRefusal: "commit" | "failure" | null = null;
     try {
       if (pending.saved.phase === "new") {
+        if (Date.now() < (this.registerRetryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
+        this.registerRetryAt.delete(request.captureId);
         pending.saved.phase = "query"; pending.saved.unknownAction = "register"; this.save(pending);
-        const receipt = await options.registerImageCapture(request);
+        const receipt = await options.registerImageCapture(request).catch(error => { registerRefusal = error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError || isRetryableCaptureRefusal(error); throw error; });
         if (this.applyReceipt(pending, receipt)) return;
         pending.saved.phase = receipt.state === "reserved" ? "reserved" : "query"; pending.saved.unknownAction = null; this.save(pending);
       } else if (pending.saved.phase === "query") {
@@ -280,31 +286,61 @@ export class ProviderImageProjector {
             if (this.stopped) { this.release(pending); return; }
           }
           if (payload.kind !== "file") {
-            pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
             const error = payload.kind === "unavailable" ? payload.error : { code: "resource_unavailable", message: "The original uploaded image could not be associated." };
-            this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, error)); return;
-          }
-          try {
+            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, error);
+            pending.saved.phase = "failure"; this.save(pending);
+          } else try {
             pending.saved.validated = await options.stageImageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: payload.path, byteLength: payload.byteLength, sha256: payload.sha256 });
           } catch {
             // Staging has joined its owned reader/decoder. No service commit
             // has been invoked, so this is a source failure, not a lost commit.
-            pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
-            this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." })); return;
+            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." });
+            pending.saved.phase = "failure"; this.save(pending);
           }
-          this.save(pending); this.release(pending);
+          if (pending.saved.phase === "reserved") { this.save(pending); this.release(pending); }
         }
-        pending.saved.phase = "commit"; this.save(pending);
+        if (pending.saved.phase === "reserved") { pending.saved.phase = "commit"; this.save(pending); }
+      }
+      if (pending.saved.phase === "failure") {
+        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
+        if (pending.saved.part.type !== "image_unavailable") throw new Error("Native image capture failure is missing.");
+        const failure = pending.saved.part.error;
+        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
+        if (this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, failure).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "failure"; throw error; }))) return;
       }
       if (pending.saved.phase === "commit") {
+        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
         const validated = pending.saved.validated;
         if (!validated) throw new Error("Native image capture validation is missing.");
-        pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
-        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated))) return;
+        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
+        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "commit"; throw error; }))) return;
       }
       this.scheduleQuery();
-    } catch {
+    } catch (error) {
       if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
+      if (controlRefusal && isRetryableCaptureRefusal(error)) {
+        const action = controlRefusal;
+        pending.saved.phase = action; pending.saved.unknownAction = null; pending.saved.retryAt = Date.now() + 1000;
+        try { this.save(pending); } catch (saveError) {
+          pending.saved.phase = "query"; pending.saved.unknownAction = action; delete pending.saved.retryAt;
+          throw saveError;
+        }
+        this.scheduleQuery(); return;
+      }
+      if (registerRefusal && isRetryableCaptureRefusal(error)) {
+        // Admission preceded registration, so the same frozen request remains eligible.
+        pending.saved.phase = "new"; pending.saved.unknownAction = null;
+        this.registerRetryAt.set(request.captureId, Date.now() + 1000);
+        this.save(pending); this.scheduleQuery(); return;
+      }
+      if (registerRefusal && (error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) {
+        // A correlated refusal is a known request result, not a lost receipt.
+        // Keep the original identity without inventing a service receipt.
+        pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });
+        pending.saved.phase = "settled"; pending.saved.unknownAction = null;
+        try { this.save(pending); this.emitPart(pending); this.retire(pending); } catch { this.scheduleQuery(); }
+        return;
+      }
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "capture_unknown", message: "The original image capture result is unknown." });
       // Reconciliation retains the same capture and attempt. It never repeats
       // register or commit after a response with an unknown outcome.

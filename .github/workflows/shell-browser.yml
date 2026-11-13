@@ -87,6 +87,9 @@ jobs:
         env:
           PLAYWRIGHT_JUNIT_OUTPUT_FILE: ${{ github.workspace }}/packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml
         run: pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/bots-viewport-playwright.config.ts --reporter=line,junit
+      - name: Verify Session draft browser regressions
+        id: session-drafts-browser
+        run: pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/session-drafts-playwright.config.ts
       - name: Upload frontend assistant browser evidence
         if: ${{ always() && steps.web-browser.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -95,6 +98,18 @@ jobs:
           path: |
             packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml
             packages/daynight-web/.tmp/acceptance/bots-viewport/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Session draft browser evidence
+        if: ${{ always() && steps.session-drafts-browser.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-web-session-drafts-browser
+          path: |
+            packages/daynight-web/.tmp/session-drafts-browser/results.json
+            packages/daynight-web/.tmp/session-drafts-browser/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

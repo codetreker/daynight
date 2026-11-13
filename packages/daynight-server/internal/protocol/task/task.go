@@ -20,6 +20,7 @@ import (
 type REST struct {
 	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Properties        map[string]json.RawMessage `json:"properties"`
+	Tags              []RESTTagReference         `json:"tags"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
 	Type              model.TaskType             `json:"type"`
@@ -42,9 +43,15 @@ type REST struct {
 	Ready             bool                       `json:"ready"`
 }
 
+type RESTTagReference struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // SyncRecord is the REST projection shared by sync accounting and output.
 type SyncRecord struct {
 	Properties        map[string]json.RawMessage `json:"properties"`
+	Tags              []RESTTagReference         `json:"tags"`
 	ID                string                     `json:"id"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
@@ -70,7 +77,7 @@ func RESTSyncRecord(t model.TaskViewRecord) SyncRecord {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	return SyncRecord{Properties: properties(t.Properties, false), ID: t.ID, Type: t.Type, ParentID: t.ParentID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
+	return SyncRecord{Properties: properties(t.Properties, false), Tags: RESTTags(t.Tags), ID: t.ID, Type: t.Type, ParentID: t.ParentID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
 		Status: string(t.Status), Version: strconv.FormatInt(t.Version, 10), DependsOn: array(t.DependsOn, false), ExternalDependsOn: array(t.ExternalDependsOn, false),
 		RequiredPlatform: platform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt)}
@@ -88,13 +95,20 @@ func optionalTime(value *time.Time) *time.Time {
 	return &v
 }
 func RESTTask(t model.Task, extended bool) (REST, error) { return restTask(t, extended, true) }
+func RESTTags(tags []model.TagReference) []RESTTagReference {
+	result := make([]RESTTagReference, len(tags))
+	for i, tag := range tags {
+		result[i] = RESTTagReference{ID: tag.ID, Name: tag.Name}
+	}
+	return result
+}
 func restTask(t model.Task, extended, copyValues bool) (REST, error) {
 	var platform *string
 	if t.RequiredPlatform != nil {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
+	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Tags: RESTTags(t.Tags), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
 	if extended {
 		return result, nil
 	}

@@ -1,3 +1,5 @@
+import { expectTextContrast, roleColors } from './color-roles';
+import type { TaskDetail } from '../../src/api/types';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
@@ -31,11 +33,11 @@ async function expectChainTimeLayout(header: Locator) {
   expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
 
-async function install(page: Page, timing = false, completion = false, title = 'Reading task') {
+async function install(page: Page, timing = false, completion = false, title = 'Reading task', variants?: readonly TaskDetail[]) {
   const task = detailFixture(projectId, taskId, { title, description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
   const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
-  const details = timing || completion ? [task, successor, standalone] : [task]; const graph = graphFixture(details);
+  const details = variants ?? (timing || completion ? [task, successor, standalone] : [task]); const graph = graphFixture(details);
   const message = { id: messageId, author: { userId: TEST_VIEWER_ID, displayName: 'Reader', Agent: false }, body: 'Discussion text', createdAt: '2026-10-20T09:00:00.000Z' };
   const state = { writes: [] as string[], holdSync: null as Promise<void> | null, syncReads: 0 };
   await page.context().route('**/api/v1/**', async route => {
@@ -47,7 +49,7 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: () => task.properties })); }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -195,6 +197,10 @@ test('mouse can reach the completion hint above a long chain title near the view
   await label.hover();
   const hint = header.getByRole('tooltip');
   await expect(hint).toBeVisible();
+  await expect.poll(async () => {
+    const labelBox = (await label.boundingBox())!, hintBox = (await hint.boundingBox())!;
+    return { above: hintBox.y + hintBox.height <= labelBox.y, reachable: labelBox.y - hintBox.y - hintBox.height <= 18 };
+  }).toEqual({ above: true, reachable: true });
   const labelBox = (await label.boundingBox())!, hintBox = (await hint.boundingBox())!;
   expect(hintBox.y + hintBox.height).toBeLessThanOrEqual(labelBox.y);
   expect(labelBox.y - (hintBox.y + hintBox.height)).toBeLessThanOrEqual(18);
@@ -302,5 +308,76 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await reader.goBack(); await expect(input).toHaveValue('Retained draft');
     await input.focus(); await expect(input).toBeFocused();
     expect(state.writes).toEqual([]); await reader.close();
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
+  test(`semantic lifecycle roles remain distinct from attention at ${width}px in ${locale}`, async ({ page }) => {
+    const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
+    const ids = statuses.map((_, index) => `00000000-0000-4000-8000-${String(60 + index).padStart(12, '0')}`);
+    const overdueId = '00000000-0000-4000-8000-000000000065', blockedId = '00000000-0000-4000-8000-000000000066';
+    const details = statuses.map((status, index) => detailFixture(projectId, ids[index]!, {
+      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo',
+      completedAt: status === 'done' ? '2026-10-22T09:59:50Z' : null,
+      cancelledAt: status === 'cancelled' ? '2026-10-22T09:59:55Z' : null,
+      properties: { pullRequests: [], ...(status === 'in_progress' ? { paused: true } : {}) },
+    }));
+    details.push(detailFixture(projectId, overdueId, { title: 'Overdue task', version: 5n, status: 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T08:00:00Z' }));
+    details.push(detailFixture(projectId, taskId, { title: 'Proposed chain', version: 5n, status: 'proposed', ready: false, dependsOn: [ids[3]!, overdueId], externalDependsOn: [ids[3]!, overdueId] }));
+    details.push(detailFixture(projectId, successorId, { title: 'Proposed successor', version: 5n, status: 'proposed', ready: false, dependsOn: [taskId], blockedBy: [taskId] }));
+    details.push(detailFixture(projectId, blockedId, { title: 'Blocked task', version: 5n, dependsOn: [taskId], externalDependsOn: [taskId], ready: false, blockedBy: [taskId] }));
+    const state = await install(page, false, false, 'Reading task', details);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    for (const [index, status] of statuses.entries()) {
+      const row = page.locator(`#standalone-task-${ids[index]}`);
+      await expect(row).toHaveAttribute('data-task-status', status);
+      await page.mouse.move(0, 0);
+      await expect(row).toHaveCSS('background-color', roleColors[status][0]);
+      await expect(row).toHaveCSS('border-top-color', roleColors[status][2]);
+      await expect(row).toHaveCSS('opacity', '1');
+      await expect(row.locator('.task-agent-permission')).toHaveCSS('color', roleColors.todo[3]);
+      await expect(row.locator('.task-agent-permission')).toHaveCSS('background-color', roleColors.todo[0]);
+      for (const hover of [false, true]) {
+        if (hover) await row.hover();
+        await expect(row).toHaveCSS('background-color', roleColors[status][hover ? 1 : 0]);
+        for (const selector of ['.root-title', '.root-meta', '.root-status', '.task-agent-permission']) await expectTextContrast(row.locator(selector));
+      }
+    }
+    const overdue = page.locator(`#standalone-task-${overdueId}`), blocked = page.locator(`#standalone-task-${blockedId}`);
+    await page.mouse.move(0, 0);
+    await expect(overdue).toHaveCSS('background-color', roleColors.attention[0]);
+    await expect(overdue.locator('.root-status')).toHaveCSS('color', roleColors.in_progress[3]);
+    await expect(overdue.locator('.task-stuck-label')).toBeVisible();
+    await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
+    await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
+    await expect(page.locator(`#standalone-task-${ids[2]} .task-paused-badge`)).toHaveCSS('color', roleColors.attention[3]);
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    const chain = page.locator(`[data-chain-id="${taskId}"]`), header = chain.locator('.goal-header');
+    await expect(header).toHaveCSS('background-color', roleColors.proposed[0]);
+    await expect(header.locator('.root-progress-track i')).toHaveCSS('background-color', roleColors.done[3]);
+    await header.locator('[aria-expanded]').click();
+    await expect(chain.locator('.goal-task-row')).toHaveCSS('background-color', roleColors.proposed[0]);
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const node = page.locator(`.react-flow__node[data-id="${taskId}"] .task-node`);
+    const body = node.locator('.task-node-body');
+    await page.mouse.move(0, 0);
+    await expect(node).toHaveCSS('background-color', roleColors.proposed[0]);
+    await body.click();
+    await body.press('Tab'); await page.keyboard.press('Shift+Tab');
+    await expect(body).toBeFocused();
+    await expect(node).toHaveCSS('outline-color', 'rgb(82, 100, 155)');
+    await expect(node).toHaveCSS('outline-width', '2px');
+    await expect(body).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
+    await expect(body).toHaveCSS('outline-width', '2px');
+    await expect(body).toHaveCSS('outline-offset', '-3px');
+    for (const selector of ['.task-node-title', '.task-node-meta', '.graph-status']) await expectTextContrast(node.locator(selector));
+    await expect(page.locator(`.react-flow__node[data-id="${ids[3]}"] .task-node`)).toHaveCSS('background-color', roleColors.done[0]);
+    await expect(page.locator(`.react-flow__node[data-id="${overdueId}"] .task-node`)).toHaveCSS('background-color', roleColors.attention[0]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(state.writes).toEqual([]);
   });
 }

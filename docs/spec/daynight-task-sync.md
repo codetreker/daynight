@@ -1,5 +1,7 @@
 # Web 任务缓存与增量同步需求
 
+服务端每条同步摘要包含必填 `tags:[{id,name}]`，无关联时为 `[]`。标签改名和删除通过关联条目的新 version 和 updatedAt 出现在普通增量中，不轮换任务缓存 epoch；每条普通 Task 的依赖状态与摘要版本一致。
+
 状态：服务端窗口摘要及完整属性、配置、身份响应头、epoch 和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 11、原子合并、权威依赖状态与本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
 
 [架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，以及必填 Type/Parent；摘要单独保存普通 Task 的权威依赖状态。schema 11 在严格解析前重建任务内容，并保留人员内容和用户身份；完整 snapshot 可清除可重取的 Session 目录。

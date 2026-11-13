@@ -33,6 +33,7 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 	}
 	m = prepared
 	var out map[string]any
+	var captureError *CaptureRequestError
 	err = s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, t task) error {
 		if check != nil {
 			if err := check(tx, r); err != nil {
@@ -65,6 +66,9 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 			out = envelope(r, "sync_ack")
 		case "image_capture":
 			out, err = s.captureMessage(ctx, tx, r, m)
+			if refusal, ok := err.(*CaptureRequestError); ok {
+				captureError, err = refusal, nil
+			}
 		case "image_response":
 			out, err = s.acceptMediaResponse(ctx, tx, r, m)
 		case "content_response":
@@ -111,7 +115,13 @@ func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[s
 		}
 		return save(ctx, tx, r)
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if captureError != nil {
+		return nil, captureError
+	}
+	return out, nil
 }
 func (s *Execution) applyState(ctx context.Context, tx *operationTx, r *record, state sp.State) error {
 	v := &r.Snapshot

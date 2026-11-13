@@ -473,7 +473,7 @@ func lifecycleMutationCalls(patch bool) map[string]int {
 func assertLifecycleTask(t *testing.T, actual api.Task, expected model.Task) {
 	t.Helper()
 	expected = copyTaskHTTPTask(expected)
-	resource := api.Task{ID: expected.ID, Type: expected.Type, ParentID: expected.ParentID, ProjectID: expected.ProjectID, Title: expected.Title, Description: expected.Description, Properties: api.TaskProperties(expected.Properties), Status: string(expected.Status), Version: expected.Version, CreatedAt: expected.CreatedAt, UpdatedAt: expected.UpdatedAt, StartedAt: expected.StartedAt, CompletedAt: expected.CompletedAt, CancelledAt: expected.CancelledAt, DependsOn: expected.DependsOn, ExternalDependsOn: expected.ExternalDependsOn, BlockedBy: expected.BlockedBy, AssignedTo: expected.AssignedTo, AllowAgents: expected.AllowAgents, Ready: expected.Ready}
+	resource := api.Task{ID: expected.ID, Type: expected.Type, ParentID: expected.ParentID, ProjectID: expected.ProjectID, Title: expected.Title, Description: expected.Description, Properties: api.TaskProperties(expected.Properties), Tags: tagHTTPReferences(expected.Tags), Status: string(expected.Status), Version: expected.Version, CreatedAt: expected.CreatedAt, UpdatedAt: expected.UpdatedAt, StartedAt: expected.StartedAt, CompletedAt: expected.CompletedAt, CancelledAt: expected.CancelledAt, DependsOn: expected.DependsOn, ExternalDependsOn: expected.ExternalDependsOn, BlockedBy: expected.BlockedBy, AssignedTo: expected.AssignedTo, AllowAgents: expected.AllowAgents, Ready: expected.Ready}
 	if !reflect.DeepEqual(actual, resource) {
 		t.Fatalf("lifecycle result=%#v want=%#v", actual, resource)
 	}

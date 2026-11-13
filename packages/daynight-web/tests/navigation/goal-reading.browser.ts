@@ -1,3 +1,4 @@
+import { expectTextContrast, roleColors } from './color-roles';
 import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
@@ -95,6 +96,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
@@ -171,6 +173,22 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === singleId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: time } : item);
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, cancelChildren: () => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    details = details.map(item => item.parentId === goalId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: changedAt } : item);
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, progressChains: () => {
+    const make = (base: number, parentId: string | null, title: string) => {
+      const id = (n: number) => `00000000-0000-4000-8000-${String(base + n).padStart(12, '0')}`;
+      return Array.from({ length: 9 }, (_, n) => detailFixture(projectId, id(n), {
+        title: n === 0 ? title : `${title} member ${n}`, parentId,
+        status: n < 4 ? 'done' : n < 6 ? 'todo' : 'cancelled',
+        completedAt: n < 4 ? time : null, cancelledAt: n >= 6 ? time : null,
+        dependsOn: n === 0 ? [] : [id(0)], blockedBy: [], ready: n >= 4 && n < 6,
+      }));
+    };
+    details = [goal, ...make(300, goalId, 'Scoped progress chain'), ...make(500, null, 'Overview progress chain')];
+    currentGraph = graphFixture(details);
   }, completionGoal: (layout = false) => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     const outside = detailFixture(projectId, outsideId, { title: layout ? longChainTitle : 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z', ...(layout ? { assignedTo: TEST_VIEWER_ID } : {}) });
@@ -232,6 +250,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     details = details.map(item => item.id === firstId ? { ...item, assignedTo: TEST_VIEWER_ID, status: 'in_progress', startedAt: time, ready: false, properties: { worker } } : item);
     currentGraph = graphFixture(details);
+  }, moveActiveGoalChild: () => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    details = details.map(item => item.id === firstId ? { ...item, parentId: otherGoalId, version: item.version + 1n, updatedAt: changedAt } : item);
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
   }, addGoalExternalChain: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', dependsOn: [singleId], externalDependsOn: [singleId] });
     const outsideChild = detailFixture(projectId, otherTaskId, { title: 'Outside child', dependsOn: [outsideId] });
@@ -294,7 +316,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   await check();
   await page.locator('.goal-detail-surface').getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
   await check();
@@ -328,7 +350,7 @@ test('Goal dialog retains statistics through a failed background graph refresh a
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const aside = page.getByRole('complementary', { name: 'Goal information' });
   const total = aside.locator('dt').filter({ hasText: /^Total tasks$/ }).locator('..').locator('dd');
   await expect(total).toHaveText('3');
@@ -351,7 +373,7 @@ for (const presentation of ['dialog', 'page'] as const) test(`restored Goal time
     await page.goto(`/projects/${projectId}`);
     await page.getByRole('tab', { name: 'Task list', exact: true }).click();
     await page.getByRole('tab', { name: /^Goal/ }).click();
-    await page.locator(`#project-goal-${goalId}`).click();
+    await page.locator(`#project-goal-detail-${goalId}`).click();
   } else await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const surface = page.locator('.goal-detail-surface');
   await restoreGoalGraph(page, surface);
@@ -747,7 +769,7 @@ test('Goal write errors identify refusals without exposing internal diagnostics'
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const dialog = page.getByRole('dialog', { name: 'Goal reading' });
   await dialog.locator('.task-status-trigger').click();
   await dialog.getByRole('menuitemradio', { name: 'In progress' }).click();
@@ -766,7 +788,7 @@ for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editi
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   await page.getByRole('dialog', { name: 'Goal reading' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
   const title = editor.getByLabel('Name', { exact: true });
@@ -802,7 +824,7 @@ test('a closed Goal editor retains an unknown draft and exposes read-only recove
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -834,7 +856,7 @@ for (const mode of ['pending', 'pending-conflict'] as const) test(`a closed Goal
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -881,7 +903,7 @@ for (const width of [1440, 390]) test(`Goal status confirmations preserve childr
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   const status = goalDialog.locator('.task-status-trigger');
   const selectStatus = async (label: string) => {
@@ -986,7 +1008,7 @@ test('a forbidden goal retires its attachment confirmation, while ordinary refre
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   await goalDialog.getByRole('tab', { name: 'Attachments' }).click();
   await goalDialog.getByRole('button', { name: 'More actions: notes.txt' }).click();
@@ -1014,7 +1036,7 @@ for (const width of [1440, 390]) test(`Goal retains reading state and nested key
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await entry.click();
   const goalDialog = page.locator('.goal-detail-surface'); await expect(goalDialog).toBeVisible();
   await expect(goalDialog.locator('[data-goal-task-id]')).toHaveCount(0);
   await goalDialog.getByRole('tab', { name: 'Description', exact: true }).click();
@@ -1086,7 +1108,7 @@ test('cross-goal graph navigation asks before discarding the goal draft', async 
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await expectHit(entry); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await expectHit(entry); await entry.click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click();
   const draft = goalDialog.locator('.thread-composer textarea'); await draft.fill('Keep this Goal draft');
@@ -1112,7 +1134,7 @@ test('a changing chain keeps its open task draft, focus and modal isolation', as
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task' });
@@ -1144,7 +1166,7 @@ test('a nested task and goal draft share one topmost leave confirmation', async 
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await expectHit(entry); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await expectHit(entry); await entry.click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click();
   await goalDialog.locator('.thread-composer textarea').fill('Goal draft');
@@ -1221,7 +1243,7 @@ test('Project nested child retains its draft and closing replaces the parent sel
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task', exact: true });
@@ -1603,6 +1625,79 @@ test('account refresh notice keeps the shared form header and close accessible',
   await expect(dialog.locator('.language-selector')).toHaveCount(0);
 });
 
+for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as const) test(`Progress surfaces agree for mixed chains at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.progressChains();
+  const zh = locale === 'zh-CN';
+  await page.goto(`/projects/${projectId}`);
+  const overall = page.getByRole('region', { name: zh ? '整体进度' : 'Overall progress' });
+  const overviewRow = overall.getByRole('button', { name: /Overview progress chain/ });
+  await expect(overviewRow).toContainText('4 / 6');
+  await expect(overviewRow).toContainText('66%');
+  await expect(overviewRow).toHaveAttribute('aria-label', zh ? /4.*6.*66%/ : /4 \/ 6 completed, 66%/);
+  await expect(overviewRow.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
+  await overviewRow.click();
+  const ordinary = page.locator('[data-chain-id="00000000-0000-4000-8000-000000000500"]');
+  await expect(ordinary.locator('.root-progress-label')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(ordinary.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
+  expect(parseFloat(await ordinary.locator('.root-progress-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
+  await ordinary.locator('.goal-graph-button').click();
+  await expect(page.locator('.task-chain-dialog .task-chain-meta')).toContainText(zh ? '4/6 已完成' : '4/6 completed');
+  await page.locator('.task-chain-dialog .task-chain-close').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await expect(card.locator('.goal-list-progress')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(card.locator('.goal-list-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
+  await card.locator('.goal-list-toggle').click();
+  const scoped = card.locator('[data-chain-id="00000000-0000-4000-8000-000000000300"]');
+  await expect(scoped.locator('.root-progress-label')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(scoped.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
+  expect(parseFloat(await scoped.locator('.root-progress-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const goalGraph = page.locator(`#task-graph-${goalId}`);
+  await expect(goalGraph.locator('.task-chain-meta')).toContainText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(goalGraph.locator('.task-node')).toHaveCount(9);
+  await goalGraph.locator('.task-chain-close').click();
+  await card.locator('.goal-list-detail').click();
+  const info = page.locator('.goal-information');
+  await expect(info.locator('.goal-information-progress')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(info.locator('.goal-information-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
+  expect(parseFloat(await info.locator('.goal-information-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
+  await expect(info.locator('.goal-information-counts').first()).toContainText('9');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal progress excludes cancellations at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  fixture.setGoalTitle('LongGoal名称'.repeat(12));
+  fixture.setGoalStatusFixture('todo', true);
+  fixture.setMixedChildren();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const progress = card.locator('.goal-list-progress');
+  await expect(progress).toHaveText(locale === 'en' ? '2/2 completed' : '2/2 已完成');
+  await expect(progress.locator('i')).toHaveCount(1);
+  expect(await progress.locator('i').evaluate(node => node.style.width)).toBe('100%');
+  const toggle = card.locator('.goal-list-toggle');
+  await toggle.click(); await toggle.focus();
+  fixture.cancelChildren();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(progress).toHaveText(locale === 'en' ? '0/0 completed' : '0/0 已完成');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(card.locator('.goal-list-empty')).toHaveCount(0);
+  expect(await progress.locator('i').evaluate(node => node.style.width)).toBe('0%');
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const goalGraph = page.locator(`#task-graph-${goalId}`);
+  await expect(goalGraph.locator('.task-chain-meta')).toContainText(locale === 'en' ? '0/0 completed' : '0/0 已完成');
+  await expect(goalGraph.locator('.task-node')).toHaveCount(3);
+  await goalGraph.locator('.task-chain-close').click();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal list uses its own status colors at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
@@ -1613,12 +1708,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   const row = card.locator('.goal-list-row');
-  const palette = {
-    todo: ['rgb(241, 243, 246)', 'rgb(232, 236, 241)', 'rgb(216, 223, 232)', 'rgb(89, 101, 121)'],
-    in_progress: ['rgb(235, 242, 255)', 'rgb(223, 234, 255)', 'rgb(187, 207, 242)', 'rgb(48, 95, 168)'],
-    done: ['rgb(234, 246, 239)', 'rgb(221, 239, 229)', 'rgb(191, 220, 201)', 'rgb(36, 109, 74)'],
-    cancelled: ['rgb(243, 239, 247)', 'rgb(235, 229, 241)', 'rgb(214, 203, 223)', 'rgb(112, 92, 128)'],
-  } as const;
+  const palette = roleColors;
   let progress = '';
   for (const status of ['todo', 'in_progress', 'done', 'cancelled'] as const) {
     if (status !== 'todo') {
@@ -1638,13 +1728,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
       if (hover) await row.hover();
       await expect(row).toHaveCSS('background-color', palette[status][hover ? 1 : 0]);
       for (const selector of ['.goal-list-title', '.goal-list-meta', '.task-assignee-identity', '.goal-list-progress', '.root-status']) {
-      const ratio = await row.locator(selector).evaluate(element => {
-        const color = (value: string) => value.match(/\d+/g)!.slice(0, 3).map(Number).map(c => { const n = c / 255; return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4; });
-        const luminance = (value: string) => { const [r, g, b] = color(value); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
-        const style = getComputedStyle(element); const background = style.backgroundColor === 'rgba(0, 0, 0, 0)' ? getComputedStyle(element.closest('.goal-list-row')!).backgroundColor : style.backgroundColor;
-        const a = luminance(style.color), b = luminance(background); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-      });
-        expect(ratio, `${status} ${hover ? 'hover' : 'default'} ${selector}`).toBeGreaterThanOrEqual(4.5);
+        await expectTextContrast(row.locator(selector));
       }
     }
   }
@@ -1656,19 +1740,21 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   fixture.setGoalStatusFixture('cancelled', false);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(row).toHaveAttribute('data-task-status', 'cancelled');
-  const title = card.locator('.goal-list-title');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
   await card.locator('.goal-list-toggle').focus();
   await page.keyboard.press('Tab');
-  await expect(title).toBeFocused();
-  await expect(title).toHaveCSS('outline-color', 'rgb(140, 140, 240)');
+  await expect(detail).toBeFocused();
+  await expect(detail).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
   await page.keyboard.press('Enter');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(title).toBeFocused();
+  await expect(detail).toBeFocused();
   await page.keyboard.press('Space');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(title).toBeFocused();
+  await expect(detail).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(card.locator(`#project-goal-graph-${goalId}`)).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
 });
 
@@ -1700,6 +1786,56 @@ test('Goal and task-chain headers match with an assigned owner on desktop', asyn
   expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);
 });
 
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale, 'Owner');
+  fixture.setGoalStatusFixture('todo', false);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
+  const graph = card.locator(`#project-goal-graph-${goalId}`);
+  const content = card.locator(`#project-goal-children-${goalId}`);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(content).toBeHidden();
+  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
+    const target = toggle.locator(selector);
+    await target.click();
+    await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
+    await expect(content).toBeVisible();
+    await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+    await target.click();
+    await expect(toggle, selector).toHaveAttribute('aria-expanded', 'false');
+    await expect(content).toBeHidden();
+  }
+  const blank = await toggle.evaluate(element => {
+    const r = element.getBoundingClientRect();
+    for (let y = r.top + 2; y < r.bottom - 2; y += 3) for (let x = r.left + 2; x < r.right - 2; x += 3) {
+      if (document.elementFromPoint(x, y) === element) return { x, y };
+    }
+    return null;
+  });
+  expect(blank).not.toBeNull();
+  await page.mouse.click(blank!.x, blank!.y);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  for (const expanded of ['true', 'false'] as const) {
+    await detail.click();
+    await expect(page.locator('.goal-detail-surface')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(detail).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+    await graph.click();
+    await expect(page.locator(`#task-graph-${goalId}`)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(graph).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+    if (expanded === 'true') await toggle.click();
+  }
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
+});
+
 for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
@@ -1712,10 +1848,25 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   const firstGoal = page.locator(`[data-goal-id="${goalId}"]`);
   const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
   await expect(firstGoal.locator('.assignee-name')).toContainText('Long owner name');
+  const firstHeader = firstGoal.locator('.goal-list-toggle');
+  const otherHeader = otherGoal.locator('.goal-list-toggle');
+  const count = locale === 'zh-CN' ? '1 进行中' : '1 in progress';
+  const active = locale === 'zh-CN' ? '自动执行中' : 'Automatic execution active';
+  await expect(firstHeader.locator('.goal-in-progress')).toHaveText(count);
+  await expect(firstHeader.locator('.chain-worker-active')).toHaveText(active);
+  await expect(firstHeader).toHaveAccessibleDescription(new RegExp(`${count}.*${active}`));
+  await expect(firstHeader.locator('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
+  await expect(firstHeader.locator('.chain-worker-active button, .chain-worker-active a')).toHaveCount(0);
+  await expect(otherHeader.locator('.goal-in-progress')).toHaveText(locale === 'zh-CN' ? '0 进行中' : '0 in progress');
+  await expect(otherHeader.locator('.chain-worker-active')).toHaveCount(0);
+  for (const selector of ['.goal-in-progress', '.chain-worker-active']) {
+    expect(await firstHeader.locator(selector).evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  }
+
   const geometry = await firstGoal.locator('.goal-list-row').evaluate(row => {
     const rect = (element: Element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
     const bounds = rect(row);
-    const elements = ['.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status'].map(selector => rect(row.querySelector(selector)!));
+    const elements = ['.goal-list-title', '.goal-in-progress', '.goal-list-meta', '.goal-list-progress', '.root-status'].map(selector => rect(row.querySelector(selector)!));
     return { bounds, elements };
   });
   for (const [index, box] of geometry.elements.entries()) {
@@ -1758,7 +1909,7 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.keyboard.press('Escape');
   await expect(graphDialog).toHaveCount(0);
   await expect(graphButton).toBeFocused();
-  await firstGoal.locator(`#project-goal-${goalId}`).focus(); await page.keyboard.press('Enter');
+  await firstGoal.locator(`#project-goal-detail-${goalId}`).focus(); await page.keyboard.press('Enter');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
@@ -1769,6 +1920,34 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.reload();
   await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
   expect(errors).toEqual([]);
+});
+
+test('Goal summary follows snapshot membership without resetting disclosure or focus', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal(); fixture.addLongGoalListWorker();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const other = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  await toggle.click(); await toggle.focus();
+  await toggle.evaluate(element => { (element as HTMLElement).dataset.testIdentity = 'retained'; });
+  const refresh = async () => {
+    const response = page.waitForResponse(response => response.url().includes('/task-sync') && response.ok());
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await response;
+  };
+  await refresh();
+  await expect(toggle).toHaveAttribute('data-test-identity', 'retained');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
+  fixture.moveActiveGoalChild(); await refresh();
+  await expect(toggle.locator('.goal-in-progress')).toHaveText('0 in progress');
+  await expect(toggle.locator('.chain-worker-active')).toHaveCount(0);
+  await expect(other.locator('.goal-list-toggle')).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
 });
 
 test('Goal list graph navigation and history retain the source and scroll', async ({ page }) => {
@@ -1856,7 +2035,7 @@ test('Goal list retires an old epoch and rejects its late background result', as
   fixture.holdNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect.poll(fixture.syncHeld).toBe(true);
   fixture.advanceEpoch(); fixture.setGoalTitle('Replacement Goal');
-  await row.locator(`#project-goal-${goalId}`).click();
+  await row.locator(`#project-goal-detail-${goalId}`).click();
   await expect.poll(fixture.goalReads).toBeGreaterThan(0);
   await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
   await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
@@ -1913,14 +2092,14 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.locator('#project-section-tab-tasks').click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
-  const title = card.locator('.goal-list-title');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
   const label = card.locator('.goal-list-meta time');
   await expect(label).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
   await label.hover();
   await expect(card.getByRole('tooltip')).toBeVisible();
   await card.getByRole('tooltip').hover();
   await expect(card.getByRole('tooltip')).toBeVisible();
-  await title.focus();
+  await detail.focus();
   await expect(card.getByRole('tooltip')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(card.getByRole('tooltip')).toBeHidden();
@@ -1943,7 +2122,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await row.focus(); await expect(row.locator('..').getByRole('tooltip')).toBeVisible();
   await page.keyboard.press('Tab'); await expect(row).not.toBeFocused();
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
-  await title.click();
+  await detail.click();
   const surface = page.locator('.goal-detail-surface');
   const check = async () => {
     const meta = surface.locator('.goal-detail-meta');
@@ -2008,7 +2187,7 @@ test('Goal list completion tick retains pinned hint and expansion while its deta
   expect(await time.evaluate((element, old) => element === old, node)).toBe(true);
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
   await page.keyboard.press('Escape');
-  await card.locator('.goal-list-title').click();
+  await card.locator(`#project-goal-detail-${goalId}`).click();
   const goalSurface = page.locator('.goal-detail-surface');
   await goalSurface.getByRole('tab', { name: 'Discussion' }).click();
   const draft = goalSurface.locator('.thread-composer textarea');

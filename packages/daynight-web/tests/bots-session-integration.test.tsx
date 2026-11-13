@@ -1,3 +1,4 @@
+vi.mock('../src/api/assistant-tasks', async original => ({ ...await original<typeof import('../src/api/assistant-tasks')>(), listAssistantTasks: async () => ({items:[],nextCursor:null,observedAt:'2026-11-13T00:00:00Z'}) }));
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import * as sessions from '../src/api/sessions';
@@ -38,6 +39,7 @@ it('keeps details, confirmation and fullscreen in one focus boundary across draw
  try {
   const input = await screen.findByRole('textbox', { name: 'Message' });
   await waitFor(() => expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input, { target: { value: 'Draft survives every focus layer' } });
   const session = input.closest('.task-agent-session'), timeline = f.view.container.querySelector('.session-timeline');
   const boundary = f.view.container.querySelector('.bot-conversation')!;
@@ -99,6 +101,7 @@ it.each([200, 403, 404, 410])('never shows the previous private target while a s
  try {
   const input = await screen.findByRole('textbox', { name: 'Message' });
   await waitFor(() => expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input, { target: { value: 'Private draft A' } });
   fireEvent.click(assistantDetailsOpener('Assistant 1'));
   const details = screen.getByRole('complementary', { name: 'Assistant details' });
@@ -147,7 +150,7 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
  const node=(id:string|null)=><TaskCacheProvider scope={scope}><BotsPage botId={id} readEnabled /></TaskCacheProvider>;
  const view=renderWithLocale(node(definitions[0]!.id),{locale:'en'});
  try{
-  const a=await screen.findByRole('textbox',{name:'Message'});await waitFor(()=>expect(a).toBeEnabled());fireEvent.change(a,{target:{value:'draft A'}});
+  const a=await screen.findByRole('textbox',{name:'Message'});await waitFor(()=>expect(a).toBeEnabled());await waitFor(()=>expect(a).not.toHaveAttribute('readonly'));fireEvent.change(a,{target:{value:'draft A'}});
   const host=view.container.querySelector('.bot-session-host');
   const session=a.closest('.task-agent-session'), channels=vi.mocked(fixtures[0]!.api.channel).mock.calls.length;
   fireEvent.click(assistantDetailsOpener('Assistant 1'));
@@ -165,6 +168,7 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
   expect(view.container.querySelector('.bot-conversation')).not.toHaveAttribute('data-session-fullscreen');
   expect(screen.getByRole('textbox',{name:'Message'})).toBe(a);
   view.rerender(node(definitions[1]!.id));await waitFor(()=>expect(screen.getByRole('textbox',{name:'Message'})).not.toBe(a));
+  await waitFor(()=>expect(screen.getByRole('textbox',{name:'Message'})).not.toHaveAttribute('readonly'));
   fireEvent.change(screen.getByRole('textbox',{name:'Message'}),{target:{value:'draft B'}});
   view.rerender(node(null));expect(screen.queryByRole('textbox',{name:'Message'})).toBeNull();
   view.rerender(node(definitions[0]!.id));await waitFor(()=>expect(screen.getByRole('textbox',{name:'Message'})).toBe(a));
@@ -189,6 +193,7 @@ it('retains the real session pane, draft and display state while identity and Bo
  const view=renderWithLocale(node(true),{locale:'en'}); let resume: (()=>void)|undefined;
  try{
   const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   fireEvent.change(input,{target:{value:'unfinished draft'}});
   fireEvent.click(screen.getByRole('button',{name:'Enter Session fullscreen'}));
   fireEvent.click(screen.getByRole('button',{name:'Display'}));

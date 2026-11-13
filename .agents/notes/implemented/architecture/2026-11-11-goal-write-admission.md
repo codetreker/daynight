@@ -23,7 +23,9 @@ pagination, and claim checks the current parent again under the Project lock.
 Worker inventory retains children of ended Goals; deletion hides them and the
 existing missing-inventory cleanup and owner-only archive paths remain responsible
 for stopping and recording execution. The [Goal requirements](../../../../docs/spec/daynight-goals.md)
-and [server design](../../../../docs/design/daynight-server.md) own the contract.
+and [server design](../../../../docs/design/daynight-server.md) own the contract. The
+[child-start decision](../feature/2026-11-13-start-goal-with-child.md) adds an atomic
+start transition without changing terminal Goal claim admission.
 
 ## Alternatives
 
