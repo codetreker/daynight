@@ -55,6 +55,15 @@ trusted HTTP success with a false application CAS is not logged as an applicatio
 acknowledgement. Checkpoint events retain their actual read, directory or persist
 suboperation rather than treating every storage failure as a write.
 
+Request correlation comes only from the actual typed ApiError. The response
+X-Request-ID takes precedence; a parsed body ID is considered only when that
+header is absent. A malformed body therefore cannot erase an already obtained
+header identity. The selected ID must satisfy the existing bounded 64-character
+ASCII token syntax. An invalid header is omitted without falling back to body
+content, and arbitrary objects cannot supply this evidence. Shared exchange,
+initial identity/configuration and management paths use the same projection;
+this adds no DTO or dispatch behavior.
+
 The diagnostic owner records the first failure, changed reason or related target,
 and matching recovery immediately. Existing calls emit a summary at most every
 five minutes for a continuing cause. Its signature uses the component, actual

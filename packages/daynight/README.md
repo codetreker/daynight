@@ -2955,7 +2955,10 @@ Configuration diagnostics preserve the actual authority read, bootstrap
 preparation, telemetry collection, observation capture, report send, receipt
 acceptance, cache persistence and application stage. Queryable `configuration`
 metadata includes the original item target and record, the current authority
-generation and baseline, report/sync IDs and an available HTTP request ID. Unread
+generation and baseline, report/sync IDs and an available HTTP request ID. A
+bounded, valid response `X-Request-ID` takes precedence over a body ID and remains
+available when the response body is malformed; a body ID is used only when the
+header is absent. Unread
 authority, initialized authority and an uninitialized service are distinct;
 `"0"` remains a valid initial observation baseline. Typed tool failures and
 controlled file errors retain fixed reasons without recording native arguments,

@@ -59,7 +59,7 @@ import { buildWorkerPrompt } from "./prompts.js";
 import { createWorkerPromptSource } from "./prompt-source.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter } from "./reporter.js";
-import { createWorkerConfigurationExchange, failedConfigurationRequestOutcome, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, type WorkerConfigurationExchangeEvent } from "./configuration-exchange.js";
+import { createWorkerConfigurationExchange, failedConfigurationRequestOutcome, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId, type WorkerConfigurationExchangeEvent } from "./configuration-exchange.js";
 import { createWorkerConfigurationBootstrap } from "./configuration-bootstrap.js";
 import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
@@ -161,8 +161,9 @@ const verifyWorkerPrincipal = async (read: () => Promise<string>, signal: AbortS
     try { const userId = await read(); observe({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "not_attempted" }); return userId; }
     catch (error) {
       const retryMs = signal.aborted || !transientAuthorityFailure(error) ? undefined : delays[Math.min(attempt++, delays.length - 1)]!;
+      const requestId = workerConfigurationRequestId(error);
       observe({ syncId, phase: "authority-read", status: signal.aborted ? "discarded" : "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(retryMs === undefined ? {} : { backoffStep: Math.min(attempt, delays.length) }), nextAttemptAt: retryMs === undefined ? null : new Date(Date.now() + retryMs).toISOString(), error,
-        ...(error instanceof ApiError && error.requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(error.requestId) ? { requestId: error.requestId } : {}) });
+        ...(requestId === undefined ? {} : { requestId }) });
       if (retryMs === undefined) throw error;
       await delay(retryMs, undefined, { signal });
     }
@@ -368,7 +369,8 @@ export const runWorker = async (options: {
       configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
     }
     catch (error) {
-      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", error });
+      const requestId = workerConfigurationRequestId(error);
+      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
       if (!isWorkerCancellation(error, signal)) observeMonitoring(m => {
         m.setAdmission("partial", [{ code: "configuration-unavailable", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
         m.fail({ operationId: randomUUID(), component: "configuration", phase: "configuration", scope: { kind: "worker" }, error });
@@ -1013,7 +1015,8 @@ export const runWorkerControl = async (options: {
       try { resource = await remote.configuration(workerId, signal); }
       catch (error) {
         if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) {
-          configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", error });
+          const requestId = workerConfigurationRequestId(error);
+          configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
           throw error;
         }
         resource = { desired: null, observationRevision: "0", observation: null };

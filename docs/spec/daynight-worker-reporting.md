@@ -92,7 +92,7 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执完整规范状态，再生成最新报告；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
 
-配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
+配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。请求关联仅来自实际 ApiError，优先保留合法 X-Request-ID；只有头缺席时才采用合法错误正文 ID，正文损坏不抹去已取得的头关联。不合法头与伪造对象均不进入关联字段，所选值遵守既有 64 字符安全格式。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
 
 诊断只从实际 ToolSelectionError、OperationError、本地来源校验及受控文件边界取得固定原因和允许的 tool/context/stage/code；云端应用观测、运行监控及本地日志各自使用所属闭合词汇。缺工具、权限、超时、不兼容配置、无效输出和持久化错误保持可区分，非法 YAML、顶层结构或本地字段明确归为 invalid_configuration。取消与清理未确认保留原语义。任意对象的 .code、消息或未经验证的 cause 不能成为分类证据；不记录原生命令、stdout/stderr、环境变量、完整遥测或凭据，包括候选文件中刚修改的凭据。身份认证的 401/403 必须留下 authority-read 的终止失败及已有请求关联，本地原因分别为 authentication_required/permission_denied，保持原拒绝与重试规则。
 

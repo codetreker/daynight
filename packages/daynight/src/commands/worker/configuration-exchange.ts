@@ -75,7 +75,11 @@ const observe = (configuration: WorkerConfigurationExchange, event: WorkerConfig
   }
 };
 export const workerConfigurationDiagnosticFailures = (configuration: WorkerConfigurationExchange): readonly unknown[] => Object.freeze([...(diagnosticFailures.get(configuration) ?? [])]);
-const requestIdFor = (error: unknown): string | undefined => error instanceof ApiError && error.requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(error.requestId) ? error.requestId : undefined;
+export const workerConfigurationRequestId = (error: unknown): string | undefined => {
+  if (!(error instanceof ApiError)) return undefined;
+  const requestId = error.responseRequestId === undefined ? error.requestId : error.responseRequestId;
+  return requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId) ? requestId : undefined;
+};
 
 export const failedConfigurationRequestOutcome = (error: unknown): WorkerConfigurationExchangeEvent["remoteOutcome"] => {
   if (!(error instanceof ApiError) || error.outcomeUnconfirmed) return "unknown";
@@ -114,7 +118,7 @@ export const createWorkerConfigurationExchange = (options: {
   const prepareStage = async (syncId: string, phase: WorkerConfigurationExchangePhase, action: () => Promise<void>, received?: () => WorkerConfigurationReceivedAuthority | undefined): Promise<void> => {
     const previousSource = source();
     const event = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => {
-      const requestId = requestIdFor(error), authority = received?.();
+      const requestId = workerConfigurationRequestId(error), authority = received?.();
       const localOutcome = phase === "authority-read" && authority !== undefined ? status === "succeeded" ? "persisted" : "pending" : "not_attempted";
       const remoteOutcome = phase !== "authority-read" ? "not_sent" : authority !== undefined ? "success" : status === "failed" ? failedConfigurationRequestOutcome(error) : "not_sent";
       observe(exchange, { syncId, phase, status, source: source(), previousSource, ...(authority === undefined ? {} : { received: authority }), remoteOutcome, localOutcome, ...(requestId === undefined ? {} : { requestId }), ...(error === undefined ? {} : { error }) });
@@ -196,7 +200,7 @@ export const syncWorkerConfigurationOnce = async (options: {
   let localOutcome: WorkerConfigurationExchangeEvent["localOutcome"] = "not_attempted";
   let capturedContext: WorkerConfigurationReportContext | undefined, observationAccepted: boolean | undefined, received: WorkerConfigurationReceivedAuthority | undefined;
   const emit = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => {
-    const requestId = requestIdFor(error);
+    const requestId = workerConfigurationRequestId(error);
     observe(configuration, { syncId, phase, status, source: exchangeSource ?? configuration.source?.() ?? null, remoteOutcome, localOutcome,
       ...(capturedContext === undefined ? {} : { report: capturedContext }), ...(received === undefined ? {} : { received }), ...(observationAccepted === undefined ? {} : { observationAccepted }),
       ...(requestId === undefined ? {} : { requestId }), ...(error === undefined ? {} : { error }) });

@@ -3,7 +3,7 @@ import { ApiError, createApiClient } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
-import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "../../../src/commands/worker/configuration-exchange.js";
+import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId } from "../../../src/commands/worker/configuration-exchange.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
@@ -21,6 +21,32 @@ const deferred = <T = void>() => {
 const operations: Operation[] = [];
 const operation = (): Operation => { const current = createOperation({ limits: { totalMs: 10_000 } }); operations.push(current); return current; };
 afterEach(() => { for (const current of operations.splice(0)) current.dispose(); });
+
+it("keeps the actual HTTP request ID when a dispatched report response has invalid JSON", async () => {
+  const current = operation(), requestId = "configuration-response-1";
+  const fetch = vi.fn(async () => new Response("{", { status: 200, headers: {
+    "Content-Type": "application/json", "X-Request-ID": requestId,
+    "Daynight-User-ID": "22222222-2222-4222-8222-222222222222", "Daynight-Worker-Configuration": "1",
+  } }));
+  const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
+  const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
+  await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+    capture: () => ({ bootstrap: null, observation: null }),
+    send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
+    observe: event => { events.push(event); },
+  } })).rejects.toMatchObject({ name: "ApiError", phase: "protocol", responseRequestId: requestId, outcomeUnconfirmed: true });
+  expect(fetch).toHaveBeenCalledOnce(); expect(accept).not.toHaveBeenCalled();
+  expect(events.at(-1)).toMatchObject({ phase: "report-send", status: "failed", remoteOutcome: "unknown", localOutcome: "not_attempted", requestId });
+});
+
+it("projects only bounded typed HTTP identity and prefers the actual response header", () => {
+  const error = (responseRequestId?: string) => new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("withheld"), ...(responseRequestId === undefined ? {} : { responseRequestId }),
+    serverError: { code: "server_error", message: "private response", requestId: "body-request-1" } });
+  expect(workerConfigurationRequestId(error("header-request-1"))).toBe("header-request-1");
+  expect(workerConfigurationRequestId(error())).toBe("body-request-1");
+  for (const invalid of ["bad\nrequest", "bad request", "x".repeat(65)]) expect(workerConfigurationRequestId(error(invalid))).toBeUndefined();
+  expect(workerConfigurationRequestId({ responseRequestId: "spoofed-request" })).toBeUndefined();
+});
 
 it("uses actual ApiClient dispatch evidence when root cancellation wins before the queued fetch", async () => {
   const root = new AbortController(), current = createOperation({ signal: root.signal }); operations.push(current);
