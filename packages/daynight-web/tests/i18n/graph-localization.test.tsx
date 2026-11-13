@@ -248,6 +248,7 @@ describe('localized task graph presentation', () => {
     const formatted = new Intl.NumberFormat('en').format(value);
     expect(en.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`Chain ${formatted} · External ${formatted} · Tasks ${formatted}/1,000 · Dependencies ${formatted}/1,000`);
     expect(zh.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`链内 ${formatted} · 外部 ${formatted} · 任务 ${formatted}/1,000 · 依赖 ${formatted}/1,000`);
-    expect(en.progress({ done: value, cancelled: 0, total: 1000 })).toBe(`${formatted}/1,000 completed`);
+    expect(en.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 completed`);
+    expect(zh.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 已完成`);
   });
 });

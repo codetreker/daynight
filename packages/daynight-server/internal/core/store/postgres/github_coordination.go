@@ -19,6 +19,6 @@ func (s *Store) WriteGitHubSignals(ctx context.Context, operation func(store.Git
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin github signal", err)
 	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(github.NewSignalWriter(tx)) })
+	err = transactSignal(ctx, tx, func(tx pgx.Tx) error { return operation(github.NewSignalWriter(tx)) })
 	return teamCompletion("write github signal", err)
 }

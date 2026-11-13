@@ -336,3 +336,39 @@ func TestSearchInputRejectsInvalidJSONFields(t *testing.T) {
 		t.Fatalf("input=%+v err=%v", input, err)
 	}
 }
+
+func TestSearchHTTPTagFilterParsingAndErrors(t *testing.T) {
+	const filterTagA = "a1111111-a111-4111-8111-a11111111111"
+	const filterTagB = "b2222222-b222-4222-8222-b22222222222"
+	var logs bytes.Buffer
+	calls := 0
+	server := serveSearch(func(_ context.Context, _ model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+		calls++
+		if input.TagFilter.TagMatch == "invalid" {
+			return tasksearch.Page{}, &model.Fault{Code: "invalid_tag_filter", Message: "Invalid tag filter."}
+		}
+		if len(input.TagFilter.TagIDs) != 2 || input.TagFilter.TagIDs[0] != filterTagA || input.TagFilter.TagIDs[1] != filterTagB || input.TagFilter.TagMatch != "any" || input.TagFilter.Untagged {
+			t.Errorf("filter differs: %+v", input.TagFilter)
+		}
+		return tasksearch.Page{ProjectID: projectID, Items: []tasksearch.Item{}}, nil
+	}, &logs)
+	t.Cleanup(server.Close)
+	status, body := postSearch(t, server, `{"query":"cache","tagIds":["`+filterTagA+`","`+filterTagB+`"],"tagMatch":"any","untagged":false}`)
+	if status != 200 || calls != 1 || !strings.Contains(body, `"items":[]`) {
+		t.Fatalf("status=%d body=%s calls=%d", status, body, calls)
+	}
+	for _, body := range []string{
+		`{"query":"x","tagIds":null}`, `{"query":"x","tagIds":"x"}`,
+		`{"query":"x","tagIds":[null]}`, `{"query":"x","tagMatch":null}`,
+		`{"query":"x","untagged":"true"}`,
+	} {
+		status, result := postSearch(t, server, body)
+		if status != 400 || calls != 1 || !strings.Contains(result, `"invalid_input"`) {
+			t.Fatalf("body=%s status=%d result=%s calls=%d", body, status, result, calls)
+		}
+	}
+	status, body = postSearch(t, server, `{"query":"x","tagMatch":"invalid"}`)
+	if status != 400 || calls != 2 || !strings.Contains(body, `"invalid_tag_filter"`) {
+		t.Fatalf("status=%d body=%s calls=%d", status, body, calls)
+	}
+}

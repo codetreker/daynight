@@ -260,7 +260,7 @@ it("retains real Git worktrees and durable stop evidence when their Project retu
   const remoteClaims = [activeOwner, stoppedOwner].map(owner => structuredClone(f.tasks.get(owner.taskId)));
   expect(f.read(activeOwner).runs[0]!.run.stopProof).toBeNull();
   expect(f.read(stoppedOwner).runs[0]!.run.stopProof).not.toBeNull();
-  const candidate = { type: "task", parentId: null, id: uuid(800), projectId: second.projectId, title: "Healthy", description: "", status: "todo", allowAgents: true, assignedTo: userId, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: {}, createdAt: "2026-11-05T00:00:00Z", updatedAt: "2026-11-05T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true } as Task;
+  const candidate = { type: "task", parentId: null, id: uuid(800), projectId: second.projectId, title: "Healthy", description: "", tags: [], status: "todo", allowAgents: true, assignedTo: userId, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: {}, createdAt: "2026-11-05T00:00:00Z", updatedAt: "2026-11-05T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true } as Task;
   let granted: Task | undefined;
   vi.mocked(f.remote.ownInventory).mockImplementation(async (_projects, _worker, _signal, unavailable) => { unavailable?.(f.project.projectId); return { tasks: granted === undefined ? [] : [granted], coveredProjectIds: [second.projectId], unavailableProjectIds: [f.project.projectId] }; });
   vi.mocked(f.remote.candidates).mockImplementation(async function* (projectId) { if (projectId === second.projectId && granted === undefined) yield candidate; });

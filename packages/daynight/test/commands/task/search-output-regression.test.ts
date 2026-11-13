@@ -77,5 +77,5 @@ it("renders ID-only and mixed evidence, keeping JSON projection and server order
   expect(await f.run(["id:05d609a8", "--json"])).toBe(0);
   const output = f.context.stdout.mock.calls[0]![0];
   expect(output.endsWith("\n")).toBe(true);
-  expect(JSON.parse(output)).toEqual([idOnly, mixed].map(({ id, type, parentId, projectId, title, status, cancelledAt, context, match }) => ({ id, type, parentId, projectId, title, status, cancelledAt, context, match })));
+  expect(JSON.parse(output)).toEqual([idOnly, mixed].map(({ id, type, parentId, projectId, title, status, cancelledAt, tags, context, match }) => ({ id, type, parentId, projectId, title, status, cancelledAt, tags, context, match })));
 });

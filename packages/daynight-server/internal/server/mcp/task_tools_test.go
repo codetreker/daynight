@@ -182,7 +182,7 @@ func TestTaskQueryBudgetMatchesMaterialization(t *testing.T) {
 	}
 	defer release()
 	for _, name := range []string{"task_list", "task_ready"} {
-		args := map[string]any{"projectId": "c450e1ca-60a7-42d7-a17a-a112bc71fd8a"}
+		args := map[string]any{"projectId": "c450e1ca-60a7-42d7-a17a-a112bc71fd8a", "tagIds": []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
 		result, err := client.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
 		if err != nil || result.IsError {
 			t.Fatalf("%s summary: %#v %v", name, result, err)

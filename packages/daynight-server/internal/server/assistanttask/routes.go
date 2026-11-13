@@ -109,6 +109,7 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 	register(task+"/events/{id}/ack", "POST", map[string]requestOperation{"POST": h.ackEvent})
 	register("/api/v1/assistant-task-events", "GET, HEAD", map[string]requestOperation{"GET": h.events})
 	register("/api/v1/assistant-task-events/attention", "POST", map[string]requestOperation{"POST": h.clearAttention})
+	register("/api/v1/bots/{id}/attention/seen", "POST", map[string]requestOperation{"POST": h.botAttentionSeen})
 	register(task+"/inquiries", "GET, HEAD, POST", map[string]requestOperation{"GET": h.inquiries, "POST": h.ask})
 	register(task+"/inquiries/{id}/answer", "POST", map[string]requestOperation{"POST": h.answer})
 }

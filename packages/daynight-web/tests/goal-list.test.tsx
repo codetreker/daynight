@@ -13,7 +13,7 @@ const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
 const project = { id: projectId, name: 'Project', repoUrl: 'https://example.test/project', ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (id: string, type: 'task' | 'goal', parentId: string | null, status: TaskSummary['status'], changes: Partial<TaskSummary> = {}): TaskSummary => ({
-  id, type, parentId, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
+  tags: [], id, type, parentId, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
   dependsOn: [], externalDependsOn: [], properties: {}, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes,
 });
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
@@ -42,7 +42,7 @@ describe('Goal list', () => {
     const detail = document.getElementById('project-goal-detail-goal')!;
     const graph = document.getElementById('project-goal-graph-goal')!;
     const content = document.getElementById(toggle.getAttribute('aria-controls')!)!;
-    expect(toggle).toHaveAccessibleDescription(/Assignee: 12345678.*1 chains.*1 standalone tasks.*1\/2 ended.*0 completed.*1 cancelled.*To do/);
+    expect(toggle).toHaveAccessibleDescription(/Assignee: 12345678.*1 chains.*1 standalone tasks.*0\/1 completed.*To do/);
     expect(content).not.toBeVisible();
     expect(toggle.contains(detail)).toBe(false);
     expect(toggle.contains(graph)).toBe(false);
@@ -94,6 +94,7 @@ describe('Goal list', () => {
       summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['outside'], properties: { paused: true } }),
       summary('pending', 'task', goal.id, 'todo', { dependsOn: ['external'], externalDependsOn: ['external'] }),
       summary('anchor', 'task', goal.id, 'done'),
+      summary('cancelled', 'task', goal.id, 'cancelled'),
       summary('cross-running', 'task', other.id, 'in_progress', { dependsOn: ['anchor'] }),
       summary('standalone', 'task', goal.id, 'todo', { allowAgents: true }),
     ];
@@ -103,7 +104,7 @@ describe('Goal list', () => {
     const emptyCard = document.querySelector<HTMLElement>('[data-goal-id="empty"]')!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     const header = (element: HTMLElement) => element.querySelector<HTMLElement>('.goal-list-toggle')!;
-    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).toHaveAccessibleDescription(/1 in progress.*1\/4 completed/);
     expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
     expect(header(otherCard)).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
     expect(header(emptyCard)).toHaveAccessibleDescription(/0 in progress/);
@@ -117,14 +118,14 @@ describe('Goal list', () => {
     expect(card.querySelector('.goal-list-toggle')).toBe(toggle);
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
+    expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active.*1\/4 completed/);
     const indicator = toggle.querySelector('.chain-worker-active')!;
     expect(indicator.querySelector('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
     expect(within(indicator as HTMLElement).queryByRole('button')).toBeNull();
 
     const moved = active.map(task => task.id === 'child' ? { ...task, parentId: other.id } : task);
     view.rerender(list(snapshot(moved)));
-    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).toHaveAccessibleDescription(/1 in progress.*1\/3 completed/);
     expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
     expect(header(otherCard)).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -163,8 +164,8 @@ describe('Goal list', () => {
     const second = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
     const toggle = within(first).getByRole('button', { name: '展开 Goal：goal' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveAccessibleDescription(/负责人：未分配.*1 条任务链.*1 个独立任务.*1\/2 已结束.*0 完成.*1 取消.*待处理/);
-    expect(first).toHaveTextContent('0 完成 · 1 取消');
+    expect(toggle).toHaveAccessibleDescription(/负责人：未分配.*1 条任务链.*1 个独立任务.*0\/1 已完成.*待处理/);
+    expect(first.querySelector('.goal-list-progress')).toHaveTextContent('0/1 已完成');
     expect(first).toHaveTextContent('待处理');
     fireEvent.click(toggle);
     fireEvent.click(within(second).getByRole('button', { name: '展开 Goal：other' }));
@@ -193,6 +194,30 @@ describe('Goal list', () => {
     expect(secondChain).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-goal-id="empty"]')!).getByRole('button', { name: '展开 Goal：empty' }));
     expect(screen.getByText('此 Goal 暂无子任务。')).toBeVisible();
+  });
+
+  it('projects cancelled children out of progress while retaining members and focus across updates', () => {
+    const members = [summary('done', 'task', goal.id, 'done'), summary('waiting', 'task', goal.id, 'todo'), summary('cancelled', 'task', goal.id, 'cancelled')];
+    const current = [goal, other, empty, ...members];
+    const view = createLocaleRender('en', { taskCache: true })(list(snapshot(current)));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const toggle = within(card).getByRole('button', { name: 'Expand Goal: goal' });
+    const progress = card.querySelector('.goal-list-progress')!;
+    expect(progress).toHaveTextContent('1/2 completed');
+    expect(progress.querySelectorAll('i')).toHaveLength(1);
+    expect(progress.querySelector('i')).toHaveStyle({ width: '50%' });
+    fireEvent.click(toggle);
+    const done = within(card).getByRole('button', { name: /done.*Done/ });
+    done.focus();
+    view.rerender(list(snapshot(current.map((item) => item.id === 'done' ? { ...item, status: 'cancelled' } : item))));
+    expect(progress).toHaveTextContent('0/1 completed');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(done).toHaveFocus();
+    view.rerender(list(snapshot(current.map((item) => item.type === 'task' ? { ...item, status: 'cancelled' } : item))));
+    expect(progress).toHaveTextContent('0/0 completed');
+    expect(progress.querySelector('i')).toHaveStyle({ width: '0%' });
+    expect(within(card).queryByText('This Goal has no child tasks yet.')).toBeNull();
+    expect(within(card).getByText('cancelled', { selector: '.root-title' })).toBeVisible();
   });
 
   it('updates membership without resetting surviving groups and discards removed group state', () => {

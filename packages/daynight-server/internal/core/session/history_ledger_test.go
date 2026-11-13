@@ -78,6 +78,24 @@ func TestActiveHistoryUsesConsumedGrantAndCannotReuseReceivingOrOldCheckpoint(t 
 	}
 }
 
+func TestActiveHistoryRejectsOlderCompleteCheckpoint(t *testing.T) {
+	op, d, r, writer := activeHistoryFixture(t)
+	r.SourceSeq = 2
+	entry := localEntry(t, "1")
+	newer := activeHistoryBytes(r, entry)
+	if _, err := op.PutHistoryLedger(t.Context(), writer, uuid.NewString(), 0, int64(len(newer)), archiveDigest(newer), archiveDigest(newer), newer); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), d.bundle.Ledger...)
+	older := encode(sp.ArchiveHistoryContent{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: "1", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}})
+	if _, err := op.PutHistoryLedger(t.Context(), writer, uuid.NewString(), 0, int64(len(older)), archiveDigest(older), archiveDigest(older), older); err == nil {
+		t.Fatal("older source checkpoint was accepted")
+	}
+	if !jsonEqual(before, d.bundle.Ledger) {
+		t.Fatal("older checkpoint replaced accepted ledger")
+	}
+}
+
 func TestActiveHistoryRechecksGrantFenceLifecycleAndFinalStoppedRound(t *testing.T) {
 	for _, kind := range []string{"unconsumed", "grant", "connection", "generation", "expired", "disconnected", "stopped", "owner"} {
 		t.Run(kind, func(t *testing.T) {

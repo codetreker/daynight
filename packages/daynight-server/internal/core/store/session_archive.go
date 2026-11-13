@@ -42,6 +42,12 @@ type SessionArchiveDAO interface {
 	SetUnifiedSessionArchiveReady(context.Context, string, string, int, string, string) error
 }
 
+// SessionArchiveFailureDAO records a definite failure while comparing the
+// original file identity and metadata in the caller's locked transaction.
+type SessionArchiveFailureDAO interface {
+	FailSessionArchiveFile(context.Context, ArchiveBundleFile, json.RawMessage) error
+}
+
 // SessionArchiveHandoffDAO changes only the active writer under the caller's
 // validated generation stop proof. The preparation and all file identities stay.
 type SessionArchiveHandoffDAO interface {

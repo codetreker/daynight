@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProjectAccess, getAuthConfig, listMembers, logout, me } from '../src/api/auth';
 import type { CurrentUser } from '../src/api/auth-types';
 import { ApiError, setTaskStatus, getTask, getTaskSync } from '../src/api/client';
+import { getProject } from '../src/api/project-settings';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -14,6 +15,7 @@ vi.mock('../src/api/auth', async (original) => ({ ...await original<typeof impor
 }));
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
   getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })), }; });
+vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 
 const confirmStatus = async (button: HTMLElement) => {
@@ -34,7 +36,7 @@ const returnFromAnotherWindow = () => {
   topLevelFocused = false; fireEvent(window, new Event('blur'));
   topLevelFocused = true; fireEvent(window, new Event('focus'));
 };
-const initial = (projectId = project): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: projectId === project ? task : otherTask, projectId,
+const initial = (projectId = project): TaskDetail => ({ tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: projectId === project ? task : otherTask, projectId,
   version: 9007199254740993n, title: `${currentUser.name} task ${projectId === project ? 'P' : 'Q'}`, description: `${currentUser.name} reviewed content`,
   properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
 const serverDetails = new Map<string, TaskDetail>();
@@ -72,6 +74,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
   vi.mocked(me).mockReset().mockImplementation(async () => currentUser);
   vi.mocked(getProjectAccess).mockReset().mockImplementation(async (projectId) => directAccessFixture(projectId, currentUser.id));
+  vi.mocked(getProject).mockReset().mockImplementation(async projectId => graph(projectId).project);
   vi.mocked(getAuthConfig).mockReset().mockResolvedValue({ providers: ['github'] });
   vi.mocked(logout).mockReset().mockResolvedValue(undefined);
   vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => ({ actorAccess: directAccessFixture(projectId, currentUser.id), items: [{ inheritedFrom: null, userId: currentUser.id, profile: { name: currentUser.name, email: currentUser.email, avatarUrl: null }, effectiveRole: 'member', directGrant: { projectId, userId: currentUser.id, role: 'member', version: 1n, createdAt: stamp, updatedAt: stamp } }] }));
@@ -83,7 +86,7 @@ afterEach(() => { cleanup(); root.remove(); });
 const mount = () => renderWithLocale(<AuthenticatedApp />, { locale: 'en', container: root });
 const open = async (title: string) => {
   await selectTaskList();
-  fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
+  fireEvent.click(await screen.findByRole('tab', { name: 'Standalone tasks' }));
   fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
   const dialog = screen.getByRole('dialog');
   await within(dialog).findByRole('heading', { name: title }); return dialog;

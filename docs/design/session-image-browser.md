@@ -349,9 +349,9 @@ fit 模式使用可用舞台宽高等比 contain，小图不强制放大；100% 
 
 ## 来源状态与读取重试
 
-浏览器只观察出现和读取已保存原件，不因展开、滚动或预览而获取原 URL/路径。来源资格由公共协议的 `GET {base}/image-occurrences/{imageId}` 返回，严格消费 `{imageId,revision,state,resourceId,action,error}`：`unregistered/unavailable` 只有 `none`，`pending/unknown` 只有 `observe`，`committed` 只有 `read_saved` 且资源非 null；`failed` 只有服务确认从未 committed、旧预留释放、来源可信且当前有操作权才允许 `retry_source`。所有字段、null 和错误约束由公共协议拥有，未授权不能用 `unregistered` 泄露存在性。
+浏览器只观察出现和读取已保存原件，不因展开、滚动或预览而获取原 URL/路径。来源资格由公共协议的 `GET {base}/image-occurrences/{imageId}` 返回，严格消费 `{imageId,revision,state,resourceId,action,error}`：`unregistered/unavailable` 只有 `none`，`pending/unknown` 只有 `observe`，`committed` 只有 `read_saved` 且资源非 null；`failed` 只有服务确认从未 committed、旧 staging 已清理、来源可信且当前有操作权才允许 `retry_source`。所有字段、null 和错误约束由公共协议拥有，未授权不能用 `unregistered` 泄露存在性。
 
-唯一来源重试为 `POST {base}/image-occurrences/{imageId}/retry`，严格 body `{}`，返回 `{capture:ImageCaptureReceipt}`；不提交新 locator、headers 或 actor。可信 local/external 来源确定 failed 且释放旧预留后，`invalid_image/unsupported_media_type/decode_failed` 可请求重新准备并完整核验原 locator；输入上传及 saved 原件不因此改变 `never` 规则，权限错误不能靠重试绕过。已 committed 只重读原件，不能换源字节；只读记录永远没有 `retry_source`。
+唯一来源重试为 `POST {base}/image-occurrences/{imageId}/retry`，严格 body `{}`，返回 `{capture:ImageCaptureReceipt}`；不提交新 locator、headers 或 actor。可信 local/external 来源确定 failed 且旧 staging 清理后，`invalid_image/unsupported_media_type/decode_failed` 可请求重新准备并完整核验原 locator；输入上传及 saved 原件不因此改变 `never` 规则，权限错误不能靠重试绕过。已 committed 只重读原件，不能换源字节；只读记录永远没有 `retry_source`。
 
 资格 GET 按需在可见失败卡片读取，同 scope+imageId 合并。pending 可由事件或 2/5/10/30 秒退避观察，隐藏页面停止；单轮最多 60 秒后保留状态及检查状态入口，后续事件仍可更新。点击来源重试前重核资格，服务再次核验原 capture 与权限；202 不代表 available，响应未知改为原身份观察。资格 revision 变化只更新动作，不重挂 frame；不能按错误文案猜资格，不能把 canSend=false 等同历史不可读。
 

@@ -101,6 +101,24 @@ func TestArchiveReconnectThenStopRetainsAcknowledgedHistory(t *testing.T) {
 	}
 }
 
+func TestArchiveReconnectRejectsCheckpointLosingAcceptedEntries(t *testing.T) {
+	op, d, r, writer := activeHistoryFixture(t)
+	entry := localEntry(t, "1")
+	body := activeHistoryBytes(r, entry)
+	if _, err := op.PutHistoryLedger(t.Context(), writer, uuid.NewString(), 0, int64(len(body)), archiveDigest(body), archiveDigest(body), body); err != nil {
+		t.Fatal(err)
+	}
+	reconnectArchiveFixture(t, op, d, r, writer)
+	before := append([]byte(nil), d.bundle.Ledger...)
+	old := activeHistoryBytes(r)
+	if _, err := op.PutHistoryLedger(t.Context(), writer, uuid.NewString(), 0, int64(len(old)), archiveDigest(old), archiveDigest(old), old); err == nil {
+		t.Fatal("reconnected checkpoint discarded accepted content")
+	}
+	if !jsonEqual(before, d.bundle.Ledger) {
+		t.Fatal("rejected checkpoint changed accepted ledger")
+	}
+}
+
 func TestArchiveReconnectRetainsIncompleteRoundUntilStoppedSettlement(t *testing.T) {
 	op, d, r, writer := activeHistoryFixture(t)
 	entry := localEntry(t, "1")

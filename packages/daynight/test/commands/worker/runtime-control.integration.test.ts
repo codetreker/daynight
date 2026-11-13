@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
@@ -12,6 +13,14 @@ import * as telemetryModule from "../../../src/commands/worker/telemetry.js";
 import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
+import * as sharedHerdrModule from "../../../src/commands/worker/herdr/shared.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext } from "../../../src/commands/worker/herdr.js";
+import type { Task } from "../../../src/api/types.js";
+import type { Operation } from "../../../src/api/operation.js";
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
+import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
+import type { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn() }));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
@@ -19,9 +28,9 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
 }));
 vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl: mocks.submit }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
-vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
+vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 
@@ -30,7 +39,9 @@ const origin = "https://daynight.example";
 const roots: string[] = [];
 const stores = new Set<WorkerStore>();
 const resources: (() => Promise<void>)[] = [];
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 afterEach(async () => {
+  Object.defineProperty(process, "platform", platformDescriptor);
   vi.restoreAllMocks();
   for (const release of resources.splice(0)) await release();
   for (const store of stores) store.close(); stores.clear();
@@ -204,6 +215,106 @@ describe("worker synchronous management runtime ownership", () => {
     await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
     expect(mocks.remote.mock.results[0]!.value.configuration).not.toHaveBeenCalled();
     expect(observed).toEqual(configuration); expect(f.store.getTask(f.task)).toEqual(f.task);
+  });
+
+  it("retries an original Herdr claim with both frozen launches while current settings are unavailable", async () => {
+    const f = await fixture(), launches = recordedHerdrTools();
+    const configuration = { agent: "codex" as const, model: "original-model", args: ["--original"],
+      toolLaunch: launches.agent, toolObservation: launches.agentObservation,
+      herdrLaunch: launches.herdr, herdrObservation: launches.herdrObservation };
+    f.store.freezeNativeConfiguration(f.task, configuration);
+    await writeFile(f.paths.configFile, staleManagedSource());
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockRejectedValue(new Error("Current target unavailable."));
+    mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
+    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(remote.configuration).not.toHaveBeenCalled();
+    expect(mocks.probe).not.toHaveBeenCalled();
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).globalConfiguration).toMatchObject(configuration);
+    expect(f.store.getNativeConfiguration(f.task)).toEqual(configuration);
+  });
+
+  // Migration uses real Git and durable filesystem operations: a Windows host
+  // cannot implement POSIX directory fsync by changing process.platform.
+  it.each((["linux", "win32"] as const).flatMap(platform => (["allowed", "paused", "revoked", "claim", "worker", "worktree", "provider", "mode", "daemon-unknown", "legacy", "no-restore", "migration"] as const).filter(gate => gate !== "migration" || (platformDescriptor.value === "win32") === (platform === "win32")).map(gate => ({ platform, gate }))))("restores only the authorized original execution through the real one-shot retry path (%j)", async ({ platform, gate }) => {
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { submitWorkerControl } = await vi.importActual<typeof import("../../../src/commands/worker/control.js")>("../../../src/commands/worker/control.js");
+    const f = await fixture(), launches = recordedHerdrTools(), sessionId = uuid(21), worktreeId = uuid(9);
+    const frozen = { agent: "codex" as const, model: "original-model", args: [], toolLaunch: launches.agent, ...(gate === "legacy" ? {} : { herdrLaunch: launches.herdr }) };
+    f.store.freezeNativeConfiguration(f.task, frozen); f.store.setSessionId(f.task, sessionId);
+    const owner = { projectId: f.project.projectId, taskId: f.task.taskId, claimId: f.task.claimId, worktreeId };
+    let remoteTask: Task = { type: "task", parentId: null, tags: [], id: f.task.taskId, projectId: f.project.projectId, title: "Original assignment", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 5n, properties: { pullRequests: [], paused: false, worker: { claimId: f.task.claimId, workerId: uuid(4), machine: { id: uuid(5), name: "original" }, platform: platform === "win32" ? "windows" : "linux", agent: "codex", agentControlMode: "herdr", worktreeId, userId: uuid(6), state: "active", phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-11-12T00:00:00Z" } }, createdAt: "2026-11-12T00:00:00Z", updatedAt: "2026-11-12T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
+    const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => uuid(6)), authorizeControl: vi.fn(async () => {}), readTask: vi.fn(async () => remoteTask),
+      configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), claim: vi.fn(), ownInventory: vi.fn(),
+      update: vi.fn(async (_task: Task, update: object) => { remoteTask = { ...remoteTask, properties: { ...remoteTask.properties, worker: { ...readWorkerClaim(remoteTask.properties)!, ...update } } }; return remoteTask; }),
+      reportConfiguration: vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({ observedAt: "2026-11-12T00:00:00Z", lastReportedAt: "2026-11-12T00:00:00Z", configuration: { desired: null, observationRevision: "0", observationAccepted: false }, prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) } })),
+    };
+    remote.readTask.mockImplementation(async () => {
+      if (remote.readTask.mock.calls.length < 3) return remoteTask;
+      if (gate === "paused") return { ...remoteTask, properties: { ...remoteTask.properties, paused: true } };
+      if (gate === "revoked") return { ...remoteTask, allowAgents: false };
+      const worker = readWorkerClaim(remoteTask.properties)!;
+      const changed = gate === "claim" ? { claimId: uuid(30) } : gate === "worker" ? { workerId: uuid(31) } : gate === "worktree" ? { worktreeId: uuid(32) } : gate === "provider" ? { agent: "copilot" as const } : gate === "mode" ? { agentControlMode: "web" as const } : {};
+      return { ...remoteTask, properties: { ...remoteTask.properties, worker: { ...worker, ...changed } } };
+    });
+    const binding = { repositoryPath: f.project.localPath, commonDirectory: path.join(f.project.localPath, ".git"), worktreePath: path.join(f.project.localPath, ".worktrees", "daynight", f.task.taskId), branch: `daynight/${f.task.taskId}` };
+    await mkdir(binding.worktreePath, { recursive: true });
+    const git = { dispose: vi.fn(async () => {}), prepareRepository: vi.fn(async (_project: typeof f.project, _operation: Operation) => {}), resolveWorktreeBinding: vi.fn(async () => binding), prepareWorktree: vi.fn(async () => binding) };
+    if (gate === "migration") {
+      const runGit = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10_000 }).trim();
+      await rm(binding.worktreePath, { recursive: true });
+      runGit(["init", "--initial-branch=main"]); runGit(["config", "user.name", "Fixture"]); runGit(["config", "user.email", "fixture@example.test"]);
+      runGit(["commit", "--allow-empty", "-m", "fixture"]);
+      const marker = `daynight-worker:${JSON.stringify({ ...owner, leaf: "1:1", root: "2:2", common: "3:3" })}`;
+      runGit(["worktree", "add", "--lock", "--reason", marker, "-b", binding.branch, "--", binding.worktreePath]);
+      await mkdir(path.join(f.paths.herdrDirectory, "c", "herdr", "sessions", "w"), { recursive: true });
+    }
+    const pane = { session: "w", workspaceId: "restored", paneId: "restored-pane", terminalId: "restored-terminal" };
+    const observation: HerdrAgentObservation = { binding: pane, name: "Original assignment", kind: "codex", status: "working", interactiveReady: true, launchPending: false, nativeSession: { source: "herdr", agent: "codex", sessionId }, stateChangeSeq: 2, completionSeq: 0 };
+    const unavailable = new Error("The original shared Herdr daemon cannot be confirmed running.");
+    let daemonRunning = false;
+    const ensureInstance = vi.fn(async () => { if (!daemonRunning) throw unavailable; return { reconnected: true, version: "0.9.5", protocol: 22 as const, snapshot: {} }; });
+    const ensureExecution = vi.fn(async () => { if (gate === "daemon-unknown") throw unavailable; daemonRunning = true; return { reconnected: false, version: "0.9.5", protocol: 22 as const, snapshot: {} }; });
+    const start = vi.fn(async (_context: HerdrExecutionContext, _binding: unknown, input: HerdrAgentStartInput) => { input.onPromptSubmitted?.({ submission: "submitted", observation }); return observation; });
+    const tasks = { observeExecutionStop: vi.fn(async () => ({ kind: "stopped" })), pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []), prepareWorkspace: vi.fn(async () => pane), syncWorkspaceName: vi.fn(), start };
+    const adapter = { ensureInstance, ...(gate === "no-restore" ? {} : { ensureExecution }), tasks, activeToolSelections: () => [], stopInstance: vi.fn() } as unknown as ReturnType<typeof sharedHerdrModule.createSharedWorkerHerdr>;
+    vi.spyOn(sharedHerdrModule, "createSharedWorkerHerdr").mockReturnValue(adapter);
+    vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
+    mocks.remote.mockReturnValue(remote);
+    mocks.git.mockImplementation((options: Parameters<typeof createWorkerGitManager>[0]) => {
+      if (gate === "migration") git.prepareRepository.mockImplementation(async (_project, operation) => {
+        expect(ensureExecution).toHaveBeenCalledOnce();
+        await options!.prepareFormat!(f.project, { root: f.project.localPath, commonDirectory: binding.commonDirectory, rootIdentity: "fixture", commonIdentity: "fixture" }, operation);
+      });
+      return git;
+    });
+    mocks.coordinator.mockImplementation(createWorkerCoordinator); mocks.submit.mockImplementation(submitWorkerControl);
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
+    const retry = runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    if (gate === "daemon-unknown" || gate === "legacy" || gate === "no-restore") await expect(retry).rejects.toBe(unavailable);
+    else await expect(retry).resolves.toBeUndefined();
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).repositories).toEqual([]);
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).readyProjectIds).toBeUndefined();
+    if (gate === "allowed" || gate === "migration") {
+      expect(ensureExecution).toHaveBeenCalledExactlyOnceWith({ ...owner, agent: "codex" }, expect.anything());
+      expect(start.mock.calls[0]![0]).toEqual({ ...owner, agent: "codex", cwd: binding.worktreePath });
+      expect(start).toHaveBeenCalledOnce(); expect(start.mock.calls[0]![2]).toMatchObject({ resumeSessionId: sessionId, configuration: frozen });
+      expect(git.prepareWorktree).toHaveBeenCalledExactlyOnceWith(f.project, owner, expect.anything(), binding.worktreePath, true, undefined, true);
+    } else {
+      expect(start).not.toHaveBeenCalled(); expect(git.prepareWorktree).not.toHaveBeenCalled();
+      if (gate === "daemon-unknown") expect(ensureExecution).toHaveBeenCalledOnce();
+      else expect(ensureExecution).not.toHaveBeenCalled();
+    }
+    if (gate === "migration") {
+      expect(ensureInstance).toHaveBeenCalled();
+      expect(createWorktreeManifestStore(binding.commonDirectory).read(worktreeId)).toMatchObject({ ...owner, directoryName: f.task.taskId });
+    } else if (gate === "legacy" || gate === "no-restore") expect(ensureInstance).toHaveBeenCalledOnce();
+    else expect(ensureInstance).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)).toMatchObject({ status: "active", claimId: f.task.claimId, sessionId });
+    expect(f.store.getNativeConfiguration(f.task)).toEqual(frozen);
+    expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
+    expect(remote.claim).not.toHaveBeenCalled(); expect(remote.ownInventory).not.toHaveBeenCalled();
+    expect(adapter.stopInstance).not.toHaveBeenCalled();
   });
 
   it("uses applied cloud settings for Herdr retry even when its project is excluded from automatic selection", async () => {

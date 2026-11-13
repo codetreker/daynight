@@ -15,6 +15,7 @@ type TaskSearchReader interface {
 
 type TaskSearchSnapshot interface {
 	ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error)
+	ResolveTags(context.Context, string, []string) ([]model.Tag, error)
 	Fence(context.Context, string) (TaskSearchFence, error)
 	Matches(context.Context, string, TaskSearchQuery) (TaskSearchPage, error)
 	ContextGraph(context.Context, string, []string) (TaskSearchGraph, error)
@@ -36,6 +37,7 @@ type TaskSearchQuery struct {
 	Type               model.TaskType
 	Parent             *string
 	Expression         *tasksearch.Node
+	TagFilter          TagFilter
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
 	Ready, AllowAgents *bool
@@ -45,6 +47,7 @@ type TaskSearchQuery struct {
 }
 
 type TaskSearchRow struct {
+	Tags                   []model.TagReference
 	Type                   model.TaskType
 	ParentID               *string
 	ID, Title, Description string

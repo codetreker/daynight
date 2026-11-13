@@ -39,6 +39,7 @@ func assignmentListFixtureFor(t *testing.T, wanted store.TaskQuery, rows []model
 	calls, returned := 0, 0
 	reader.TasksFn = func(actual context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
 		expected := wanted
+		expected.TagFilter = store.TagFilter{TagIDs: []string{}, TagMatch: "all"}
 		expected.Page.Limit = q.Page.Limit
 		if returned > 0 {
 			expected.Page.After = &store.Position{ID: rows[returned-1].ID, CreatedAt: rows[returned-1].CreatedAt}

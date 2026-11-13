@@ -65,7 +65,7 @@ it.each(["0", "101", "1.5"])("rejects Thread count %s without a cause or request
 it("preserves returned message execution details after releasing its claim", async () => {
   const execution = { claimId, workerId, provider: "codex" };
   const page = { items: [{ id: messageId, author: { userId, displayName: null, Agent: true, execution }, createdAt: time, body: "Agent message" }], hasMoreBefore: false, hasMoreAfter: false };
-  const released = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", properties: {}, status: "todo", ready: true, allowAgents: true, assignedTo: null, requiredPlatform: null, version: 2n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [] };
+  const released = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", tags: [], properties: {}, status: "todo", ready: true, allowAgents: true, assignedTo: null, requiredPlatform: null, version: 2n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [] };
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     const value = url.pathname.endsWith("/worker-claim/release") ? released : page;

@@ -51,13 +51,17 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	if err != nil {
 		return store.TaskPriorityPage{}, pg.QueryError("list priority tasks", err)
 	}
+	tagFilter, err := taskTagFilter(q.TagFilter, &args)
+	if err != nil {
+		return store.TaskPriorityPage{}, pg.QueryError("list priority tasks", err)
+	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.type, t.parent_id::text, left(t.title,513), octet_length(t.title)>512, t.status, t.version,
  t.created_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskReady+`,
  `+pg.TaskBlockedCount+`
  FROM task_resource_rows t WHERE t.project_id=$1 AND t.effective_deleted_at IS NULL
  AND ($2::text IS NULL OR t.status=$2) AND (NOT $3::boolean OR t.status NOT IN ('done', 'cancelled'))
  AND ($4::boolean IS NULL OR `+pg.TaskReady+`=$4) AND ($5::boolean IS NULL OR t.allow_agents=$5)
- AND ($6::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$6)`+assignment+resourceFilter+`
+ AND ($6::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$6)`+assignment+resourceFilter+tagFilter+`
  AND ($7::int IS NULL OR (`+priorityGroup+`,t.created_at,t.id)>($7,$8::timestamptz,$9::uuid))
  ORDER BY `+priorityGroup+`,t.created_at,t.id LIMIT $10`, args...)
 	if err != nil {
@@ -83,6 +87,17 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
+	}
+	ids := make([]string, len(items))
+	for i := range items {
+		ids[i] = items[i].Task.ID
+	}
+	tags, err := pg.LoadTaskTagsBatch(ctx, s.tx, projectID, ids)
+	if err != nil {
+		return store.TaskPriorityPage{}, err
+	}
+	for i := range items {
+		items[i].Task.Tags = tags[items[i].Task.ID]
 	}
 	return store.TaskPriorityPage{Items: items, HasMore: hasMore}, nil
 }

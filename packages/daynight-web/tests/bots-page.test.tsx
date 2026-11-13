@@ -1,3 +1,4 @@
+vi.mock('../src/api/assistant-tasks', async original => ({ ...await original<typeof import('../src/api/assistant-tasks')>(), listAssistantTasks: async () => ({items:[],nextCursor:null,observedAt:'2026-11-13T00:00:00Z'}) }));
 import type { SessionHeaderSlot, SessionPresentationSlots } from '../src/features/task-agent-session/session-presentation-slots';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -221,4 +222,93 @@ it('keeps sending blocked after an unknown delete even when a following read sti
  await screen.findByText('Deletion result unknown');
  expect(screen.getByTestId('host')).toHaveTextContent('no binding');
  expect(f.fetch.mock.calls.filter(([,o])=>o?.method==='DELETE')).toHaveLength(1);
+});
+
+it.each([0, 1])('clears report attention on opening while preserving %s pending proposals', async pendingProposals => {
+ const f=fixture(); f.bots[0]!.attentionCount=2+pendingProposals;
+ const base=f.fetch.getMockImplementation()!;
+ f.fetch.mockImplementation(async (url,options)=>{
+  if(String(url).endsWith('/attention/seen')) { f.bots[0]!.attentionCount=pendingProposals; return botResponse({targetBotId:botId()}); }
+  return base(url,options);
+ });
+ const view=mount(); await screen.findByLabelText(`${2+pendingProposals} items need your attention`);
+ expect(f.fetch.mock.calls.some(([,o])=>o?.method==='POST')).toBe(false);
+ view.select(botId());
+ await waitFor(()=>expect(screen.queryByLabelText(`${2+pendingProposals} items need your attention`)).toBeNull());
+ if(pendingProposals) expect(screen.getByLabelText('1 items need your attention')).toHaveTextContent('1');
+ else expect(document.querySelector('.bot-attention-count')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Refresh'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Refresh'})).not.toHaveAttribute('aria-busy','true'));
+ expect(f.fetch.mock.calls.filter(([,o])=>o?.method==='POST')).toHaveLength(1);
+});
+
+it('keeps attention visible after a failed seen request and refreshes without replay', async()=>{
+ const f=fixture(); f.bots[0]!.attentionCount=2;
+ const base=f.fetch.getMockImplementation()!;
+ f.fetch.mockImplementation(async (url,options)=>String(url).endsWith('/attention/seen')?botError(500,'internal_error'):base(url,options));
+ mount(botId());
+ await screen.findByText('Could not confirm that these items were seen.');
+ expect(screen.getByLabelText('2 items need your attention')).toBeVisible();
+ fireEvent.click(screen.getByRole('button',{name:'Retry'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Refresh'})).not.toHaveAttribute('aria-busy','true'));
+ expect(f.fetch.mock.calls.filter(([,o])=>o?.method==='POST')).toHaveLength(1);
+});
+
+it('does not mark hidden or admission-paused conversations seen and fences late selection results', async()=>{
+ const f=fixture(); f.bots[0]!.attentionCount=2; f.bots[1]!.attentionCount=1;
+ const base=f.fetch.getMockImplementation()!, pending=Promise.withResolvers<Response>();
+ f.fetch.mockImplementation(async (url,options)=>String(url).endsWith('/attention/seen')?pending.promise:base(url,options));
+ Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});
+ const view=mount(botId());
+ await act(async()=>{}); expect(f.fetch.mock.calls.some(([,o])=>o?.method==='POST')).toBe(false);
+ Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+ view.select(botId(),false); fireEvent(document,new Event('visibilitychange'));
+ await act(async()=>{}); expect(f.fetch.mock.calls.some(([,o])=>o?.method==='POST')).toBe(false);
+ view.select(botId(),true);
+ await waitFor(()=>expect(f.fetch.mock.calls.filter(([,o])=>o?.method==='POST')).toHaveLength(1));
+ view.select(null);
+ await act(async()=>pending.resolve(botResponse({targetBotId:botId()})));
+ expect(screen.getByLabelText('2 items need your attention')).toBeVisible();
+ expect(screen.queryByText('Could not confirm that these items were seen.')).toBeNull();
+});
+
+it('keeps reports arriving after a zero-count opening until the conversation is opened again', async()=>{
+ vi.useFakeTimers({toFake:['setInterval','clearInterval']});
+ try {
+  const f=fixture(), base=f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation(async (url,options)=>{
+   if(String(url).endsWith('/attention/seen')) { f.bots[0]!.attentionCount=0; return botResponse({targetBotId:botId()}); }
+   return base(url,options);
+  });
+  const view=mount(botId());
+  await act(async()=>{});
+  expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+  expect(document.querySelector('.bot-attention-count')).toBeNull();
+  f.bots[0]!.attentionCount=1;
+  await act(async()=>{vi.advanceTimersByTime(5_000);});
+  expect(screen.getByLabelText('1 items need your attention')).toBeVisible();
+  expect(f.fetch.mock.calls.some(([,options])=>options?.method==='POST')).toBe(false);
+  view.select(null);
+  view.select(botId());
+  await act(async()=>{});
+  expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1);
+  expect(document.querySelector('.bot-attention-count')).toBeNull();
+ } finally { vi.useRealTimers(); }
+});
+
+it('waits for the first confirmed count before consuming an opening', async()=>{
+ const f=fixture(); f.bots[0]!.attentionCount=1;
+ const base=f.fetch.getMockImplementation()!, firstDetail=Promise.withResolvers<Response>();
+ let detailReads=0;
+ f.fetch.mockImplementation(async (url,options)=>{
+  if(String(url).endsWith('/attention/seen')) { f.bots[0]!.attentionCount=0; return botResponse({targetBotId:botId()}); }
+  if(String(url).endsWith(`/me/bots/${botId()}`) && detailReads++===0) return firstDetail.promise;
+  return base(url,options);
+ });
+ mount(botId());
+ await screen.findByLabelText('1 items need your attention');
+ expect(f.fetch.mock.calls.some(([,options])=>options?.method==='POST')).toBe(false);
+ await act(async()=>firstDetail.resolve(botResponse(f.bots[0])));
+ expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1);
+ expect(document.querySelector('.bot-attention-count')).toBeNull();
 });

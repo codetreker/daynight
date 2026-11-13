@@ -246,7 +246,7 @@ test("isolated upgrade preserves stopped evidence and original files, then real 
     expect(fs.readdirSync(path.join(`${f.file}.pending-content`, "entries"))).toEqual([]);
     expect(openTimelineStore(db, { assertWrite: () => { throw new Error("read only"); } }).get(f.entry.entryId)).toEqual(f.entry);
     expect(fs.statSync(f.file).size).toBe(Number(db.pragma("page_count", { simple: true })) * Number(db.pragma("page_size", { simple: true })));
-    expect(charge(f)).toBe(136 * 1048576); expect(beforeCharge).toBeGreaterThan(fs.statSync(f.file).size);
+    expect(charge(f)).toBe(144 * 1048576); expect(beforeCharge).toBeGreaterThan(fs.statSync(f.file).size);
     expect(() => acquireControllerStoragePermit(f.file)).toThrow();
   } finally { idle.close(); db.close(); f.permit.release(); }
 });
@@ -271,7 +271,7 @@ test("an incident source beyond the ordinary metadata ceiling imports using its 
   fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
   try {
     expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
-    expect(fs.existsSync(f.old)).toBe(false); expect(charge(f)).toBe(136 * 1048576);
+    expect(fs.existsSync(f.old)).toBe(false); expect(charge(f)).toBe(144 * 1048576);
   } finally { f.permit.release(); }
 });
 
@@ -325,7 +325,7 @@ test("an unknown successful marker COMMIT is read back and preserves the high re
     vi.spyOn(db, "exec").mockImplementation(source => { const result = exec(source); if (source === "COMMIT" && intercept) { intercept = false; throw new Error("unknown successful commit"); } return result; });
     expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow(/unknown successful commit/);
     expect(marker(db)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, db).bytes());
-    restoreMocks(); expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" }); expect(charge(f)).toBe(136 * 1048576);
+    restoreMocks(); expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" }); expect(charge(f)).toBe(144 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 
@@ -353,7 +353,7 @@ test.each(["maintenance", "preparation", "upgrade-only"] as const)("completed cl
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
       : prepareControllerStorage(entry === "preparation" ? f.request : { journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {});
     expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
-    expect(charge(f)).toBe(136 * 1048576);
+    expect(charge(f)).toBe(144 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 

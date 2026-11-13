@@ -17,7 +17,7 @@ import (
 func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 	now := time.Date(2026, 11, 7, 9, 0, 0, 0, time.FixedZone("other", 3600))
 	parent := "d41a4e82-6bf0-4c7f-b519-47076dafc425"
-	task := model.Task{ID: "id", ProjectID: "project", Type: model.TaskTypeTask, ParentID: &parent, Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "paused": json.RawMessage(`false`)}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
+	task := model.Task{ID: "id", ProjectID: "project", Type: model.TaskTypeTask, ParentID: &parent, Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "paused": json.RawMessage(`false`)}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&世界"}}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
 	for _, extended := range []bool{false, true} {
 		value, err := RESTTask(task, extended)
 		if err != nil {
@@ -30,6 +30,13 @@ func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 		n, err := EncodeREST(&got, task, extended, int64(want.Len()))
 		if err != nil || n != int64(want.Len()) || !bytes.Equal(got.Bytes(), want.Bytes()) {
 			t.Fatalf("REST err=%v got %s want %s", err, got.Bytes(), want.Bytes())
+		}
+		if !bytes.Contains(got.Bytes(), []byte(`"tags":[{"id":"tag-id","name":"\u003c\u0026世界"}]`)) {
+			t.Fatalf("actual tag reference missing or incorrectly encoded: %s", got.Bytes())
+		}
+		value.Tags[0].Name = "changed"
+		if task.Tags[0].Name != "<&世界" {
+			t.Fatal("REST projection aliases task tags")
 		}
 		_, err = EncodeREST(io.Discard, task, extended, int64(want.Len()-1))
 		var limit *limit.Violation
@@ -52,6 +59,67 @@ func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 	}
 	if !strings.Contains(string(want), `"type":"task","parentId":"`+parent+`"`) {
 		t.Fatalf("MCP type and parent missing: %s", want)
+	}
+}
+
+func TestRESTEmptyTagsAreAnArray(t *testing.T) {
+	for _, tags := range [][]model.TagReference{nil, {}} {
+		value, err := RESTTask(model.Task{Tags: tags}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(value)
+		if err != nil || !bytes.Contains(raw, []byte(`"tags":[]`)) {
+			t.Fatalf("empty tags: %s, %v", raw, err)
+		}
+	}
+}
+
+func TestMCPTagProjections(t *testing.T) {
+	for _, tags := range [][]model.TagReference{nil, {}, {{ID: "id", Name: "<&标签"}}} {
+		task := model.Task{Tags: tags}
+		for name, value := range map[string]any{"full": MCPTask(task), "summary": MCPTaskSummary(task)} {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := `"tags":[]`
+			if len(tags) > 0 {
+				want = `"tags":[{"id":"id","name":"\u003c\u0026标签"}]`
+			}
+			if !bytes.Contains(raw, []byte(want)) {
+				t.Fatalf("%s tags: %s", name, raw)
+			}
+		}
+		if len(tags) > 0 {
+			full, summary := MCPTask(task), MCPTaskSummary(task)
+			full.Tags[0].Name = "full changed"
+			summary.Tags[0].Name = "summary changed"
+			if task.Tags[0].Name != "<&标签" {
+				t.Fatal("MCP projection aliases task tags")
+			}
+		}
+	}
+}
+
+func TestRESTSyncTags(t *testing.T) {
+	for _, tags := range [][]model.TagReference{nil, {}, {{ID: "id", Name: "<&标签"}}} {
+		value := RESTSyncRecord(model.TaskViewRecord{Tags: tags})
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `"tags":[]`
+		if len(tags) > 0 {
+			want = `"tags":[{"id":"id","name":"\u003c\u0026标签"}]`
+			value.Tags[0].Name = "changed"
+			if tags[0].Name != "<&标签" {
+				t.Fatal("sync projection aliases task tags")
+			}
+		}
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("sync tags: %s", raw)
+		}
 	}
 }
 

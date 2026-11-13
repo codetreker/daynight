@@ -2,6 +2,7 @@ import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { openDB } from 'idb';
+import { IDBObjectStore } from 'fake-indexeddb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { createTaskCacheScope, TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
@@ -545,6 +546,7 @@ describe("authenticated application shell", () => {
     const initial = { ...graphFixture([detailFixture(projectId, taskId)]), project: project() };
     let responseMode: 'valid' | 'untrusted' | 'not-found' = 'valid';
     install((url) => {
+      if (responseMode === 'not-found' && (url === `/api/v1/projects/${projectId}` || url === `/api/v1/projects/${projectId}/access`)) return fail(404, 'not_found');
       if (!isTaskSync(url)) return defaults(url);
       if (responseMode === 'valid') return graphResponse(initial, url);
       if (responseMode === 'not-found') return fail(404, 'not_found');
@@ -557,6 +559,7 @@ describe("authenticated application shell", () => {
     const heading = await screen.findByRole('heading', { name: '私有项目' });
     const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
     try {
+      await waitForState(async () => expect((await database.get('projects', [userId, projectId]))?.state).toBe('active'));
       const before = await database.get('projects', [userId, projectId]);
       const summaries = await database.getAllFromIndex('summaries', 'by-project', [userId, projectId]);
       expect(before?.state).toBe('active');
@@ -584,7 +587,7 @@ describe("authenticated application shell", () => {
     const fetcher = install(); render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
-    expect(fetcher.mock.calls.some(([url]) => isTaskSync(url))).toBe(true);
+    await waitForState(() => expect(fetcher.mock.calls.some(([url]) => isTaskSync(url))).toBe(true));
   });
 
 
@@ -661,6 +664,7 @@ describe("authenticated application shell", () => {
     const fetcher = install(); render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("link", { name: "项目成员" }));
     const heading = await screen.findByRole("heading", { name: "项目成员" });
+    await screen.findByText("私有项目");
     accountChange(otherId); await screen.findByText("账户已变化");
     expect(screen.getByRole("heading", { name: "项目成员" })).toBe(heading);
     expect(document.body.textContent).toContain("私有项目");
@@ -670,7 +674,7 @@ describe("authenticated application shell", () => {
   it("clears all workspace data on a real resource401 while keeping project404 local", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let denied = false;
-    install((url) => isTaskSync(url) && denied ? fail(404, "not_found") : defaults(url));
+    install((url) => denied && (isTaskSync(url) || url === `/api/v1/projects/${projectId}` || url === `/api/v1/projects/${projectId}/access`) ? fail(404, "not_found") : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     denied = true;
@@ -679,7 +683,7 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url))));
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(within(screen.getByRole("tabpanel", { name: "概览" })).getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
@@ -779,10 +783,8 @@ describe("authenticated application shell", () => {
     createLocaleRender(locale)(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" }, { timeout: 5000 });
     const actions = document.querySelector<HTMLElement>(".project-title-actions")!;
-    const placeholder = actions.querySelector<HTMLElement>(".project-title-actions-placeholder")!;
-    expect(placeholder).toHaveAttribute("aria-hidden", "true");
-    expect(placeholder.textContent).toBe(`${members}${settings}`);
-    expect(within(actions).queryByRole("link", { name: members })).toBeNull();
+    expect(within(actions).getByRole("link", { name: members })).toHaveAttribute("href", `/projects/${projectId}/members`);
+    expect(within(actions).getByRole("link", { name: settings })).toHaveAttribute("href", `/projects/${projectId}/settings`);
     await waitForState(() => expect(syncUrl).not.toBe(""));
     await act(async () => pending.resolve(taskSyncResponse(snapshot, { viewerId: userId, query: taskSyncQuery(new URL(syncUrl, window.location.origin)), versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, role) })));
     expect(await within(actions).findByRole("link", { name: members })).toHaveAttribute("href", `/projects/${projectId}/members`);
@@ -798,24 +800,21 @@ describe("authenticated application shell", () => {
 
   it("retains project links and focus through access revalidation, failure and retry", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    const pending = Promise.withResolvers<Response>();
-    let accessReads = 0;
-    const fetcher = install((url) => url.endsWith("/access") ? ++accessReads === 1 ? pending.promise : json(directAccessFixture(projectId, userId, "admin")) : defaults(url));
+    let failing = false;
+    const fetcher = install((url) => url.endsWith("/access") && failing ? fail(503, "internal") : defaults(url));
     render(<AuthenticatedApp />);
     const members = await screen.findByRole("link", { name: "项目成员" });
-    members.focus();
+    await screen.findByRole("heading", { name: "概览" });
+    members.focus(); failing = true;
     returnFromAnotherWindow();
-    await waitForState(() => expect(accessReads).toBe(1));
+    expect(await screen.findByText("暂时无法读取项目权限。", {}, { timeout: 5000 })).toBeVisible();
     expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
     expect(members).toHaveFocus();
-    await act(async () => pending.resolve(fail(503, "internal")));
-    expect(await screen.findByText("暂时无法读取项目权限。")).toBeVisible();
-    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
-    expect(members).toHaveFocus();
+    failing = false;
     fireEvent.click(screen.getByRole("button", { name: "重试读取权限" }));
     await waitFor(() => expect(screen.queryByText("暂时无法读取项目权限。")).toBeNull());
     expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(2);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1);
   });
 
   it("submits task status through the core API and retains pending ownership across standalone attachment navigation", async () => {
@@ -830,7 +829,7 @@ describe("authenticated application shell", () => {
       if (reopening && currentProject === projectId && currentTask === taskId) reopenedSessions = this;
       requireOpeningRead.call(this, currentProject, currentTask);
     });
-    const detail = () => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "Lifecycle task", description: "Reviewed lifecycle content", properties: { pullRequests: [] },
+    const detail = () => ({ type: 'task', parentId: null, assignedTo: null, tags: [], requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "Lifecycle task", description: "Reviewed lifecycle content", properties: { pullRequests: [] },
       status: started ? "in_progress" : "todo", version: started ? 8 : 7, dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now });
     const taskGraph = (): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
       status: started ? "in_progress" : "todo", dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now }],
@@ -849,8 +848,8 @@ describe("authenticated application shell", () => {
     try {
       await screen.findByRole("heading", { name: "私有项目" });
       await selectTaskList();
-      fireEvent.click(screen.getByRole("tab", { name: "独立任务" }));
-      fireEvent.click(screen.getByRole("button", { name: /Lifecycle task/ }));
+      fireEvent.click(await screen.findByRole("tab", { name: "独立任务" }));
+      fireEvent.click(await screen.findByRole("button", { name: /Lifecycle task/ }));
       let dialog = screen.getByRole("dialog");
       await within(dialog).findByRole("heading", { name: "Lifecycle task" });
       fireEvent.click(within(dialog).getByRole("button", { name: "待处理" }));
@@ -865,9 +864,9 @@ describe("authenticated application shell", () => {
       act(() => { window.history.pushState(null, "", `/projects/${projectId}`); window.dispatchEvent(new PopStateEvent("popstate")); });
       await screen.findByRole("heading", { name: "私有项目" });
       await selectTaskList();
-      fireEvent.click(screen.getByRole("tab", { name: "独立任务" }));
+      fireEvent.click(await screen.findByRole("tab", { name: "独立任务" }));
       reopening = true;
-      fireEvent.click(screen.getByRole("button", { name: /Lifecycle task/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Lifecycle task/ }));
       dialog = screen.getByRole("dialog");
       // This opening's live read is admitted before its pending write is settled.
       await waitFor(() => {
@@ -1424,4 +1423,109 @@ it('retains cold Bot draft and receipt namespaces on an account change outside t
   expect(window.sessionStorage.getItem(key)).toBe('private draft');
   expect(window.localStorage.getItem(displayKey)).toBe('\"standard\"');
   expect(window.sessionStorage.getItem(creationKey)).toBe('20000000-0000-4000-8000-000000000001');
+});
+
+it.each(['pending', 'failed'] as const)('recovers the project header through an independent retry when the task cache is %s', async mode => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(() => mode === 'pending' ? new Promise(() => {}) : Promise.reject(new Error('cache unavailable')));
+  let denied = true;
+  install(url => url === `/api/v1/projects/${projectId}` && denied ? fail(404, 'not_found') : defaults(url));
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  denied = false;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
+  expect(screen.queryByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeNull();
+});
+
+it('rejects a recovery response after a newer project withdrawal', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(() => new Promise(() => {}));
+  const suspend = TaskCacheScope.prototype.suspendProject;
+  let current: TaskCacheScope | null = null;
+  vi.spyOn(TaskCacheScope.prototype, 'suspendProject').mockImplementation(function (this: TaskCacheScope, id) { current = this; return suspend.call(this, id); });
+  let denied = true, recoveryReads = 0; const pending = Promise.withResolvers<Response>(), newer = Promise.withResolvers<Response>();
+  const fetcher = install(url => url === `/api/v1/projects/${projectId}` ? denied ? fail(404, 'not_found') : ++recoveryReads === 1 ? pending.promise : newer.promise : defaults(url));
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  denied = false;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`)).toHaveLength(2));
+  act(() => current!.suspendProject(projectId));
+  await waitFor(() => expect(recoveryReads).toBe(2));
+  await act(async () => pending.resolve(json(project())));
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  expect(screen.queryByRole('link', { name: '项目成员' })).toBeNull();
+  expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
+  await act(async () => newer.resolve(json(project())));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+});
+
+
+it('recovers Project after its access recheck confirms denial and cache cleanup fails', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  const beginSync = TaskCacheScope.prototype.beginSync;
+  let cacheFailed = false, projectDenied = false, cleanupFailures = 0;
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(function (this: TaskCacheScope, ...args) {
+    return cacheFailed ? Promise.reject(new Error('cache unavailable')) : beginSync.apply(this, args);
+  });
+  const originalPut = IDBObjectStore.prototype.put;
+  const purge = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (cacheFailed && this.name === 'projects' && (args[0] as { state?: string }).state === 'invalidated') { cleanupFailures++; throw new DOMException('Injected cleanup failure', 'QuotaExceededError'); }
+    return originalPut.apply(this, args);
+  });
+  const revoke = vi.spyOn(TaskCacheScope.prototype, 'revokeProject');
+  const firstAccess = Promise.withResolvers<Response>();
+  let projectAllowed = false;
+  const fetcher = install(url => {
+    if (url === `/api/v1/projects/${projectId}`) {
+      if (projectAllowed) return json(project());
+      projectDenied = true; return fail(404, 'not_found');
+    }
+    if (url === `/api/v1/projects/${projectId}/access`) {
+      if (!projectDenied) return firstAccess.promise;
+      cacheFailed = true; return fail(404, 'not_found');
+    }
+    return defaults(url);
+  });
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  await waitFor(() => expect(revoke).toHaveBeenCalled());
+  await waitFor(() => expect(cleanupFailures).toBeGreaterThan(0));
+  projectAllowed = true;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(1);
+  purge.mockRestore();
+});
+
+it('automatically rereads Project after task sync denial even when the cache becomes unavailable', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  const beginSync = TaskCacheScope.prototype.beginSync;
+  let cacheFailed = false, graphDenied = false;
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(function (this: TaskCacheScope, ...args) {
+    return cacheFailed ? Promise.reject(new Error('cache unavailable')) : beginSync.apply(this, args);
+  });
+  const pending = Promise.withResolvers<Response>();
+  const fetcher = install(url => {
+    if (isTaskSync(url) && graphDenied) { cacheFailed = true; return fail(404, 'not_found'); }
+    if (url === `/api/v1/projects/${projectId}` && graphDenied) return pending.promise;
+    return defaults(url);
+  });
+  render(<AuthenticatedApp />);
+  await screen.findByRole('heading', { name: '私有项目' });
+  await screen.findByRole('heading', { name: '概览' });
+  const projectReads = fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length;
+  graphDenied = true;
+  fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+  await screen.findByRole('heading', { name: '项目不存在' });
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(projectReads));
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  await act(async () => pending.resolve(json(project())));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
 });

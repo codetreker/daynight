@@ -5,13 +5,13 @@ import { chmodSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openS
 import path from "node:path";
 import type { SessionContent } from "../content/session-content.js";
 import type { TimelineEntry } from "../../../session/protocol.js";
+import { parseImageError, type ImageError } from "../../../session/image-values.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
-import type { controllerMetadataBudget } from "./metadata-budget.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, budget: ReturnType<typeof controllerMetadataBudget>) => {
-  const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint";
+export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, reserveContent: (additionalBytes: number, contentGrowth: number) => void) => {
+  const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint", failureKey = "active_history_failure";
   const syncDirectory = () => { if (process.platform !== "win32") { const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } } };
   const intent = (): ImageHistorySyncIntent | null => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
@@ -45,7 +45,7 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     });
     const body = { historyEpoch, sourceThrough: source.through, entries, resources }, bytes = Buffer.from(JSON.stringify(body));
     if (bytes.length > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller image history exceeds its synchronization budget.");
-    budget.assert(bytes.length + 16_384, true);
+    reserveContent(bytes.length + 16_384, bytes.length);
     const syncId = randomUUID(), filename = path.join(root, `${syncId}.json`), next: ImageHistorySyncIntent = { syncId, filename, historyEpoch, sourceThrough: source.through, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") };
     writeDurableJson(filename, body);
     // Acquire write access before sealing: Windows cannot flush a read-only handle.
@@ -54,8 +54,22 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     return next;
   });
   return { prepareImageHistorySync,
-    finishImageHistorySync: (syncId: string, complete: boolean): void => {
-      const current = transactions.write(() => { const current = intent(); if (!current || current.syncId !== syncId) throw new Error("Controller history synchronization identity changed."); if (complete) db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(checkpoint, JSON.stringify(current)); db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(key); return current; });
+    getImageHistorySyncFailure: (): ImageError | null => transactions.read(() => {
+      const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(failureKey) as { value: string } | undefined;
+      return row ? parseImageError(JSON.parse(row.value)) : null;
+    }),
+    finishImageHistorySync: (syncId: string, complete: boolean, failure?: ImageError): void => {
+      const savedFailure = complete ? null : parseImageError(failure);
+      const current = transactions.write(() => {
+        const current = intent(); if (!current || current.syncId !== syncId) throw new Error("Controller history synchronization identity changed.");
+        if (complete) {
+          db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(checkpoint, JSON.stringify(current));
+          db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(failureKey);
+        } else {
+          db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(failureKey, JSON.stringify(savedFailure));
+        }
+        db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(key); return current;
+      });
       unlinkSync(current.filename); syncDirectory();
     },
   };

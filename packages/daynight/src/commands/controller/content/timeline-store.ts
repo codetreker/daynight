@@ -1,17 +1,17 @@
 import type Database from "better-sqlite3";
 import { parseTimelineEntry, type TimelineEntry } from "../../../session/protocol.js";
+import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
 import { controllerPayloadHash } from "../launch-ticket.js";
 
 const MAX_SEQUENCE = 9_223_372_036_854_775_807n;
 const MAX_ENTRIES = 100_000;
-const MAX_TIMELINE_BYTES = 64 * 1024 * 1024;
 const ENVELOPE_BYTES = Buffer.byteLength('{"entries":[]}');
 const columns = "id, CAST(entry_seq AS TEXT) AS entry_seq, CAST(revision AS TEXT) AS revision, kind, value, content_hash, byte_length";
 type TimelineRow = { id: string; entry_seq: string; revision: string; kind: string; value: string; content_hash: string; byte_length: number };
 export type TimelineTotals = { readonly entryCount: number; readonly byteLength: number; readonly timelineBytes: number };
 export type TimelinePageQuery = { readonly direction: "tail" | "before" | "after"; readonly pivot: string | null; readonly limit: number };
 /** Zero checks original write ownership; a mutation also admits incoming UTF-8 bytes plus 16 KiB of SQLite overhead. */
-export type TimelineWriteContext = { readonly assertWrite: (additionalBytes: number) => void };
+export type TimelineWriteContext = { readonly assertWrite: (additionalBytes: number, contentGrowth?: number) => void };
 
 const sequence = (value: string): bigint => {
   if (!/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > MAX_SEQUENCE) throw new Error("Invalid SQL timeline sequence.");
@@ -20,7 +20,7 @@ const sequence = (value: string): bigint => {
 const totalSize = (entryCount: number, byteLength: number): TimelineTotals => {
   if (!Number.isSafeInteger(entryCount) || entryCount < 0 || !Number.isSafeInteger(byteLength) || byteLength < 0) throw new Error("SQL timeline totals are corrupt.");
   const timelineBytes = ENVELOPE_BYTES + byteLength + Math.max(entryCount - 1, 0);
-  if (entryCount > MAX_ENTRIES || timelineBytes > MAX_TIMELINE_BYTES) throw new Error("Pending session timeline budget exceeded.");
+  if (entryCount > MAX_ENTRIES || timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
   return { entryCount, byteLength, timelineBytes };
 };
 const decode = (row: TimelineRow): TimelineEntry => {
@@ -65,7 +65,7 @@ export const openTimelineStore = (db: Database.Database, context: TimelineWriteC
     const current = totals(), updated = totalSize(current.entryCount + (old === undefined ? 1 : 0), current.byteLength - (previous?.byte_length ?? 0) + byteLength);
     // The owner admits the incoming JSON plus SQLite statement/page overhead
     // against its normal or explicitly reserved migration capacity.
-    context.assertWrite(byteLength + 16_384);
+    context.assertWrite(byteLength + 16_384, Math.max(0, byteLength - (previous?.byte_length ?? 0)));
     db.prepare("INSERT INTO timeline_entries(id,entry_seq,revision,kind,value,content_hash,byte_length) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,kind=excluded.kind,value=excluded.value,content_hash=excluded.content_hash,byte_length=excluded.byte_length")
       .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
     const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);

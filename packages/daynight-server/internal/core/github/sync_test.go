@@ -22,6 +22,11 @@ func TestWorkKindPriorityAndAdmission(t *testing.T) {
 	check(WorkPoll, true)
 	c.AccessHintID = &hint
 	check(WorkAccess, true)
+	c.NextAccessCheckAt = &future
+	check("", true)
+	c.NextAccessCheckAt = &now
+	check(WorkAccess, true)
+	c.NextAccessCheckAt = nil
 	c.AccessHintID = nil
 	c.NextPollAt = &future
 	check(WorkWebhook, true)

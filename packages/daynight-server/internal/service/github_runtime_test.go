@@ -35,6 +35,9 @@ func (s githubAssemblyStore) DueGitHubProjects(ctx context.Context, id int64, _ 
 	}
 	return nil, nil
 }
+func (s githubAssemblyStore) WriteGitHubSignals(context.Context, func(store.GitHubSignalWriter) error) (store.Completion, error) {
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
 func githubTestConfig(t *testing.T) ghconfig.Config {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
@@ -57,7 +60,7 @@ func TestGitHubProductionAssemblyStartsAndDrains(t *testing.T) {
 	if err := app.assembleGitHub(db, c, logger); err != nil {
 		t.Fatal(err)
 	}
-	if app.GitHubManager == nil || app.githubRuntime == nil || app.githubRuntime.client == nil {
+	if app.GitHubManager == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.client == nil {
 		t.Fatal("production dependencies not assembled")
 	}
 	if err := app.Start(context.Background()); err != nil {

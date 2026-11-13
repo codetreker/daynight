@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import type {} from './bots-viewport-session';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
 import { botConversationBack, botDetails, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading, focusBotControl } from '../helpers/bot-heading';
@@ -15,7 +15,7 @@ const install = async (page: Page, options: { items?: readonly BotDefinition[]; 
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     if (request.method() !== 'GET' && !path.endsWith('/readonly/requests')) writes.push(`${request.method()} ${path}`);
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
@@ -234,7 +234,7 @@ test('preserves selection, searches, drafts and reading through responsive navig
   await expect(search).toHaveValue('Bot');
   await expect(page.locator('.bot-list a')).toHaveCount(2);
   await focusBotControl(page, page.locator(`.bot-list a[href="/bots/${botId(2)}"]`)); await page.keyboard.press('Enter');
-  await expect(message()).toBeEnabled();
+  await expect(message()).toBeEditable();
   await focusBotControl(page, page.locator(`${visiblePane} textarea`)); await page.keyboard.type('Independent draft B');
   await closeBotConversation(page);
   await page.setViewportSize({ width: 1024, height: 1000 });
@@ -436,10 +436,10 @@ for (const locale of ['en', 'zh-CN'] as const) {
       const body = route.request().postDataJSON(); submissions.push(body);
       if (submissions.length === 1) return route.fulfill({ status: 400, headers: { 'Daynight-User-ID': BOT_USER }, json: { error: { code: 'invalid_request', message: 'Controlled creation rejection', requestId: 'create-rejection' } } });
       created = { ...botDefinition(90), id: body.id, name: body.name };
-      await route.fulfill({ status: 200, headers: { 'Daynight-User-ID': BOT_USER }, json: created });
+      await route.fulfill({ status: 200, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers()) }, json: created });
     });
     await page.route('**/api/v1/me/bots/*', async route => {
-      if (created && new URL(route.request().url()).pathname.endsWith(`/${created.id}`)) return route.fulfill({ headers: { 'Daynight-User-ID': BOT_USER }, json: created });
+      if (created && new URL(route.request().url()).pathname.endsWith(`/${created.id}`)) return route.fulfill({ headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers()) }, json: created });
       return route.fallback();
     });
     const submit = form.getByRole('button', { name: /^(Create assistant|创建助手)$/, exact: true });
@@ -457,7 +457,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     expect(submissions[0]!.id).not.toBe(submissions[1]!.id);
     await expect(page.locator('.bot-conversation-title')).toContainText('Created with keyboard');
     await closeBotConversation(page);
-    await page.route(/\/api\/v1\/me\/bots(?:\?.*)?$/, route => route.fulfill({ json: { items: [], nextCursor: null }, headers: { 'Daynight-User-ID': BOT_USER } }));
+    await page.route(/\/api\/v1\/me\/bots(?:\?.*)?$/, route => route.fulfill({ json: { items: [], nextCursor: null }, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers()) } }));
     await page.reload();
     await expect(page.getByText(locale === 'en' ? 'No assistants yet' : '还没有助手', { exact: true })).toBeVisible();
     await expect(page.locator(`${visiblePane} textarea`)).toHaveCount(0);
@@ -614,7 +614,7 @@ for (const width of [1440, 390, 320]) {
     await page.route(`**/api/v1/me/bots/${botId(1)}`, async route => {
       if (!frozen) return route.fallback();
       reads++; await barrier;
-      await route.fulfill({ json: bots[0], headers: { 'Daynight-User-ID': BOT_USER } });
+      await route.fulfill({ json: bots[0], headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers()) } });
     });
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));

@@ -24,12 +24,12 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-export type ProjectSection = "overview" | "tasks";
+export type ProjectSection = "overview" | "tasks" | "prs" | "tags";
 export type TaskView = "standalone" | "chains" | "goals";
 export type GraphDirection = "horizontal" | "vertical";
 
 const projectSectionPreference = (value: unknown): ProjectSection => {
-  if (value !== "overview" && value !== "tasks") throw new Error("Invalid project section preference.");
+  if (value !== "overview" && value !== "tasks" && value !== "prs" && value !== "tags") throw new Error("Invalid project section preference.");
   return value;
 };
 

@@ -102,7 +102,7 @@ describe("Herdr retained recording resources", () => {
       // grant is deliberately hidden as not_found; the active claim is unchanged.
       if (!projectAccess) { response.writeHead(404); response.end(JSON.stringify({ error: { code: "not_found", message: "Project was not found.", requestId: "revoked-access" } })); return; }
       const time = "2026-11-03T10:00:00Z";
-      response.end(JSON.stringify({ type: "task", parentId: null, id: s.owner.taskId, projectId: s.owner.projectId, title: "Retained execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId, requiredPlatform: "macos", startedAt: time, completedAt: null, cancelledAt: null, version: 1, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+      response.end(JSON.stringify({ type: "task", parentId: null, id: s.owner.taskId, projectId: s.owner.projectId, title: "Retained execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId, requiredPlatform: "macos", startedAt: time, completedAt: null, cancelledAt: null, version: 1, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
         properties: { pullRequests: [], worker: { claimId: s.owner.claimId, state: "active", userId, workerId: s.record.owner.workerId, worktreeId: s.owner.worktreeId, machine: { id: s.record.owner.workerId, name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } } }));
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));

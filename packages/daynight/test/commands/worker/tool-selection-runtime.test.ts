@@ -73,3 +73,44 @@ test("demand changes during a refresh take effect after the current preparation 
     expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex", "copilot"]);
   } finally { release(); prepare.mockRestore(); try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
 });
+
+test("Herdr configuration freezes both inspected native and handshake recipes", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "herdr-")), native = path.join(root, "codex.cjs"), daemon = path.join(root, "herdr.cjs");
+  await writeFile(native, "console.log('codex-cli 1.0.0');\n"); await writeFile(daemon, "console.log('herdr 0.9.9');\n");
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: process.env, readActiveSelections: () => [],
+    localToolPaths: { codex: { kind: "path", path: native }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } },
+    admitHerdr: async () => ({ state: "applied", version: "0.9.5", checkedAt: new Date().toISOString() }),
+  });
+  try {
+    const frozen = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }, new AbortController().signal);
+    expect(frozen.toolLaunch).toMatchObject({ context: "herdr", entryPath: native });
+    expect(frozen.herdrLaunch).toMatchObject({ tool: "herdr", context: "herdr", entryPath: daemon });
+    expect(frozen.herdrObservation?.version).toBe("0.9.5");
+    await rm(native); await rm(daemon);
+    expect(await runtime.freezeConfiguration(frozen, new AbortController().signal)).toBe(frozen);
+  } finally { try { await runtime.close(); } finally { await rm(root, { recursive: true, force: true }); } }
+});
+
+
+test("background Herdr admission rechecks an unchanged target after an idle daemon exits", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "herdr-refresh-")), daemon = path.join(root, "herdr.cjs");
+  await writeFile(daemon, "console.log('herdr 0.9.9');\n");
+  const now = Date.now; let elapsed = 0, running = false, launches = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: process.env, readActiveSelections: () => [],
+    localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } },
+    admitHerdr: async () => { if (!running) { running = true; launches++; } return { state: "applied", version: "0.9.5", checkedAt: new Date().toISOString() }; },
+  });
+  try {
+    const signal = new AbortController().signal;
+    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(true);
+    expect(launches).toBe(1); running = false;
+    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(false);
+    expect(running).toBe(false);
+    elapsed += 60_001;
+    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(true);
+    expect(launches).toBe(2); expect(running).toBe(true);
+  } finally { try { await runtime.close(); } finally { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); } }
+});

@@ -38,6 +38,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph().project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph().project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
@@ -45,7 +46,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
       expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, limit: 15 });
-      return send({ projectId, total: 1, items: [{ id: task.id, projectId, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
+      return send({ projectId, total: 1, items: [{ id: task.id, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
@@ -576,7 +577,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     expect(preserved!.after.startedAt).toBe(preserved!.before.startedAt); expect(preserved!.after.completedAt).toBe(preserved!.before.completedAt);
     await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
     await page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true }).selectOption('cancelled');
-    await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '1/2 ended' : '1/2 已结束');
+    await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '0/1 completed' : '0/1 已完成');
     await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });

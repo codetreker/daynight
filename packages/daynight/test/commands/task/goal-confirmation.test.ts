@@ -8,7 +8,7 @@ const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
 const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const time = "2026-10-20T00:00:00Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: taskId, version: 1n }, createdAt: time, updatedAt: time };
-const base = { id: taskId, projectId, type: "goal", parentId: null, title: "Goal", description: "", properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
+const base = { id: taskId, projectId, type: "goal", parentId: null, title: "Goal", description: "", tags: [], properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
 const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "content-type": "application/json", "Daynight-User-ID": projectId } });
 const operations: ReturnType<typeof createOperation>[] = [];
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); });

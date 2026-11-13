@@ -33,7 +33,7 @@ describe("typed Task reads", () => {
   });
 
   it("validates typed search items without expanding their projection", () => {
-    const item = { id: taskId, type: "task", parentId: otherId, projectId, title: "Task", status: "todo", cancelledAt: null, assignedTo: null, updatedAt: time, context: null, match: { fields: ["title"], descriptionSnippet: null } };
+    const item = { id: taskId, type: "task", parentId: otherId, projectId, title: "Task", status: "todo", cancelledAt: null, tags: [], assignedTo: null, updatedAt: time, context: null, match: { fields: ["title"], descriptionSnippet: null } };
     const page = { projectId, total: 1, items: [item], nextCursor: null };
     expect(parseTaskSearchPage(page, projectId).items[0]).toMatchObject({ type: "task", parentId: otherId });
     expect(() => parseTaskSearchPage({ ...page, items: [{ ...item, type: undefined }] }, projectId)).toThrow("invalid response");

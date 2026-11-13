@@ -13,7 +13,7 @@ export type BotStartupResult = { readonly state: 'pending' | 'ready' | 'failed';
 export type BotCleanupResult = { readonly state: 'pending' | 'completed' | 'failed'; readonly code: string | null };
 type BotIdentity = { readonly id: string; readonly workerId: string; readonly version: string };
 export type BotDefinition = BotIdentity & {
-  readonly deletion: null; readonly ownerUserId: string; readonly name: string; readonly creationOrder: string;
+  readonly deletion: null; readonly ownerUserId: string; readonly name: string; readonly creationOrder: string; readonly attentionCount: number;
   readonly requestedOverrides: BotOverrides; readonly resolvedConfiguration: BotConfiguration;
   readonly roleConfiguration: { readonly instructions: string; readonly revision: string; readonly digest: string } | null;
   readonly sessionId: string | null; readonly testExecutionId: string | null; readonly startupResult: BotStartupResult;
@@ -48,6 +48,7 @@ const decimal = (value: unknown): string => {
   const result = string(value);
   return /^[1-9][0-9]{0,18}$/.test(result) && BigInt(result) <= 9_223_372_036_854_775_807n ? result : malformed();
 };
+const attentionCount = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : malformed();
 const provider = (value: unknown) => choice(value, ['codex', 'claude', 'copilot']);
 const botName = (value: unknown) => {
   const result = controlledText(value).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
@@ -101,7 +102,7 @@ export const parseBot = (value: unknown, userId: string, expectedId?: string): B
     if (BigInt(requestedVersion) >= BigInt(identity.version)) return malformed();
     return { ...identity, deletion: { deletionId: id(deletion.deletionId), requestedVersion, workerCleanup: result(deletion.workerCleanup, ['pending', 'completed', 'failed']), serverCleanup: result(deletion.serverCleanup, ['pending', 'completed', 'failed']) } };
   }
-  fields(data, ['id', 'workerId', 'version', 'deletion', 'ownerUserId', 'name', 'creationOrder', 'requestedOverrides', 'resolvedConfiguration', 'roleConfiguration', 'sessionId', 'testExecutionId', 'startupResult', 'createdAt', 'updatedAt']);
+  fields(data, ['id', 'workerId', 'version', 'deletion', 'ownerUserId', 'name', 'creationOrder', 'attentionCount', 'requestedOverrides', 'resolvedConfiguration', 'roleConfiguration', 'sessionId', 'testExecutionId', 'startupResult', 'createdAt', 'updatedAt']);
   const ownerUserId = id(data.ownerUserId), resolvedConfiguration = configuration(data.resolvedConfiguration), requestedOverrides = overrides(data.requestedOverrides);
   const sessionId = data.sessionId === null ? null : id(data.sessionId), testExecutionId = data.testExecutionId === null ? null : id(data.testExecutionId);
   const startupResult = result(data.startupResult, ['pending', 'ready', 'failed']);
@@ -115,7 +116,7 @@ export const parseBot = (value: unknown, userId: string, expectedId?: string): B
   if (ownerUserId !== requestId(userId) || identity.workerId !== resolvedConfiguration.workerId || (sessionId === null) !== (testExecutionId === null) || (sessionId === null) !== (roleConfiguration === null) || startupResult.state === 'ready' && sessionId === null) return malformed();
   if (Object.entries(requestedOverrides).some(([key, value]) => resolvedConfiguration[key as keyof BotOverrides] !== value)) return malformed();
   if (requestedOverrides.model !== undefined && resolvedConfiguration.selection?.modelSource !== 'explicit' || requestedOverrides.reasoningEffort !== undefined && resolvedConfiguration.selection?.reasoningEffortSource !== 'explicit') return malformed();
-  return { ...identity, deletion: null, ownerUserId, name: botName(data.name), creationOrder: decimal(data.creationOrder), requestedOverrides, resolvedConfiguration, roleConfiguration, sessionId, testExecutionId, startupResult, createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  return { ...identity, deletion: null, ownerUserId, name: botName(data.name), creationOrder: decimal(data.creationOrder), attentionCount: attentionCount(data.attentionCount), requestedOverrides, resolvedConfiguration, roleConfiguration, sessionId, testExecutionId, startupResult, createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
 };
 
 const workerDefaults = (value: unknown): BotWorkerDefaults => {
@@ -159,11 +160,11 @@ const cursor = (value: unknown): string => {
   const result = controlledText(value);
   return result.length <= 4096 ? result : malformed();
 };
-async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T, onDispatch?: () => void): Promise<T> {
+async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T, onDispatch?: () => void, attention = false): Promise<T> {
   const expected = requestId(admission.userId);
-  const response = await request(url, signal, { headers: { Accept: 'application/json' } }, onDispatch);
+  const response = await request(url, signal, { headers: { Accept: 'application/json', ...(attention ? { 'Daynight-Bot-Attention': '1' } : {}) } }, onDispatch);
   assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
-  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); });
+  return json(response, signal, value => { if (response.status !== 200 || attention && response.headers.get('Daynight-Bot-Attention') !== '1') throw new ApiError('protocol', response.status); return parse(value); });
 }
 export async function listBots(query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<BotPage> {
   const parameters = new URLSearchParams();
@@ -179,11 +180,11 @@ export async function listBots(query: { readonly limit?: number; readonly cursor
     const items = array(data.items, entry => { const bot = parseBot(entry, admission.userId); if (bot.deletion !== null) return malformed(); return bot; });
     if (items.length > 100 || new Set(items.map(bot => bot.id)).size !== items.length) return malformed();
     return { items, nextCursor: data.nextCursor === null ? null : cursor(data.nextCursor) };
-  });
+  }, undefined, true);
 }
 export async function getBot(botId: string, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<Bot> {
   const target = requestId(botId);
-  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target), onDispatch);
+  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target), onDispatch, true);
 }
 export async function getBotDefaults(workerId: string | null, signal: AbortSignal, admission: WorkerReadAdmission, choices?: Omit<BotOverrides, 'workerId'>): Promise<BotDefaults> {
   const target = workerId === null ? null : requestId(workerId);
@@ -206,10 +207,10 @@ export async function createBot(input: CreateBotInput, signal: AbortSignal, admi
   catch { throw new ApiError('protocol'); }
   let dispatched = false;
   try {
-    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
+    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Bot-Attention': '1' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
     return await json(response, signal, value => {
-      if (response.status !== 200) throw new ApiError('protocol', response.status);
+      if (response.status !== 200 || response.headers.get('Daynight-Bot-Attention') !== '1') throw new ApiError('protocol', response.status);
       const bot = parseBot(value, expected, target);
       if (bot.deletion !== null) return malformed();
       const original = JSON.parse(body) as CreateBotInput;
@@ -250,4 +251,14 @@ export async function deleteBot(botId: string, input: DeleteBotInput, signal: Ab
     if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotDeletionUnknown(target, original, error);
     throw error;
   }
+}
+
+/** Mark the currently outstanding report events as seen; proposal decisions remain independent. */
+export async function markBotAttentionSeen(botId: string, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<void> {
+  const expected = requestId(admission.userId), target = requestId(botId);
+  const response = await request(`/api/v1/bots/${target}/attention/seen`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: '{}' }, onDispatch);
+  assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
+  await json(response, signal, value => {
+    if (response.status !== 200 || id(fields(value, ['targetBotId']).targetBotId) !== target) return malformed();
+  });
 }

@@ -8,12 +8,12 @@ import type { CacheEvent, TaskCacheScope } from '../src/features/task-cache/proj
 vi.mock('../src/api/task-search', async (importOriginal) => ({ ...await importOriginal<typeof import('../src/api/task-search')>(), searchTasks: vi.fn() }));
 const project = '10000000-0000-4000-8000-000000000001';
 const user = '20000000-0000-4000-8000-000000000001';
-const item = (id: string) => ({ id, projectId: project, title: id, status: 'todo' as const, assignedTo: null, updatedAt: '2026-01-01T00:00:00Z', cancelledAt: null, context: null, match: { fields: [] as ('title' | 'description')[], descriptionSnippet: null } });
+const item = (id: string) => ({ tags: [], id, projectId: project, title: id, status: 'todo' as const, assignedTo: null, updatedAt: '2026-01-01T00:00:00Z', cancelledAt: null, context: null, match: { fields: [] as ('title' | 'description')[], descriptionSnippet: null } });
 const page = (id: string, nextCursor: string | null, total = 2): TaskSearchPage => ({ projectId: project, items: [item(id)], total, nextCursor });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const world = () => {
   const listeners = new Set<(event: CacheEvent) => void>(); const lifetime = new AbortController(); let revision = 0;
-  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), getProjectRevision: () => revision, revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
+  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), getProjectRevision: () => revision, markProjectReadable: vi.fn(), revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
   return { scope, abort: () => lifetime.abort(), bump: () => { revision++; }, emit: (event: CacheEvent) => { revision++; for (const listener of listeners) listener(event); } };
 };
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });

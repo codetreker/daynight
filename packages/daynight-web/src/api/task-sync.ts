@@ -6,6 +6,7 @@ import { array, boolean, id, malformed, project, record, string, timestamp, exec
 import type { ProjectPersonVersion } from "./auth-types";
 import type { TaskDependencyState, TaskListSessionState, TaskSummary, TaskSync } from "./types";
 import { nullableId, taskStatusFields, taskTypeFields } from "./validation";
+import { parseTaskTags } from "./task-tags";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
@@ -64,7 +65,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const worker = readWorkerClaim(properties);
   if (worker?.state === "active" && data.status !== "in_progress") return malformed();
   const result: TaskSummary = {
-    id: id(data.id), version, properties,
+    id: id(data.id), version, properties, tags: parseTaskTags(data.tags),
     ...taskTypeFields(data),
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     ...taskStatusFields(data), dependsOn, externalDependsOn,

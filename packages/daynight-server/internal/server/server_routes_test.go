@@ -2124,10 +2124,10 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 	reader.TaskPriorityListFn = func(ctx context.Context, id string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
 		counts.Called("priority")
 		mcpAttachmentCheck(t, id, project.ID)
-		expected := store.TaskPriorityQuery{Type: model.TaskTypeTask, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}, Limit: 50, ExcludeTerminal: true}
+		expected := store.TaskPriorityQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Type: model.TaskTypeTask, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}, Limit: 50, ExcludeTerminal: true}
 		if name == "task_ready" {
 			status, ready := model.TaskTodo, true
-			expected = store.TaskPriorityQuery{Type: model.TaskTypeTask, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}, Status: &status, Ready: &ready, Limit: 5}
+			expected = store.TaskPriorityQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Type: model.TaskTypeTask, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}, Status: &status, Ready: &ready, Limit: 5}
 		}
 		mcpAttachmentCheck(t, q, expected)
 		summary := mcpCloneFixture(target)

@@ -14,6 +14,7 @@ import (
 )
 
 type MCPListRequest struct {
+	TagFilter          store.TagFilter
 	Type               model.TaskType
 	Parent             *string
 	All                bool
@@ -27,6 +28,7 @@ type MCPListRequest struct {
 }
 
 type mcpListScope struct {
+	TagFilterIdentity  string                     `json:"tagFilter"`
 	Version            int                        `json:"version"`
 	Kind               string                     `json:"kind"`
 	Order              string                     `json:"order"`
@@ -53,6 +55,9 @@ type MCPListSelection struct {
 	query store.TaskPriorityQuery
 	prior *mcpListCursor
 }
+
+func (selection MCPListSelection) TagFilter() store.TagFilter { return selection.query.TagFilter }
+
 type MCPListPage struct {
 	Items   []store.TaskPriorityItem
 	HasMore bool
@@ -108,8 +113,12 @@ func SelectMCPList(projectID, principalUserID string, request MCPListRequest) (M
 	if err != nil {
 		return MCPListSelection{}, err
 	}
-	scope := mcpListScope{Version: 3, Kind: "task_list", Order: "priority_created_id", Actor: principalUserID, Project: projectID, Type: kind, Parent: parent, All: request.All, Status: request.Status, AssignedTo: assignment, AssignmentSource: request.AssignedTo, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, View: request.View}
-	selection := MCPListSelection{scope: scope, query: store.TaskPriorityQuery{Type: kind, Parent: parent, AssignedTo: assignment, Status: request.Status, ExcludeTerminal: !request.All && request.Status == nil, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}}
+	filter, err := NormalizeTagFilter(request.TagFilter)
+	if err != nil {
+		return MCPListSelection{}, err
+	}
+	scope := mcpListScope{TagFilterIdentity: TagFilterIdentity(filter), Version: 3, Kind: "task_list", Order: "priority_created_id", Actor: principalUserID, Project: projectID, Type: kind, Parent: parent, All: request.All, Status: request.Status, AssignedTo: assignment, AssignmentSource: request.AssignedTo, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, View: request.View}
+	selection := MCPListSelection{scope: scope, query: store.TaskPriorityQuery{TagFilter: filter, Type: kind, Parent: parent, AssignedTo: assignment, Status: request.Status, ExcludeTerminal: !request.All && request.Status == nil, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}}
 	if request.Cursor != nil {
 		if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
 			return MCPListSelection{}, mcpInvalidCursor()

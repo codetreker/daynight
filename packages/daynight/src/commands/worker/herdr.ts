@@ -7,6 +7,12 @@ import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
 import type { NativeSelectionVerifier } from "./native-selection.js";
+import type { ExecutionConfiguration } from "./types.js";
+import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
+import { ToolSelectionError } from "../../platform/tool-executables.js";
+import { createToolLaunchMapping } from "./herdr/tool-launch.js";
+import { readToolLaunchMappingInventory } from "./herdr/tool-launch-inventory.js";
+import { canonicalResourceOwner, sameResourceOwner } from "./resource-owner.js";
 
 export type {
   HerdrExecutionContext,
@@ -30,6 +36,8 @@ export const createWorkerHerdr = (options: {
   paths: WorkerPaths;
   homeDirectory: string;
   executable?: string;
+  herdrLaunch?: ResolvedToolLaunch | undefined;
+  readExecutionConfiguration?: (context: HerdrExecutionOwner) => ExecutionConfiguration | null;
   environment?: NodeJS.ProcessEnv;
   agentEnvironment?: Readonly<{ PATH?: string; DN_CONFIG_DIR?: string }>;
   onDaemonSpawn?: (pid: number) => Promise<void>;
@@ -38,7 +46,7 @@ export const createWorkerHerdr = (options: {
   selectionVerifier?: NativeSelectionVerifier;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
-  const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
+  const instance = createHerdrInstance({ ...options, ...(options.herdrLaunch === undefined ? {} : { toolLaunch: options.herdrLaunch }), environment: inheritedEnvironment });
   const nativeEnvironment = { ...createHerdrNativeEnvironment(options.paths, inheritedEnvironment), ...options.agentEnvironment };
   const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
@@ -54,14 +62,30 @@ export const createWorkerHerdr = (options: {
     homeDirectory: options.homeDirectory,
     ...(options.selectionVerifier === undefined ? {} : { selectionVerifier: options.selectionVerifier }),
   });
+  const toolMapping = async (context: HerdrExecutionOwner & { agent?: HerdrExecutionContext["agent"] }, operation: Operation, existingOnly = true) => {
+    const owner = canonicalResourceOwner(context), configuration = options.readExecutionConfiguration?.(owner) ?? null;
+    if (configuration !== null && ((configuration.agentControlMode ?? "herdr") !== "herdr" || context.agent !== undefined && configuration.agent !== context.agent)) throw new Error("The frozen Herdr execution configuration belongs to another provider or mode.");
+    if (configuration?.toolLaunch === undefined) {
+      if (existingOnly && readToolLaunchMappingInventory(options.paths.herdrDirectory).some(mapping => sameResourceOwner(mapping.owner, owner) && !mapping.retired)) throw new Error("The original Herdr mapping has no frozen execution recipe; process ownership remains unknown.");
+      if (existingOnly || context.agent === "claude") return null;
+      if (context.agent === undefined) throw new Error("A new Herdr mapping requires its original native provider.");
+      throw new ToolSelectionError(context.agent, "herdr", "launch", "legacy_tool_identity_missing");
+    }
+    if (configuration.toolLaunch.tool !== configuration.agent || configuration.toolLaunch.context !== "herdr") throw new Error("The original Herdr tool recipe differs from its execution owner.");
+    return createToolLaunchMapping({ directory: options.paths.herdrDirectory, owner, launch: configuration.toolLaunch, nativeEnvironment, ...instance.toolMappingRuntime(), existingOnly }, operation);
+  };
   const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight: {
     verifyStart: (input, operation) => {
       return preflight.verifyStart({ ...input, configuration: { ...input.configuration, agent: input.configuration.agent } }, operation);
     },
-  }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
+  }, workspaceEnvironment, nativeEnvironment,
+    ...(options.readExecutionConfiguration === undefined ? {} : { toolMapping }),
+    stopToolMapping: (context, operation) => toolMapping(context, operation),
+    readCodexConfig: (args, cwd, operation, toolLaunch) => readCodexConfiguration({ args, cwd, environment: nativeEnvironment, ...(toolLaunch === undefined ? {} : { toolLaunch }) }, operation) });
   return {
     createShellStartup: instance.createShellStartup,
     ensureInstance: instance.ensure,
+    connectInstance: instance.connect,
     stopInstance: async (operation: Operation) => {
       const results = await Promise.allSettled([instance.stop(operation), preflight.close()]);
       const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
@@ -84,6 +108,7 @@ export type WorkerHerdrLifecycle = {
     listLegacyBindings(operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
     listLegacyPendingStops(): readonly import("./herdr/agents.js").HerdrPendingStop[];
   };
+  activeToolSelections?(): import("./tool-selection.js").ActiveToolSelection[];
   neverStarted?: {
     candidates(): HerdrExecutionOwner[];
     retired(): { owner: HerdrExecutionOwner; cwd: string; agent: import("./types.js").ExecutionConfiguration["agent"] }[];
@@ -113,4 +138,9 @@ export type WorkerHerdrInput = {
   submit(owner: HerdrExecutionOwner, message: Extract<import("../../session/v2/types.js").SessionV2Message, { type: "operation" }>, operation: Operation): Promise<import("../../session/v2/types.js").SessionV2Payloads["operation_result"]>;
   suspend(owner: HerdrExecutionOwner): void;
 };
-export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle; input?: WorkerHerdrInput };
+export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & {
+  lifecycle?: WorkerHerdrLifecycle;
+  input?: WorkerHerdrInput;
+  /** Restore only an original claim's frozen instance after its old process tree is closed. */
+  ensureExecution?(context: Omit<HerdrExecutionContext, "cwd">, operation: Operation): Promise<import("./herdr/instance.js").HerdrInstanceReady>;
+};

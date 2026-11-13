@@ -12,7 +12,7 @@ const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.com:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task = { type: "task", parentId: null, id: taskId, projectId, title: "Race", description: "Preserved", properties: {}, status: "in_progress", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_994n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
+const task = { type: "task", parentId: null, id: taskId, projectId, title: "Race", description: "Preserved", tags: [], properties: {}, status: "in_progress", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_994n, startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
 const respond = (response: ServerResponse, body: unknown, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(body)); };
 type Request = { method: string; path: string; body: unknown };
 

@@ -1,3 +1,6 @@
+// GitHub settings has its own component and route-lifecycle coverage.
+vi.mock('../src/features/github-integration/GitHubSettings', () => ({ GitHubSettings: () => null }));
+
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";

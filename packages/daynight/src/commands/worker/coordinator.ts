@@ -17,6 +17,7 @@ import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
+import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
@@ -36,7 +37,7 @@ import type { ExecutionAdvance } from "./execution.js";
 import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "./configuration-admission.js";
 import { isUnavailableProject } from "./remote.js";
 import type { WorkerRemote } from "./remote.js";
-import type { WorkerStore } from "./store.js";
+import type { ClaimToolReservation, WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
 import { MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
@@ -48,6 +49,7 @@ export type WorkerRepositoryAssignment = { project: WorkerProject; configuration
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" };
 export type WorkerCoordinatorOptions = {
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
+  reserveClaimTools?: (reservation: ClaimToolReservation, signal: AbortSignal) => Promise<void>;
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
   webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
@@ -429,7 +431,33 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const isStopped = (owner: ResourceOwner): boolean => lifecycle()?.isStopped(owner) === true;
   const pendingStops = () => needsHerdr() || hasHerdrCleanup() ? options.herdr.tasks.pendingStops() : [];
 
-  const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
+  const mayRestoreHerdr = async (local: LocalTask, owner: ResourceOwner, signal: AbortSignal): Promise<boolean> => {
+    const fresh = await options.remote.readTask(local.projectId, local.taskId, signal), claim = readWorkerClaim(fresh.properties);
+    return !projectStops.has(local.projectId) && fresh.id === local.taskId && fresh.projectId === local.projectId && fresh.status === "in_progress" && fresh.allowAgents && !readTaskPaused(fresh.properties)
+      && claim?.state === "active" && claim.claimId === local.claimId && claim.workerId === options.workerId && claim.worktreeId === owner.worktreeId && claim.agent === local.agent && claim.agentControlMode === "herdr";
+  };
+  const ensureHerdr = async (signal?: AbortSignal, sources: readonly Task[] = []): Promise<void> => {
+    if (!needsHerdr()) return;
+    try { await workerOperation(operation => options.herdr.ensureInstance(operation), signal); }
+    catch (error) {
+      if (options.herdr.ensureExecution === undefined || signal?.aborted) throw error;
+      const failures: unknown[] = [error];
+      for (const source of sources) {
+        const owner = remoteOwner(source), local = options.store.getTask(owner);
+        const selectedForRecovery = configuration.targetProjectIds?.includes(owner.projectId)
+          ?? configuration.repositories.some(repository => repository.project.projectId === owner.projectId);
+        if (local === null || local.status === "done" || local.agentControlMode === "web" || !selectedForRecovery || options.store.getNativeConfiguration(local)?.herdrLaunch === undefined) continue;
+        if (!await mayRestoreHerdr(local, owner, signal ?? normalSignal)) continue;
+        try {
+          const context = { ...owner, agent: local.agent };
+          await workerOperation(operation => options.herdr.ensureExecution!(context, operation), signal);
+          return;
+        } catch (failure) { if (signal?.aborted) throw failure; failures.push(failure); }
+      }
+      if (failures.length === 1) throw error;
+      throw new AggregateError(failures, "The original Herdr instance could not be restored; frozen execution identities are retained.");
+    }
+  };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
   const snapshot = async (signal: AbortSignal, coveredProjects: ReadonlySet<string>, currentClaims: readonly ResourceOwner[] = [], unavailable: ReadonlySet<string> = new Set(), fileGated: ReadonlySet<string> = new Set()): Promise<Snapshot> => {
     const observed = await listHerdr(signal);
@@ -599,8 +627,38 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       observe(m => m.fail({ operationId, component: "inventory", phase: "inventory", scope: { kind: "project", projectId }, error }));
     });
     const invalidated = (id: string): boolean => (projectInvalidations.get(id) ?? 0) !== (initialInvalidations.get(id) ?? 0);
+    const observedTasks = [...observation.tasks];
+    for (const reservation of options.store.listClaimToolReservations()) {
+      if (invalidated(reservation.projectId)) continue;
+      const granted = observedTasks.find(task => task.projectId === reservation.projectId && task.id === reservation.taskId && readWorkerClaim(task.properties)?.claimId === reservation.claimId);
+      if (granted !== undefined) { options.store.acceptClaimToolReservation(granted, options.workerId); continue; }
+      if (!observation.coveredProjectIds.includes(reservation.projectId)) continue;
+      try {
+        // An absent inventory row cannot fence a request still committing at
+        // its original version. Reconcile that Task without replaying the POST.
+        const fresh = await options.remote.readTask(reservation.projectId, reservation.taskId, signal);
+        if (invalidated(reservation.projectId)) continue;
+        if (fresh.projectId !== reservation.projectId || fresh.id !== reservation.taskId) throw new Error("Claim reservation reconciliation returned another task.");
+        const claim = readWorkerClaim(fresh.properties);
+        if (claim?.claimId === reservation.claimId && (claim.workerId !== reservation.workerId || claim.worktreeId !== reservation.worktreeId || claim.agent !== reservation.nativeConfiguration.agent || claim.agentControlMode !== reservation.agentControlMode)) throw new Error("The original claim request has conflicting ownership evidence.");
+        if (claim?.claimId === reservation.claimId && claim.state === "active") {
+          options.store.acceptClaimToolReservation(fresh, options.workerId);
+          const index = observedTasks.findIndex(task => task.projectId === fresh.projectId && task.id === fresh.id);
+          if (index < 0) observedTasks.push(fresh); else observedTasks[index] = fresh;
+        } else if (fresh.version > reservation.version) options.store.releaseClaimToolReservation(reservation);
+      } catch (error) {
+        if (isWorkerCancellation(error, signal)) throw error;
+        if (!signal.aborted && !invalidated(reservation.projectId) && error instanceof ApiError && error.operation === "task.show"
+          && error.phase === "response" && error.status === 410 && error.code === "task_deleted"
+          && error.projectId === reservation.projectId && error.taskId === reservation.taskId && error.confirmedRefusal && !error.outcomeUnconfirmed) {
+          options.store.releaseClaimToolReservation(reservation);
+          continue;
+        }
+        options.emit({ kind: "warning", message: `The original claim request for ${reservation.projectId}/${reservation.taskId}/${reservation.claimId} remains unconfirmed; its frozen tools are retained.`, error });
+      }
+    }
     const result = new Map<string, Task>();
-    for (const task of observation.tasks) {
+    for (const task of observedTasks) {
       if (invalidated(task.projectId)) continue;
       const owner = remoteOwner(task);
       observe(m => {
@@ -972,7 +1030,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!stopped.complete) throw new Error("The original Web resources remain before restart.");
     return options.webStore.clearShutdown(stopped.task, now());
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true): Promise<WorkerInputWait | undefined> => {
+  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true, herdrRestored = false): Promise<WorkerInputWait | undefined> => {
     if (ending.has(key(task))) return;
     const owner = remoteOwner(remoteTask);
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
@@ -1070,6 +1128,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       }
       return waitingInput;
+    }
+    if (execute && options.herdr.ensureExecution !== undefined && options.store.getNativeConfiguration(task)?.herdrLaunch !== undefined) {
+      if (!await mayRestoreHerdr(task, owner, signal)) return;
+      const context = { ...owner, agent: task.agent };
+      if (!herdrRestored) await workerOperation(operation => options.herdr.ensureExecution!(context, operation), signal);
     }
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     nameFailureThisJob.delete(key(task));
@@ -1669,9 +1732,26 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     reconciliationPhase = "resource-observation";
     observe(m => m.setPhase("resource-observation"));
-    await ensureHerdr(normalSignal);
-    const observedBefore = settlementSequence;
-    const observed = await listHerdr(normalSignal);
+    let observed: HerdrOwnedWorkspace[], observedBefore: number;
+    try {
+      await ensureHerdr(normalSignal, [...inventory.values()]);
+      observedBefore = settlementSequence;
+      observed = await listHerdr(normalSignal);
+    } catch (error) {
+      if (normalSignal.aborted) throw error;
+      // Existing Web reservations can advance independently; missing Herdr
+      // observations still prohibit admission and retain unknown capacity.
+      const retainedOwners = [...responsibilities(), ...pendingStops().map(stop => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? []), ...options.store.listCleanupSchedules()];
+      for (const remoteTask of inventory.values()) {
+        const local = options.store.getTask(remoteOwner(remoteTask));
+        if (local === null || local.agentControlMode !== "web" || local.status !== "active" || !coveredProjects.has(local.projectId) || !prepared.has(local.projectId)
+          || remoteTask.status !== "in_progress" || !remoteTask.allowAgents || readTaskPaused(remoteTask.properties) || blockedByOldClaim(local, retainedOwners)) continue;
+        const record = options.webStore?.getTask(local);
+        if (record?.resources.worktree == null || record.webExecution === null) continue;
+        schedule(local, remoteTask);
+      }
+      throw error;
+    }
     await retireSettledMetadata(inventory, prepared, needsHerdr() ? observed : undefined);
     const failedRechecks = new Map<string, ResourceOwner>();
     const recheckFailedProjects = new Set<string>();
@@ -1903,13 +1983,32 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
           const frozenConfiguration = options.freezeConfiguration === undefined ? currentRepository.configuration : await options.freezeConfiguration(currentRepository.configuration, normalSignal);
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
-          const claimId = randomUUID();
+          const claimId = randomUUID(), worktreeId = randomUUID();
+          const reservation: ClaimToolReservation | undefined = (frozenConfiguration.agentControlMode ?? "herdr") === "herdr" && frozenConfiguration.herdrLaunch !== undefined
+            ? { projectId: candidate.projectId, taskId: candidate.id, claimId, worktreeId, workerId: options.workerId, version: candidate.version, agentControlMode: "herdr", nativeConfiguration: frozenConfiguration } : undefined;
+          if (reservation !== undefined) {
+            if (options.platform !== "macos" && options.reserveClaimTools === undefined) throw new Error("Shared Herdr claim reservation is unavailable.");
+            if (options.reserveClaimTools !== undefined) await options.reserveClaimTools(reservation, normalSignal);
+            else options.store.reserveClaimTools(reservation);
+            if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved() || normalSignal.aborted) {
+              options.store.releaseClaimToolReservation(reservation); normalSignal.throwIfAborted(); continue;
+            }
+          }
           reconciliationPhase = "claim-request";
           observe(m => m.setPhase("claim-request"));
           try {
-            const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
+            let granted: Task;
+            try { granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId }, normalSignal); }
+            catch (error) {
+              if (reservation !== undefined && error instanceof ApiError && !error.outcomeUnconfirmed && error.confirmedMutationId === undefined
+                && (error.confirmedRefusal || error.phase === "prepare" || error.phase === "request")) options.store.releaseClaimToolReservation(reservation);
+              throw error;
+            }
             const owner = remoteOwner(granted);
-            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration });
+            const local = reservation === undefined
+              ? options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration })
+              : options.store.acceptClaimToolReservation(granted, options.workerId);
+            if (local === null) throw new Error("The granted claim has no original frozen tool reservation.");
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
@@ -1946,6 +2045,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    if (options.store.listClaimToolReservations().some(reservation => reservation.projectId === target.projectId && reservation.taskId === target.taskId)) throw new Error("The original claim request remains unconfirmed; its frozen selection is reserved.");
     reconcileNeverStarted();
     // A Git mutation may have removed its visible worktree before its owned
     // process joins. Consult persisted responsibilities too, including before
@@ -2026,8 +2126,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       }
     },
-    advanceRetry: async (identity: ClaimIdentity): Promise<WorkerInputWait | undefined> => {
-      const { task, remoteTask } = await readSource(identity);
+    advanceRetry: async (identity: ClaimIdentity, prepareRepository?: () => Promise<void>): Promise<WorkerInputWait | undefined> => {
+      const { task, owner, remoteTask } = await readSource(identity);
       if (task.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
       const webRecord = task.agentControlMode === "web" ? options.webStore?.getTask(task) : null;
       const worker = readWorkerClaim(remoteTask.properties)!;
@@ -2036,7 +2136,21 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
       executionCapacity.invalidate(remoteOwner(remoteTask));
-      await ensureHerdr(normalSignal);
+      // Frozen execution recovery performs its own fresh claim checks and does
+      // not require the project to be selected for automatic scheduling.
+      let herdrRestored = false;
+      if (task.agentControlMode !== "web") {
+        if (options.store.getNativeConfiguration(task)?.herdrLaunch === undefined || options.herdr.ensureExecution === undefined) await ensureHerdr(normalSignal, [remoteTask]);
+        else {
+          if (!await mayRestoreHerdr(task, owner, normalSignal)) return;
+          await workerOperation(operation => options.herdr.ensureExecution!({ ...owner, agent: task.agent }, operation), normalSignal);
+          herdrRestored = true;
+        }
+      }
+      // Legacy worktree migration observes the original daemon. Restore that
+      // frozen infrastructure before preparing the repository, without starting
+      // a native execution or inventing a cwd before its manifest is available.
+      await prepareRepository?.();
       return serialize(identity, async () => {
         if (task.agentControlMode === "web" && options.webStore) {
           let record = options.webStore.getTask(task);
@@ -2045,12 +2159,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             options.webStore.authorizeRecoveryRetry(record, now());
           }
         }
-        return ensure(task, remoteTask, normalSignal);
+        return ensure(task, remoteTask, normalSignal, true, herdrRestored);
       });
     },
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
-      const { owner } = await readSource(identity);
-      await ensureHerdr(normalSignal);
+      const { owner, task } = await readSource(identity);
+      if (task.agentControlMode !== "web" && options.webStore?.getTask(owner) == null) await ensureHerdr(normalSignal);
       await serialize(identity, async () => {
         const binding = await runCleanup(owner, settings.deleteWorktree === true, normalSignal, undefined, true);
         normalSignal.throwIfAborted();
@@ -2063,7 +2177,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       return owner;
     },
     completeSource: async (owner: ResourceOwner): Promise<void> => {
-      await ensureHerdr(normalSignal);
+      if (options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null) await ensureHerdr(normalSignal);
       await serialize(owner, async () => {
         const binding = await runCleanup(owner, true, normalSignal, undefined, true);
         normalSignal.throwIfAborted();

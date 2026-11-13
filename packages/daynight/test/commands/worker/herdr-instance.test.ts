@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -12,6 +14,8 @@ import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance
 import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 import { terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
 import { herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
+import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
+import { createToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -60,7 +64,10 @@ setInterval(()=>{},1000);
 
 const fixture = async (extra: NodeJS.ProcessEnv = {}) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(`${scratch}${path.sep}`); roots.push(root);
+  const physicalRoot = await mkdtemp(`${scratch}${path.sep}`); roots.push(physicalRoot);
+  // AF_UNIX endpoints keep their real protocol length limit inside long worktrees.
+  let root = physicalRoot;
+  if (process.platform !== "win32") { const alias = path.join("/tmp", `dn-a0bc-${randomUUID().slice(0, 8)}`); await symlink(scratch, alias); roots.push(alias); root = path.join(alias, path.basename(physicalRoot)); }
   const script = path.join(root, "daemon.mjs"); await writeFile(script, daemonSource);
   const events = path.join(root, "events.jsonl"); const ready = path.join(root, "ready");
   const worker = { herdrDirectory: root, logsDirectory: path.join(root, "l") };
@@ -84,6 +91,50 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it.skipIf(process.platform === "win32")("registers the final mapped Bash process only after its explicit startup nonce is ready", async () => {
+    const f = await fixture();
+    const herdrLaunch = await resolveToolLaunch({ tool: "herdr", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: f.environment, cwd: f.root }, operation());
+    const instance = createHerdrInstance({ paths: f.worker, environment: f.environment, toolLaunch: herdrLaunch, spawnProcess: f.start });
+    await instance.ensure(operation());
+    const launch = await resolveToolLaunch({ tool: "codex", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: f.environment, cwd: f.root }, operation());
+    const mapping = (await createToolLaunchMapping({ directory: f.root, owner: { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() }, launch, nativeEnvironment: f.environment }, operation()))!;
+    const startup = instance.createShellStartup()!, terminal = parseToml(await readFile(instance.paths.configurationFile, "utf8")).terminal as { default_shell: string };
+    expect(startup.nonce).not.toBe(mapping.nonce);
+    const shell = spawn(terminal.default_shell, ["-i", "-c", "read -r release"], { env: { ...f.environment, ...mapping.environment, DAYNIGHT_HERDR_SHELL_NONCE: startup.nonce }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    children.push(shell);
+    const closed = once(shell, "close"), timer = setTimeout(() => shell.kill("SIGKILL"), 4_000);
+    try {
+      await mapping.verifyReady(shell.pid!, operation(), startup.nonce);
+      expect(await startup.isReady(shell.pid!)).toBe(true);
+      await mapping.captureProcesses([shell.pid!], operation());
+      await mapping.verifyProcesses({ shellPid: shell.pid! }, operation());
+    } finally { shell.stdin!.end("release\n"); await closed; clearTimeout(timer); await instance.stop(operation()); }
+  });
+
+  it("uses the frozen Herdr command for both version and daemon spawn and its attachment", async () => {
+    const f = await fixture(), calls: { file: string; args: readonly string[] }[] = [];
+    const toolLaunch = await resolveToolLaunch({ tool: "herdr", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: f.environment, cwd: f.root }, operation());
+    const instance = createHerdrInstance({ paths: f.worker, environment: f.environment, toolLaunch, spawnProcess: (file, args, options) => { calls.push({ file, args }); return f.start(file, args, options); } });
+    expect(await instance.ensure(operation())).toMatchObject({ version: "0.9.5", protocol: 22 });
+    expect(calls).toEqual([{ file: toolLaunch.command.file, args: ["--version"] }, { file: toolLaunch.command.file, args: ["--session", "w", "server"] }]);
+    expect(instance.attachment).toMatchObject({ executable: toolLaunch.command.file, arguments: ["--session", "w"] });
+    await instance.stop(operation());
+  });
+  it.skipIf(process.platform === "win32")("reconnects the original controlled shell using its recorded helper runtime after an installation moves", async () => {
+    const f = await fixture();
+    const toolLaunch = await resolveToolLaunch({ tool: "herdr", context: "herdr", choice: { kind: "path", path: process.execPath }, environment: f.environment, cwd: f.root }, operation());
+    const instance = createHerdrInstance({ paths: f.worker, environment: f.environment, toolLaunch, spawnProcess: f.start });
+    await instance.ensure(operation());
+    const original = instance.toolMappingRuntime(), moved = { nodeExecutable: path.join(f.root, "removed-node"), childEntry: path.join(f.root, "removed-helper.js") };
+    await writeFile(path.join(f.root, "shell-tool-runtime.json"), JSON.stringify(moved), { mode: 0o600 });
+    const rcFile = path.join(f.root, "shell.rc"), rc = (await readFile(rcFile, "utf8")).replaceAll(original.nodeExecutable, moved.nodeExecutable).replaceAll(original.childEntry, moved.childEntry);
+    await writeFile(rcFile, rc);
+    const reconnected = createHerdrInstance({ paths: f.worker, environment: f.environment, toolLaunch, spawnProcess: () => { throw new Error("An existing endpoint must not spawn another helper or daemon."); } });
+    expect(await reconnected.connect(operation())).toMatchObject({ reconnected: true });
+    expect(reconnected.toolMappingRuntime()).toEqual(moved);
+    expect(await readFile(rcFile, "utf8")).toBe(rc);
+    await instance.stop(operation());
+  });
   it.skipIf(process.platform !== "darwin")("runs new isolated panes without user shell startup files while retaining PATH and native homes", async () => {
     const f = await fixture();
     const home = path.join(f.root, "native-home"); await mkdir(home);

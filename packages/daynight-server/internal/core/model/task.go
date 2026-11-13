@@ -49,6 +49,7 @@ type Task struct {
 	Title             string
 	Description       string
 	Properties        TaskProperties
+	Tags              []TagReference
 	Status            TaskStatus
 	Version           int64
 	CreatedAt         time.Time

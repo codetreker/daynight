@@ -63,6 +63,24 @@ const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
 describe('Goal task lists', () => {
+  it('keeps cancelled chain members and terminal status while projecting completion', () => {
+    const items = [task('Goal', 'done'), task('Done', 'done', ['Goal']), task('Cancelled', 'cancelled', ['Goal'])];
+    const view = render(list(indexOf(items)));
+    const header = disclosure().closest('.goal-header')!;
+    expect(header).toHaveAttribute('data-task-status', 'ended');
+    expect(disclosure()).toHaveAccessibleName(/2\/2 已完成/);
+    expect(header.querySelector('.root-progress-track i')).toHaveStyle({ width: '100%' });
+    fireEvent.click(disclosure());
+    const member = document.getElementById('chain-task-Goal-Cancelled')!;
+    expect(member).toBeVisible();
+    member.focus();
+    view.rerender(list(indexOf(items.map((item) => ({ ...item, status: 'cancelled' as const })))));
+    expect(header).toHaveAttribute('data-task-status', 'cancelled');
+    expect(disclosure()).toHaveAccessibleName(/0\/0 已完成/);
+    expect(header.querySelector('.root-progress-track i')).toHaveStyle({ width: '0%' });
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
+    expect(member).toHaveFocus();
+  });
   it('keeps a cross-scope chain but shows only the current scope and counts its representative once', () => {
     const items = [
       { ...task('Outside', 'done'), parentId: 'goal-a' },
@@ -339,7 +357,8 @@ describe('shared scoped chain presentation', () => {
     expect(first).toHaveAttribute('aria-controls', firstChildren.id);
     expect(second).toHaveAttribute('aria-controls', secondChildren.id);
     expect(first).toHaveTextContent('Outside');
-    expect(first.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3');
+    expect(first.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/2 已完成');
+    expect(first.closest('.goal-header')!.querySelector('.root-progress-track i')).toHaveStyle({ width: '100%' });
     expect(first.closest('.goal-header')).toHaveAttribute('data-task-status', 'ended');
     fireEvent.click(first);
     expect(firstChildren).toBeVisible();

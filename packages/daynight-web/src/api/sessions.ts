@@ -1,5 +1,5 @@
 import { awaitAbortable } from '../../../daynight/src/api/abort';
-import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
+import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
 import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
 import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
@@ -114,7 +114,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           const archive = parseSessionArchive(archiveEnvelope(value));
           if (archive.sessionId !== id) throw new ApiError('protocol');
           return archive;
-        }, async () => { rawBytes = await boundedArchiveBytes(response, signal); return decodeStrictSessionJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
+        }, async () => { rawBytes = await boundedArchiveBytes(response, signal, SESSION_ARCHIVE_MAX_BYTES + 1024); return decodeStrictSessionJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
         assertCurrent();
         if (archive.schemaVersion === 3) {
           if (archive.recordId !== id) throw new ApiError('protocol');
@@ -128,7 +128,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           assertCurrent();
           assertResponsePrincipal(timelineResponse, userId, onPrincipalMismatch);
           if (timelineResponse.status !== 200) return json(timelineResponse, signal, () => { throw new ApiError('protocol', timelineResponse.status); });
-          const bytes = await boundedArchiveBytes(timelineResponse, signal);
+          const bytes = await boundedArchiveBytes(timelineResponse, signal, SESSION_ARCHIVE_TIMELINE_MAX_BYTES);
           assertCurrent();
           const timeline = await verifySessionArchiveMetadata(archive, bytes);
           assertCurrent();
@@ -205,12 +205,10 @@ function archiveEnvelope(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('archive' in value) || Object.keys(value).length !== 1) throw new ApiError('protocol');
   return value.archive;
 }
-async function boundedArchiveBytes(response: Response, signal: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
+async function boundedArchiveBytes(response: Response, signal: AbortSignal, limit: number): Promise<Uint8Array<ArrayBuffer>> {
   signal = responseSignal(response, signal);
   signal.throwIfAborted();
   if (!response.body) throw new ApiError('protocol');
-  // The content envelope adds a few bytes beyond the bounded archive document.
-  const limit = SESSION_ARCHIVE_MAX_BYTES + 1024;
   const length = response.headers.get('Content-Length');
   if (length !== null && (!/^[0-9]+$/.test(length) || BigInt(length) > BigInt(limit))) { await awaitAbortable(response.body.cancel().catch(() => undefined), signal); signal.throwIfAborted(); throw new ApiError('protocol'); }
   const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;

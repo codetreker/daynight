@@ -6,6 +6,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/tag"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,6 +18,10 @@ var _ store.TaskSearchSnapshot = (*searchSnapshot)(nil)
 
 func (s *searchSnapshot) ProjectAccess(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	return pg.ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
+}
+
+func (s *searchSnapshot) ResolveTags(ctx context.Context, projectID string, ids []string) ([]model.Tag, error) {
+	return tag.NewReader(s.tx).ResolveTags(ctx, projectID, ids)
 }
 
 func searchError(phase string, err error) error {

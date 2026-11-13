@@ -95,6 +95,10 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	if err != nil {
 		return store.TaskSearchPage{}, searchError("query task search", err)
 	}
+	tagFilter, err := taskTagFilter(input.TagFilter, &args)
+	if err != nil {
+		return store.TaskSearchPage{}, searchError("query task search", err)
+	}
 	folded := []string{"t.id", "t.updated_at"}
 	if c.id {
 		folded = append(folded, `t.id::text AS id_text`)
@@ -131,7 +135,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
  AND ($3::boolean IS NULL OR ` + pg.TaskReady + `=$3)
  AND ($4::boolean IS NULL OR t.allow_agents=$4)
  AND ($5::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$5)
- AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))` + resourceFilter + `),
+ AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))` + resourceFilter + tagFilter + `),
  atom_hits AS MATERIALIZED (SELECT ` + strings.Join(hits, ", ") + ` FROM folded f),
  matched AS MATERIALIZED (SELECT h.id,h.updated_at,` + expr.exactIDPriority + ` AS exact_id_priority,` + expr.titlePriority + ` AS title_priority FROM atom_hits h WHERE ` + expr.matches + `),
  total AS (SELECT count(*) AS total FROM matched),
@@ -165,6 +169,18 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	}
 	if err := rows.Err(); err != nil {
 		return store.TaskSearchPage{}, searchError("read task search", err)
+	}
+	rows.Close()
+	ids := make([]string, len(result.Items))
+	for i := range result.Items {
+		ids[i] = result.Items[i].ID
+	}
+	tags, err := pg.LoadTaskTagsBatch(ctx, s.tx, projectID, ids)
+	if err != nil {
+		return store.TaskSearchPage{}, err
+	}
+	for i := range result.Items {
+		result.Items[i].Tags = tags[result.Items[i].ID]
 	}
 	return result, nil
 }

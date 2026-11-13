@@ -22,7 +22,7 @@ Controller journal 的唯一编号序列为 `001`–`011`，当前格式为 v11�
 
 `openTimelineStore` 不保留正文 Map。`get`、`has`、`nextSequence`、`page`、`hasBefore`、`hasAfter` 和 `totals` 直接查询 SQL。`page` 使用严格的序号游标：before 选择 `< pivot` 的倒序有界页后恢复升序，after 使用 `> pivot` 的升序页，tail 返回最后一页的升序结果。`nextSequence` 保留 `MAX(entry_seq)+1` 的分配语义，并拒绝溢出。
 
-`save` 要求调用者的原写事务仍有效，同时执行构造时传入的写权限断言；store 不开始第二套事务。已有 entry 不得改变序号、回退 revision，或在相同 revision 下改变内容。正文写入与 `timeline_totals` 的增减属于同一事务。逻辑 timeline 大小精确为 `length('{"entries":[]}') + SUM(byte_length) + max(entry_count-1, 0)`，上限为 64 MiB 和 100000 条；替换扣除旧长度，历史修订不累计计费。
+`save` 要求调用者的原写事务仍有效，同时执行构造时传入的写权限断言；store 不开始第二套事务。已有 entry 不得改变序号、回退 revision，或在相同 revision 下改变内容。正文写入与 `timeline_totals` 的增减属于同一事务。逻辑 timeline 大小精确为 `length('{"entries":[]}') + SUM(byte_length) + max(entry_count-1, 0)`，上限为 128 MiB 和 100000 条；替换扣除旧长度，历史修订不累计计费。
 
 每次读取验证 JSON、id、kind、序号、revision、长度与 hash。重新打开时核对实际 COUNT/SUM 与统计；损坏暴露为错误，不重建或覆盖统计。`iterate(visitor)` 在调用者的同步读事务内耗尽 SQLite statement，不返回活跃 iterator，也不允许跨 await 保留快照。
 
@@ -42,7 +42,7 @@ v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文�
 
 ## 峰值预留与停止维护
 
-原 `ControllerStoragePermit` 贯穿本机导入和维护。局部 context 绑定实际迁移连接与已预留峰值，步骤 6/8 使用同一许可导出，不因历史候选垃圾超过普通 128 MiB 水位而提前拒绝转换。逻辑正文、资源、2200 MiB/execution、8 GiB/stateDirectory 和 512 MiB 卷空闲限制继续有效。账本 `reserve(bytes)` 替换原 execution 的绝对预留；重入按实际残留和剩余工作重算，不累计退款。
+原 `ControllerStoragePermit` 贯穿本机导入和维护。局部 context 绑定实际迁移连接与已预留峰值，步骤 6/8 使用同一许可导出，不因历史候选垃圾超过普通 128 MiB 水位而提前拒绝转换。逻辑正文、资源、2200 MiB/execution、8 GiB/stateDirectory 和 512 MiB 卷空闲限制继续有效。控制元数据 128 MiB 和 8 MiB 结算余量之外，已提交 timeline 字节及匹配 active history 同步原身份、路径和长度的完整文件按实际字节提供额外空间；未登记或不匹配的孤儿文件不豁免。正文增长及冻结副本前按 8 MiB 档位登记峰值。账本 `reserve(bytes)` 替换原 execution 的绝对预留；重入按实际残留和剩余工作重算，不累计退款。
 
 停止维护要求原 ticket、generation、instance、持久 stopped/nativeStopped 证据及无活跃 writer。顺序为：
 
@@ -76,4 +76,4 @@ checkpoint busy 返回 `waiting/reader_busy`，保留 pending、原文件与必�
 
 组件复用 SQLite migration reporter，通用编号迁移阶段为 `journal-migration`，原 SQLite 具体阶段保留在 `storage.sqlitePhase`；维护的实际阶段为 `legacy-timeline-retirement`、`journal-compaction`、`storage-admission`。目标版本来自 canonical 格式；停止结算在连接成功准入前保留真实来源版本，之后报告实际已准入版本。指标包含条目与字节数、真实文件占用、checkpoint busy/frames、回收字节和实际事务结果，不记录正文或凭据。诊断失败保留真实存储操作结果。
 
-真实 SQLite 测试拥有当前行替换、BigInt、UTF-8、游标、统计回滚、历史来源与文件身份、资源引用及停止维护故障。held WAL reader 验证退休屏障，空闲打开连接验证 VACUUM 后置 checkpoint。100000 条、64 MiB 和大量历史修订探针独立于普通 CI；生成数据只能证明其明示的内容、顺序、outbox/ACK 和 reader 条件，不能替代未取得的原事故数据。
+真实 SQLite 测试拥有当前行替换、BigInt、UTF-8、游标、统计回滚、历史来源与文件身份、资源引用及停止维护故障。held WAL reader 验证退休屏障，空闲打开连接验证 VACUUM 后置 checkpoint。100000 条、128 MiB 和大量历史修订探针独立于普通 CI；生成数据只能证明其明示的内容、顺序、outbox/ACK 和 reader 条件，不能替代未取得的原事故数据。

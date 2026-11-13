@@ -12,11 +12,14 @@ daynight task create --type goal --title "Improve installation"
 daynight task create --parent <goal-id> --title "Document prerequisites" --status todo
 daynight task list --type goal --json
 daynight task list --parent <goal-id> --json
+daynight task list --tag <tag-id> --tag <another-tag-id> --tag-match any --json
+daynight task list --untagged --json
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task list --ready --assigned-to me --json
 daynight task list --assigned-to unassigned --json
 daynight task ready --limit 20 --json
+daynight task ready --tag <tag-id> --limit 20 --json
 daynight task show <task-id> --json
 ```
 
@@ -63,10 +66,25 @@ identity even on empty pages. Ready supports parent and permission/platform filt
 assignee filter; use `task list --ready --assigned-to me`. Readiness, assignment
 and automatic permission are independent.
 
+Ordinary list, ready and search accept repeated `--tag <tag-id>` UUIDs; IDs are
+canonicalized, deduplicated and sorted. `--tag-match all` (default) requires all
+selected tags, while `any` requires at least one. `--untagged` selects resources
+without tags and conflicts with a nonempty tag selection. With neither selected
+IDs nor `--untagged`, there is no tag predicate. The service applies it with
+other filters before pagination or the ready limit; a Task matches only its own
+tags, not its Goal's. The same selection is sent on every page. Invalid UUIDs
+and conflicting options fail; unknown, deleted or cross-project tags produce
+`invalid_tag_filter`. Request and cursor limits still apply and inputs are never
+truncated. Grouped chain queries reject tag options.
+
 Lists order in_progress, ready todo, blocked todo, proposed, then selected
 terminal Tasks; done/cancelled stay distinct. Neither list nor ready ordering
 ranks relevance. List/show/graph include [Session observations](session-reads.md#observations);
 ready and Task-returning writes retain full Task data without querying live Sessions.
+Task and Goal details, lists, ready results and receipts contain their own `tags`
+array of `{id,name}` references; `[]` means no tags. Text displays each name on
+its own line, or `Tags: none`. Missing or invalid references fail as protocol
+errors; graph nodes do not include tags.
 A candidate page or single Task cannot prove a complete inventory or verify all
 relationships. Include terminal Tasks for duplicate/history checks; read full
 descriptions and separate materials required for the decision.
@@ -80,10 +98,12 @@ a leading dash. Grammar: uppercase `AND`, `OR`, `NOT`, parentheses, quoted phras
 with ASCII case folding.
 
 Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents`,
-`--compatible-platform`, `--type` and `--parent`, not `--all`; it traverses all pages in server relevance
+`--compatible-platform`, `--type`, `--parent` and the tag filters above, not `--all`; it traverses all pages in server relevance
 order. Matches and actual parent Goal context are compact, not full Tasks.
+Tag filters intersect the expression; tag names are not search fields. An
+expression is still required, so use list for tag-only queries.
 Text/JSON omit assignee and update time;
-JSON fields are id, type, parentId, projectId, title, status, cancelledAt, context
+JSON fields are id, type, parentId, projectId, title, tags, status, cancelledAt, context
 and match. Search text also displays Type and Parent. `context:{taskId,title}`
 identifies the visible actual parent Goal, or is null for an independent Task;
 dependencies do not establish Goal membership.
@@ -119,6 +139,28 @@ needs a non-null assignee matching the Worker's authenticated account; existing
 claim authority is separate. Actual assignment, permission and platform
 changes are locked in_progress and do not change status. Task/graph JSON retain
 assignedTo as UUID/null; text shows UUID/unassigned.
+
+## Tag associations
+
+```bash
+daynight task create --title "Improve installation" --tag <tag-id> --tag <another-tag-id>
+daynight task update <task-id> --tag <tag-id> --if-version <observed-version>
+daynight task update <task-id> --clear-tags --if-version <observed-version>
+daynight task tag add <task-id> <tag-id> --if-version <observed-version>
+daynight task tag remove <task-id> <tag-id> --if-version <observed-version>
+```
+
+Create and update accept repeated tag UUIDs, normalized, deduplicated and sorted.
+Create writes the tags and metadata atomically; omission creates no associations.
+Update replaces the complete set; `--clear-tags` empties it and conflicts with
+`--tag`. Omission preserves the set. Task and Goal tags are independent.
+
+Add/remove read the current Task and PATCH the complete resulting set, including
+when unchanged. An explicit version must match that read and remains the original
+condition; otherwise the read version is used. Conflicts require a fresh decision.
+A timeout or unknown result is not rollback: read the Task to inspect the saved
+state and do not automatically replay the write. Successful receipts must contain
+the submitted IDs.
 
 ## Status and timing
 

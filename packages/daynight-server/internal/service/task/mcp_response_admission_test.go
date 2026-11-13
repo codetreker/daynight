@@ -2,8 +2,10 @@ package task
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +115,45 @@ func TestMCPResponseAdmissionUsesCompleteWireForBothProtocols(t *testing.T) {
 			}
 		}
 		assertResponseLimit(t, admitTaskResponse(WithMCPTaskResponse(t.Context(), "rpc-test", strings.Repeat("x", 600*1024), modern, false, true), task, true))
+	}
+}
+
+func TestMCPTaggedResponseAdmissionReservesRenameInWireEnvelope(t *testing.T) {
+	actual := mcpAdmissionTask()
+	actual.Tags = []model.TagReference{{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Name: "short"}, {ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Name: "标签"}}
+	actual.Description = strings.Repeat("d", 65536)
+	reserved := actual
+	reserved.Tags = []model.TagReference{{ID: actual.Tags[0].ID, Name: strings.Repeat("&", 64)}, {ID: actual.Tags[1].ID, Name: strings.Repeat("&", 64)}}
+	reserved.Version = math.MaxInt64
+	reserved.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	before := actual
+	before.Tags = append([]model.TagReference(nil), actual.Tags...)
+	for _, modern := range []bool{false, true} {
+		for _, batch := range []bool{false, true} {
+			for _, full := range []bool{false, true} {
+				for _, changed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("modern=%t/batch=%t/full=%t/changed=%t", modern, batch, full, changed), func(t *testing.T) {
+						prefix := "<&世界"
+						base := mcpAdmissionSize(t, reserved, changed, prefix, modern, batch, full)
+						rpcID := prefix + strings.Repeat("x", taskcore.MaxTaskResponseJSONBytes-base)
+						if size := mcpAdmissionSize(t, reserved, changed, rpcID, modern, batch, full); size != taskcore.MaxTaskResponseJSONBytes {
+							t.Fatalf("reserved wire size=%d", size)
+						}
+						ctx := WithMCPTaskResponse(t.Context(), "rpc-test", rpcID, modern, batch, full)
+						if err := admitTaskResponse(ctx, actual, changed); err != nil {
+							t.Fatalf("exact reserved envelope rejected: %v", err)
+						}
+						if !reflect.DeepEqual(actual, before) {
+							t.Fatal("admission changed actual tag references")
+						}
+						excess := rpcID + "x"
+						if size := mcpAdmissionSize(t, actual, changed, excess, modern, batch, full); size >= taskcore.MaxTaskResponseJSONBytes {
+							t.Fatalf("actual short names should fit: %d", size)
+						}
+						assertResponseLimit(t, admitTaskResponse(WithMCPTaskResponse(t.Context(), "rpc-test", excess, modern, batch, full), actual, changed))
+					})
+				}
+			}
+		}
 	}
 }

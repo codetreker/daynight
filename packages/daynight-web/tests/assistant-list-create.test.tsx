@@ -1,3 +1,4 @@
+vi.mock('../src/api/assistant-tasks', async original => ({ ...await original<typeof import('../src/api/assistant-tasks')>(), listAssistantTasks: async () => ({items:[],nextCursor:null,observedAt:'2026-11-13T00:00:00Z'}) }));
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { pauseAuthRequests } from '../src/api/client';
@@ -33,7 +34,7 @@ function fixture(items = [botDefinition(1), botDefinition(2)]) {
   return fetch;
 }
 const writes = (fetch: ReturnType<typeof fixture>) => fetch.mock.calls.filter(([url, options]) => options?.method === 'POST' && !String(url).endsWith('/readonly/requests'));
-const listLinks = () => within(screen.getByRole('list')).queryAllByRole('link');
+const listLinks = () => within(screen.getByRole('list', {name: /Your assistants|你的助手/})).queryAllByRole('link');
 
 it('searches names without reordering or fetching, and distinguishes no matches from no assistants in both languages', async () => {
   const first = { ...botDefinition(1), name: 'Zulu 助手' }, second = { ...botDefinition(2), name: 'Alpha Helper' };
@@ -42,7 +43,7 @@ it('searches names without reordering or fetching, and distinguishes no matches 
   await screen.findByRole('link', { name: /Alpha Helper/ });
   expect(listLinks().map(link => link.getAttribute('href'))).toEqual([`/bots/${first.id}`, `/bots/${second.id}`]);
   const calls = fetch.mock.calls.length;
-  const search = screen.getByRole('searchbox', { name: 'Search assistants' });
+  const search = screen.getByRole('searchbox', { name: 'Search assistants or tasks' });
   fireEvent.change(search, { target: { value: 'hELper' } });
   expect(listLinks()).toHaveLength(1);
   expect(listLinks()[0]).toHaveAttribute('href', `/bots/${second.id}`);
@@ -50,7 +51,7 @@ it('searches names without reordering or fetching, and distinguishes no matches 
   expect(screen.getByText('No matching assistants')).toBeVisible();
   expect(screen.queryByText('No assistants yet')).toBeNull();
   view.setLocale('zh-CN');
-  expect(screen.getByRole('searchbox', { name: '搜索助手' })).toBe(search);
+  expect(screen.getByRole('searchbox', { name: '搜索助手或助手任务' })).toBe(search);
   expect(search).toHaveValue('missing');
   expect(screen.getByText('没有匹配的助手')).toBeVisible();
   fireEvent.change(search, { target: { value: '助手' } });
@@ -128,8 +129,8 @@ it('keeps startup failure distinct from Worker observation failure in compact se
   const row = await screen.findByRole('link', { name: /Assistant 2.*Startup failed.*Worker offline/ });
   expect(row).toHaveAttribute('href', `/bots/${failed.id}`);
   expect(screen.getByRole('link', { name: /Assistant 1/ })).toHaveTextContent('Starting');
-  expect(within(screen.getByRole('list')).queryByText('Machine 20')).toBeNull();
-  expect(within(screen.getByRole('list')).queryByText('/ordinary/directory')).toBeNull();
+  expect(within(screen.getByRole('list', {name: /Your assistants|你的助手/})).queryByText('Machine 20')).toBeNull();
+  expect(within(screen.getByRole('list', {name: /Your assistants|你的助手/})).queryByText('/ordinary/directory')).toBeNull();
   fetch.mockImplementation(async url => String(url).includes('/defaults') ? botError(503, 'unavailable') : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByRole('alert');
