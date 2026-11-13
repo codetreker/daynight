@@ -41,8 +41,12 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
     const root = `/api/v1/test-sessions/${sessionId}`;
     let entries: TimelineEntry[] = [];
     await expect.poll(async () => {
+      if (exited) throw new Error(`Controller exited before its images were published: ${output}`);
       const response = await page.request.get(`${root}/timeline?direction=tail&limit=100`);
-      expect(response.status(), await response.text()).toBe(200);
+      const body = await response.text();
+      // The public URL is printed before the first Controller connection opens.
+      if (response.status() === 503 && (JSON.parse(body) as { error: { code: string } }).error.code === "controller_offline") return -1;
+      expect(response.status(), `${body}\nController output:\n${output}`).toBe(200);
       entries = (await response.json() as { items: TimelineEntry[] }).items;
       return new Set(imageParts(entries).map(part => part.imageId)).size;
     }, { timeout: 60_000 }).toBe(2);
