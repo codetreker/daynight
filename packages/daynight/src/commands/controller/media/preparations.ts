@@ -418,7 +418,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         if (process.platform !== "win32") fsyncSync(fd); syncDirectory(nativeRoot);
         const reference = `operation:${operationId}:${image.imageId}`;
         pendingPins.push({ resourceId: image.resourceId, reference, filename });
-        native.push({ type: "image", imageId: image.imageId, resourceId: image.resourceId, mediaType: metadata.mediaType, byteLength: image.byteLength, sha256: image.sha256, localPath: filename });
+        native.push({ type: "image", imageId: image.imageId, resourceId: image.resourceId, mediaType: metadata.mediaType, byteLength: image.byteLength, sha256: image.sha256, localPath: filename, validated: Object.freeze({ ...metadata }) });
       }
       verify();
       for (const pin of pendingPins) content.pinResource(pin.resourceId, pin.reference);

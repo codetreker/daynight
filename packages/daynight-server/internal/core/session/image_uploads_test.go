@@ -341,6 +341,11 @@ type imageRuleFixture struct {
 	files *imageRuleStorage
 }
 
+func supportedImageRuleCapabilities(native *string) *sp.ImageCapabilities {
+	model := "controlled-model"
+	return &sp.ImageCapabilities{Revision: "2", ProviderRevision: "7", ExpectedNativeSessionID: native, ModelID: &model, Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png", "image/jpeg", "image/webp"}, MaxImageBytes: decimal(sp.MaxImageBytes), MaxMessageImageBytes: decimal(sp.MaxMessageImageBytes), MaxImagesPerMessage: sp.MaxImagesPerMessage, Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 16384, MaxHeight: 16384, MaxPixels: 33554432, MaxFrames: 256}}
+}
+
 func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 	t.Helper()
 	storage, e := local.New(t.TempDir())
@@ -363,6 +368,7 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 	expiry := now.Add(time.Hour)
 	r := &record{Owner: owner, Live: &liveSession{Synced: true}, LastSeen: &now, ConnectionExpiry: &expiry, Snapshot: sp.Snapshot{ContentRevision: 2, ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: uuid.NewString(), ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, Identity: sp.Identity{OwnerUserID: owner, NativeSessionID: &native}, Lifecycle: "active", ConnectionState: "connected", Synchronized: true}}
 	historyID := uuid.NewString()
+	r.Snapshot.Capabilities.Images = supportedImageRuleCapabilities(&native)
 	d.bundle = store.ArchiveBundle{SessionID: r.Snapshot.SessionID, Phase: "active", HistoryID: historyID, Ledger: encode(archiveLedger{HistoryID: historyID, HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: "0", Sealable: true})}
 	s := &Execution{Engine: engine}
 	s.browserRun = func(ctx context.Context, actor model.Principal, _, _, id string, _ BrowserPurpose, fn func(*Access) error) error {
@@ -619,6 +625,7 @@ func TestImageUploadRemoteValidationBudgetAndOriginalRelease(t *testing.T) {
 	if e := f.s.refreshImageState(t.Context(), tx, f.r, nil); e != nil || f.r.Snapshot.Capabilities.Images.Revision != initialRevision {
 		t.Fatal("unchanged capability revision advanced", e)
 	}
+	f.r.Snapshot.Capabilities.Images = supportedImageRuleCapabilities(f.r.Snapshot.Identity.NativeSessionID)
 	f.prepare(t)
 	reservedRevision := f.r.Snapshot.ImageBudget.Revision
 	if f.r.Snapshot.ImageBudget.ReservedBytes != f.spec.ByteLength {

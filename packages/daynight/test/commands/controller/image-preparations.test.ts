@@ -214,7 +214,8 @@ test("release cancels and joins a decoder before removing its private original",
 });
 
 test("undispatched leases can be reacquired but unknown native and resume pins survive close and restart", async () => {
-  const f = await fixture(); const media = f.store.media();
+  const decoder = vi.fn(validateImageFile);
+  const f = await fixture(decoder); const media = f.store.media();
   await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
   await media.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
   const resourceId = randomUUID(); const input = { content: [{ type: "image" as const, imageId: f.spec.imageId, uploadId: f.spec.uploadId, resourceId, sha256: f.spec.sha256, byteLength: f.spec.byteLength }], expectedTurnId: null, target: f.spec.target, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
@@ -222,10 +223,16 @@ test("undispatched leases can be reacquired but unknown native and resume pins s
   f.store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: input, intent: command });
   try {
     const first = await media.acquireInput(input, command.operationId); const firstImage = first.input.content.find(part => part.type === "image")!;
+    expect(firstImage.validated).toEqual({ mediaType: "image/png", byteLength: f.spec.byteLength, sha256: f.spec.sha256, width: 23, height: 19, frameCount: 1 });
+    expect(Object.isFrozen(firstImage.validated)).toBe(true);
+    first.verify();
     await expect(media.acquireInput(input, command.operationId)).rejects.toThrow("already has");
     first.close(); await expect(readFile(firstImage.localPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(media.read({ resourceId, offset: "0", limit: 524288 })).rejects.toThrow("unavailable");
     const second = await media.acquireInput(input, command.operationId); const retained = second.input.content.find(part => part.type === "image")!;
+    expect(retained.validated).toEqual(firstImage.validated);
+    second.verify();
+    expect(decoder).toHaveBeenCalledOnce();
     const original = path.join(`${f.file}.pending-content`, "blobs", `${createHash("sha256").update(resourceId).digest("hex")}.bin`);
     const [originalStat, nativeStat] = await Promise.all([stat(original), stat(retained.localPath)]);
     expect([nativeStat.dev, nativeStat.ino]).toEqual([originalStat.dev, originalStat.ino]);

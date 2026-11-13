@@ -18,8 +18,6 @@ import (
 // Run separately from routine CI: this exercises all three declared counts at
 // the exact timeline byte boundary and measures PostgreSQL's stored metadata.
 func TestArchiveMaximumLegalMetadataCapacity(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
-	defer cancel()
 	const count = 100000
 	id := func(kind, index int) string { return fmt.Sprintf("%08x-0000-4000-8000-%012x", kind, index+1) }
 	resources := make([]sp.Resource, 1000)
@@ -86,6 +84,9 @@ func TestArchiveMaximumLegalMetadataCapacity(t *testing.T) {
 	}
 	result := map[string]any{"entries": count, "occurrences": count, "resources": 1000, "timelineBytes": len(timeline), "historyBytes": len(history), "historyMaxBytes": sp.MaxArchiveHistoryBytes, "ledgerJSONBytes": len(encoded), "ledgerPostgresBoundBytes": estimate, "ledgerMaxBytes": maxArchiveLedgerBytes, "persistentReserveBytes": sp.ArchiveResourceReserve}
 	if url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL"); url != "" {
+		// The test runner bounds CPU fixture construction; the database budget starts with database work.
+		ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+		defer cancel()
 		db, e := pgx.Connect(ctx, url)
 		if e != nil {
 			t.Fatal(e)

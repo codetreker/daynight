@@ -3,6 +3,8 @@ import { createControllerCaptureBridge } from "./media/capture.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
+import { assertNativeImageAdmission, authorizeNativeImageInput } from "./providers/image-admission.js";
+import type { ImageCapabilities } from "../../session/image-values.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -176,10 +178,11 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     })();
     active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(fail); return execute;
   };
-  const assertImageCommand = (command: SessionCommand): void => {
+  const assertImageCommand = (command: SessionCommand, authorization?: ImageCapabilities): void => {
     if (command.kind !== "send_message" || !command.payload.content.some(part => part.type === "image")) return;
     const images = readState().providerImages, target = command.payload.target;
-    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId || command.payload.expectedImageCapabilityRevision !== images.revision) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (authorization && (authorization.revision !== command.payload.expectedImageCapabilityRevision || authorization.providerRevision !== images.revision || authorization.expectedNativeSessionId !== images.expectedNativeSessionId || authorization.modelId !== images.modelId || authorization.controlsRevision !== images.controlsRevision)) throw new NativeRpcError(-32602, "Service image authorization no longer matches the original capability and provider qualification.");
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
@@ -227,13 +230,23 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
           if (!provider || stopping || !synchronized) throw new NativeRpcError(-32602, "Native provider is not available.");
           assertControlCommand(command, journal.getSnapshot());
           if (lease) assertImageCommand(command);
-          await relay.authorize(command.operationId);
+          const authorization = await relay.authorize(command.operationId);
           if (!relay.connected() || stopping) throw new Error("Relay authorization lost before native dispatch.");
           // Authorization is asynchronous too; check current turn and target again.
           assertControlCommand(command, journal.getSnapshot());
-          if (lease) assertImageCommand(command);
-          lease?.verify();
-          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, lease?.input); }); relay.receipt(result);
+          let input = lease?.input;
+          if (lease) {
+            if (!authorization || command.kind !== "send_message") throw new NativeRpcError(-32602, "The service did not authorize the complete image input.");
+            const verify = () => {
+              if (!relay.connected() || stopping || !synchronized) throw new NativeRpcError(-32602, "Image authorization connection is no longer current.");
+              assertImageCommand(command, authorization);
+              lease!.verify();
+            };
+            verify();
+            input = authorizeNativeImageInput(lease.input, authorization, verify);
+            assertNativeImageAdmission(input, readState().providerImages!, command.payload.expectedTurnId);
+          }
+          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, input); }); relay.receipt(result);
         } catch (error) {
           if (journal.getOperation(command.operationId)?.state === "accepted") relay.receipt(journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized."));
           else throw error;

@@ -65,6 +65,16 @@ test("disconnect rejects an outstanding authorization and never treats begin as 
   socket.close(); await assertion; expect(relay.connected()).toBe(false);
 });
 
+test("authorization retains effective image limits and the independent provider revision", async () => {
+  const { relay, emit, frame } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const operationId = randomUUID();
+  const imageAuthorization = { revision: "7", providerRevision: "2", expectedNativeSessionId: "native", modelId: "model", controlsRevision: "3", send: "supported", steer: "unsupported", reasonCode: null, inputMediaTypes: ["image/png"], maxImageBytes: "100", maxMessageImageBytes: "200", maxImagesPerMessage: 2, geometry: { version: 1, known: true, maxWidth: 32, maxHeight: 32, maxPixels: 512, maxFrames: 1 } };
+  const pending = relay.authorize(operationId);
+  emit(frame("operation_authorized", { operationId, imageAuthorization }));
+  expect(await pending).toEqual(imageAuthorization);
+});
+
 test("old generation receipts retain their identity and only reconcile, while explicit rejected states survive", async () => {
   const operation = { operationId: randomUUID(), executionGeneration: "1", kind: "cancel", state: "rejected", result: null, error: "Native turn changed" } as ControllerOperation;
   const { relay, socket, emit, frame, ticket } = await setup([operation]);

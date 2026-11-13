@@ -1,3 +1,4 @@
+import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
 import { expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -44,11 +45,28 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
   const input = (content: NativeInput["content"], expectedTurnId: string | null = null) => {
     const operationId = randomUUID(), payload = { content: content.map(part => part.type === "text" ? part : { type: "image", imageId: part.imageId, resourceId: part.resourceId, uploadId: randomUUID(), sha256: part.sha256, byteLength: part.byteLength }), expectedTurnId, target: { expectedNativeSessionId: null } };
     intents.set(operationId, { sha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex"), state: "dispatching", command: { operationId, kind: "send_message", payload } });
-    return { operationId, value: { content }, expectedTurnId };
+    const value = { content: content.map(part => part.type === "image" ? { ...part, validated: { mediaType: part.mediaType as "image/png", byteLength: part.byteLength, sha256: part.sha256, width: 1, height: 1, frameCount: 1 } } : part) };
+    const caps = states.at(-1)?.images;
+    return { operationId, value: caps ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}) : value, expectedTurnId };
   };
   const requests = async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
   return { root, options, image, input, requests, entries, states, observations, captures, state, child: () => child, cleanup: () => rm(root, { recursive: true, force: true }) };
 };
+
+test.each(["second-geometry", "qualification-revoked"])("Codex sends nothing when final admission rejects %s", async failure => {
+  const f = await fixture(), provider = await openCodexProvider(f.options);
+  try {
+    const prepared = f.input([await f.image(), await f.image()]);
+    let allowed = true;
+    const current = f.states.at(-1)!.images!;
+    const input = authorizeNativeImageInput(prepared.value, { ...current, revision: "7", providerRevision: "1" }, () => { if (!allowed) throw new NativeRpcError(-32602, "Qualification revoked during verification."); });
+    if (failure === "second-geometry") Object.assign(input.content[1]!, { validated: { ...(input.content[1] as NativeImagePart).validated!, width: 1025 } });
+    const sending = provider.send(input, prepared.operationId, null);
+    if (failure === "qualification-revoked") allowed = false;
+    await expect(sending).rejects.toBeInstanceOf(NativeRpcError);
+    expect((await f.requests()).filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await provider.close(); await f.cleanup(); }
+});
 
 test("pure and mixed image inputs use one native request each, preserve order and reuse original resources", async () => {
   const f = await fixture(), onInputMessage = vi.fn();

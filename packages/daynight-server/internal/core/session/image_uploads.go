@@ -623,6 +623,17 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	if _, e = sp.DecodeValidatedImage(encode(validated)); e != nil {
 		return out, fault("resource_conflict", "Decoder returned invalid image metadata.")
 	}
+	if remote {
+		e = s.browser(ctx, p, project, taskID, id, func(_ *operationTx, r *record, _ task, write bool) error {
+			if !write {
+				return denied()
+			}
+			return validateInputImage(r.Snapshot.Capabilities.Images, validated)
+		})
+		if e != nil {
+			return out, e
+		}
+	}
 	reader, closeReaders, e = open()
 	if e != nil {
 		return out, e
@@ -642,6 +653,11 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		}
 		if e = s.imageTarget(p, r, u.Spec.Target); e != nil {
 			return e
+		}
+		if remote {
+			if e = validateInputImage(r.Snapshot.Capabilities.Images, validated); e != nil {
+				return e
+			}
 		}
 		usage, e := d.SessionResourceUsage(ctx, id)
 		if e != nil {

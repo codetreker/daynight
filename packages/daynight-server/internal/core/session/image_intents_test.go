@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -18,6 +19,56 @@ type imageIntentDAO struct {
 	session, id        string
 	raw                []byte
 	insertErr, readErr error
+}
+
+type imageBeginDAO struct {
+	*imageIntentDAO
+	operation store.SessionOperation
+}
+
+func (d *imageBeginDAO) SessionOperation(context.Context, string, string) (store.SessionOperation, error) {
+	return d.operation, nil
+}
+
+func TestImageBeginReturnsEffectiveAuthorizationBoundToOriginalIntent(t *testing.T) {
+	for _, kind := range []string{"image", "text", "stale", "shrunk"} {
+		t.Run(kind, func(t *testing.T) {
+			f, c, _ := imageIntentFixture(t)
+			if kind == "text" {
+				c.Payload = []byte(`{"content":[{"type":"text","text":"hello"}],"expectedTurnId":null}`)
+			}
+			f.r.Snapshot.Capabilities.Send = true
+			f.r.Snapshot.Activity, f.r.Snapshot.InitialInputState = "idle", "not_required"
+			f.s.authorizationRun = func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) error { return nil }
+			epoch := int64(1)
+			d := &imageBeginDAO{imageIntentDAO: &imageIntentDAO{imageRuleDAO: f.d}, operation: store.SessionOperation{Command: c, Actor: f.p, Epoch: &epoch, Receipt: sp.Operation{State: "dispatching"}}}
+			tx := &operationTx{dao: d, op: &Operation{live: map[string]*liveSession{c.SessionID: {Commands: map[string]sp.Command{c.OperationID: c}}}}}
+			if kind == "stale" {
+				f.r.Snapshot.Capabilities.Images.Revision = "3"
+			}
+			if kind == "shrunk" {
+				f.r.Snapshot.Capabilities.Images.Geometry.MaxWidth = 1
+			}
+			before := imageCommandHash(c)
+			out, err := f.s.begin(t.Context(), tx, f.r, task{}, c.OperationID)
+			if kind == "stale" || kind == "shrunk" {
+				if err == nil || out != nil {
+					t.Fatalf("stale image authorized: %v %v", out, err)
+				}
+				return
+			}
+			if err != nil || out["operationId"] != c.OperationID || out["sessionId"] != c.SessionID || out["connectionEpoch"] != f.r.Snapshot.ConnectionEpoch {
+				t.Fatalf("authorization binding: %v %v", out, err)
+			}
+			image, exists := out["imageAuthorization"]
+			if exists != (kind == "image") || exists && !jsonEqual(encode(image), encode(f.r.Snapshot.Capabilities.Images)) {
+				t.Fatalf("authorization snapshot: %v", out)
+			}
+			if !bytes.Equal(before, imageCommandHash(c)) {
+				t.Fatal("authorization rewrote intent")
+			}
+		})
+	}
 }
 
 func (d *imageIntentDAO) InsertSessionOperationIntent(_ context.Context, session, id string, raw []byte) error {
@@ -48,7 +99,7 @@ func imageIntentFixture(t *testing.T) (imageRuleFixture, sp.Command, sp.SendMess
 	if e != nil {
 		t.Fatal(e)
 	}
-	f.r.Snapshot.Capabilities.Images = &sp.ImageCapabilities{Revision: "2", ExpectedNativeSessionID: f.r.Snapshot.Identity.NativeSessionID, Send: "supported", Steer: "unsupported"}
+	f.r.Snapshot.Capabilities.Images = supportedImageRuleCapabilities(f.r.Snapshot.Identity.NativeSessionID)
 	input := sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: "Use this original."}, {Type: "image", ImageID: f.spec.ImageID, UploadID: f.spec.UploadID, ResourceID: receipt.Resource.ResourceID, SHA256: f.spec.SHA256, ByteLength: f.spec.ByteLength}}, Target: &f.spec.Target, DraftID: uuid.NewString(), DraftRevision: "1", ExpectedImageCapabilityRevision: "2"}
 	return f, sp.Command{Fence: f.r.Snapshot.Fence, ContentRevision: 2, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "send_message", Payload: encode(input)}, input
 }
@@ -97,6 +148,78 @@ func TestImageIntentRequiresCompletedOriginalAndCurrentProviderProfile(t *testin
 				}
 			} else if e == nil {
 				t.Fatal("changed image intent accepted")
+			}
+		})
+	}
+}
+
+func TestImageIntentEnforcesEffectiveProfileOnEveryOriginal(t *testing.T) {
+	for _, kind := range []string{"boundary", "mime", "bytes", "message bytes", "message sum", "count", "width", "height", "pixels", "frames", "unknown geometry", "missing geometry", "second image"} {
+		t.Run(kind, func(t *testing.T) {
+			f, c, input := imageIntentFixture(t)
+			caps := f.r.Snapshot.Capabilities.Images
+			caps.MaxImageBytes, caps.MaxMessageImageBytes, caps.MaxImagesPerMessage = f.spec.ByteLength, f.spec.ByteLength, 1
+			caps.Geometry = sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 2, MaxHeight: 3, MaxPixels: 6, MaxFrames: 1}
+			switch kind {
+			case "mime":
+				caps.InputMediaTypes = []string{"image/jpeg"}
+			case "bytes":
+				caps.MaxImageBytes = decimal(number(f.spec.ByteLength) - 1)
+			case "message bytes":
+				caps.MaxMessageImageBytes = decimal(number(f.spec.ByteLength) - 1)
+			case "width":
+				caps.Geometry.MaxWidth--
+			case "height":
+				caps.Geometry.MaxHeight--
+			case "pixels":
+				caps.Geometry.MaxPixels--
+			case "frames":
+				caps.Geometry.MaxFrames--
+			case "unknown geometry":
+				caps.Geometry.Known = false
+			case "missing geometry":
+				u := f.d.uploads[f.spec.UploadID]
+				u.Receipt.Resource.Width = nil
+				resource := f.d.resources[u.BlobID]
+				resource.Resource.Width = nil
+				f.d.resources[u.BlobID] = resource
+			case "second image", "message sum", "count":
+				other := f
+				other.spec.UploadID, other.spec.ImageID = uuid.NewString(), uuid.NewString()
+				other.prepare(t)
+				if _, e := other.write(t, []byte("original"), 0); e != nil {
+					t.Fatal(e)
+				}
+				if kind == "second image" {
+					decode := f.s.imageDecoder
+					f.s.SetImageDecoder(func(ctx context.Context, reader io.Reader, size int64, hash string) (sp.ValidatedImage, error) {
+						image, e := decode(ctx, reader, size, hash)
+						image.Width = 3
+						return image, e
+					})
+				}
+				receipt, e := other.complete(t)
+				if e != nil {
+					t.Fatal(e)
+				}
+				part := input.Content[1]
+				part.UploadID, part.ImageID, part.ResourceID = other.spec.UploadID, other.spec.ImageID, receipt.Resource.ResourceID
+				input.Content = append(input.Content, part)
+				caps.MaxImagesPerMessage, caps.MaxMessageImageBytes = 2, decimal(2*number(f.spec.ByteLength))
+				if kind == "count" {
+					caps.MaxImagesPerMessage = 1
+				}
+				if kind == "message sum" {
+					caps.MaxMessageImageBytes = decimal(2*number(f.spec.ByteLength) - 1)
+				}
+			}
+			c.Payload = encode(input)
+			err := f.s.authorizeImages(t.Context(), &operationTx{dao: f.d}, f.r, c)
+			if (err == nil) != (kind == "boundary") {
+				t.Fatalf("profile admission: %v", err)
+			}
+			if len(f.d.references) != len(f.d.resources) {
+				t.Fatal("admission partially pinned the message")
 			}
 		})
 	}
