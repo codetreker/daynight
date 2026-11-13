@@ -25,6 +25,11 @@ func (operations *inputTaskOperations) Update(arg0 context.Context, arg1 model.P
 	return operations.update(arg0, arg1, arg2, arg3, arg4)
 }
 
+func (operations *inputTaskOperations) ReplaceTags(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error) {
+	operations.t.Error("unexpected Task ReplaceTags")
+	return model.Task{}, errors.New("unexpected Task ReplaceTags")
+}
+
 func (operations *inputTaskOperations) Delete(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.DeleteTask) error {
 	operations.t.Error("unexpected Task Delete")
 	return errors.New("unexpected Task Delete")

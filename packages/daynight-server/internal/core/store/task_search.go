@@ -45,6 +45,7 @@ type TaskSearchQuery struct {
 }
 
 type TaskSearchRow struct {
+	Tags                   []model.TagReference
 	Type                   model.TaskType
 	ParentID               *string
 	ID, Title, Description string

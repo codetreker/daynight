@@ -60,6 +60,7 @@ type UpdateTaskRequest struct {
 	Title             *string              `json:"title,omitempty"`
 	Description       *string              `json:"description,omitempty"`
 	DependsOn         *[]string            `json:"dependsOn,omitempty"`
+	TagIDs            *[]string            `json:"tagIds,omitempty"`
 }
 
 type TaskDeleteRequest struct {

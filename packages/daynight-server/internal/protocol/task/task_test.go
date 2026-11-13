@@ -75,6 +75,27 @@ func TestRESTEmptyTagsAreAnArray(t *testing.T) {
 	}
 }
 
+func TestRESTSyncTags(t *testing.T) {
+	for _, tags := range [][]model.TagReference{nil, {}, {{ID: "id", Name: "<&标签"}}} {
+		value := RESTSyncRecord(model.TaskViewRecord{Tags: tags})
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `"tags":[]`
+		if len(tags) > 0 {
+			want = `"tags":[{"id":"id","name":"\u003c\u0026标签"}]`
+			value.Tags[0].Name = "changed"
+			if tags[0].Name != "<&标签" {
+				t.Fatal("sync projection aliases task tags")
+			}
+		}
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("sync tags: %s", raw)
+		}
+	}
+}
+
 func TestTypedTaskProjectionsAndByteCost(t *testing.T) {
 	parent := "d41a4e82-6bf0-4c7f-b519-47076dafc425"
 	for _, parentID := range []*string{nil, &parent} {

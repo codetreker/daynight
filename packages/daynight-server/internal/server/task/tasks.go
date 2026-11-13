@@ -210,6 +210,10 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
+	input.TagIDs, err = httpx.OptionalStrings(fields, "tagIds")
+	if err != nil {
+		return api.UpdateTaskRequest{}, err
+	}
 	input.Properties, err = optionalProperties(fields)
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
@@ -230,7 +234,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil && input.ParentID == nil &&
+	if input.TagIDs == nil && input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil && input.ParentID == nil &&
 		(input.Properties == nil || len(*input.Properties) == 0) {
 		return api.UpdateTaskRequest{}, httpx.InvalidInput("at least one task field must be provided")
 	}
@@ -420,7 +424,7 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform", "assignedTo", "parentId")
+	fields, err := httpx.DecodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform", "assignedTo", "parentId", "tagIds")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
@@ -430,13 +434,19 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
-	values := taskcore.UpdateTask{ParentID: input.ParentID, AssignedTo: input.AssignedTo, RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
+	values := taskcore.UpdateTask{ParentID: input.ParentID, AssignedTo: input.AssignedTo, RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, TagIDs: input.TagIDs}
 	if input.Properties != nil {
 		values.Properties = model.TaskPropertiesPatch(*input.Properties)
 	}
 
 	var metadata service.TaskWriteMetadata
-	task, err := h.tasks.Update(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, values)
+	ctx := service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata)
+	var task model.Task
+	if input.TagIDs != nil && input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil && input.ParentID == nil && input.Properties == nil {
+		task, err = h.tasks.ReplaceTags(ctx, principal, projectID, id, input.Version, input.TagIDs)
+	} else {
+		task, err = h.tasks.Update(ctx, principal, projectID, id, values)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "update", err)
 		return

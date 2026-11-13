@@ -52,3 +52,47 @@ func LoadTaskTags(ctx context.Context, tx pgx.Tx, projectID, taskID string) ([]m
 	}
 	return refs, nil
 }
+
+// LoadTaskTagsBatch reads references for the selected resources in the caller's snapshot.
+func LoadTaskTagsBatch(ctx context.Context, tx pgx.Tx, projectID string, taskIDs []string) (map[string][]model.TagReference, error) {
+	result := make(map[string][]model.TagReference, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT a.task_id::text, p.id::text, p.name FROM task_tags a
+		JOIN project_tags p ON p.project_id=a.project_id AND p.id=a.tag_id
+		JOIN task_resource_rows t ON t.project_id=a.project_id AND t.id=a.task_id
+		WHERE a.project_id=$1 AND a.task_id=ANY($2::uuid[]) AND t.effective_deleted_at IS NULL
+		ORDER BY a.task_id, p.id`, projectID, taskIDs)
+	if err != nil {
+		return nil, QueryError("read task tags", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID string
+		var ref model.TagReference
+		if err := rows.Scan(&taskID, &ref.ID, &ref.Name); err != nil {
+			return nil, QueryError("read task tags", err)
+		}
+		result[taskID] = append(result[taskID], ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, QueryError("read task tags", err)
+	}
+	return result, nil
+}
+
+func AttachTaskTags(ctx context.Context, tx pgx.Tx, projectID string, tasks []model.Task) error {
+	ids := make([]string, len(tasks))
+	for i := range tasks {
+		ids[i] = tasks[i].ID
+	}
+	tags, err := LoadTaskTagsBatch(ctx, tx, projectID, ids)
+	if err != nil {
+		return err
+	}
+	for i := range tasks {
+		tasks[i].Tags = tags[tasks[i].ID]
+	}
+	return nil
+}
