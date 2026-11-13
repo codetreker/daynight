@@ -63,6 +63,9 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
     };
     for (const { resourceId } of images) await readOriginal(resourceId);
     const showImages = async (): Promise<void> => {
+      await page.getByRole("button", { name: "Display", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Standard", exact: true }).click();
+      await page.keyboard.press("Escape");
       await page.locator(".session-tool > summary").filter({ hasText: "render_plot" }).click();
       await expect(page.locator(".session-timeline img")).toHaveCount(2);
     };
