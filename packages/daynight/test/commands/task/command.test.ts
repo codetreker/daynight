@@ -54,6 +54,7 @@ const fixture = (operation = createOperation()) => {
     listTeamInvitations: vi.fn<ApiClient["listTeamInvitations"]>(), createTeamInvitation: vi.fn<ApiClient["createTeamInvitation"]>(), revokeTeamInvitation: vi.fn<ApiClient["revokeTeamInvitation"]>(),
     listTeamMembers: vi.fn<ApiClient["listTeamMembers"]>(), setTeamMemberRole: vi.fn<ApiClient["setTeamMemberRole"]>(), removeTeamMember: vi.fn<ApiClient["removeTeamMember"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
+    listTags: vi.fn<ApiClient["listTags"]>(), getTag: vi.fn<ApiClient["getTag"]>(), createTag: vi.fn<ApiClient["createTag"]>(), renameTag: vi.fn<ApiClient["renameTag"]>(), deleteTag: vi.fn<ApiClient["deleteTag"]>(),
     listBots: vi.fn<ApiClient["listBots"]>(), getBot: vi.fn<ApiClient["getBot"]>(), createBot: vi.fn<ApiClient["createBot"]>(), deleteBot: vi.fn<ApiClient["deleteBot"]>(), listWorkers: vi.fn<ApiClient["listWorkers"]>(), getWorker: vi.fn<ApiClient["getWorker"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(), readWorkerMonitoring: vi.fn<ApiClient["readWorkerMonitoring"]>(), writeWorkerMonitoring: vi.fn<ApiClient["writeWorkerMonitoring"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
