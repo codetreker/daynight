@@ -34,6 +34,7 @@ import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
+import { TagFilter, useTagFilter, matchesTagFilter } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
 import "../../styles/project.css";
 
@@ -81,6 +82,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [tagsMounted, setTagsMounted] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
+  const tagFilter = useTagFilter(projectId, section === "tasks");
+  const invalidReceipt = useRef({ projectId, viewer, revision: 0 });
+  if (invalidReceipt.current.projectId !== projectId || invalidReceipt.current.viewer !== viewer) invalidReceipt.current = { projectId, viewer, revision: 0 };
+  useLayoutEffect(() => {
+    search.setFilters({ ...search.filters, type: activeView === "goals" ? "goal" : "task", parentId: null, ...tagFilter.value }, tagFilter.invalid);
+  }, [activeView, tagFilter.value, tagFilter.invalid, search.setFilters]);
+  useEffect(() => {
+    if (invalidReceipt.current.revision === search.serverInvalidRevision) return;
+    invalidReceipt.current.revision = search.serverInvalidRevision;
+    if (search.filters.tagIds.length === tagFilter.value.tagIds.length && search.filters.tagIds.every((id, i) => id === tagFilter.value.tagIds[i])) tagFilter.markInvalid();
+  }, [search.serverInvalidRevision, search.filters.tagIds, tagFilter.value.tagIds, tagFilter.markInvalid]);
   const searchActive = search.applied !== null;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
@@ -153,13 +165,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const matchesCurrentAssignee = (assignedTo: string | null) => matchesAssignee(assignedTo, assigneeFilter, viewer.userId);
   const assignedGoals = allGoals.filter((goal) => matchesCurrentAssignee(goal.assignedTo));
   const goals = assignedGoals.filter((goal) =>
-    (statusFilter === "all" || goal.status === statusFilter));
+    (statusFilter === "all" || goal.status === statusFilter) && !tagFilter.invalid && matchesTagFilter(goal.tags, tagFilter.value));
   const pausedTaskCount = useMemo(() => snapshot === null ? 0 : pausedSummaryTaskIds(
     snapshot.graph.tasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)), snapshot.pausedTaskIds).size,
   [snapshot, assigneeFilter, viewer.userId]);
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
-      (statusFilter === "all" || task.status === statusFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId]);
+      (statusFilter === "all" || task.status === statusFilter) && !tagFilter.invalid &&
+      (snapshot.summaries.has(task.id) ? matchesTagFilter(snapshot.summaries.get(task.id)!.tags, tagFilter.value) : tagFilter.value.tagIds.length === 0 && !tagFilter.value.untagged)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid]);
   const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
   const unfinishedMatches = (id: string) => {
@@ -173,6 +186,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const chainPagination = usePagination(rootIds.length);
   const standalonePagination = usePagination(standaloneIds.length);
   const goalPagination = usePagination(goals.length);
+  const resetTaskPages = useRef(() => {});
+  resetTaskPages.current = () => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); };
+  useEffect(() => {
+    resetTaskPages.current();
+  }, [tagFilter.value, tagFilter.invalid]);
   const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
   const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
@@ -561,7 +579,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             {section === "tasks" && graphState}
-            <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
+            <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} />} />
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}

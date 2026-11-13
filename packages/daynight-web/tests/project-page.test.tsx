@@ -10,6 +10,7 @@ import { getProject } from "../src/api/project-settings";
 import { getProjectAccess } from "../src/api/auth";
 import { directAccessFixture } from "./helpers/taskSync";
 import { searchTasks, TaskSearchError } from "../src/api/task-search";
+import { listProjectTags, resolveProjectTags } from "../src/api/task-tags";
 import type { GraphTask, TaskDetail, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectPage } from "../src/features/projects/ProjectPage";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
@@ -22,6 +23,7 @@ const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
+vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof import("../src/api/task-tags")>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
 vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
@@ -110,6 +112,7 @@ beforeEach(() => {
   vi.mocked(getProject).mockReset().mockImplementation(async (id) => graph(seeds, id).project);
   vi.mocked(getProjectAccess).mockReset().mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
   vi.mocked(searchTasks).mockReset();
+  vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: "00000000-0000-4000-8000-000000000001", nextCursor: null });
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -132,6 +135,73 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it("keeps the current page when a background snapshot changes the page count", async () => {
+    const makeSeeds = (count: number): Seed[] => Array.from({ length: count }, (_, i) => ({ id: `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`, title: `Task ${i + 1}`, status: "todo", dependsOn: [] }));
+    graphRequest.mockResolvedValueOnce(graph(makeSeeds(21))).mockResolvedValue(resetSnapshot(graph(makeSeeds(41))));
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("tab", { name: /独立任务/ });
+    fireEvent.click(taskTabs().getByRole("tab", { name: /独立任务/ }));
+    document.getElementById("project-standalone-list")!.scrollIntoView = vi.fn();
+    const pagination = () => within(document.querySelector<HTMLElement>("#project-standalone-list .list-pagination")!);
+    await waitFor(() => expect(pagination().getByRole("button", { name: "下一页" })).toBeEnabled());
+    fireEvent.click(pagination().getByRole("button", { name: "下一页" }));
+    expect(pagination().getByText(/2 \/ 2/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(pagination().getByText(/2 \/ 3/)).toBeVisible());
+  });
+
+  it("shares tags between local chains and search without changing graph context", async () => {
+    const tag = { id: E, name: "后端", projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 1, goals: 0 } };
+    vi.mocked(listProjectTags).mockResolvedValue({ items: [tag], catalogEpoch: A, nextCursor: null });
+    vi.mocked(resolveProjectTags).mockResolvedValue([{ id: E, name: "后端" }]);
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(getTaskSync).mockImplementation(async (id, query) => {
+      const source = graph(); servedGraphs.set(id, source);
+      const sync = syncFixture.toSync(source, query);
+      return taskSyncReadFixture({ ...sync, tasks: sync.tasks.map(task => ({ ...task, tags: task.id === B ? [{ id: E, name: "后端" }] : [] })) });
+    });
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await findListButton("另一任务链");
+    const filter = screen.getByText("标签筛选", { selector: "summary" });
+    fireEvent.click(filter);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
+    expect(chainList().getByRole("button", { name: "已完成根" })).toBeVisible();
+    expect(chainList().queryByRole("button", { name: "另一任务链" })).toBeNull();
+    expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", expect.stringContaining(C));
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledWith(projectId, "query", expect.objectContaining({ type: "task", tagIds: [E], tagMatch: "all" }), null, expect.anything(), expect.anything(), expect.anything()));
+    fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
+    expect(chainList().queryByRole("button", { name: "另一任务链" })).toBeNull();
+    expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
+  });
+
+  it("restarts an invalid search only after removing the missing tag and resolving the remainder", async () => {
+    const tag = (id: string, name: string) => ({ id, name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } });
+    vi.mocked(listProjectTags).mockResolvedValue({ items: [tag(E, "已删除"), tag(F, "保留")], catalogEpoch: A, nextCursor: null });
+    let missing = false;
+    vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => {
+      if (missing && ids.includes(E)) throw new ApiError("server", 404, "tag_not_found");
+      return ids.map(id => ({ id, name: id === E ? "已删除" : "保留" }));
+    });
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockImplementationOnce(async () => { missing = true; throw new ApiError("server", 400, "invalid_tag_filter"); })
+      .mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks(); await findListButton("另一任务链");
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "已删除" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "保留" }));
+    const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
+    fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("选中的标签已不可用，请移除后重新查询。");
+    await waitFor(() => expect(screen.getByText(/已不可用/, { selector: ".tag-filter-chip" })).toHaveTextContent("已删除"));
+    expect(searchTasks).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "移除 已删除" }));
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(searchTasks).mock.calls[1]![2]).toMatchObject({ tagIds: [F], tagMatch: "all" });
+    expect(screen.queryByText("选中的标签已不可用，请移除后重新查询。")).toBeNull();
+  });
   it("retains the search draft and focus when the first graph sample arrives", async () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValue(pending.promise);
@@ -148,7 +218,7 @@ describe("project dashboard", () => {
 
   it("keeps search available without a graph and opens a hit with direct observation", async () => {
     graphRequest.mockRejectedValue(new ApiError("network"));
-    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ tags: [], id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ tags: [{ id: A, name: "搜索标签" }], type: "task", parentId: A, id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.click(searchForm().getByRole("button", { name: "搜索语法" }));
@@ -159,6 +229,7 @@ describe("project dashboard", () => {
     const result = await waitFor(() => searchResults().getByRole("button", { name: "打开任务：完整的历史任务" }));
     expect(screen.getByText("原任务链", { exact: false })).toBeTruthy();
     expect(result).toHaveTextContent("ID 命中 · 描述命中 · 匹配描述");
+    expect(result).toHaveTextContent("搜索标签");
     expect(result).toHaveTextContent(X);
     fireEvent.click(result);
     expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
@@ -186,7 +257,7 @@ describe("project dashboard", () => {
   it("clears an applied search when the draft is deleted, cancelling an in-flight read", async () => {
     const user = userEvent.setup();
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
-    const hit = { tags: [], id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    const hit = { tags: [], type: "task" as const, parentId: null, id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
     graphRequest.mockResolvedValue(graph());
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
@@ -232,7 +303,7 @@ describe("project dashboard", () => {
   it("retains pagination focus while the next page is loading and after it arrives", async () => {
     graphRequest.mockResolvedValue(graph());
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
-    const item = { tags: [], id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    const item = { tags: [], type: "task" as const, parentId: null, id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
@@ -492,10 +563,10 @@ describe("project dashboard", () => {
   ] as const)("shows safe first-load errors without zero-stat fallbacks %#", async (failure, heading, message) => {
     graphRequest.mockRejectedValueOnce(failure).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    expect((await screen.findByRole("alert")).textContent).toContain(heading);
-    expect(within(screen.getByRole("alert")).getByText(message)).toBeTruthy();
+    const alert = (await screen.findByRole("heading", { name: heading })).closest<HTMLElement>("[role=alert]")!;
+    expect(within(alert).getByText(message)).toBeTruthy();
     expect(screen.queryByText("任务总数")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
   });
 

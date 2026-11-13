@@ -8,7 +8,7 @@ import type { CacheEvent, TaskCacheScope } from '../src/features/task-cache/proj
 vi.mock('../src/api/task-search', async (importOriginal) => ({ ...await importOriginal<typeof import('../src/api/task-search')>(), searchTasks: vi.fn() }));
 const project = '10000000-0000-4000-8000-000000000001';
 const user = '20000000-0000-4000-8000-000000000001';
-const item = (id: string) => ({ tags: [], id, projectId: project, title: id, status: 'todo' as const, assignedTo: null, updatedAt: '2026-01-01T00:00:00Z', cancelledAt: null, context: null, match: { fields: [] as ('title' | 'description')[], descriptionSnippet: null } });
+const item = (id: string) => ({ tags: [], id, type: 'task' as const, parentId: null, projectId: project, title: id, status: 'todo' as const, assignedTo: null, updatedAt: '2026-01-01T00:00:00Z', cancelledAt: null, context: null, match: { fields: [] as ('title' | 'description')[], descriptionSnippet: null } });
 const page = (id: string, nextCursor: string | null, total = 2): TaskSearchPage => ({ projectId: project, items: [item(id)], total, nextCursor });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const world = () => {
@@ -33,19 +33,19 @@ it('separates draft, filters and cursors, and retires later cursors after readin
   expect(search.mock.calls[3]?.[3]).toBe('new-cursor');
   act(() => result.current.clear()); expect(result.current.applied).toBeNull();
 });
-it('clears filters, pages and pending reads without publishing late results', async () => {
+it('preserves filters while clearing pages and pending reads without publishing late results', async () => {
   const search = vi.mocked(searchTasks); const pending = deferred<TaskSearchPage>();
   search.mockResolvedValueOnce(page('a', 'cursor')).mockResolvedValueOnce(page('a', 'filtered-cursor')).mockResolvedValueOnce(page('b', null)).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(page('fresh', null, 1));
   const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, 'me'));
   act(() => { result.current.setDraft('query'); result.current.submit(); }); await waitFor(() => expect(result.current.canNext).toBe(true));
-  act(() => result.current.setFilters({ status: 'done', assignedTo: 'me' })); await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+  act(() => result.current.setFilters({ ...result.current.filters, status: 'done', assignedTo: 'me' })); await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(result.current.canNext).toBe(true));
   act(() => result.current.next()); await waitFor(() => expect(result.current.page).toBe(2));
   act(() => result.current.retry()); await waitFor(() => expect(search).toHaveBeenCalledTimes(4));
   const signal = search.mock.calls[3]![4];
   act(() => result.current.clear());
   expect(signal.aborted).toBe(true);
-  expect(result.current).toMatchObject({ draft: '', applied: null, filters: { status: '', assignedTo: '' }, items: [], total: null, page: 1, canPrevious: false, canNext: false, busy: false, error: null });
+  expect(result.current).toMatchObject({ draft: '', applied: null, filters: { status: 'done', assignedTo: 'me' }, items: [], total: null, page: 1, canPrevious: false, canNext: false, busy: false, error: null });
   await act(async () => { pending.resolve(page('late', 'late-cursor')); });
   expect(result.current).toMatchObject({ applied: null, items: [], page: 1, canNext: false });
   act(() => { result.current.setDraft('new'); result.current.submit(); }); await waitFor(() => expect(result.current.items[0]?.id).toBe('fresh'));
@@ -133,7 +133,7 @@ it('retries the failed target page using its obtained cursor and clears it on a 
   act(() => result.current.next()); await waitFor(() => expect(result.current.error).toMatchObject({ kind: 'network' }));
   act(() => result.current.retry()); await waitFor(() => expect(result.current.page).toBe(2)); expect(search.mock.calls[2]?.[3]).toBe('cursor');
   act(() => result.current.previous()); await waitFor(() => expect(result.current.error).toMatchObject({ kind: 'network' }));
-  act(() => result.current.setFilters({ status: 'done', assignedTo: '' })); await waitFor(() => expect(result.current.items[0]?.id).toBe('filtered'));
+  act(() => result.current.setFilters({ ...result.current.filters, status: 'done', assignedTo: '' })); await waitFor(() => expect(result.current.items[0]?.id).toBe('filtered'));
   expect(search.mock.calls[4]?.[3]).toBeNull();
 });
 it('retires cursors and cancels in-flight reads when the cache generation changes', async () => {
@@ -186,4 +186,113 @@ it('logs safe structured cycle correlation without query, cursor or upstream err
     expect(success.cycle_id).toBeTruthy(); expect(failure).toMatchObject({ component: 'task_search', phase: 'read', error_code: 'network' });
     expect(JSON.stringify([success, failure])).not.toMatch(/private|secret-cursor/);
   } finally { debug.mockRestore(); warn.mockRestore(); }
+});
+
+it('normalizes filter identity, retires old pages and rejects late results when tags or type change', async () => {
+  const search = vi.mocked(searchTasks), pending = deferred<TaskSearchPage>();
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  search.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(page('goal', null, 1));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setDraft('text'); result.current.submit(); }); await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+  const oldSignal = search.mock.calls[0]![4];
+  act(() => result.current.setFilters({ ...result.current.filters, type: 'goal', tagIds: [b.toUpperCase(), a, a] }));
+  await waitFor(() => expect(result.current.items[0]?.id).toBe('goal'));
+  expect(oldSignal.aborted).toBe(true); expect(search.mock.calls[1]?.[2]).toMatchObject({ type: 'goal', tagIds: [a, b] }); expect(search.mock.calls[1]?.[3]).toBeNull();
+  act(() => pending.resolve(page('old', null, 1))); await act(async () => {}); expect(result.current.items[0]?.id).toBe('goal');
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [b, a] })); await act(async () => {}); expect(search).toHaveBeenCalledTimes(2);
+  act(() => result.current.clear()); expect(result.current.filters.tagIds).toEqual([a, b]); expect(result.current.applied).toBeNull();
+});
+
+it('does not retry invalid tags until the user removes a selected condition', async () => {
+  const search = vi.mocked(searchTasks), bad = new ApiError('server', 400, 'invalid_tag_filter');
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  search.mockRejectedValueOnce(bad).mockResolvedValueOnce(page('valid', null, 1));
+  const { scope, emit } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a, b] }); result.current.setDraft('text'); result.current.submit(); });
+  await waitFor(() => expect(result.current.tagFilterInvalid).toBe(true)); expect(result.current.error).toBe(bad);
+  act(() => { result.current.retry(); result.current.setFilters({ ...result.current.filters, status: 'done' }); document.dispatchEvent(new Event('visibilitychange')); emit({ projectId: project, historyChanged: true }); });
+  await act(async () => {}); expect(search).toHaveBeenCalledTimes(1);
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [a] }, false));
+  await waitFor(() => expect(result.current.items[0]?.id).toBe('valid')); expect(search).toHaveBeenCalledTimes(2);
+  expect(search.mock.calls[1]?.[2]).toMatchObject({ status: 'done', tagIds: [a] });
+});
+
+it('cancels a pending search when the selected catalog IDs become invalid', async () => {
+  const search = vi.mocked(searchTasks), pending = deferred<TaskSearchPage>(); search.mockReturnValueOnce(pending.promise);
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a] }); result.current.setDraft('text'); result.current.submit(); });
+  await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+  act(() => result.current.setTagFilterInvalid(true)); expect(search.mock.calls[0]![4].aborted).toBe(true);
+  act(() => pending.resolve(page('late', null, 1))); await act(async () => {});
+  expect(result.current).toMatchObject({ tagFilterInvalid: true, items: [], busy: false, error: { code: 'invalid_tag_filter' } });
+});
+
+it('atomically keeps search blocked when removal leaves another selected ID invalid', async () => {
+  const search = vi.mocked(searchTasks), a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  search.mockResolvedValue(page('valid', null, 1));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a, b] }, true); result.current.setDraft('text'); result.current.submit(); });
+  expect(search).not.toHaveBeenCalled();
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [a] }, true));
+  await act(async () => {}); expect(search).not.toHaveBeenCalled(); expect(result.current.tagFilterInvalid).toBe(true);
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [] }, false));
+  await waitFor(() => expect(result.current.items[0]?.id).toBe('valid')); expect(search).toHaveBeenCalledTimes(1);
+});
+
+it('unlocks only after a removal and confirmation of the remaining IDs', async () => {
+  const search = vi.mocked(searchTasks), a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  search.mockRejectedValueOnce(new ApiError('server', 400, 'invalid_tag_filter')).mockResolvedValueOnce(page('valid', null, 1));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a, b] }, false); result.current.setDraft('text'); result.current.submit(); });
+  await waitFor(() => expect(result.current.tagFilterInvalid).toBe(true));
+  act(() => result.current.setFilters(result.current.filters, false));
+  expect(search).toHaveBeenCalledTimes(1); expect(result.current.tagFilterInvalid).toBe(true);
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [a] }, true));
+  expect(search).toHaveBeenCalledTimes(1); expect(result.current.tagFilterInvalid).toBe(true);
+  act(() => result.current.setFilters({ ...result.current.filters, status: 'done' }));
+  expect(search).toHaveBeenCalledTimes(1); expect(result.current.tagFilterInvalid).toBe(true);
+  act(() => result.current.setFilters(result.current.filters, false));
+  await waitFor(() => expect(result.current.items[0]?.id).toBe('valid'));
+  expect(search).toHaveBeenCalledTimes(2); expect(search.mock.calls[1]?.[2]).toMatchObject({ status: 'done', tagIds: [a] }); expect(search.mock.calls[1]?.[3]).toBeNull();
+});
+
+it('uses the ordinary assignee at first submission without changing other conditions or aborting active searches on later changes', async () => {
+  const search = vi.mocked(searchTasks), pending = deferred<TaskSearchPage>(); search.mockReturnValue(pending.promise);
+  const tag = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const { scope } = world(); const { result, rerender } = renderHook(({ assignee }) => useTaskSearch(project, scope, assignee), { initialProps: { assignee: '' } });
+  act(() => result.current.setFilters({ ...result.current.filters, type: 'goal', tagIds: [tag] }, false));
+  rerender({ assignee: 'me' });
+  act(() => { result.current.setDraft('text'); result.current.submit(); }); await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+  expect(search.mock.calls[0]?.[2]).toMatchObject({ assignedTo: 'me', type: 'goal', tagIds: [tag] });
+  const signal = search.mock.calls[0]![4]; rerender({ assignee: 'unassigned' }); expect(signal.aborted).toBe(false);
+  act(() => pending.resolve(page('first', null, 1))); await waitFor(() => expect(result.current.items[0]?.id).toBe('first'));
+  expect(result.current.filters.assignedTo).toBe('me');
+});
+
+it('retains the invalid-tag error when text is cleared and resubmitted', async () => {
+  const search = vi.mocked(searchTasks), a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  search.mockRejectedValueOnce(new ApiError('server', 400, 'invalid_tag_filter'));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a] }); result.current.setDraft('text'); result.current.submit(); });
+  await waitFor(() => expect(result.current.tagFilterInvalid).toBe(true));
+  act(() => result.current.clear()); expect(result.current.error).toMatchObject({ code: 'invalid_tag_filter' });
+  act(() => { result.current.setDraft('new'); result.current.submit(); });
+  expect(result.current).toMatchObject({ applied: 'new', tagFilterInvalid: true, error: { code: 'invalid_tag_filter' } });
+  expect(search).toHaveBeenCalledTimes(1);
+  act(() => result.current.setDraft(' ')); expect(result.current.error).toMatchObject({ code: 'invalid_tag_filter' });
+});
+
+it('advances invalid revision only for a server refusal and retains it across text clearing', async () => {
+  const search = vi.mocked(searchTasks), a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  search.mockRejectedValueOnce(new ApiError('server', 400, 'invalid_tag_filter'));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [a] }, true));
+  expect(result.current.serverInvalidRevision).toBe(0);
+  act(() => result.current.setFilters({ ...result.current.filters, tagIds: [] }, false));
+  act(() => { result.current.setFilters({ ...result.current.filters, tagIds: [a] }, false); result.current.setDraft('text'); result.current.submit(); });
+  await waitFor(() => expect(result.current.serverInvalidRevision).toBe(1));
+  act(() => result.current.clear()); expect(result.current.serverInvalidRevision).toBe(1);
+  act(() => { result.current.setDraft('new'); result.current.submit(); });
+  expect(result.current.serverInvalidRevision).toBe(1); expect(search).toHaveBeenCalledTimes(1);
 });

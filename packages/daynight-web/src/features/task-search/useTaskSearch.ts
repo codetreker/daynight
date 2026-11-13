@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
-import { searchTasks, type TaskSearchFilters, type TaskSearchItem } from '../../api/task-search';
+import { normalizeTaskSearchFilters, searchTasks, type TaskSearchFilters, type TaskSearchItem } from '../../api/task-search';
 import { pollingInterval } from '../../app/polling';
 import type { TaskCacheScope } from '../task-cache/project-cache';
 import { taskCacheFailureDiagnostic } from '../task-cache/diagnostics';
@@ -10,20 +10,25 @@ type State = {
   readonly items: readonly TaskSearchItem[]; readonly total: number | null; readonly page: number;
   readonly cursors: readonly (string | null)[]; readonly nextCursor: string | null;
   readonly busy: boolean; readonly error: unknown; readonly errorQuery: string | null;
+  readonly tagFilterInvalid: boolean;
+  readonly serverInvalidRevision: number;
 };
-const initial = (): State => ({ draft: '', applied: null, filters: { status: '', assignedTo: '' }, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: null, errorQuery: null });
+const initial = (assignedTo = ''): State => ({ draft: '', applied: null, filters: { status: '', assignedTo, type: 'task', parentId: null, tagIds: [], tagMatch: 'all', untagged: false }, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: null, errorQuery: null, tagFilterInvalid: false, serverInvalidRevision: 0 });
+const invalidTagError = (error: unknown) => error instanceof ApiError && error.code === 'invalid_tag_filter' ? error : new ApiError('server', 400, 'invalid_tag_filter');
 
 export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialAssignee: string) => {
-  const [stored, setStored] = useState<{ projectId: string; scope: TaskCacheScope; state: State }>(() => ({ projectId, scope, state: initial() }));
+  const [stored, setStored] = useState<{ projectId: string; scope: TaskCacheScope; state: State }>(() => ({ projectId, scope, state: initial(initialAssignee) }));
   const current = useRef(stored);
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const pages = useRef(new Map<number, { ids: readonly string[]; total: number }>());
   const retryPage = useRef<number | null>(null);
   const stoppedOnChange = useRef(false);
+  const removedWhileInvalid = useRef(false);
+  const assignee = useRef(initialAssignee); assignee.current = initialAssignee;
   if (current.current.projectId !== projectId || current.current.scope !== scope) {
-    current.current = { projectId, scope, state: initial() };
-    generation.current++; controller.current?.abort(); controller.current = null; pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false;
+    current.current = { projectId, scope, state: initial(initialAssignee) };
+    generation.current++; controller.current?.abort(); controller.current = null; pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false; removedWhileInvalid.current = false;
   }
   const update = useCallback((change: (state: State) => State) => {
     const next = { projectId, scope, state: change(current.current.state) };
@@ -32,7 +37,7 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
   const cancel = useCallback(() => { generation.current++; controller.current?.abort(); controller.current = null; }, []);
   const load = useCallback(async (page: number, automatic = false, recovering = false, revisionRetry = false) => {
     const snapshot = current.current.state;
-    if (snapshot.applied === null || scope.isInvalidated || automatic && (controller.current !== null || stoppedOnChange.current) || page < 1 || page > snapshot.cursors.length) return;
+    if (snapshot.applied === null || snapshot.tagFilterInvalid || scope.isInvalidated || automatic && (controller.current !== null || stoppedOnChange.current) || page < 1 || page > snapshot.cursors.length) return;
     const preserveFailure = automatic && retryPage.current !== null && retryPage.current !== page;
     cancel();
     if (!automatic) { retryPage.current = null; stoppedOnChange.current = false; }
@@ -76,11 +81,17 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
         error: keepFailure ? state.error : null, errorQuery: keepFailure ? state.errorQuery : null }));
     } catch (error) {
       if (!stillCurrent()) return;
-      const safeCodes = new Set(['invalid_input', 'invalid_search_expression', 'search_changed', 'search_timeout', 'not_found', 'unauthenticated', 'forbidden', 'principal_mismatch', 'network', 'protocol']);
+      const safeCodes = new Set(['invalid_input', 'invalid_tag_filter', 'invalid_search_expression', 'search_changed', 'search_timeout', 'not_found', 'unauthenticated', 'forbidden', 'principal_mismatch', 'network', 'protocol']);
       console.warn('Task search failed', { type: 'operation_error', component: 'task_search', phase: 'read', cycle_id: cycleId, request_id: requestId ?? (error instanceof ApiError ? error.requestId : null), project_id: projectId, user_id: scope.userId, duration_ms: performance.now() - started, error_code: error instanceof ApiError && safeCodes.has(error.code) ? error.code : 'unknown', ...taskCacheFailureDiagnostic(error) });
       if (isAbortError(error)) {
         if (!preserveFailure) retryPage.current = page;
         update(state => ({ ...state, busy: false, error: new ApiError('protocol'), errorQuery: query }));
+        return;
+      }
+      if (error instanceof ApiError && error.code === 'invalid_tag_filter' && error.status === 400) {
+        pages.current.clear(); retryPage.current = null;
+        removedWhileInvalid.current = false;
+        update(state => ({ ...state, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error, errorQuery: query, tagFilterInvalid: true, serverInvalidRevision: state.serverInvalidRevision + 1 }));
         return;
       }
       if (error instanceof ApiError && error.code === 'search_changed' && error.status === 409 && !recovering) {
@@ -102,21 +113,38 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
       update(state => ({ ...state, ...(denied ? { items: [], total: null, page: 1, cursors: [null], nextCursor: null } : {}), busy: false, error, errorQuery: query }));
     } finally { if (ownGeneration === generation.current) controller.current = null; }
   }, [projectId, scope, cancel, update]);
-  const setDraft = useCallback((draft: string) => update(state => ({ ...state, draft })), [update]);
-  const clear = useCallback(() => { cancel(); pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false; update(() => initial()); }, [cancel, update]);
+  const setDraft = useCallback((draft: string) => {
+    if (draft.trim() === '') {
+      cancel(); pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false;
+      update(state => ({ ...initial(), draft, filters: state.filters, tagFilterInvalid: state.tagFilterInvalid, serverInvalidRevision: state.serverInvalidRevision, error: state.tagFilterInvalid ? invalidTagError(state.error) : null }));
+    } else update(state => ({ ...state, draft }));
+  }, [cancel, update]);
+  const clear = useCallback(() => { cancel(); pages.current.clear(); retryPage.current = null; stoppedOnChange.current = false; update(state => ({ ...initial(), filters: state.filters, tagFilterInvalid: state.tagFilterInvalid, serverInvalidRevision: state.serverInvalidRevision, error: state.tagFilterInvalid ? invalidTagError(state.error) : null })); }, [cancel, update]);
   const submit = useCallback(() => {
     const state = current.current.state;
     if (state.draft.trim() === '') { clear(); return; }
     cancel(); pages.current.clear(); retryPage.current = null;
-    update(previous => ({ ...previous, applied: previous.draft, filters: previous.applied === null ? { status: '', assignedTo: initialAssignee } : previous.filters, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: true, error: null, errorQuery: null }));
+    update(previous => ({ ...previous, applied: previous.draft, filters: previous.applied === null ? { ...previous.filters, assignedTo: assignee.current } : previous.filters, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: !previous.tagFilterInvalid, error: previous.tagFilterInvalid ? invalidTagError(previous.error) : null, errorQuery: previous.tagFilterInvalid ? previous.draft : null }));
     void load(1);
-  }, [cancel, clear, initialAssignee, load, update]);
-  const setFilters = useCallback((filters: TaskSearchFilters) => {
-    if (filters.status === current.current.state.filters.status && filters.assignedTo === current.current.state.filters.assignedTo) return;
+  }, [cancel, clear, load, update]);
+  const setFilters = useCallback((filters: TaskSearchFilters, selectedTagsInvalid?: boolean) => {
+    filters = normalizeTaskSearchFilters(filters);
+    const previous = current.current.state, old = previous.filters;
+    const removed = old.tagIds.some(id => !filters.tagIds.includes(id));
+    if (previous.tagFilterInvalid && removed) removedWhileInvalid.current = true;
+    const tagFilterInvalid = selectedTagsInvalid === true || previous.tagFilterInvalid && !(removedWhileInvalid.current && selectedTagsInvalid === false);
+    if (!tagFilterInvalid) removedWhileInvalid.current = false;
+    if (filters.status === old.status && filters.assignedTo === old.assignedTo && filters.type === old.type && filters.parentId === old.parentId && filters.tagMatch === old.tagMatch && filters.untagged === old.untagged && filters.tagIds.length === old.tagIds.length && filters.tagIds.every((id, i) => id === old.tagIds[i]) && tagFilterInvalid === previous.tagFilterInvalid) return;
     cancel(); pages.current.clear(); retryPage.current = null;
-    update(state => ({ ...state, filters, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: state.applied !== null, error: null, errorQuery: null }));
+    update(state => ({ ...state, filters, tagFilterInvalid, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: state.applied !== null && !tagFilterInvalid, error: tagFilterInvalid ? invalidTagError(state.error) : null, errorQuery: tagFilterInvalid ? state.applied : null }));
     void load(1);
   }, [cancel, load, update]);
+  const setTagFilterInvalid = useCallback((invalid: boolean) => {
+    if (!invalid || current.current.state.tagFilterInvalid || current.current.state.filters.tagIds.length === 0) return;
+    cancel(); pages.current.clear(); retryPage.current = null;
+    removedWhileInvalid.current = false;
+    update(state => ({ ...state, tagFilterInvalid: true, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: new ApiError('server', 400, 'invalid_tag_filter'), errorQuery: state.applied }));
+  }, [cancel, update]);
   const previous = useCallback(() => { const page = current.current.state.page; if (page > 1) void load(page - 1); }, [load]);
   const next = useCallback(() => { const state = current.current.state; if (state.nextCursor !== null) void load(state.page + 1); }, [load]);
   const retry = useCallback(() => { void load(retryPage.current ?? current.current.state.page); }, [load]);
@@ -125,11 +153,11 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
       if (event.projectId !== projectId) return;
       if (event.historyChanged || event.cacheGenerationChanged || event.accessRevoked) {
         cancel(); pages.current.clear(); retryPage.current = null;
-        update(state => ({ ...state, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: event.accessRevoked && state.applied !== null ? event.error ?? new ApiError('server', 404, 'not_found') : stoppedOnChange.current ? state.error : null, errorQuery: event.accessRevoked ? state.applied : stoppedOnChange.current ? state.errorQuery : null }));
+        update(state => ({ ...state, items: [], total: null, page: 1, cursors: [null], nextCursor: null, busy: false, error: event.accessRevoked && state.applied !== null ? event.error ?? new ApiError('server', 404, 'not_found') : stoppedOnChange.current || state.tagFilterInvalid ? state.error : null, errorQuery: event.accessRevoked ? state.applied : stoppedOnChange.current || state.tagFilterInvalid ? state.errorQuery : null }));
         if (!event.accessRevoked && !stoppedOnChange.current) void load(1);
       } else if (event.accessRestored && !stoppedOnChange.current && current.current.state.applied !== null) void load(1);
     });
-    const retireScope = () => { cancel(); pages.current.clear(); retryPage.current = null; update(() => initial()); };
+    const retireScope = () => { cancel(); pages.current.clear(); retryPage.current = null; removedWhileInvalid.current = false; update(() => initial(assignee.current)); };
     scope.signal.addEventListener('abort', retireScope, { once: true });
     if (scope.signal.aborted) retireScope();
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -139,8 +167,8 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
     resume(); document.addEventListener('visibilitychange', visibility);
     return () => { pause(); unsubscribe(); scope.signal.removeEventListener('abort', retireScope); document.removeEventListener('visibilitychange', visibility); cancel(); };
   }, [scope, projectId, cancel, load, update]);
-  const state = stored.projectId === projectId && stored.scope === scope ? stored.state : initial();
-  return { draft: state.draft, setDraft, applied: state.applied, filters: state.filters, setFilters, submit, clear,
+  const state = stored.projectId === projectId && stored.scope === scope ? stored.state : initial(initialAssignee);
+  return { draft: state.draft, setDraft, applied: state.applied, filters: state.filters, setFilters, setTagFilterInvalid, tagFilterInvalid: state.tagFilterInvalid, serverInvalidRevision: state.serverInvalidRevision, submit, clear,
     page: state.page, pageIndex: state.page, total: state.total, items: state.items, canPrevious: state.page > 1 && !state.busy,
     canNext: state.nextCursor !== null && !state.busy, previous, next, busy: state.busy, error: state.error, errorQuery: state.errorQuery, retry };
 };

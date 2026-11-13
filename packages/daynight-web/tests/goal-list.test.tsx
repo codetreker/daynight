@@ -1,5 +1,5 @@
-import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
 import { GoalList } from '../src/features/projects/GoalList';
@@ -8,6 +8,13 @@ import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskE
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { statesForSummaries } from './helpers/taskSync';
+import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
+
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
+beforeEach(() => {
+  vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: 'epoch', nextCursor: null });
+  vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([]);
+});
 
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -33,6 +40,30 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it('filters only direct children independently while retaining the complete chain context', async () => {
+    vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
+    vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));
+    const entries = [goal, other, empty,
+      summary('child', 'task', goal.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }], dependsOn: ['sibling'] }),
+      summary('sibling', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] }),
+      summary('outside', 'task', other.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }] }),
+      summary('standalone', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] })];
+    const value = snapshot(entries);
+    createLocaleRender('en', { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+      <GoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[goal, other]} total={2} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+    </TaskExecutionClockProvider></TaskPauseProvider>);
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    fireEvent.click(within(card).getByText('Child task tag filter', { selector: 'summary' }));
+    await waitFor(() => expect(within(card).getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
+    fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+    expect(within(card).queryByText('standalone')).not.toBeInTheDocument();
+    expect(within(card).queryByText('outside')).not.toBeInTheDocument();
+    expect(card.querySelector('.root-list')).not.toBeNull();
+    expect(value.index.nodes.size).toBe(4);
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove alpha' }));
+    expect(within(card).getByText('standalone', { selector: '.root-title' })).toBeInTheDocument();
+  });
   it('toggles from each part of the header and keeps detail and graph actions separate', () => {
     const openGoal = vi.fn(); const openGraph = vi.fn();
     const assigned = tasks.map(task => task.id === goal.id ? { ...task, assignedTo: '12345678-0000-4000-8000-000000000001' } : task);

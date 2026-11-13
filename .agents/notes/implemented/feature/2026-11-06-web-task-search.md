@@ -26,6 +26,10 @@ lifecycle; the [server search decision](../architecture/2026-11-05-project-task-
 and [direct observation decision](../architecture/2026-11-06-task-direct-observation.md)
 own their respective contracts.
 
+Tag conditions are shared with browsing and retained when text is cleared; the
+[tag filtering decision](2026-11-13-web-tag-filter.md) owns their qualification
+and invalidation.
+
 ## Alternatives
 
 **Search cached summaries.** Summaries omit complete descriptions, can lag the

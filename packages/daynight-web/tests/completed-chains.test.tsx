@@ -99,7 +99,7 @@ describe('task chain status filtering', () => {
     const filter = await screen.findByRole('combobox', { name: '状态' });
     fireEvent.change(filter, { target: { value: 'done' } });
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await screen.findByRole('alert');
+    await screen.findByRole('heading', { name: '刷新失败' });
     expect(filter).toHaveValue('done');
     expect(roots()).toHaveLength(3);
     expect(count('任务总数')).toBe('8');

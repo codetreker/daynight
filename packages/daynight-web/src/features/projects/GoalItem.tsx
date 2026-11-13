@@ -9,6 +9,7 @@ import { ScopedTaskChainRow } from '../task-graph/ScopedTaskChainRow';
 import { ActiveWorkerIndicator } from '../task-graph/ActiveWorkerIndicator';
 import { goalListContents } from './goal-list-model';
 import { TaskTagList } from '../task-tags/TaskTagList';
+import { TagFilter, useTagFilter, matchesTagFilter } from '../task-tags/TagFilter';
 import { StandaloneTaskRow } from './StandaloneTaskRow';
 import { completedAtFor } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
@@ -29,14 +30,21 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, op
   readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
-  const { messages: { workspace: { goals: m }, graph, common } } = useI18n();
+  const { messages: { workspace: { goals: m }, graph, common, assignment } } = useI18n();
   const completion = useCompletionTime(completedAtFor(goal));
   const hint = useCompletionHint(completion);
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
   const memberIds = useMemo(() => new Set(scope.taskIds), [scope]);
   const inProgressCount = scope.taskIds.filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
-  const contents = useMemo(() => goalListContents(scope, index), [scope, index]);
   const [expanded, setExpanded] = useState(false);
+  const filter = useTagFilter(projectId, expanded);
+  const contents = useMemo(() => goalListContents(scope, index), [scope, index]);
+  const visibleContents = useMemo(() => {
+    const matches = (id: string) => !filter.invalid && (summaries?.has(id)
+      ? matchesTagFilter(summaries.get(id)!.tags, filter.value)
+      : filter.value.tagIds.length === 0 && !filter.value.untagged);
+    return { standaloneIds: contents.standaloneIds.filter(matches), chains: contents.chains.filter(chain => chain.memberIds.some(matches)) };
+  }, [contents, summaries, filter.value, filter.invalid]);
   const [expandedChainIds, setExpandedChainIds] = useState<ReadonlySet<string>>(() => new Set());
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -69,9 +77,11 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, op
       <button className="goal-list-graph" type="button" id={`project-goal-graph-${goal.id}`} aria-haspopup="dialog" aria-label={graph.goalGraphLabel({ title })} title={graph.goalGraph} onClick={(event) => onOpenGoalGraph(goal.id, event.currentTarget)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></button>
     </div>
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
+      <TagFilter controller={filter} child />
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
-      {contents.standaloneIds.length > 0 && <section aria-label={m.standalone}><h3>{m.standalone} <span>{contents.standaloneIds.length}</span></h3><ul className="standalone-list">{contents.standaloneIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} {...(summaries?.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`goal-${goal.id}-task-${id}`} onSelectTask={(taskId, trigger) => onOpenListTask(taskId, trigger, goal.id)} />)}</ul></section>}
-      {contents.chains.length > 0 && <section aria-label={m.chains}><h3>{m.chains} <span>{contents.chains.length}</span></h3><ul className="root-list">{contents.chains.map((chain) => {
+      {count > 0 && !filter.invalid && visibleContents.standaloneIds.length === 0 && visibleContents.chains.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
+      {visibleContents.standaloneIds.length > 0 && <section aria-label={m.standalone}><h3>{m.standalone} <span>{visibleContents.standaloneIds.length}</span></h3><ul className="standalone-list">{visibleContents.standaloneIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} {...(summaries?.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`goal-${goal.id}-task-${id}`} onSelectTask={(taskId, trigger) => onOpenListTask(taskId, trigger, goal.id)} />)}</ul></section>}
+      {visibleContents.chains.length > 0 && <section aria-label={m.chains}><h3>{m.chains} <span>{visibleContents.chains.length}</span></h3><ul className="root-list">{visibleContents.chains.map((chain) => {
         const instanceId = `goal-${goal.id}-chain-${chain.representativeId}`;
         return <ScopedTaskChainRow key={chain.representativeId} projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={chain.representativeId} memberIds={chain.memberIds} progress={chain.progress} workerMachines={workerMachines} instanceId={instanceId} expanded={expandedChainIds.has(chain.representativeId)} onExpandedChange={(value) => {
           if (!value) {
