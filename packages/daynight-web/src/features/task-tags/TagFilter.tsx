@@ -100,11 +100,11 @@ export const useTagFilter = (projectId: string, active = true) => {
 
 export type TagFilterController = ReturnType<typeof useTagFilter>;
 const messages = {
-  en: { title: 'Tag filter', child: 'Child task tag filter', clear: 'Clear', search: 'Search tags', all: 'Match all (AND)', any: 'Match any (OR)', untagged: 'No tags', invalid: 'A selected tag is unavailable. Remove it to search again.', removed: 'unavailable', remove: 'Remove', loading: 'Loading tags…', empty: 'No tags yet.', noMatches: 'No matching tags.', error: 'Could not load tags.', resolveError: 'Could not check selected tags.', retry: 'Retry', next: 'Next', first: 'First page' },
-  'zh-CN': { title: '标签筛选', child: '子 Task 标签筛选', clear: '清除', search: '搜索标签', all: '全部匹配（AND）', any: '任一匹配（OR）', untagged: '无标签', invalid: '选中的标签已不可用，请移除后重新查询。', removed: '已不可用', remove: '移除', loading: '正在读取标签…', empty: '还没有标签。', noMatches: '没有匹配的标签。', error: '无法读取标签。', resolveError: '无法核对选中的标签。', retry: '重试', next: '下一页', first: '首页' },
+  en: { manage: 'Manage tags', title: 'Tag filter', child: 'Child task tag filter', clear: 'Clear', search: 'Search tags', all: 'Match all (AND)', any: 'Match any (OR)', untagged: 'No tags', invalid: 'A selected tag is unavailable. Remove it to search again.', removed: 'unavailable', remove: 'Remove', loading: 'Loading tags…', empty: 'No tags yet.', noMatches: 'No matching tags.', error: 'Could not load tags.', resolveError: 'Could not check selected tags.', retry: 'Retry', next: 'Next', first: 'First page' },
+  'zh-CN': { manage: '管理标签', title: '标签筛选', child: '子 Task 标签筛选', clear: '清除', search: '搜索标签', all: '全部匹配（AND）', any: '任一匹配（OR）', untagged: '无标签', invalid: '选中的标签已不可用，请移除后重新查询。', removed: '已不可用', remove: '移除', loading: '正在读取标签…', empty: '还没有标签。', noMatches: '没有匹配的标签。', error: '无法读取标签。', resolveError: '无法核对选中的标签。', retry: '重试', next: '下一页', first: '首页' },
 } as const;
 
-export const TagFilter = ({ controller, child = false }: { readonly controller: TagFilterController; readonly child?: boolean }) => {
+export const TagFilter = ({ controller, child = false, onManage }: { readonly controller: TagFilterController; readonly child?: boolean; readonly onManage?: () => void }) => {
   const { locale } = useI18n(); const m = messages[locale];
   const { value, names, invalidIds, catalog, update } = controller;
   const title = child ? m.child : m.title;
@@ -127,6 +127,7 @@ export const TagFilter = ({ controller, child = false }: { readonly controller: 
         {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <span>{tag.name}</span></label>)}</div>}
         {catalog.page?.nextCursor && <button type="button" onClick={catalog.next}>{m.next}</button>}
         {catalog.cursor !== null && <button type="button" onClick={catalog.first}>{m.first}</button>}
+        {!child && onManage !== undefined && <div className="tag-filter-manage"><button type="button" onClick={onManage}>{m.manage}</button></div>}
       </div>
     </details>
     {controller.invalid && <p className="tag-filter-error" role="alert">{m.invalid}</p>}

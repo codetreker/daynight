@@ -21,9 +21,9 @@ vi.mock('../src/features/task-tags/useProjectTags', async () => {
     return { page: { ...data.page, items: data.page.items.filter(tag => tag.name.includes(query)) }, cursor: null, query, loading: false, refreshing: false, error: null, setQuery, refresh: vi.fn(), first: vi.fn(), next: vi.fn() };
   } };
 });
-const Harness = ({ child = false }: { child?: boolean }) => {
+const Harness = ({ child = false, onManage }: { child?: boolean; onManage?: () => void }) => {
   const filter = useTagFilter('project');
-  return <><TagFilter controller={filter} child={child} /><output data-testid="value">{JSON.stringify(filter.value)}</output><output data-testid="invalid">{String(filter.invalid)}</output><button type="button" onClick={filter.markInvalid}>Server invalid</button></>;
+  return <><TagFilter controller={filter} child={child} {...(onManage === undefined ? {} : { onManage })} /><output data-testid="value">{JSON.stringify(filter.value)}</output><output data-testid="invalid">{String(filter.invalid)}</output><button type="button" onClick={filter.markInvalid}>Server invalid</button></>;
 };
 const setup = (child = false) => render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness child={child} /></LocaleProvider>);
 beforeEach(() => {
@@ -195,4 +195,15 @@ it('publishes individual missing IDs only after admission completes', async () =
   expect(screen.getByTestId('invalid')).toHaveTextContent('false');
   await act(async () => { admission.resolve(); await admission.promise; });
   await waitFor(() => expect(screen.getByTestId('invalid')).toHaveTextContent('true'));
+});
+
+
+it('offers tag management only in the main filter when a navigation action is supplied', () => {
+  const manage = vi.fn();
+  const view = render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness onManage={manage} /></LocaleProvider>);
+  fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Manage tags' }));
+  expect(manage).toHaveBeenCalledOnce();
+  view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness child onManage={manage} /></LocaleProvider>);
+  expect(screen.queryByRole('button', { name: 'Manage tags' })).not.toBeInTheDocument();
 });

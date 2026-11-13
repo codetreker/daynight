@@ -175,6 +175,10 @@ describe("project dashboard", () => {
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
     expect(chainList().queryByRole("button", { name: "另一任务链" })).toBeNull();
     expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "管理标签" }));
+    expect(sectionTabs().getByRole("tab", { name: "标签" })).toHaveAttribute("aria-selected", "true");
+    selectTasks();
+    expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
   });
 
   it("restarts an invalid search only after removing the missing tag and resolving the remainder", async () => {
