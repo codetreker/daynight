@@ -17,6 +17,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 
 - **Organize repository work.** Associate projects with Git repositories, create
   Markdown tasks, link pull requests and track `proposed`, `todo`, `in_progress`, `done` and `cancelled`.
+- **Review your in-progress work.** Open My Tasks to see your assigned in-progress tasks across accessible projects, with elapsed time and Session status.
 - **Understand what can start.** Model prerequisites, find ready and blocked
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.

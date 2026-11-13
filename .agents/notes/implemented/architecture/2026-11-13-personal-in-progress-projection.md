@@ -10,6 +10,8 @@ An account overview needs complete counts and bounded pages of the caller's in-p
 
 The server provides an account-scoped lightweight projection with database filtering, project aggregation and keyset pagination. It reuses the project authorization relation and effective deletion rules. Session sources are selected within the initial snapshot and sampled after it closes; a fresh credential and inventory revision check fences publication. The [contract](../../../../docs/spec/daynight-personal-in-progress-tasks.md) and [design](../../../../docs/design/daynight-server.md#账号进行中任务读取) own the observable behavior and data flow.
 
+The Web overview traverses the projection once per refresh, checks cross-page consistency, and fences every publication against account and project access changes. It keeps permitted prior results on ordinary refresh failure and withdraws completeness claims when access events remove projects. The [Web design](../../../../docs/design/daynight-web.md#我的进行中任务) owns its presentation and lifecycle.
+
 The revision hashes canonical facts for each matching project, including its full Task epoch, count and version sum. It excludes Session and clock observations.
 
 ## Alternatives
