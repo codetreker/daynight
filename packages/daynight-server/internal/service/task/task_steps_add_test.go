@@ -609,3 +609,5 @@ func (p *strictWriteProject) RotateTagCatalogEpoch(context.Context) error {
 	p.f.unexpected("RotateTagCatalogEpoch")
 	return nil
 }
+
+func (s *strictStepWrite) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

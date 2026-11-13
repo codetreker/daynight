@@ -21,5 +21,6 @@ type SnapshotScope interface {
 	SessionDAO() SessionReader
 	BotDAO() BotReader
 	AttachmentDAO() AttachmentReader
+	GitHubDAO() GitHubReadDAO
 	ObservedAt(context.Context) (time.Time, error)
 }

@@ -924,3 +924,7 @@ func (mock *projectWriterMock) RotateTagCatalogEpoch(context.Context) error {
 	mock.need("RotateTagCatalogEpoch", false)
 	panic("unreachable")
 }
+
+func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (s *taskProjectScopeMock) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

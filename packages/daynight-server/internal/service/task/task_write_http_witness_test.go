@@ -351,3 +351,5 @@ func (s *writeWitnessScope) TaskTagDAO() store.TaskTagWriteDAO { panic(s.f.unexp
 func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
 	panic(d.f.unexpected("RotateTagCatalogEpoch"))
 }
+
+func (s *writeWitnessScope) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

@@ -326,11 +326,11 @@ Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
 reads the selected file sequentially and records its byte count, SHA-256 and
-preparation duration. Resolution, preparation and native execution share one
-10-second gh budget; expired preparation or an over-budget native result fails
-the probe. The version child uses isolated project-local configuration/state and
-disabled telemetry. A separate diagnostic artifact uploads after validation even
-when environment discovery fails. Ordinary environment and diagnostic artifacts
+preparation duration. The gh preparation has a separate 20-second deadline; an
+expired or failed preparation stops the probe before launch. The version command
+then receives its own full 10-second execution budget. Its child uses isolated
+project-local configuration/state and disabled telemetry. A separate diagnostic
+artifact uploads after validation even when environment discovery fails. Ordinary environment and diagnostic artifacts
 use `daynight-cli-tests-*` and `daynight-cli-tests-probes-*` names; installed
 receipts and diagnostics use `daynight-cli-installed-*` and
 `daynight-cli-installed-probes-*`. The installed receipts include the environment,

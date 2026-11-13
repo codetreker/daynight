@@ -506,3 +506,5 @@ func (s *listOperationScope) TagDAO() store.TagReader {
 	_ = s.fixture.unexpected("TagDAO")
 	return nil
 }
+
+func (s *listOperationScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

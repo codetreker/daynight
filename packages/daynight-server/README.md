@@ -80,6 +80,10 @@ remain enforced; database and backup readers can read retained credentials.
 
 ## Contracts
 
+The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
+the independent Project resource, persisted observations and transaction scopes.
+It does not expose a connection endpoint or run synchronization.
+
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
 Read the [organization rules](../../docs/daynight-server.md) before adding to,

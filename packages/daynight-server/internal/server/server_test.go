@@ -1100,3 +1100,5 @@ func (s *httpTestSnapshot) TagDAO() store.TagReader {
 	unexpectedHTTPCall(s.t, "SnapshotScope.TagDAO")
 	return nil
 }
+
+func (s *httpTestSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

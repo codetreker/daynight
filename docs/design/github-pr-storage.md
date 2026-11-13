@@ -1,0 +1,17 @@
+# 项目 GitHub PR 存储
+
+GitHub 连接和 PR 观测是 Project 的独立资源，不改变 Project 设置、Task 的手工 PR 引用或 Task 缓存。每个 Project 单独持有数据，即使多个 Project 指向同一仓库。存储本身不提供连接路由或后台同步。
+
+## 身份与状态
+
+`project_github` 以 Project ID 为主键，保存连接配置及同步事实。缺失行表示虚拟未连接资源：`version=1`、`generation=0`、`revision=0`、`enabled=false`、轮询间隔为 5 分钟、访问状态为 `unknown`，其余可空事实为空。读取不会创建行。首次实际管理写入在 live Project 写事务内创建版本 2；配置变更推进 version，连接、重连和断开推进 generation，对外可见状态或 PR 观测提交推进 revision。三者分别保护管理配置、连接代次和读取新鲜度，不能互相代替。
+
+App、installation 和仓库使用稳定数值身份；名称仅用于展示，仓库可见性未知时为 null。领取及其期限、种类可为空。管理写先在 Project 锁作用域内读取并锁定既有 GitHub 行，再根据该事实决定并执行明确字段与预期条件的写入；这样广播对同一行的更新不会被陈旧决定覆盖。缺失行由 Project 锁保护首次管理写入，而广播只匹配已启用的行。数据访问层不决定业务状态转换。提交结果沿用 `committed`、`not_committed` 和 `unknown`；未知结果不能当作回滚或自动重放。
+
+`project_pull_requests` 以 Project ID 和 PR number 唯一标识记录。作者、head 仓库及其 ref 可以缺失；不能用 base 仓库或其他身份补齐。description 保留原始 Markdown，空字符串和 null 不合并。GitHub 时间与本地观测时间分别保存。列表摘要不读取 description，详情读取完整正文。
+
+## 读取与一致性
+
+Project 权限、连接状态、计数及列表或详情可在同一只读 Repeatable Read snapshot 中读取。列表按 number 降序，以固定上界及锚点进行有界 keyset 分页；向前查询恢复降序。标题搜索按字面匹配，编号搜索使用十进制文本；用户输入不作为 SQL 结构。状态计数不随搜索条件缩小，筛选后的总数和页面共享 snapshot。跨请求分页不冻结后续观测。
+
+迁移一次创建两个资源表及对应身份、状态和调度索引，不改写历史迁移或既有 Project、Task 数据。同步协调、待处理提示、授权决策和实际远端读取由各自的后续组件承担。
