@@ -457,6 +457,13 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     await page.locator('#project-section-tab-tasks').click();
     await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    const standaloneTab = page.locator('#project-task-tab-standalone');
+    const chainTab = page.locator('#project-task-tab-chains');
+    const goalTab = page.locator('#project-task-tab-goals');
+    await expect(standaloneTab.locator('.graph-count-pill')).toHaveText('2');
+    await expect(chainTab.locator('.graph-count-pill')).toHaveText('0');
+    await expect(goalTab.locator('.graph-count-pill')).toHaveText('0');
+    await expect(standaloneTab.locator('.graph-count-pill')).toHaveAttribute('title', locale === 'en' ? 'Unfinished task count' : '未完成任务数');
     const filter = page.locator('.task-assignee-filter .assignee-trigger');
     const status = page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true });
     await expect.poll(() => status.evaluate(select => {
@@ -466,6 +473,15 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await filter.click();
     const picker = page.locator('.assignee-menu'); await expect(picker.getByRole('listbox')).toBeVisible();
     await picker.getByRole('option', { name: locale === 'en' ? 'Assigned to me' : '分配给我', exact: true }).click();
+    await expect(standaloneTab.locator('.graph-count-pill')).toHaveText('1');
+    await expect(chainTab.locator('.graph-count-pill')).toHaveText('0');
+    await expect(goalTab.locator('.graph-count-pill')).toHaveText('0');
+    expect(await page.locator('.project-task-tabs').evaluate(tabs => [...tabs.querySelectorAll('.graph-count-pill')].every(pill => {
+      const box = pill.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.width > 0;
+    }))).toBe(true);
+    await standaloneTab.focus(); await page.keyboard.press('ArrowRight');
+    await expect(chainTab).toBeFocused(); await expect(chainTab).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('ArrowLeft'); await expect(standaloneTab).toBeFocused();
     const row = page.locator(`#standalone-task-${taskId}`);
     await expect(row).toBeVisible(); await expect(page.locator(`#standalone-task-${previousId}`)).toHaveCount(0);
     const identity = row.locator('.task-assignee-identity');

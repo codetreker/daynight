@@ -44,5 +44,6 @@ Restoration is local to one browser origin and does not synchronize across
 browsers. Account and project isolation prevent one choice from becoming
 another account's or project's default. Browser storage can be unavailable or
 contain invalid data; an error is visible and the session remains usable without
-claiming the value was saved. The full project snapshot, graph context and
-statistics remain independent of the displayed filter.
+claiming the value was saved. The full project snapshot, graph context and overview statistics remain
+independent of the displayed filter. The [tab count decision](../bug-fix/2026-11-13-assignee-scoped-tab-counts.md)
+uses the restored assignee selection when deriving tab counts.

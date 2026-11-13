@@ -131,21 +131,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       snapshot.index.components.get(left)!.progress.status, snapshot.index.components.get(right)!.progress.status));
     const chains = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size > 1);
     const standalone = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size === 1);
-    let unfinishedChainTaskCount = 0;
-    let unfinishedStandaloneTaskCount = 0;
-    for (const task of snapshot.index.nodes.values()) {
-      if (isTerminalStatus(task.status)) continue;
-      if (snapshot.index.components.get(snapshot.index.componentByTask.get(task.id)!)!.memberIds.size === 1) unfinishedStandaloneTaskCount++;
-      else unfinishedChainTaskCount++;
-    }
-    return { chains, standalone, unfinishedChainTaskCount, unfinishedStandaloneTaskCount };
+    return { chains, standalone };
   }, [snapshot]);
   const progress = useOverviewProgress(snapshot, categories?.chains ?? emptyIds, categories?.standalone ?? emptyIds, snapshotReady);
   const scope = useMemo(() => snapshot === null ? null : projectTaskScope(snapshot.index, null), [snapshot]);
   const scopedMembers = useMemo(() => new Map(scope?.chains.map((chain) => [chain.representativeId, chain.memberIds]) ?? []), [scope]);
   const allGoals = useMemo(() => snapshot === null ? [] : [...snapshot.summaries.values()].filter((item) => item.type === "goal")
     .toReversed().sort((left, right) => compareTaskStatus(left.status, right.status)), [snapshot]);
-  const goals = allGoals.filter((goal) => matchesAssignee(goal.assignedTo, assigneeFilter, viewer.userId) &&
+  const matchesCurrentAssignee = (assignedTo: string | null) => matchesAssignee(assignedTo, assigneeFilter, viewer.userId);
+  const assignedGoals = allGoals.filter((goal) => matchesCurrentAssignee(goal.assignedTo));
+  const goals = assignedGoals.filter((goal) =>
     (statusFilter === "all" || goal.status === statusFilter));
   const pausedTaskCount = useMemo(() => snapshot === null ? 0 : pausedSummaryTaskIds(
     snapshot.graph.tasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)), snapshot.pausedTaskIds).size,
@@ -155,6 +150,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       (statusFilter === "all" || task.status === statusFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId]);
   const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
+  const unfinishedMatches = (id: string) => {
+    const task = snapshot!.index.nodes.get(id)!;
+    return !isTerminalStatus(task.status) && matchesCurrentAssignee(task.assignedTo);
+  };
+  const unfinishedStandaloneTaskCount = scopedStandaloneIds.filter(unfinishedMatches).length;
+  const unfinishedChainTaskCount = [...new Set([...scopedMembers.values()].flat())].filter(unfinishedMatches).length;
   const rootIds = scopedChainIds.filter((id) => scopedMembers.get(id)!.some((member) => matchingTaskIds.has(member)));
   const standaloneIds = scopedStandaloneIds.filter((id) => matchingTaskIds.has(id));
   const chainPagination = usePagination(rootIds.length);
@@ -540,8 +541,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
-              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={scopedStandaloneIds.filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length}
-              unfinishedChainTaskCount={[...scopedMembers.values()].flat().filter((id) => !isTerminalStatus(snapshot.index.nodes.get(id)!.status)).length} goalCount={allGoals.length} onViewChange={selectView}
+              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
+              unfinishedChainTaskCount={unfinishedChainTaskCount} goalCount={assignedGoals.length} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openChainId, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
