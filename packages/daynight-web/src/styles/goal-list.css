@@ -33,3 +33,8 @@
   .goal-list-contents .goal-task-main { flex-basis: 100%; }
   .goal-list-contents .goal-task-status { flex: 1 1 100%; min-width: 0; max-width: 100%; flex-direction: row; flex-wrap: wrap; }
 }
+
+.goal-list-graph { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 1px solid #ddddee; border-radius: 6px; background: #fff; color: #6862b2; cursor: pointer; }
+.goal-list-graph:hover { background: #eeedff; border-color: #b8b4e1; }
+.goal-list-graph:focus-visible { outline: 2px solid #7777df; outline-offset: 2px; }
+@media (max-width: 600px) { .goal-list-graph { margin-left: auto; } }

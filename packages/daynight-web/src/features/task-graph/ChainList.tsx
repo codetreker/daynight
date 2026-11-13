@@ -142,7 +142,7 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
 };
 
 export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openGraphTarget, onOpenChain, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
-  const openChainId = openGraphTarget?.rootId ?? null;
+  const openChainId = openGraphTarget?.kind === 'chain' ? openGraphTarget.rootId : null;
   const { messages: { graph: m, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
