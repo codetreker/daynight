@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../../src/api/operation.js";
 import { ApiError } from "../../../../src/api/client.js";
 import { resolveConfigurationPaths } from "../../../../src/config/paths.js";
-import { BotEnvironmentCleanupError, prepareBotEnvironment } from "../../../../src/commands/worker/bots/environment.js";
+import { BotEnvironmentCleanupError, prepareBotEnvironment, prepareBotStateDirectory } from "../../../../src/commands/worker/bots/environment.js";
 import { HerdrCommandError, runHerdrCommand, type HerdrCommand } from "../../../../src/commands/worker/herdr/command.js";
 
 import { BotCliProbeCleanupError } from "../../../../src/commands/worker/bots/cli-probe.js";
@@ -29,7 +29,7 @@ const fixture = async () => {
   const config = async (extra = "", configuredToken: string | null = token) => writeFile(workerPaths.configFile, `serverUrl: ${serverOrigin}\n${configuredToken === null ? "" : `serverToken: ${configuredToken}\n`}${extra}`);
   await config();
   const environment: NodeJS.ProcessEnv = { ...process.env, HOME: homeDirectory, CODEX_HOME: path.join(homeDirectory, "native-codex"), DN_CONFIG_DIR: path.join(root, "wrong-config"), DAYNIGHT_CONTROLLER_TOKEN: "fixture-relay-secret" };
-  const options = { homeDirectory, cwd, workerPaths, serverOrigin, ownerUserId: owner, environment, signal: new AbortController().signal };
+  const options = { homeDirectory, cwd, workerPaths, serverOrigin, ownerUserId: owner, botId: other, environment, signal: new AbortController().signal };
   const fetch = vi.fn<typeof globalThis.fetch>(async () => userResponse());
   const runCommand = vi.fn(async (command: HerdrCommand) => ({ stdout: `Usage: daynight ${command.args.slice(0, -1).join(" ")} [--json]\n`, stderr: "" }));
   return { root, config, options, dependencies: { fetch, runCommand }, fetch, runCommand };
@@ -43,7 +43,7 @@ describe("Bot CLI environment preparation", () => {
   it("uses the target Worker configuration outside Git and preserves real home and PATH", async () => {
     const f = await fixture();
     const prepared = await prepareBotEnvironment(f.options, f.dependencies); resources.push(prepared);
-    expect(prepared.environment).toEqual({ ...f.options.environment, DN_CONFIG_DIR: f.options.workerPaths.stateDirectory, DAYNIGHT_CONTROLLER_TOKEN: undefined });
+    expect(prepared.environment).toEqual({ ...f.options.environment, DN_CONFIG_DIR: f.options.workerPaths.stateDirectory, DAYNIGHT_CONTROLLER_TOKEN: undefined, DAYNIGHT_BOT_ID: other, DAYNIGHT_BOT_STATE_DIR: path.join(f.options.workerPaths.stateDirectory, "bots", other, "state") });
     expect(Object.hasOwn(prepared.environment, "DAYNIGHT_CONTROLLER_TOKEN")).toBe(false);
     expect(f.options.environment.DAYNIGHT_CONTROLLER_TOKEN).toBe("fixture-relay-secret");
     expect(f.options.environment.DN_CONFIG_DIR).not.toBe(prepared.environment.DN_CONFIG_DIR);
@@ -65,6 +65,51 @@ describe("Bot CLI environment preparation", () => {
     const f = await fixture();
     await expect(prepareBotEnvironment({ ...f.options, serverOrigin: "https://other.example" }, f.dependencies)).rejects.toThrow(/server/);
     expect(f.fetch).not.toHaveBeenCalled(); expect(f.runCommand).not.toHaveBeenCalled();
+  });
+
+  it("keeps private claim state across preparations and alias release", async () => {
+    const f = await fixture();
+    f.options.environment.DAYNIGHT_BOT_ID = owner;
+    f.options.environment.DAYNIGHT_BOT_STATE_DIR = path.join(f.root, "wrong-bot");
+    const prepared = await prepareBotEnvironment(f.options, f.dependencies); resources.push(prepared);
+    const directory = prepared.environment.DAYNIGHT_BOT_STATE_DIR!;
+    expect(prepared.environment.DAYNIGHT_BOT_ID).toBe(other);
+    expect(directory).toBe(path.join(f.options.workerPaths.stateDirectory, "bots", other, "state"));
+    if (process.platform !== "win32") expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    const retained = path.join(directory, "claim-fixture.json");
+    await writeFile(retained, "retained claim", { mode: 0o600 });
+    await prepared.release();
+    expect(await prepareBotStateDirectory(f.options.workerPaths, other)).toBe(directory);
+    expect(await readFile(retained, "utf8")).toBe("retained claim");
+    const second = await prepareBotStateDirectory(f.options.workerPaths, owner);
+    expect(second).not.toBe(directory);
+    expect(await readdir(second)).toEqual([]);
+  });
+
+  it.each(["../outside", "00000000-0000-0000-0000-000000000000", "11111111-1111-4111-8111-11111111111A"])("rejects invalid Bot identity %s before preparing a child", async botId => {
+    const f = await fixture();
+    await expect(prepareBotEnvironment({ ...f.options, botId }, f.dependencies)).rejects.toThrow(/Bot ID/);
+    expect(f.fetch).not.toHaveBeenCalled(); expect(f.runCommand).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a linked Bot state path without changing its target", async () => {
+    const f = await fixture(), outside = path.join(f.root, "outside");
+    await mkdir(outside, { mode: 0o700 });
+    const botRoot = path.join(f.options.workerPaths.stateDirectory, "bots", other);
+    await mkdir(botRoot, { recursive: true, mode: 0o700 });
+    await symlink(outside, path.join(botRoot, "state"));
+    await expect(prepareBotEnvironment(f.options, f.dependencies)).rejects.toThrow();
+    expect(await readdir(outside)).toEqual([]);
+    expect(f.runCommand).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects nonprivate existing state without silently changing permissions", async () => {
+    const f = await fixture();
+    const directory = await prepareBotStateDirectory(f.options.workerPaths, other);
+    await chmod(directory, 0o755);
+    await expect(prepareBotEnvironment(f.options, f.dependencies)).rejects.toThrow(/private/);
+    expect((await stat(directory)).mode & 0o777).toBe(0o755);
+    expect(f.runCommand).not.toHaveBeenCalled();
   });
 
   it("requires paths derived from the target Worker configuration root", async () => {
