@@ -125,6 +125,61 @@ test("Markdown register rate limit retries its frozen identity after a delay", a
   expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "unknown", receipt: { state: "copying" } });
 });
 
+test.each(["commit", "failure"] as const)("rate-limited Markdown %s survives restart without rereading its source", async action => {
+  let sourceReads = 0;
+  const f = await fixture(checkpoint => { if (checkpoint.stage === "initial") sourceReads++; });
+  if (action === "failure") await rm(path.join(f.home, "original.png"));
+  const target = action === "commit" ? "commitImageCapture" : "failImageCapture";
+  const control = vi.spyOn(f.bridge.providerOptions, target).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }));
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()), start = Date.now();
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  await f.coordinator.tick();
+  const request = f.coordinator.get(f.occurrence.imageId)!.request!, args = control.mock.calls[0]!;
+  expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "unknown", retryControl: { action, attemptId: request.attemptId, after: start + 1000 } });
+  await f.coordinator.tick(); expect(control).toHaveBeenCalledOnce();
+  const readsBeforeRestart = sourceReads;
+  await f.close();
+  const journal = openControllerLifecycleStore(f.file, f.ticket, { imageDecoder: validateImageFile });
+  const unexpected = vi.fn(async () => { throw new Error("Unexpected operation"); });
+  const prior = f.receipts.get(request.captureId)!;
+  const commit = vi.fn(async (_id: string, _attempt: string, _validated: unknown) => ({ ...prior, revision: "2", state: "copying" as const }));
+  const fail = vi.fn(async (_id: string, _attempt: string, error: { code: string; message: string }) => ({ ...prior, revision: "2", state: "failed" as const, resourceId: null, error }));
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal, writable: () => true, fence: () => "reopened-fence", nativeReadPolicy: f.policy, onReceipt() {}, bridge: {
+    registerImageCapture: unexpected, queryImageCapture: unexpected, commitImageCapture: commit, failImageCapture: fail,
+  } });
+  cleanups.push(async () => { await coordinator.stop(); await journal.stopMedia(); journal.close(); });
+  await coordinator.tick(); expect(commit).not.toHaveBeenCalled(); expect(fail).not.toHaveBeenCalled();
+  now.mockReturnValue(start + 1000); await coordinator.tick();
+  expect(action === "commit" ? commit : fail).toHaveBeenCalledWith(...args);
+  expect(unexpected).not.toHaveBeenCalled(); expect(sourceReads).toBe(readsBeforeRestart);
+  expect(coordinator.get(f.occurrence.imageId)?.receipt?.state).toBe(action === "commit" ? "copying" : "failed");
+});
+
+test.each(["commit", "failure"] as const)("a lost response to a retried Markdown %s remains observation-only after restart", async action => {
+  const f = await fixture();
+  if (action === "failure") await rm(path.join(f.home, "original.png"));
+  const target = action === "commit" ? "commitImageCapture" : "failImageCapture";
+  const control = vi.spyOn(f.bridge.providerOptions, target).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." })).mockImplementationOnce(async () => {
+    expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "unknown", observeOnly: true });
+    expect(f.coordinator.get(f.occurrence.imageId)?.retryControl).toBeUndefined();
+    throw new Error("Response lost");
+  });
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()), start = Date.now();
+  f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  await f.coordinator.tick(); const request = f.coordinator.get(f.occurrence.imageId)!.request!;
+  now.mockReturnValue(start + 1000); await f.coordinator.tick(); expect(control).toHaveBeenCalledTimes(2);
+  await f.close();
+  const journal = openControllerLifecycleStore(f.file, f.ticket, { imageDecoder: validateImageFile });
+  const unexpected = vi.fn(async () => { throw new Error("Unexpected replay"); });
+  const query = vi.fn(async () => f.receipts.get(request.captureId)!);
+  const coordinator = createMarkdownCaptureCoordinator({ ticket: f.ticket, journal, writable: () => true, fence: () => "reopened-fence", nativeReadPolicy: f.policy, onReceipt() {}, bridge: {
+    registerImageCapture: unexpected, queryImageCapture: query, commitImageCapture: unexpected, failImageCapture: unexpected,
+  } });
+  cleanups.push(async () => { await coordinator.stop(); await journal.stopMedia(); journal.close(); });
+  await coordinator.tick(); expect(query).toHaveBeenCalledOnce(); expect(unexpected).not.toHaveBeenCalled();
+  expect(coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "unknown", observeOnly: true });
+});
+
 test("a missing query after an unknown Markdown register keeps the original identity until copying", async () => {
   const f = await fixture(); f.setLost();
   const originalQuery = f.bridge.providerOptions.queryImageCapture!;
@@ -197,10 +252,10 @@ test("unknown failure settlement cannot commit or return the admitted stage afte
   expect(fault.row(request)?.released).toBe(false); expect(freeSlots(f)).toBe(1);
   fault.recover(); failed.mockRestore();
   await f.coordinator.tick();
-  expect(f.calls).toEqual(["register", "query", "failed"]);
+  expect(f.calls).toEqual(["register", "query"]);
   expect(fault.row(request)?.released).toBe(true); expect(freeSlots(f)).toBe(2); expect(sources).toBe(1);
   await expect(f.coordinator.retry(request, new AbortController().signal)).rejects.toMatchObject({ code: "source_unavailable" });
-  expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ request, phase: "settled", sourceCleanup: { pending: false, error: { code: "SQLITE_CONSTRAINT_TRIGGER" } } });
+  expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ request, phase: "unknown", observeOnly: true, sourceCleanup: { pending: false, error: { code: "SQLITE_CONSTRAINT_TRIGGER" } } });
 });
 
 test("source retry-after survives cleanup failure without extending its window during recovery", async () => {

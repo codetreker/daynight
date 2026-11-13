@@ -83,6 +83,78 @@ func TestDefiniteImageFailureRetainsUnknownAndCleanupOutcomes(t *testing.T) {
 	}
 }
 
+func TestImageFailureEvidenceRejectsAmbiguousAndUnidentifiedErrors(t *testing.T) {
+	cause := errors.New("original write failed")
+	cleanup := errors.New("discard failed")
+	message := sp.ImageError{Code: "storage_unavailable", Message: "Image storage is unavailable."}
+	unidentified := &definiteImageError{image: message, cause: cause}
+	if unidentified.Error() != cause.Error() || imageFailureEvidence(fmt.Errorf("write: %w", unidentified)) != nil {
+		t.Fatal("an error without an original upload observation became settlement evidence")
+	}
+	joined := &definiteImageError{image: message, cause: errors.Join(cause, cleanup)}
+	if imageFailureEvidence(joined) != nil || !errors.Is(joined, cleanup) || !errors.Is(joined, cause) {
+		t.Fatal("ambiguous original and cleanup failures became settlement evidence")
+	}
+	refusal := captureRefusal("capture_not_found", "Image capture was not found.")
+	if refusal.Error() != "Image capture was not found." {
+		t.Fatal("capture refusal lost its public message", refusal)
+	}
+}
+
+func TestCaptureFailureCannotSettleAfterIdentityOrStorageChanges(t *testing.T) {
+	for _, kind := range []string{"storage unavailable", "gate failure", "capture missing", "capture terminal", "upload identity changed", "upload disappeared"} {
+		t.Run(kind, func(t *testing.T) {
+			f, capture := copyingCaptureFixture(t)
+			original := f.d.uploads[capture.Receipt.AttemptID]
+			evidence := &definiteImageError{image: sp.ImageError{Code: "storage_unavailable", Message: "Storage failed."}, expectedUpload: &original}
+			cause := errors.New("gate unavailable")
+			switch kind {
+			case "storage unavailable":
+				f.s.files = nil
+			case "gate failure":
+				f.s.files = imageBoundaryStorage{Storage: f.files, point: "gate", cause: cause}
+			case "capture missing":
+				delete(f.d.captures, capture.Request.CaptureID)
+			case "capture terminal":
+				current := capture
+				current.Receipt.State = "failed"
+				current.Receipt.ResourceID = nil
+				current.Receipt.Error = &sp.ImageError{Code: "invalid_image", Message: "Earlier failure."}
+				f.d.captures[capture.Request.CaptureID] = current
+			case "upload identity changed":
+				changed := original
+				changed.ActorID = uuid.NewString()
+				f.d.uploads[capture.Receipt.AttemptID] = changed
+			case "upload disappeared":
+				delete(f.d.uploads, capture.Receipt.AttemptID)
+			}
+			before := f.d.captures[capture.Request.CaptureID]
+			uploadBefore, uploadExists := f.d.uploads[capture.Receipt.AttemptID]
+			err := f.s.settleCaptureFailure(t.Context(), f.p, "", "", capture.SessionID, capture, evidence)
+			switch kind {
+			case "storage unavailable", "capture missing", "upload identity changed":
+				if err == nil {
+					t.Fatal("invalid settlement succeeded")
+				}
+			case "gate failure":
+				if !errors.Is(err, cause) {
+					t.Fatal("gate failure was hidden", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal("unchanged state should need no settlement", err)
+				}
+			}
+			if got := f.d.captures[capture.Request.CaptureID]; !jsonEqual(encode(got), encode(before)) {
+				t.Fatal("original capture changed", got)
+			}
+			if got, exists := f.d.uploads[capture.Receipt.AttemptID]; exists != uploadExists || exists && !jsonEqual(encode(got), encode(uploadBefore)) {
+				t.Fatal("original upload changed", got)
+			}
+		})
+	}
+}
+
 func TestImageUploadValidationWaitsForCleanupBeforeFailureSettlement(t *testing.T) {
 	for _, failCleanup := range []bool{false, true} {
 		t.Run(map[bool]string{false: "clean", true: "lease cleanup failed"}[failCleanup], func(t *testing.T) {

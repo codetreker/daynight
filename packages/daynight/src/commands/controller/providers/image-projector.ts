@@ -250,6 +250,7 @@ export class ProviderImageProjector {
       this.emitPart(pending); this.release(pending); this.pending.delete(request.occurrence.imageId); return;
     }
     let registerRefusal = false;
+    let controlRefusal: "commit" | "failure" | null = null;
     try {
       if (pending.saved.phase === "new") {
         if (Date.now() < (this.registerRetryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
@@ -285,31 +286,47 @@ export class ProviderImageProjector {
             if (this.stopped) { this.release(pending); return; }
           }
           if (payload.kind !== "file") {
-            pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
             const error = payload.kind === "unavailable" ? payload.error : { code: "resource_unavailable", message: "The original uploaded image could not be associated." };
-            this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, error)); return;
-          }
-          try {
+            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, error);
+            pending.saved.phase = "failure"; this.save(pending);
+          } else try {
             pending.saved.validated = await options.stageImageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: payload.path, byteLength: payload.byteLength, sha256: payload.sha256 });
           } catch {
             // Staging has joined its owned reader/decoder. No service commit
             // has been invoked, so this is a source failure, not a lost commit.
-            pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
-            this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." })); return;
+            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." });
+            pending.saved.phase = "failure"; this.save(pending);
           }
-          this.save(pending); this.release(pending);
+          if (pending.saved.phase === "reserved") { this.save(pending); this.release(pending); }
         }
-        pending.saved.phase = "commit"; this.save(pending);
+        if (pending.saved.phase === "reserved") { pending.saved.phase = "commit"; this.save(pending); }
+      }
+      if (pending.saved.phase === "failure") {
+        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
+        if (pending.saved.part.type !== "image_unavailable") throw new Error("Native image capture failure is missing.");
+        const failure = pending.saved.part.error;
+        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
+        if (this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, failure).catch(error => { if (error instanceof ImageCaptureRequestError) controlRefusal = "failure"; throw error; }))) return;
       }
       if (pending.saved.phase === "commit") {
+        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
         const validated = pending.saved.validated;
         if (!validated) throw new Error("Native image capture validation is missing.");
-        pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
-        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated))) return;
+        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
+        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated).catch(error => { if (error instanceof ImageCaptureRequestError) controlRefusal = "commit"; throw error; }))) return;
       }
       this.scheduleQuery();
     } catch (error) {
       if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
+      if (controlRefusal && error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+        const action = controlRefusal;
+        pending.saved.phase = action; pending.saved.unknownAction = null; pending.saved.retryAt = Date.now() + 1000;
+        try { this.save(pending); } catch (saveError) {
+          pending.saved.phase = "query"; pending.saved.unknownAction = action; delete pending.saved.retryAt;
+          throw saveError;
+        }
+        this.scheduleQuery(); return;
+      }
       if (registerRefusal && error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
         // Admission preceded registration, so the same frozen request remains eligible.
         pending.saved.phase = "new"; pending.saved.unknownAction = null;

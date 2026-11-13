@@ -209,6 +209,55 @@ test("register rate limit retries the frozen identity after a delay without quer
   } finally { now.mockRestore(); await projector.close(); }
 });
 
+test.each(["commit", "failure"] as const)("rate-limited %s survives restart and reuses the original request", async action => {
+  const f = fixture(); f.acknowledge();
+  const now = vi.spyOn(Date, "now").mockReturnValue(10000);
+  const control = action === "commit" ? vi.mocked(f.options.commitImageCapture!) : vi.mocked(f.options.failImageCapture!);
+  control.mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }));
+  if (action === "failure") vi.mocked(f.options.failImageCapture!).mockImplementationOnce(async (captureId, attemptId, error) => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId, revision: "2", occurrence: saved.request.occurrence, state: "failed", resourceId: null, resource: null, error };
+  });
+  let projector = new ProviderImageProjector(f.options);
+  const slot = action === "failure" ? { ...f.slot, payload: { kind: "unavailable" as const, error: { code: "source_missing", message: "Original is missing." } } } : f.slot;
+  try {
+    projector.publish(f.entry, [slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    await projector.close(); projector = new ProviderImageProjector(f.options);
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    expect(control).toHaveBeenCalledOnce();
+    now.mockReturnValue(11000); projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledTimes(2); expect(control.mock.calls[0]).toEqual(control.mock.calls[1]);
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    expect(f.options.stageImageCapture).toHaveBeenCalledTimes(action === "commit" ? 1 : 0);
+  } finally { now.mockRestore(); await projector.close(); }
+});
+
+test.each(["commit", "failure"] as const)("a lost native %s retry is queried after restart, never replayed", async action => {
+  const f = fixture(); f.acknowledge();
+  const now = vi.spyOn(Date, "now").mockReturnValue(10000);
+  const control = action === "commit" ? vi.mocked(f.options.commitImageCapture!) : vi.mocked(f.options.failImageCapture!);
+  control.mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." })).mockImplementationOnce(async () => {
+    expect([...f.states.values()]).toContainEqual(expect.objectContaining({ phase: "query", unknownAction: action }));
+    throw new Error("Response lost");
+  });
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "reserved", resourceId: f.resourceId, resource: null, error: null };
+  });
+  const slot = action === "failure" ? { ...f.slot, payload: { kind: "unavailable" as const, error: { code: "source_missing", message: "Original is missing." } } } : f.slot;
+  let projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [slot]); await projector.settled();
+    now.mockReturnValue(11000); projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledTimes(2);
+    await projector.close(); projector = new ProviderImageProjector(f.options);
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledOnce(); expect(control).toHaveBeenCalledTimes(2);
+  } finally { now.mockRestore(); await projector.close(); }
+});
+
 test("a failed original receipt ends observation after an unknown register result", async () => {
   const f = fixture(); f.acknowledge();
   vi.mocked(f.options.registerImageCapture!).mockRejectedValue(new Error("lost receipt"));
