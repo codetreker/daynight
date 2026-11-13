@@ -94,6 +94,7 @@ describe('Goal list', () => {
       summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['outside'], properties: { paused: true } }),
       summary('pending', 'task', goal.id, 'todo', { dependsOn: ['external'], externalDependsOn: ['external'] }),
       summary('anchor', 'task', goal.id, 'done'),
+      summary('cancelled', 'task', goal.id, 'cancelled'),
       summary('cross-running', 'task', other.id, 'in_progress', { dependsOn: ['anchor'] }),
       summary('standalone', 'task', goal.id, 'todo', { allowAgents: true }),
     ];
@@ -103,7 +104,7 @@ describe('Goal list', () => {
     const emptyCard = document.querySelector<HTMLElement>('[data-goal-id="empty"]')!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     const header = (element: HTMLElement) => element.querySelector<HTMLElement>('.goal-list-toggle')!;
-    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).toHaveAccessibleDescription(/1 in progress.*1\/4 completed/);
     expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
     expect(header(otherCard)).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
     expect(header(emptyCard)).toHaveAccessibleDescription(/0 in progress/);
@@ -117,14 +118,14 @@ describe('Goal list', () => {
     expect(card.querySelector('.goal-list-toggle')).toBe(toggle);
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
+    expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active.*1\/4 completed/);
     const indicator = toggle.querySelector('.chain-worker-active')!;
     expect(indicator.querySelector('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
     expect(within(indicator as HTMLElement).queryByRole('button')).toBeNull();
 
     const moved = active.map(task => task.id === 'child' ? { ...task, parentId: other.id } : task);
     view.rerender(list(snapshot(moved)));
-    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).toHaveAccessibleDescription(/1 in progress.*1\/3 completed/);
     expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
     expect(header(otherCard)).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
