@@ -142,7 +142,7 @@ describe('project task views', () => {
     ]));
     mount(); await findTab('chains');
     const chain = await findChainRow(rootId);
-    expect(chain).toHaveTextContent('0/1');
+    expect(chain.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('0/1');
     fireEvent.click(chain);
     expect(document.getElementById(`chain-task-${rootId}-${outsideId}`)).toBeVisible();
     expect(document.getElementById(`chain-task-${rootId}-${rootId}`)).toBeNull();
@@ -328,7 +328,7 @@ describe('project task views', () => {
       expect(childRows[position]).toBeVisible();
       expect(childRows[position]!.closest('.goal-task-row')!.querySelector('.root-status')).toHaveTextContent(status);
     }
-    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;
     completedChild.focus();
     fireEvent.click(completedChild);
@@ -362,7 +362,7 @@ describe('project task views', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(goalDetails).toHaveFocus());
     expect(goal).toHaveAttribute('aria-expanded', 'true');
-    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     fireEvent.click(tab('chains'));
     expect(chainRow()).toHaveAttribute('aria-expanded', 'false');
@@ -378,10 +378,10 @@ describe('project task views', () => {
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(7);
     expect(stats).toHaveTextContent('待处理5等待开始');
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('待处理');
     expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
@@ -1146,7 +1146,7 @@ describe('recent task browsing and pagination', () => {
     ]));
     mount(); await findChainRow(canonicalTask(1));
     expect(chainRow(canonicalTask(3))).toBeVisible();
-    expect(chainRow(canonicalTask(1))).toHaveTextContent('已完成');
+    expect(chainRow(canonicalTask(1)).closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('已完成');
     fireEvent.click(tab('standalone'));
     expect(row(canonicalTask(5))).toBeVisible();
     expect(row(canonicalTask(6))).toBeVisible();
@@ -1471,7 +1471,7 @@ describe('status-first project presentation', () => {
     graphRequest.mockResolvedValue(value);
     mount(); await findChainRow(canonicalTask(3));
     expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
-    expect(chainRow(canonicalTask(1)).parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(chainRow(canonicalTask(1)).closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     expect(presentedIds('standalone')).toEqual([102, 101, 104, 103, 106, 105].map(canonicalTask));
     expect(JSON.stringify(value.tasks)).toBe(original);
@@ -1558,7 +1558,7 @@ it('filters cancelled membership without reducing the complete Goal progress den
   mount(); await findChainRow();
   fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'cancelled' } });
   expect(screen.getByRole('option', { name: '已取消' })).toBeInTheDocument();
-  expect(chainRow()).toHaveTextContent('2/2 已结束 · 1 完成 · 1 取消');
+  expect(chainRow().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/2 已结束 · 1 完成 · 1 取消');
   fireEvent.click(tab('standalone')); await waitFor(() => expect(row(standalone.id)).toBeVisible());
   expect(row(rootTask.id)).toBeNull();
   await openStandalone(standalone.id);

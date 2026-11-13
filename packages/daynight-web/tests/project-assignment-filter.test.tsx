@@ -251,7 +251,7 @@ describe('project assignee filtering', () => {
     await mount();
     await filter('分配给我');
     expect(chain(1)).toBeVisible();
-    expect(chain(1)).toHaveTextContent('2/4 已完成');
+    expect(chain(1)!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
     expect(chain(1)).toHaveTextContent('1 进行中');
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;

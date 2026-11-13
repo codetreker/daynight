@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -12,8 +12,27 @@ const messageId = '00000000-0000-4000-8000-000000000051';
 const time = '2026-10-20T09:00:00Z';
 const description = Array.from({ length: 60 }, (_, i) => `## Section ${i + 1}\n\nLong task description remains readable.`).join('\n\n');
 
-async function install(page: Page, timing = false, completion = false) {
-  const task = detailFixture(projectId, taskId, { title: 'Reading task', description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
+async function expectChainTimeLayout(header: Locator) {
+  const layout = await header.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const title = box('.root-title'), meta = box('.chain-summary-meta'), time = box('.chain-completion-time');
+    const headerBox = element.getBoundingClientRect();
+    const other = ['.root-progress', '.session-status-slot', '.goal-graph-button'].map(box);
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return {
+      belowTitle: time.top >= title.bottom - 1,
+      inMeta: time.left >= meta.left - 1 && time.right <= meta.right + 1 && time.top >= meta.top - 1 && time.bottom <= meta.bottom + 1,
+      alignedLeft: Math.abs(meta.left - title.left) <= 8,
+      insideHeader: [title, time, ...other].every(rect => rect.width > 0 && rect.height > 0 && rect.left >= headerBox.left - 1 && rect.right <= headerBox.right + 1 && rect.top >= headerBox.top - 1 && rect.bottom <= headerBox.bottom + 1),
+      separate: other.every(rect => separate(time, rect)),
+      noHorizontalOverflow: element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth,
+    };
+  });
+  expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
+}
+
+async function install(page: Page, timing = false, completion = false, title = 'Reading task') {
+  const task = detailFixture(projectId, taskId, { title, description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
   const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
   const details = timing || completion ? [task, successor, standalone] : [task]; const graph = graphFixture(details);
@@ -106,6 +125,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     const completionLabel = completionButton.locator('time[datetime="2026-10-22T09:59:50Z"]');
     await expect(completionLabel).toBeVisible();
     await expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await expectChainTimeLayout(header);
     await completionButton.focus();
     const tooltip = header.getByRole('tooltip');
     await expect(tooltip).toBeVisible();
@@ -130,6 +150,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
       await tooltip.hover();
       await expect(tooltip).toBeVisible();
       await expand.click();
+      await expectChainTimeLayout(header);
       await expect(page.locator(`[data-chain-id="${taskId}"] .goal-children-heading time[datetime="2026-10-22T09:59:30Z"]`)).toBeVisible();
       const member = page.locator(`#chain-task-${taskId}-${successorId}`);
       await expect(member.locator('time[datetime="2026-10-22T09:59:50Z"]')).toBeVisible();
@@ -158,6 +179,35 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     } finally { state.holdSync = null; gate.resolve(); }
   });
 }
+
+test('mouse can reach the completion hint above a long chain title near the viewport bottom', async ({ page }) => {
+  const title = 'A long chain title that wraps across multiple lines and stays readable while the completion hint remains reachable';
+  const state = await install(page, false, true, title);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Task chains' }).click();
+  const header = page.locator(`[data-chain-id="${taskId}"] > .goal-header`);
+  const label = header.locator('.chain-completion-time time');
+  await label.scrollIntoViewIfNeeded();
+  await page.evaluate(() => { const rect = document.querySelector('.chain-completion-time')!.getBoundingClientRect(); window.scrollBy(0, rect.bottom - innerHeight + 16); });
+  await label.hover();
+  const hint = header.getByRole('tooltip');
+  await expect(hint).toBeVisible();
+  const labelBox = (await label.boundingBox())!, hintBox = (await hint.boundingBox())!;
+  expect(hintBox.y + hintBox.height).toBeLessThanOrEqual(labelBox.y);
+  expect(labelBox.y - (hintBox.y + hintBox.height)).toBeLessThanOrEqual(18);
+  const x = Math.max(labelBox.x, hintBox.x) + 5;
+  await page.mouse.move(x, labelBox.y + labelBox.height / 2);
+  for (let step = 1; step <= 8; step++) {
+    await page.mouse.move(x, labelBox.y + labelBox.height / 2 + (hintBox.y + hintBox.height - 2 - labelBox.y - labelBox.height / 2) * step / 8);
+    await page.waitForTimeout(10);
+  }
+  await expect(hint).toBeVisible();
+  await expect(page.locator(`#task-root-${taskId}`)).toHaveAttribute('aria-expanded', 'false');
+  expect(state.writes).toEqual([]);
+});
 
 test.describe('touch completion hints', () => {
   test.use({ hasTouch: true });

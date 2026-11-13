@@ -74,8 +74,8 @@ describe('Goal task lists', () => {
       scopedMembers={new Map([['Outside', ['Inside']]])} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
     const header = document.getElementById('task-root-Outside')!;
     expect(header).toHaveTextContent('Outside');
-    expect(header).toHaveTextContent('0/1');
-    expect(header.parentElement).toHaveAttribute('data-task-status', 'todo');
+    expect(header.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('0/1');
+    expect(header.closest('.goal-header')).toHaveAttribute('data-task-status', 'todo');
     expect(header.querySelector('.task-assignee-identity')).toBeNull();
     fireEvent.click(header);
     const rows = document.querySelectorAll('.goal-task-main');
@@ -146,11 +146,11 @@ describe('Goal task lists', () => {
     expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
     expect(rows.map((row) => row.closest('.goal-task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
     expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
-    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
+    expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
     expect(rows[1]!.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
-    expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
+    expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
     expect(children()).toHaveTextContent('子任务 · 3');
     expect(document.querySelector('button button')).toBeNull();
   });
@@ -167,7 +167,7 @@ describe('Goal task lists', () => {
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^1 进行中$/);
     view.rerender(list(indexOf(remaining.map((item) => item.id === 'Goal' ? { ...item, status: 'done' as const } : item))));
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 进行中$/);
-    expect(disclosure().parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(disclosure().closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     view.setLocale('en');
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
   });
@@ -226,12 +226,12 @@ describe('Goal task lists', () => {
 
   it('keeps a partly completed chain in progress without any executing member', () => {
     const view = render(list(indexOf([task('Goal', 'done'), task('Waiting', 'todo', ['Goal'])])));
-    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
+    expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
     expect(disclosure()).toHaveTextContent('进行中');
     view.rerender(list(indexOf([task('Goal', 'todo'), task('Waiting', 'todo', ['Goal'])])));
-    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'todo');
+    expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'todo');
     view.rerender(list(indexOf([task('Goal', 'done'), task('Waiting', 'done', ['Goal'])])));
-    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'done');
+    expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'done');
   });
 
   it('opens graphs independently from keyboard disclosure and passes the correct task and trigger to details', async () => {
@@ -285,7 +285,7 @@ describe('Goal task lists', () => {
     expect(within(children()).getAllByRole('button')).toHaveLength(3);
     expect(screen.getByRole('button', { name: /Implementation.*已完成/ })).toBeVisible();
     expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
-    expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
+    expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
   });
 
   it('retranslates expanded controls and renders long titles as text without changing disclosure', () => {
@@ -339,8 +339,8 @@ describe('shared scoped chain presentation', () => {
     expect(first).toHaveAttribute('aria-controls', firstChildren.id);
     expect(second).toHaveAttribute('aria-controls', secondChildren.id);
     expect(first).toHaveTextContent('Outside');
-    expect(first).toHaveTextContent('3/3');
-    expect(first.parentElement).toHaveAttribute('data-task-status', 'ended');
+    expect(first.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3');
+    expect(first.closest('.goal-header')).toHaveAttribute('data-task-status', 'ended');
     fireEvent.click(first);
     expect(firstChildren).toBeVisible();
     expect(secondChildren).not.toBeVisible();

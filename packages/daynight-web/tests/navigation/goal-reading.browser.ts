@@ -13,8 +13,11 @@ const otherGoalId = '00000000-0000-4000-8000-000000000204';
 const otherTaskId = '00000000-0000-4000-8000-000000000205';
 const outsideId = '00000000-0000-4000-8000-000000000206';
 const otherTask2Id = '00000000-0000-4000-8000-000000000207';
+const layoutChildId = '00000000-0000-4000-8000-000000000208';
+const layoutWorkerId = '00000000-0000-4000-8000-000000000209';
 const personalId = '00000000-0000-4000-8000-000000000701';
 const time = '2026-10-22T10:00:00Z';
+const longChainTitle = 'Long completed chain title '.repeat(5).trim();
 async function restoreGoalGraph(page: Page, surface: Locator, representativeId = firstId) {
   await expect(surface.locator('.goal-information-counts').first()).toBeAttached();
   await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined);
@@ -45,6 +48,24 @@ const graph = graphFixture(all);
 async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);
+}
+async function expectChainTimeLayout(header: Locator) {
+  const layout = await header.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const title = box('.root-title'), meta = box('.chain-summary-meta'), time = box('.chain-completion-time');
+    const headerBox = element.getBoundingClientRect();
+    const other = ['.root-progress', '.session-status-slot', '.goal-graph-button'].map(box);
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return {
+      belowTitle: time.top >= title.bottom - 1,
+      inMeta: time.left >= meta.left - 1 && time.right <= meta.right + 1 && time.top >= meta.top - 1 && time.bottom <= meta.bottom + 1,
+      alignedLeft: Math.abs(meta.left - title.left) <= 8,
+      insideHeader: [title, time, ...other].every(rect => rect.width > 0 && rect.height > 0 && rect.left >= headerBox.left - 1 && rect.right <= headerBox.right + 1 && rect.top >= headerBox.top - 1 && rect.bottom <= headerBox.bottom + 1),
+      separate: other.every(rect => separate(time, rect)),
+      noHorizontalOverflow: element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth,
+    };
+  });
+  expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
 async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'Long owner name '.repeat(8)) {
   let details = all;
@@ -149,13 +170,20 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === singleId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: time } : item);
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
-  }, completionGoal: () => {
-    const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z' });
+  }, completionGoal: (layout = false) => {
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    const outside = detailFixture(projectId, outsideId, { title: layout ? longChainTitle : 'Outside chain', parentId: otherGoalId, status: 'done', completedAt: '2026-10-22T09:59:55Z', ...(layout ? { assignedTo: TEST_VIEWER_ID } : {}) });
     details = [{ ...goal, status: 'done', createdAt: '2026-10-22T09:58:00Z', updatedAt: '2026-10-22T09:59:40Z', completedAt: '2026-10-22T09:59:40Z' },
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), outside,
       { ...first, title: 'First task with a long title '.repeat(5), status: 'done', completedAt: '2026-10-22T09:59:10Z', dependsOn: [outsideId] },
       { ...second, status: 'done', completedAt: '2026-10-22T09:59:30Z', dependsOn: [firstId] }, single];
-    currentGraph = graphFixture(details);
+    if (layout) details.push(
+      detailFixture(projectId, otherTaskId, { title: 'Scoped member', status: 'done', completedAt: '2026-10-22T09:59:35Z', dependsOn: [outsideId] }),
+      detailFixture(projectId, otherTask2Id, { title: longChainTitle, status: 'done', assignedTo: TEST_VIEWER_ID, completedAt: '2026-10-22T09:59:40Z' }),
+      detailFixture(projectId, layoutChildId, { title: 'Complete member', status: 'done', completedAt: '2026-10-22T09:59:50Z', dependsOn: [otherTask2Id] }),
+      detailFixture(projectId, layoutWorkerId, { title: 'Active outside member', parentId: otherGoalId, status: 'in_progress', startedAt: time, dependsOn: [outsideId], properties: { worker } }),
+    );
+    currentGraph = layout ? { ...graphFixture(details), observedAt: '2055-01-01T00:00:00Z' } : graphFixture(details);
   }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
     details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
     currentGraph = graphFixture(details);
@@ -934,13 +962,14 @@ for (const width of [1366, 390, 320]) test(`active chain indicator remains usabl
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   const header = page.locator(`#task-root-${outsideId}`);
+  const chain = page.locator(`[data-chain-id="${outsideId}"]`);
   await expect(header).toHaveAccessibleName(/Automatic execution active/);
-  await expect(header.locator('.chain-worker-active')).toBeVisible();
-  await expect(header.locator('.assignee-name')).toHaveText('Long owner name '.repeat(8).trim());
+  await expect(chain.locator('.chain-worker-active')).toBeVisible();
+  await expect(chain.locator('.assignee-name').first()).toHaveText('Long owner name '.repeat(8).trim());
   expect(await page.locator(`[data-chain-id="${outsideId}"]`).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await header.focus(); await page.keyboard.press('Enter');
   await expect(header).toHaveAttribute('aria-expanded', 'true');
-  await expect(header.locator('.chain-worker-active')).toBeVisible();
+  await expect(chain.locator('.chain-worker-active')).toBeVisible();
   await expect(page.locator(`#chain-task-${outsideId}-${firstId}`)).toBeVisible();
   await expectHit(page.locator(`#task-chain-graph-${outsideId}`));
   await expectHit(page.locator(`#chain-task-${outsideId}-${outsideId}`));
@@ -1647,7 +1676,7 @@ test('Goal and task-chain headers match with an assigned owner on desktop', asyn
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Task chains/ }).click();
   const chain = page.locator(`[data-chain-id="${outsideId}"]`);
-  const chainHeader = chain.locator('.root-toggle');
+  const chainHeader = chain.locator('.goal-header');
   await expect(chainHeader.locator('.assignee-avatar')).toBeVisible();
   await expect(chainHeader.locator('.assignee-name')).toHaveText('Owner');
   const chainHeight = await chainHeader.evaluate(element => element.getBoundingClientRect().height);
@@ -1833,6 +1862,43 @@ test('Goal list retires an old epoch and rejects its late background result', as
 });
 
 
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`long completed chain metadata remains readable at ${width}px in ${locale}`, async ({ page }) => {
+  const fixture = await install(page, locale); fixture.completionGoal(true);
+  await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
+  await page.setViewportSize({ width, height: 800 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+  const verify = async (row: Locator, scoped: boolean) => {
+    const header = row.locator('.goal-header'), toggle = header.locator('.goal-toggle');
+    const completion = header.locator('.chain-completion-time');
+    await expect(header.locator('.root-title')).toHaveText(longChainTitle);
+    if (scoped) await expect(header.locator('.chain-worker-active')).toBeVisible();
+    if (!scoped) await expect(header.locator('.assignee-name')).toHaveText('Long owner name '.repeat(8).trim());
+    await expect(completion.locator('time')).toContainText('2026');
+    await expectChainTimeLayout(header);
+    expect(await header.evaluate(element => [...element.querySelectorAll<HTMLElement>('.root-title, .assignee-name, .chain-worker-active, .chain-completion-time, .root-progress-label, .root-status, .goal-graph-button')].every(part => part.scrollWidth <= part.clientWidth + 1 && part.scrollHeight <= part.clientHeight + 1))).toBe(true);
+    await expectHit(completion);
+    await completion.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(row.getByRole('tooltip')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expectChainTimeLayout(header);
+    await expectHit(header.locator('.goal-graph-button'));
+  };
+  await verify(page.locator(`[data-chain-id="${otherTask2Id}"]`), false);
+  await verify(page.locator(`[data-chain-id="${outsideId}"]`), true);
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  await verify(card.locator('.goal-row'), true);
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
+  expect(fixture.statusWrites()).toEqual([]);
+  expect(fixture.edits()).toEqual([]);
+});
+
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal completion is readable in its list and detail at ${width}px in ${locale}`, async ({ page }) => {
   const fixture = await install(page, locale); fixture.completionGoal();
   await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
@@ -1859,12 +1925,14 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const disclosure = chain.locator('.goal-toggle');
   const time = chain.getByRole('button', { name: zh ? '查看 Outside chain 的完成时间' : 'View completion time for Outside chain' });
   await expect(time.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:30Z');
+  await expectChainTimeLayout(chain.locator('.goal-header'));
   await time.focus(); await expect(chain.getByRole('tooltip')).toBeVisible();
   await time.click();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Escape');
   await expect(chain.getByRole('tooltip')).toBeHidden();
   await disclosure.click();
+  await expectChainTimeLayout(chain.locator('.goal-header'));
   const row = chain.locator(`#chain-task-goal-${goalId}-chain-${outsideId}-${firstId}`);
   await expect(row.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:10Z');
   await row.focus(); await expect(row.locator('..').getByRole('tooltip')).toBeVisible();

@@ -48,3 +48,21 @@
 .session-status-tooltip{position:fixed;z-index:45;width:max-content;max-width:min(280px,calc(100vw - 16px));box-sizing:border-box;padding:7px 10px;border-radius:5px;background:#253148;color:white;font-size:12px;font-weight:400;line-height:1.6;white-space:normal;overflow-wrap:anywhere;pointer-events:none}
 
 .chain-worker-active{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-size:10px;line-height:16px;color:#287454}.chain-worker-active-dot{width:6px;height:6px;border-radius:50%;background:#287454;flex:none}.task-assignee-row-meta>.root-meta{margin-top:0}
+
+.chain-summary{flex:1;min-width:0;padding:10px 12px 10px 15px}
+.goal-header .chain-summary .goal-toggle{width:100%;min-height:22px;padding:0;gap:11px;background:transparent}
+.chain-summary-meta{margin-left:25px}
+.chain-summary-context{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0;max-width:100%}
+.chain-summary-context>.root-meta{margin-top:0}
+.chain-summary-meta .task-assignee-identity{max-width:100%}
+.chain-summary-meta .assignee-name{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
+.chain-summary-meta .chain-completion-time{padding:3px 4px}
+@container(max-width:600px){
+  .goal-header{grid-template-columns:minmax(0,1fr) auto auto}
+  .chain-summary{grid-column:1/-1;padding:11px 11px 0}
+  .goal-header .chain-summary .goal-toggle{min-height:28px;gap:8px;flex-wrap:nowrap}
+  .chain-summary-meta{margin-left:22px}
+  .goal-header>.root-progress{grid-column:1;margin:0 0 10px 11px}
+  .goal-header>.session-status-slot{grid-column:2;width:auto;padding-right:0}
+  .goal-header>.goal-graph-button{grid-column:3;margin:0 11px 10px 8px}
+}

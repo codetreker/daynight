@@ -66,7 +66,7 @@ describe('localized task graph presentation', () => {
       openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
-    expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
     expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
     view.setLocale('zh-CN');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
