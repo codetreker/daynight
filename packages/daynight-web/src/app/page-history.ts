@@ -17,6 +17,10 @@ export type ResourcePageReading = {
   readonly goalChildren: GoalChildren | null;
   readonly externalGoal: (ResourceReading & { readonly witness: string; readonly goalChildren: GoalChildren | null }) | null;
 };
+export type MyTasksReading = {
+  readonly projectPages: Readonly<Record<string, number>>;
+  readonly detail: (ResourceReading & { readonly projectId: string; readonly goalChildren: GoalChildren | null }) | null;
+};
 type HistoryEnvelope<Key extends string, Selection> = {
   readonly version: 1;
   readonly userId: string;
@@ -26,6 +30,7 @@ type HistoryEnvelope<Key extends string, Selection> = {
 export type PageHistoryState = HistoryEnvelope<'account', { readonly tab: AccountTab }>
   | HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
   | HistoryEnvelope<`project:${string}`, ProjectReading>
+  | HistoryEnvelope<'my-tasks', MyTasksReading>
   | HistoryEnvelope<`resource:${string}/${string}`, ResourcePageReading>;
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -71,6 +76,26 @@ export function readResourceHistory(value: unknown, userId: string, projectId: s
 
 export const resourceHistory = (userId: string, projectId: string, taskId: string, selection: ResourcePageReading): PageHistoryState =>
   ({ version: 1, userId, pageKey: resourceKey(projectId, taskId), selection });
+
+export const emptyMyTasksReading = (): MyTasksReading => ({ projectPages: {}, detail: null });
+
+/** Read the account's overview position without accepting resource data or drafts. */
+export function readMyTasksHistory(value: unknown, userId: string): MyTasksReading | null {
+  if (value === undefined) return null;
+  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || !validId(value.userId) || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
+  if (value.userId !== userId || value.pageKey !== 'my-tasks') return null;
+  const selection = value.selection;
+  if (!record(selection) || !exact(selection, ['projectPages', 'detail']) || !record(selection.projectPages) ||
+      !Object.entries(selection.projectPages).every(([id, page]) => validId(id) && typeof page === 'number' && Number.isSafeInteger(page) && page >= 1)) throw new Error('Invalid my-tasks navigation state.');
+  const detail = selection.detail;
+  if (detail !== null && (!record(detail) || !exact(detail, ['projectId', 'id', 'navigation', 'goalChildren']) ||
+      !validId(detail.projectId) || !validId(detail.id) || !validNavigation(detail.navigation) ||
+      !(detail.goalChildren === null || validChildren(detail.goalChildren)))) throw new Error('Invalid my-tasks navigation state.');
+  return selection as MyTasksReading;
+}
+
+export const myTasksHistory = (userId: string, selection: MyTasksReading): PageHistoryState =>
+  ({ version: 1, userId, pageKey: 'my-tasks', selection });
 
 /** Read the project selection only for its authenticated identity and project. */
 export function readProjectHistory(value: unknown, userId: string, projectId: string): ProjectReading | null {

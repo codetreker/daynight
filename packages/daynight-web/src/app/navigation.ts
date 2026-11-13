@@ -1,4 +1,4 @@
-import type { PageHistoryState } from './page-history';
+import { readMyTasksHistory, type PageHistoryState } from './page-history';
 
 export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string; readonly entryId: string | null; readonly view: unknown };
 export type WorkerConfigurationDraftScope = { readonly kind: 'worker-configuration'; readonly identity: object; readonly workerId: string };
@@ -15,6 +15,19 @@ type Entry = { readonly url: URL; readonly index: number | null; readonly entryI
 type Decision = { readonly kind: 'action'; readonly run: () => void; readonly drafts: readonly DirtyDraft[] }
   | { readonly kind: 'history'; readonly drafts: readonly DirtyDraft[] };
 const namespace = '__daynightNavigation';
+// Only the overview has a reloadable reading selection. Its resource identifiers
+// remain subject to the current identity and project access checks on admission.
+const overviewView = (url: URL, view: unknown): boolean => {
+  if (url.pathname !== '/my-tasks' || typeof view !== 'object' || view === null || !('userId' in view) || typeof view.userId !== 'string') return false;
+  try { return readMyTasksHistory(view, view.userId) !== null; } catch { return false; }
+};
+const restoredOverviewView = (url: URL, marker: unknown): unknown => {
+  if (typeof marker !== 'object' || marker === null || !('resumeUrl' in marker) || marker.resumeUrl !== url.href ||
+      !('session' in marker) || typeof marker.session !== 'string' || !('entryId' in marker) || typeof marker.entryId !== 'string' ||
+      !('index' in marker) || typeof marker.index !== 'number' || !Number.isSafeInteger(marker.index) ||
+      !('view' in marker) || !overviewView(url, marker.view)) return undefined;
+  return marker.view;
+};
 // Page choices are structured-clone values. Compare their contents, not object
 // identity, since a history traversal may deserialize a fresh copy.
 const sameValue = (left: unknown, right: unknown, seen = new WeakMap<object, object>()): boolean => {
@@ -52,7 +65,8 @@ export class BrowserNavigation {
   private readonly decisions = new Set<() => void>();
   constructor(private readonly browser: Window) {
     const url = new URL(browser.location.href);
-    this.writeState('replaceState', url, 0, crypto.randomUUID());
+    const restored = restoredOverviewView(url, browser.history.state?.[namespace]);
+    this.writeState('replaceState', url, 0, crypto.randomUUID(), restored);
     this.accepted = this.observed = this.readEntry();
     this.location = this.toLocation(this.accepted);
     browser.addEventListener('popstate', this.traversed);
@@ -78,7 +92,7 @@ export class BrowserNavigation {
   private writeState(method: 'pushState' | 'replaceState', url: URL, index: number, entryId: string, view?: unknown): void {
     const state: unknown = this.browser.history.state;
     this.browser.history[method]({ ...(typeof state === 'object' && state !== null ? state : {}),
-      [namespace]: { session: this.session, index, entryId, ...(view === undefined ? {} : { view }) } }, '', url.href);
+      [namespace]: { session: this.session, index, entryId, ...(view === undefined ? {} : { view }), ...(overviewView(url, view) ? { resumeUrl: url.href } : {}) } }, '', url.href);
     this.urls.set(index, { url: url.href, entryId });
   }
   /** Scrub a consumed fragment without treating cleanup as a new route or numbering native entries. */
