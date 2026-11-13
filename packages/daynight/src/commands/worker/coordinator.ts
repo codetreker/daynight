@@ -1909,7 +1909,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           try {
             const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
             const owner = remoteOwner(granted);
-            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, ...((options.configurationComplete?.() ?? true) ? { nativeConfiguration: frozenConfiguration } : {}) });
+            const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: frozenConfiguration });
             registerClaim(granted);
             confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });

@@ -2314,16 +2314,52 @@ describe("worker cancellation classification", () => {
   });
 });
 
-it("retains a granted claim without freezing native intent when readiness changes during acquisition", async () => {
-  const f = await fixture(); let complete = true;
+it.each(["native parameter change", "Web to Herdr change"] as const)("retains the confirmed claim configuration across blocked storage and %s", async change => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(); const webStore = openWebExecutionStore(createMemoryDatabase());
+  const original: ExecutionConfiguration = { ...configuration, agentControlMode: change === "Web to Herdr change" ? "web" : "herdr", model: "claimed-model", args: change === "Web to Herdr change" ? [] : ["--search"] };
+  const changed: ExecutionConfiguration = { ...original, agentControlMode: "herdr", model: "new-default-model", args: [] };
+  let complete = true, releaseClaim!: () => void;
+  const claimPending = new Promise<void>(resolve => { releaseClaim = resolve; });
   const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
-  vi.mocked(f.remote.claim).mockImplementation(async (...args) => { const granted = await claim(...args); complete = false; return granted; });
-  const coordinator = createWorkerCoordinator({ ...f.options, configurationComplete: () => complete });
-  await coordinator.tick();
-  const local = f.store.listTasks()[0]!;
-  expect(local).toBeDefined();
-  expect(f.store.getNativeConfiguration(local)).toBeNull();
-  expect(f.tasks.start).not.toHaveBeenCalled();
+  vi.mocked(f.remote.claim).mockImplementation(async (...args) => { await claimPending; return claim(...args); });
+  const advance = vi.fn(async (input: WebTask) => {
+    const record = webStore.initializeWebExecution(input, 2);
+    return webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(880) }, 3);
+  });
+  const register = vi.spyOn(webStore, "register");
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: original }], globalConfiguration: original,
+    configurationComplete: () => complete, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: async task => ({ task, complete: true }) } });
+  const acquiring = coordinator.tick(); void acquiring.catch(() => {});
+  try {
+    await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+    complete = false;
+    coordinator.updateConfiguration({ ...f.options, repositories: [{ project: f.project, configuration: changed }], globalConfiguration: changed });
+    releaseClaim(); await acquiring;
+    const local = f.store.listTasks()[0]!;
+    expect(local).toMatchObject({ taskId: f.candidates[0]!.id, agentControlMode: original.agentControlMode, status: "pending" });
+    expect([...f.grants.values()]).toHaveLength(1);
+    await coordinator.tick();
+    expect(f.tasks.start).not.toHaveBeenCalled(); expect(advance).not.toHaveBeenCalled(); expect(register).not.toHaveBeenCalled();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    complete = true;
+    await coordinator.tick();
+    if (change === "Web to Herdr change") {
+      await eventually(() => expect(advance).toHaveBeenCalledOnce());
+      expect(advance.mock.calls[0]![0].configuration).toMatchObject(original);
+      expect(f.tasks.start).not.toHaveBeenCalled();
+      expect(webStore.getTask(local)).toMatchObject({ claimId: local.claimId, configuration: original });
+    } else {
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+      expect(vi.mocked(f.tasks.start).mock.calls[0]![2].configuration).toMatchObject(original);
+      expect(advance).not.toHaveBeenCalled();
+    }
+    expect(f.store.getNativeConfiguration(local)).toMatchObject({ agent: original.agent, model: original.model, args: original.args });
+    expect(f.store.listTasks()).toHaveLength(1);
+    expect(f.store.getTask(local)!.claimId).toBe(local.claimId);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+  } finally { releaseClaim(); await acquiring; await coordinator.shutdown(); webStore.close(); }
 });
 
 it("waits before freezing a new native configuration after awaited preparation", async () => {
