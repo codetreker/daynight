@@ -18,6 +18,47 @@ type directCaptureSaveFailureDAO struct {
 	err, pinErr, removeErr error
 }
 
+type directCaptureObservationDAO struct {
+	*imageRuleDAO
+	point string
+	cause error
+}
+
+func (d *directCaptureObservationDAO) SessionResourceUsage(ctx context.Context, id string) (store.SessionResourceUsage, error) {
+	if d.point == "usage" {
+		return store.SessionResourceUsage{}, d.cause
+	}
+	return d.imageRuleDAO.SessionResourceUsage(ctx, id)
+}
+
+func (d *directCaptureObservationDAO) SessionCapture(ctx context.Context, session, id string) (store.SessionCaptureRecord, error) {
+	if d.point == "capture" {
+		return store.SessionCaptureRecord{}, d.cause
+	}
+	return d.imageRuleDAO.SessionCapture(ctx, session, id)
+}
+
+func (d *directCaptureObservationDAO) SessionUpload(ctx context.Context, session, id string) (store.SessionUploadRecord, error) {
+	if d.point == "upload" {
+		return store.SessionUploadRecord{}, d.cause
+	}
+	return d.imageRuleDAO.SessionUpload(ctx, session, id)
+}
+
+func (d *directCaptureObservationDAO) SavedSessionResource(ctx context.Context, session, id string) (store.SessionResourceRecord, error) {
+	if d.point == "resource" {
+		return store.SessionResourceRecord{}, d.cause
+	}
+	return d.imageRuleDAO.SavedSessionResource(ctx, session, id)
+}
+
+func (d *directCaptureObservationDAO) SessionResourceReferenceExists(ctx context.Context, ref store.SessionResourceReference) (bool, error) {
+	if d.point == "reference" {
+		return false, d.cause
+	}
+	return d.imageRuleDAO.SessionResourceReferenceExists(ctx, ref)
+}
+
 func (d *directCaptureSaveFailureDAO) SaveSessionCapture(context.Context, store.SessionCaptureRecord) error {
 	return d.err
 }
@@ -317,5 +358,82 @@ func TestDirectCaptureResourceReclamationAndPinFailures(t *testing.T) {
 				t.Fatal("prior pin was removed")
 			}
 		})
+	}
+}
+
+func TestDirectCaptureObservationsPreserveStorageFailures(t *testing.T) {
+	for _, point := range []string{"usage", "capture", "upload", "resource", "reference"} {
+		t.Run(point, func(t *testing.T) {
+			raw := []byte("original")
+			f := newImageRuleFixture(t, raw)
+			var resourceID string
+			if point == "resource" || point == "reference" {
+				f.prepare(t)
+				if _, err := f.write(t, raw, 0); err != nil {
+					t.Fatal(err)
+				}
+				upload, err := f.complete(t)
+				if err != nil || upload.Resource == nil {
+					t.Fatal(upload, err)
+				}
+				resourceID = upload.Resource.ResourceID
+			}
+			request := directCaptureFixture(t, f)
+			input := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "failed", Error: &sp.ImageError{Code: "source_timeout", Message: "Original timed out."}}}
+			if resourceID != "" {
+				input.Request.Locator = sp.ImageLocator{Kind: "resource", ResourceID: resourceID}
+				input.Outcome = sp.DirectCaptureOutcome{Kind: "resource"}
+			}
+			cause := errors.New("observation unavailable")
+			dao := &directCaptureObservationDAO{imageRuleDAO: f.d, point: point, cause: cause}
+			_, err := f.s.captureMessage(t.Context(), &operationTx{dao: dao, op: &Operation{}}, f.r, sp.ControllerMessage{Action: "submit", MediaBody: encode(input)})
+			var refusal *CaptureRequestError
+			if !errors.Is(err, cause) || errors.As(err, &refusal) || len(f.d.captures) != 0 {
+				t.Fatal("observation error was hidden or created a capture", err)
+			}
+			if resourceID != "" {
+				ref := store.SessionResourceReference{SessionID: f.r.Snapshot.SessionID, ResourceID: resourceID, Kind: "message", ReferenceID: request.Occurrence.ImageID}
+				if f.d.references[ref] {
+					t.Fatal("observation error created a reference")
+				}
+			}
+		})
+	}
+}
+
+func TestDirectCaptureRejectsMissingResourceAndConflictingUploadIdentity(t *testing.T) {
+	for _, condition := range []string{"missing resource", "upload identity", "outcome locator"} {
+		t.Run(condition, func(t *testing.T) {
+			f := newImageRuleFixture(t, []byte("original"))
+			request := directCaptureFixture(t, f)
+			input := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "resource"}}
+			if condition != "outcome locator" {
+				input.Request.Locator = sp.ImageLocator{Kind: "resource", ResourceID: uuid.NewString()}
+			}
+			if condition == "upload identity" {
+				f.d.uploads[request.AttemptID] = store.SessionUploadRecord{SessionID: f.r.Snapshot.SessionID}
+			}
+			_, err := directCaptureCall(t, f, input)
+			var refusal *CaptureRequestError
+			if !errors.As(err, &refusal) || refusal.Code != "resource_conflict" || len(f.d.captures) != 0 {
+				t.Fatal("ineligible capture was not refused", err)
+			}
+		})
+	}
+}
+
+func TestDirectCapturePersistsFailureWhenDecoderUnavailable(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	f.s.SetImageDecoder(nil)
+	request := directCaptureFixture(t, f)
+	validated := sp.ValidatedImage{MediaType: "image/png", ByteLength: "8", SHA256: imageBytesHash([]byte("original")), Width: 2, Height: 3, FrameCount: 1}
+	input := sp.DirectCaptureSubmission{Request: request, AttemptID: request.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "validated", Validated: &validated}}
+	first, err := directCaptureCall(t, f, input)
+	if err != nil || first.State != "failed" || first.Error == nil || first.Error.Code != "component_unsupported" {
+		t.Fatal("decoder absence did not persist a failure", first, err)
+	}
+	replay, err := directCaptureCall(t, f, input)
+	if err != nil || !reflect.DeepEqual(first, replay) || len(f.d.resources) != 0 || len(f.d.uploads) != 0 {
+		t.Fatal("decoder failure replay changed the original result", replay, err)
 	}
 }

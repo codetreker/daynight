@@ -290,6 +290,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 					return fault("resource_conflict", "Chunk identity already has different content.")
 				}
 				if offset == 0 && u.Receipt.AcceptedOffset == "0" {
+					if u.Receipt.State != "receiving" {
+						return fault("resource_conflict", "Upload no longer accepts its first chunk.")
+					}
 					usage, err := d.SessionResourceUsage(ctx, id)
 					if err != nil {
 						return err

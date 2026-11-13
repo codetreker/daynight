@@ -64,7 +64,7 @@ func imageDigest(b []byte) string { digest := sha256.Sum256(b); return hex.Encod
 
 func sessionImageController(ctx context.Context, connection *websocket.Conn, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte) error {
 	validated := &sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256, Width: 3, Height: 2, FrameCount: 1}
-	for _, expected := range []string{"prepare", "write", "complete", "release"} {
+	for _, expected := range []string{"prepare", "write", "complete"} {
 		kind, data, err := connection.Read(ctx)
 		if err != nil {
 			return err
@@ -87,11 +87,13 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 				return fmt.Errorf("Controller chunk differs: %s", request.Body)
 			}
 		} else {
-			var id struct {
-				UploadID string `json:"uploadId"`
+			var completion struct {
+				UploadID   string `json:"uploadId"`
+				SHA256     string `json:"sha256"`
+				ByteLength string `json:"byteLength"`
 			}
-			if json.Unmarshal(request.Body, &id) != nil || id.UploadID != spec.UploadID {
-				return fmt.Errorf("Controller upload identity differs: %s", request.Body)
+			if json.Unmarshal(request.Body, &completion) != nil || completion.UploadID != spec.UploadID || completion.SHA256 != spec.SHA256 || completion.ByteLength != spec.ByteLength {
+				return fmt.Errorf("Controller completion differs: %s", request.Body)
 			}
 		}
 		state, offset := "receiving", "0"
@@ -101,9 +103,6 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 		}
 		if expected == "complete" {
 			state, offset, image = "validated", spec.ByteLength, validated
-		}
-		if expected == "release" {
-			state, offset = "released", spec.ByteLength
 		}
 		result, err := sp.MarshalWire(sp.LocalImagePreparation{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: state, AcceptedOffset: offset, Validated: image})
 		if err != nil {

@@ -4,11 +4,121 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
+
+type refusingUploadGate struct {
+	filestorage.Storage
+	err error
+}
+
+func (s refusingUploadGate) AcquireGate(context.Context, filestorage.GateDomain, string) (io.Closer, error) {
+	return nil, s.err
+}
+
+func TestDirectUploadAdmissionPreservesIdentityOnRefusal(t *testing.T) {
+	for _, kind := range []string{"body limit", "missing storage", "gate", "frozen", "wrong target", "duplicate image", "rate limit"} {
+		t.Run(kind, func(t *testing.T) {
+			raw := []byte("original")
+			f := newImageRuleFixture(t, raw)
+			input := sp.DirectImageContent{Spec: f.spec, Offset: "0", SHA256: imageBytesHash(raw), Data: base64.StdEncoding.EncodeToString(raw)}
+			gateErr := errors.New("upload gate unavailable")
+			switch kind {
+			case "body limit":
+				input.Data = strings.Repeat("a", 1<<20)
+			case "missing storage":
+				f.s.files = nil
+			case "gate":
+				f.s.files = refusingUploadGate{Storage: f.files, err: gateErr}
+			case "frozen":
+				f.d.usage.Frozen = true
+			case "wrong target":
+				input.Spec.Target.Fence.ExecutionGeneration = "2"
+			case "duplicate image":
+				f.prepare(t)
+				input.Spec.UploadID = "00000000-0000-4000-8000-000000000001"
+			case "rate limit":
+				f.d.rateDeny = "prepare"
+			}
+			before := len(f.d.uploads)
+			_, _, err := f.s.DirectUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, input)
+			if err == nil || kind == "gate" && !errors.Is(err, gateErr) {
+				t.Fatalf("%s admission unexpectedly succeeded: %v", kind, err)
+			}
+			if len(f.d.uploads) != before || len(f.d.chunks[input.Spec.UploadID]) != 0 {
+				t.Fatal("refusal created a new upload or first intent")
+			}
+		})
+	}
+}
+
+func TestDirectUploadResumesOriginalPendingFile(t *testing.T) {
+	for _, stored := range []string{"original", "changed!"} {
+		t.Run(stored, func(t *testing.T) {
+			raw := []byte("original")
+			f := newImageRuleFixture(t, raw)
+			input := sp.DirectImageContent{Spec: f.spec, Offset: "0", SHA256: imageBytesHash(raw), Data: base64.StdEncoding.EncodeToString(raw)}
+			receipt, created, err := f.s.prepareUploadIdentityWithFirst(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, true, &input)
+			if err != nil || !created || receipt.AcceptedOffset != "0" || len(f.d.chunks[f.spec.UploadID]) != 1 {
+				t.Fatal("first identity and intent", receipt, created, err)
+			}
+			path := f.d.chunks[f.spec.UploadID][0].Path
+			if _, err = f.files.Put(t.Context(), sessionresource.Bucket, path, strings.NewReader(stored)); err != nil {
+				t.Fatal(err)
+			}
+			got, created, err := f.s.DirectUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, input)
+			if stored != "original" {
+				if err == nil || f.d.uploads[f.spec.UploadID].Receipt.AcceptedOffset != "0" {
+					t.Fatal("different pending bytes were accepted", got, err)
+				}
+				return
+			}
+			if err != nil || created || got.AcceptedOffset != "8" || len(f.d.chunks[f.spec.UploadID]) != 1 {
+				t.Fatal("existing identical original was not resumed", got, created, err)
+			}
+		})
+	}
+}
+
+func TestDirectUploadBindsFirstChunkToExistingLegacyIdentity(t *testing.T) {
+	raw := []byte("original")
+	f := newImageRuleFixture(t, raw)
+	old := f.prepare(t)
+	input := sp.DirectImageContent{Spec: f.spec, Offset: "0", SHA256: imageBytesHash(raw), Data: base64.StdEncoding.EncodeToString(raw)}
+	receipt, created, err := f.s.DirectUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, input)
+	if err != nil || created || receipt.AcceptedOffset != "8" || receipt.ExpiresAt != old.ExpiresAt || len(f.d.chunks[f.spec.UploadID]) != 1 {
+		t.Fatal("existing legacy identity was not bound to the real first chunk", receipt, created, err)
+	}
+}
+
+func TestDirectUploadNeverWritesFailedFirstIntent(t *testing.T) {
+	raw := []byte("original")
+	f := newImageRuleFixture(t, raw)
+	input := sp.DirectImageContent{Spec: f.spec, Offset: "0", SHA256: imageBytesHash(raw), Data: base64.StdEncoding.EncodeToString(raw)}
+	if _, _, err := f.s.prepareUploadIdentityWithFirst(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, true, &input); err != nil {
+		t.Fatal(err)
+	}
+	row := f.d.uploads[f.spec.UploadID]
+	row.Receipt.State = "failed"
+	row.Receipt.Error = &sp.ImageError{Code: "storage_unavailable", Message: "Original storage failed."}
+	f.d.uploads[f.spec.UploadID] = row
+	writes := 0
+	f.files.beforePut = func(string) { writes++ }
+	if _, _, err := f.s.DirectUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, input); err == nil {
+		t.Fatal("failed first intent accepted a replay")
+	}
+	if writes != 0 || f.d.uploads[f.spec.UploadID].Receipt.State != "failed" || f.d.uploads[f.spec.UploadID].Receipt.AcceptedOffset != "0" || len(f.d.chunks[f.spec.UploadID]) != 1 {
+		t.Fatal("failed first intent changed or published bytes")
+	}
+}
 
 func TestDirectUploadPersistsAndReplaysOriginalFirstChunk(t *testing.T) {
 	raw := bytes.Repeat([]byte("image"), 110000)
