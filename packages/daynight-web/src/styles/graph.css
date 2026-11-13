@@ -39,7 +39,7 @@
 .goal-task-machine { min-width: 0; max-width: 100%; color: var(--task-helper); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .session-status-slot{display:inline-flex;align-items:center;justify-content:flex-end;box-sizing:border-box;width:106px;flex:0 0 106px;min-height:44px;padding-right:24px}
 .session-status-control{display:inline-flex;align-items:center;justify-content:flex-end;box-sizing:border-box;width:100%;min-height:44px;padding:0 8px;border:0;background:transparent;color:inherit;font:inherit;text-align:right;text-decoration:none}
-.goal-row .session-status-progress .session-status-label{position:relative;padding:0;border:0;border-radius:0;background:transparent;line-height:20px}
+.goal-header > .session-status-progress .session-status-label,.goal-task-row .session-status-progress .session-status-label{position:relative;padding:0;border:0;border-radius:0;background:transparent;line-height:20px}
 .session-status-action:hover .session-status-label{text-decoration:underline;text-underline-offset:3px;text-decoration-color:#8e9cb5}
 .session-status-action:active .session-status-label{color:#244b89}
 .session-status-action:focus-visible{outline:2px solid var(--task-focus);outline-offset:-2px;border-radius:4px}

@@ -160,7 +160,7 @@ time 使用 `PT<秒数>S` 语义时长；可见文字对小于一分钟及 d/h/m
 独立行的可见新元数据对名称计算隐藏，计时 tick 不改变按钮名称；没有 alert/status/live-region 逐秒广播。
 完成、未知与进行中都保留现有焦点和控制；显式外部边、链外卡片及选中/前置强调不被琥珀提醒覆盖。
 
-共享的 memoized `ChainMemberRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
+共享的 memoized `TaskMemberRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
 `todo`、未知起点及完成态未知终点由共享计时判定返回 null，不补造元数据时间；完成值只取持久端点差。
 标题保持独立 `.root-title` 文本，后接 `TaskExecutionDuration`，两者使用行内排版；空间不足时自然换行，耗时允许内部换行且不省略文本，状态及箭头保留各自空间。
 耗时外层对按钮名称计算隐藏，`time` 保留机器可读时长；`tooltip="duration"` 仅显示格式化耗时，避免把图卡片和独立行的阈值或提醒说明带入子任务行。

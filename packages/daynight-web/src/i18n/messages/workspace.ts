@@ -128,12 +128,10 @@ export type WorkspaceMessages = {
     readonly empty: string;
     readonly emptyDetail: string;
     readonly summary: (args: { shown: number; total: number }) => string;
-    readonly composition: (args: { chains: number; standalone: number }) => string;
+    readonly composition: (args: { count: number }) => string;
     readonly toggle: (args: { title: string; expanded: boolean }) => string;
     readonly details: string;
     readonly detailsLabel: (args: { title: string }) => string;
-    readonly standalone: string;
-    readonly chains: string;
     readonly emptyTasks: string;
   };
   readonly preferences: {

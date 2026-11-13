@@ -23,9 +23,10 @@ the existing history witness and project-scoped direction preference.
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
 own the user-visible contract and the [inspection design](../../../../docs/design/daynight-task-inspection.md#goal-整体图)
 owns projection, framing and reading ownership. The existing
-[Goal browsing decision](2026-11-11-goal-browsing.md) continues to classify
-ordinary chains before selecting list members; this graph adds a distinct Goal
-view without changing that list classification. The
+[Goal browsing decision](2026-11-11-goal-browsing.md) owns direct Parent scope
+and Goal detail classification. The [flat Goal list decision](../simplification/2026-11-13-goal-flat-list.md)
+presents those members without chain groups; this graph remains a distinct Goal
+view. The
 [shared graph presentation decision](../architecture/2026-11-13-shared-task-graph-presentation.md)
 retains the shared mechanical layer and ordinary chain policy.
 

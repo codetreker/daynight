@@ -12,7 +12,7 @@ including a scope containing only one of its members.
 ## Decision
 
 The Web classifies the complete ordinary graph before selecting a Parent scope.
-Lists count and render each scoped Task once while retaining the complete chain
+Lists count and render each scoped Task once; chain views retain the complete
 representative and witness for graph navigation. A typed detail loader selects
 the Goal or ordinary Task surface before mounting execution controllers. The
 Goal retains its description, attachment and discussion controllers and any
@@ -29,12 +29,12 @@ only its explicit members for progress, while the full component supplies worker
 indication, the representative supplies its title and a scoped member supplies
 the graph witness.
 Instance identities also separate DOM associations and Session visibility keys,
-without starting Session reads where no provider exists. Project Goal scoped
-chains use the existing page Session store and visibility registration, without
-additional HTTP reads. Project Goal rows
-share the same projection between summary and inline contents. Each row owns
-its Goal disclosure and retained chain disclosures, while the active category
-hosts one graph. The original source Goal and trigger remain separate from the
+without starting Session reads where no provider exists. Project Goal rows share
+the same projection between summary and inline contents. The [flat Goal list
+decision](../simplification/2026-11-13-goal-flat-list.md) replaces nested chain
+disclosures with direct member rows and retains the existing page Session store
+and visibility registration without additional HTTP reads. Each Goal owns its
+disclosure while the active category hosts one graph. The original source Goal and trigger remain separate from the
 current graph witness across navigation; visible fallbacks do not alter filters
 or pagination.
 The [Goal description tab decision](2026-11-12-goal-description-tab.md) originally
@@ -44,7 +44,7 @@ task rows in the project Goal list and presents description and statistics in
 detail while retaining the nested reading owners. The
 [Web design](../../../../docs/design/daynight-web.md) describes the current
 presentation and lifecycle.
-The [Goal overview graph decision](2026-11-13-goal-overview-graph.md) adds a separate complete Goal graph; the list still classifies ordinary chains before selecting scoped members.
+The [Goal overview graph decision](2026-11-13-goal-overview-graph.md) adds a separate complete Goal graph; Goal detail statistics retain ordinary chain classification.
 The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)
 uses the Goal's own state for its list heading while keeping scoped progress
 independent. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md)
