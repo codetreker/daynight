@@ -30,3 +30,4 @@
 .github-settings .number-unit { display: flex; gap: 9px; align-items: center; font-size: 12px; }
 .github-settings .number-unit input { width: 140px; }
 .github-settings .number-unit span { flex: none; }
+.github-repository-actions { display: flex; gap: .5rem; flex-wrap: wrap; }

@@ -14,10 +14,10 @@ const baseStatus = () => ({ projectId, version: '1', revision: '0', serviceAvail
   poll: { running: false, lastAttemptAt: null as string | null, lastSuccessAt: null as string | null, nextAttemptAt: null as string | null, error: null as {code: string; message: string; at: string} | null },
   webhook: { running: false, lastReceivedAt: null as string | null, lastAttemptAt: null as string | null, lastSuccessAt: null as string | null, error: null as {code: string; message: string; at: string} | null },
 });
-type State = { status: ReturnType<typeof baseStatus>; role: 'admin' | 'member'; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdPatch: Promise<void> | null; conflict: boolean; unknown: boolean; requests: string[]; writes: { path: string; method: string; body: string; principal: string | null }[] };
+type State = { status: ReturnType<typeof baseStatus>; role: 'admin' | 'member'; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdPatch: Promise<void> | null; conflict: boolean; unknown: boolean; failReconcile: boolean; failRead: boolean; requests: string[]; writes: { path: string; method: string; body: string; principal: string | null }[] };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { status: baseStatus(), role: 'admin', holdMe: null, holdAccess: null, holdPatch: null, conflict: false, unknown: false, requests: [], writes: [] };
-  const access = () => ({ projectId, ownerTeam: team, ownership: { teamId, version: 1n }, effectiveRole: state.role, teamRole: null, canTransfer: false,
+  const state: State = { status: baseStatus(), role: 'admin', holdMe: null, holdAccess: null, holdPatch: null, conflict: false, unknown: false, failReconcile: false, failRead: false, requests: [], writes: [] };
+  const access = () => ({ projectId, ownerTeam: team, ownership: { teamId, version: 1n }, effectiveRole: state.role, teamRole: state.role === 'admin' ? 'admin' : null, canTransfer: state.role === 'admin',
     directGrant: { projectId, userId: actorId, role: state.role, version: 1n, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
@@ -31,14 +31,14 @@ const install = async (page: Page): Promise<State> => {
     if (path === `/api/v1/projects/${projectId}`) return send(project);
     if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess) await state.holdAccess; return send(access()); }
     if (path === `/api/v1/me/projects/${projectId}/worker-prompt`) return send({ scope: 'project', scopeId: projectId, revision: '0', text: '', updatedAt: null });
-    if (path === `/api/v1/projects/${projectId}/github`) return send(state.status);
+    if (path === `/api/v1/projects/${projectId}/github`) return state.failRead ? send(error('internal_error'), 500) : send(state.status);
     if (path === `/api/v1/projects/${projectId}/pull-requests`) return send({ projectId, revision: state.status.revision, items: [], total: '0', counts: { active: '0', closed: '0', merged: '0', all: '0' }, nextCursor: null, previousCursor: null });
     if (path === `/api/v1/projects/${projectId}/github/installation`) return send(candidate);
     if (path.startsWith(`/api/v1/projects/${projectId}/github/`) && method !== 'GET') {
       const body = request.postData()!; state.writes.push({ path, method, body, principal: request.headers()['daynight-user-id'] ?? null });
       if (path.endsWith('/settings')) {
         if (state.holdPatch) await state.holdPatch;
-        if (state.unknown) { state.status = { ...state.status, version: '2', revision: '1', pollIntervalMinutes: 12 }; return send(error('github_write_outcome_unknown'), 503); }
+        if (state.unknown) { state.failRead = state.failReconcile; state.status = { ...state.status, version: '2', revision: '1', pollIntervalMinutes: 12 }; return send(error('github_write_outcome_unknown'), 503); }
         if (state.conflict) { state.status = { ...state.status, version: '2', revision: '1', pollIntervalMinutes: 9 }; return send(error('version_conflict'), 409); }
         state.status = { ...state.status, version: String(BigInt(state.status.version) + 1n), revision: String(BigInt(state.status.revision) + 1n), pollIntervalMinutes: (JSON.parse(body) as {pollIntervalMinutes: number}).pollIntervalMinutes };
       } else if (path.endsWith('/connect')) {
@@ -176,5 +176,43 @@ test('an unknown write outcome rereads without replaying and keeps the submitted
   await expect(page.getByText('The write outcome is unknown. Check the reread status before deciding whether to retry.')).toBeVisible();
   await expect.poll(() => state.requests.filter(x => x === `GET /api/v1/projects/${projectId}/github`).length).toBeGreaterThan(reads);
   await expect(field).toHaveValue('12');
+  expect(state.writes).toHaveLength(1);
+});
+
+
+for (const { name, connection, serviceAvailable } of [
+  { name: 'revoked repository access', connection: 'unavailable', serviceAvailable: true },
+  { name: 'unconfigured service', connection: 'connected', serviceAvailable: false },
+] as const) {
+  test(`disconnects with ${name} without discovering an installation`, async ({ page }) => {
+    const state = await install(page);
+    state.status = { ...baseStatus(), connection, serviceAvailable, installation: candidate.installation, repository: candidate.repository, version: '2', revision: '2' };
+    await open(page);
+    if (!serviceAvailable) await expect(page.getByRole('button', { name: 'Reconnect' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Disconnect GitHub?' });
+    await dialog.getByRole('button', { name: 'Disconnect', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('Previously saved data is retained.')).toBeVisible();
+    expect(state.writes.map(({path, body}) => ({path, body}))).toEqual([{path: `/api/v1/projects/${projectId}/github/disconnect`, body: '{"version":"2"}'}]);
+    expect(state.requests.filter(value => value.endsWith('/github/installation'))).toHaveLength(0);
+    if (!serviceAvailable) await expect(page.getByRole('button', { name: 'Reconnect' })).toHaveCount(0);
+  });
+}
+
+test('failed reconciliation retains the management lock until a successful reread', async ({ page }) => {
+  const state = await install(page); await open(page);
+  const projectField = page.getByLabel('Alert threshold'); await projectField.fill('75');
+  const projectSave = page.getByRole('button', { name: 'Save settings' });
+  const deletion = page.getByRole('button', { name: 'Delete project', exact: true });
+  await expect(projectSave).toBeEnabled(); await expect(deletion).toBeEnabled();
+  state.unknown = true; state.failReconcile = true;
+  await page.getByLabel('Poll interval').fill('12'); await page.getByRole('button', { name: 'Save interval' }).click();
+  await expect(page.getByText('Unable to read GitHub sync status.')).toBeVisible();
+  await expect(projectSave).toBeDisabled(); await expect(deletion).toBeDisabled();
+  expect(state.writes).toHaveLength(1);
+  state.failRead = false;
+  await page.locator('.github-settings').getByRole('button', { name: 'Retry' }).first().click();
+  await expect(projectSave).toBeEnabled(); await expect(deletion).toBeEnabled();
   expect(state.writes).toHaveLength(1);
 });

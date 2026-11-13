@@ -27,9 +27,9 @@ const base = (): GitHubStatus => ({ projectId: id, version: '9007199254740993', 
 const count = (revision = '4', active = '0') => ({ projectId: id, revision, total: active, counts: { active, closed: '0', merged: '0', all: active } });
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const render = createLocaleRender('en');
-const Subject = ({ active = true, onRoute = true, retain }: { active?: boolean; onRoute?: boolean; retain?: (value: boolean) => void }) => {
+const Subject = ({ active = true, onRoute = true, retain, peers = false }: { active?: boolean; onRoute?: boolean; retain?: (value: boolean) => void; peers?: boolean }) => {
   const guard = useProjectManagementGuard();
-  return <GitHubSettings projectId={id} userId={userId} repoUrl="https://github.com/owner/private" active={active} onRoute={onRoute} onRetentionChange={retain} guard={guard} />;
+  return <><GitHubSettings projectId={id} userId={userId} repoUrl="https://github.com/owner/private" active={active} onRoute={onRoute} onRetentionChange={retain} guard={guard} />{peers && (['settings', 'transfer', 'delete'] as const).map(owner => <button key={owner} type="button" disabled={guard.isBlocked(owner)} onClick={() => guard.tryAcquire(owner)}>{owner}</button>)}</>;
 };
 const ready = async () => { await screen.findByDisplayValue('5'); };
 beforeEach(() => {
@@ -80,6 +80,54 @@ describe('GitHub settings', () => {
     await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce()); expect(screen.getByRole('button', { name: 'Disconnect' })).toBeDisabled();
     await act(async () => write.resolve({ ...base(), version: '9007199254740994', revision: '5', pollIntervalMinutes: 7 }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Disconnect' })).not.toBeDisabled());
+  });
+
+  it('holds management exclusion while reconciliation is delayed or fails, and releases only after an admitted read', async () => {
+    const read = deferred<GitHubStatus>();
+    mocks.status.mockResolvedValueOnce(base()).mockImplementation(() => read.promise);
+    mocks.save.mockImplementation(async (_project, _input, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });
+    render(<Subject peers />); await ready();
+    fireEvent.change(screen.getByLabelText('Poll interval'), { target: { value: '8' } }); fireEvent.click(screen.getByRole('button', { name: 'Save interval' }));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce());
+    for (const owner of ['settings', 'transfer', 'delete']) expect(screen.getByRole('button', { name: owner })).toBeDisabled();
+    await act(async () => read.reject(new ApiError('network')));
+    const error = await screen.findByText('Unable to read GitHub sync status.');
+    for (const owner of ['settings', 'transfer', 'delete']) expect(screen.getByRole('button', { name: owner })).toBeDisabled();
+    mocks.status.mockResolvedValue(base());
+    fireEvent.click(within(error.closest('[role=alert]')!).getByRole('button', { name: 'Retry' }));
+    for (const owner of ['settings', 'transfer', 'delete']) await waitFor(() => expect(screen.getByRole('button', { name: owner })).not.toBeDisabled());
+    expect(mocks.save).toHaveBeenCalledOnce(); expect(screen.getByLabelText('Poll interval')).toHaveValue(8);
+  });
+
+  it('releases management exclusion when the authenticated scope ends', async () => {
+    const read = deferred<GitHubStatus>(); mocks.status.mockResolvedValueOnce(base()).mockImplementation(() => read.promise);
+    mocks.save.mockImplementation(async (_project, _input, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });
+    const view = render(<Subject peers />); await ready();
+    fireEvent.change(screen.getByLabelText('Poll interval'), { target: { value: '8' } }); fireEvent.click(screen.getByRole('button', { name: 'Save interval' }));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledOnce()); expect(screen.getByRole('button', { name: 'settings' })).toBeDisabled();
+    mocks.invalidated = true; view.rerender(<Subject peers />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'settings' })).not.toBeDisabled());
+  });
+
+  it.each(['connected', 'unavailable'] as const)('permits disconnect while %s and the service App is unavailable', async connection => {
+    mocks.status.mockResolvedValue({ ...base(), connection, serviceAvailable: false });
+    mocks.disconnect.mockImplementation(async (_project, _input, _signal, admission) => { admission.onDispatch(); return { ...base(), connection: 'disconnected', serviceAvailable: false, version: '9007199254740994', revision: '5' }; });
+    render(<Subject />); await ready();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    const dialog = screen.getByRole('dialog'); fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(mocks.disconnect).toHaveBeenCalledOnce());
+    expect(mocks.disconnect.mock.calls[0]![1]).toEqual({ version: '9007199254740993' }); expect(mocks.discover).not.toHaveBeenCalled();
+  });
+
+  it('offers both reconnect and disconnect for an unavailable binding when the App is configured', async () => {
+    mocks.status.mockResolvedValue({ ...base(), connection: 'unavailable' }); render(<Subject />); await ready();
+    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled(); expect(screen.getByRole('button', { name: 'Disconnect' })).toBeEnabled();
+  });
+
+  it.each(['not_connected', 'disconnected'] as const)('does not offer discovery while %s and the service App is unavailable', async connection => {
+    mocks.status.mockResolvedValue({ ...base(), connection, serviceAvailable: false, ...(connection === 'not_connected' ? { installation: null, repository: null } : {}) });
+    render(<Subject />); await ready(); expect(screen.queryByRole('button', { name: 'Connect GitHub App' })).toBeNull(); expect(screen.queryByRole('button', { name: 'Reconnect' })).toBeNull();
   });
 
   it('rereads an unknown write without replay and retains its draft', async () => {

@@ -93,9 +93,10 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
   }, [onRoute, active, needsRead]);
   useEffect(() => session.scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) { revoked.current = true; clearPrivate(); } }), [session, projectId, clearPrivate]);
   useEffect(() => {
-    if (access.status === 'unavailable' || session.scope.isInvalidated) clearPrivate();
+    if (session.scope.isInvalidated) { clearPrivate(); unresolved.current = false; setNeedsRead(false); guard.release('github'); }
+    else if (access.status === 'unavailable') clearPrivate();
     else if (role !== null && role !== 'admin') { setDialog(null); setCandidate(null); }
-  }, [access.status, role, session, clearPrivate]);
+  }, [access.status, role, session, session.scope.isInvalidated, guard, clearPrivate]);
 
   const load = useCallback(async (reconcile = false) => {
     if (writing.current && !reconcile) return false;
@@ -125,14 +126,14 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
       confirmedSave.current = null;
       if (!dirtyRef.current) setDraftValue(String(next.pollIntervalMinutes));
       else if (draftVersion.current !== null && draftVersion.current !== next.version) setDraftConflict(true);
-      unresolved.current = false; setReadError(null); setNeedsRead(false); return true;
+      unresolved.current = false; if (!writing.current) guard.release('github'); setReadError(null); setNeedsRead(false); return true;
     } catch (error) {
       if (!alive.current || signal.aborted || ticket !== sequence.current || isAbortError(error)) return false;
       if (error instanceof ApiError && error.status === 404) { clearPrivate(); void session.revalidate(); }
       else setReadError(error);
       return false;
     } finally { if (readAbort.current === controller) readAbort.current = null; }
-  }, [projectId, userId, session, clearPrivate]);
+  }, [projectId, userId, session, guard, clearPrivate]);
   const loadRef = useRef(load); loadRef.current = load;
   useEffect(() => {
     if (!active || !onRoute || access.status !== 'ready') return;
@@ -144,7 +145,7 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
   }, [active, onRoute, access.status, load]);
 
   const openConnect = async () => {
-    if (!admin || busy || !onRoute || guard.isBlocked('github') || needsRead) return;
+    if (!admin || busy || !onRoute || guard.isBlocked('github') || needsRead || !statusRef.current?.serviceAvailable) return;
     setDialog('connect'); setCandidate(null); setDiscoveryError(null); setDiscovering(true);
     const controller = new AbortController(); operation.current = controller;
     const signal = AbortSignal.any([controller.signal, session.scope.signal, session.scope.mismatchSignal]);
@@ -162,7 +163,7 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
   const run = async (kind: 'save' | 'connect' | 'disconnect') => {
     const saved = statusRef.current;
     const parsed = minutes(draftRef.current);
-    if (!saved || !admin || busy || !onRoute || needsRead || kind === 'save' && draftConflict || kind === 'save' && parsed === null || kind === 'connect' && candidate === null || !guard.tryAcquire('github')) return;
+    if (!saved || !admin || busy || !onRoute || needsRead || kind === 'save' && draftConflict || kind === 'save' && parsed === null || kind === 'connect' && (candidate === null || !saved.serviceAvailable) || !guard.tryAcquire('github')) return;
     const controller = new AbortController(); operation.current = controller;
     const signal = AbortSignal.any([controller.signal, session.scope.signal, session.scope.mismatchSignal]);
     let dispatched = false, rejected = false;
@@ -197,7 +198,7 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
         if (error instanceof ApiError && (error.status === 403 || error.status === 404)) void session.revalidate();
         await load(true);
       }
-    } finally { writing.current = false; dispatchedRef.current = false; confirmedRef.current = false; if (operation.current === controller) operation.current = null; guard.release('github'); if (alive.current) { setBusy(false); if (statusRef.current !== null && !signal.aborted) void load(); } }
+    } finally { writing.current = false; dispatchedRef.current = false; confirmedRef.current = false; if (operation.current === controller) operation.current = null; if (!unresolved.current || session.scope.isInvalidated) guard.release('github'); if (alive.current) { setBusy(false); if (statusRef.current !== null && !signal.aborted) void load(); } }
   };
 
   const shown = status;
@@ -217,7 +218,7 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
         {!shown.serviceAvailable && <div className="notice warning">{m.unconfigured}</div>}
         {!admin && role === 'member' && <p className="github-member-hint">{m.member}</p>}
         <div className="github-repository"><div><span className="small-label">{m.repo}</span><div className="github-repository-name"><strong>{shown.repository?.fullName ?? description}</strong>{shown.repository?.private != null && <span className="badge">{shown.repository.private ? m.private : m.public}</span>}</div></div>
-          {admin && shown.serviceAvailable && (shown.connection === 'not_connected' ? null : <button id="github-connection-action" className={`button ${stopped ? 'primary' : 'quiet'}`} type="button" disabled={blocked} onClick={() => { if (stopped) void openConnect(); else setDialog('disconnect'); }}>{stopped ? m.reconnect : m.disconnect}</button>)}
+          {admin && <div className="github-repository-actions">{shown.serviceAvailable && (shown.connection === 'disconnected' || shown.connection === 'unavailable') && <button id={shown.connection === 'disconnected' ? 'github-connection-action' : undefined} className="button primary" type="button" disabled={blocked} onClick={() => { void openConnect(); }}>{m.reconnect}</button>}{(shown.connection === 'connected' || shown.connection === 'unavailable') && <button id="github-connection-action" className="button quiet" type="button" disabled={blocked} onClick={() => setDialog('disconnect')}>{m.disconnect}</button>}</div>}
         </div>
         {shown.connection === 'not_connected' ? <div className="github-empty"><div><h3>{m.emptyTitle}</h3><p>{m.emptyBody}</p></div>{admin && shown.serviceAvailable && <button id="github-connection-action" className="button primary" type="button" disabled={blocked} onClick={() => { void openConnect(); }}>{m.connect}</button>}</div> : <>
           <div className="github-overview"><div><strong>{stopped ? m.stopped : shown.initializing || shown.poll.running ? m.syncing : shown.poll.error ? m.pollError : shown.webhook.error ? m.hookError : m.healthy}</strong><p>{stopped ? m.retained : shown.initializing ? m.noComplete : knownCounts && counts.counts.active === '0' && shown.poll.lastSuccessAt !== null ? m.emptySuccess : ''}</p></div>{knownCounts && <div className="github-counts"><div><strong>{counts.counts.active}</strong><span>{m.activeCount}</span></div><div><strong>{(BigInt(counts.counts.closed) + BigInt(counts.counts.merged)).toString()}</strong><span>{m.retainedCount}</span></div></div>}</div>{countError && <p className="hint error" role="alert">{m.countError}</p>}
@@ -233,7 +234,7 @@ export const GitHubSettings = ({ projectId, userId, repoUrl, active, onRoute, on
           <div className="github-scope"><h3>{m.scope}</h3><ul><li>{m.open}</li><li>{m.fields}</li><li>{m.keep}</li></ul><p>{m.shared}</p></div></div>
       </>}
     </div>
-    {dialog === 'connect' && <ManagementDialog title={m.connect} suspended={!active || !onRoute} busy={busy} onClose={closeDialog} footer={<><button className="button" type="button" data-dialog-cancel disabled={busy} onClick={closeDialog}>{m.cancel}</button><button className="button primary" type="button" disabled={blocked || discovering || candidate === null} onClick={() => { void run('connect'); }}>{busy ? m.connectBusy : m.connect}</button></>}>
+    {dialog === 'connect' && <ManagementDialog title={m.connect} suspended={!active || !onRoute} busy={busy} onClose={closeDialog} footer={<><button className="button" type="button" data-dialog-cancel disabled={busy} onClick={closeDialog}>{m.cancel}</button><button className="button primary" type="button" disabled={blocked || !shown?.serviceAvailable || discovering || candidate === null} onClick={() => { void run('connect'); }}>{busy ? m.connectBusy : m.connect}</button></>}>
       <div className="github-dialog-target"><span className="small-label">{m.target}</span><strong>{candidate?.repository.fullName ?? shown?.repository?.fullName ?? description}</strong>{candidate?.repository.private != null && <span className="badge">{candidate.repository.private ? m.private : m.public}</span>}</div>
       {discovering ? <p role="status">{m.discovering}</p> : discoveryError !== null ? <div className="notice error" role="alert"><p>{m.discoverError}</p>{discoveryError instanceof ApiError && <p>{m.errorCode}: {discoveryError.code}</p>}<button className="button" type="button" onClick={() => { void openConnect(); }}>{m.retry}</button></div> : candidate !== null && <div className="field"><label htmlFor="github-installation">{m.candidate}</label><select id="github-installation" value={candidate.installation.id} disabled={busy} onChange={() => {}}><option value={candidate.installation.id}>{candidate.installation.accountLogin}</option></select><p className="hint">{m.candidateHint}</p></div>}
       <div className="notice">{m.shared}</div>{feedback !== null && feedback !== 'saved' && <div className="notice warning" role="alert">{m[feedback]}{operationError instanceof ApiError && <p>{m.errorCode}: {operationError.code}</p>}{needsRead && <button className="button" type="button" onClick={() => { void load(); }}>{m.retry}</button>}</div>}

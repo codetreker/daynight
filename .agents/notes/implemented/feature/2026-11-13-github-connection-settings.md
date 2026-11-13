@@ -8,7 +8,7 @@ Project members need to understand synchronization health, and administrators ne
 
 ## Decision
 
-Project settings present the independent GitHub resource and its polling and Webhook observations. Administrator mutations use the observed version and share the Project management guard. Conflicts and unconfirmed writes retain drafts and reconcile through reads without replay. The [Web design](../../../../docs/design/daynight-web.md#项目执行提醒设置) describes the admission and presentation boundaries.
+Project settings present the independent GitHub resource and its polling and Webhook observations. Administrator mutations use the observed version and share the Project management guard. Conflicts and unconfirmed writes retain drafts and hold that guard until an admitted read reconciles the state or the scope ends, without replay. Administrators can disconnect an existing binding even when App access or configuration is unavailable. The [Web design](../../../../docs/design/daynight-web.md#项目执行提醒设置) describes the admission and presentation boundaries.
 
 ## Alternatives
 
