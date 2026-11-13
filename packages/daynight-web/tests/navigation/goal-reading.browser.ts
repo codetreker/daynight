@@ -795,11 +795,9 @@ for (const width of [1440, 320]) test(`external Expand opens the target Goal cha
   await target.getByRole('button', { name: 'Other task, Details' }).click();
   await expect(targetGoal).toBeVisible();
   await expect(page.getByRole('dialog', { name: 'Other task', exact: true })).toBeVisible();
-  await expect(page.locator('.task-chain-dialog')).toHaveCount(1);
+  await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
-  await sourceGraph.getByRole('button', { name: 'Close dependency graph' }).click();
-  await sourceGoal.getByRole('button', { name: 'Close task details' }).click();
   await expect(opener).toBeFocused();
   await expect(card.locator('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
 });
@@ -1989,6 +1987,50 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.reload();
   await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
   expect(errors).toEqual([]);
+});
+
+test('flat Goal member preserves history, draft protection, and its source focus', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  await toggle.click();
+  const entry = card.locator(`#chain-task-goal-${goalId}-${firstId}`);
+  await entry.focus(); await page.keyboard.press('Enter');
+  const child = page.getByRole('dialog', { name: 'First task', exact: true });
+  await expect(child).toBeVisible();
+  await child.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await child.getByRole('button', { name: /^notes\.txt/ }).click();
+  await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack(); await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward(); await expect(child.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goForward(); await expect(child.locator('.attachment-file-selected')).toContainText('notes.txt');
+  await page.goBack(); await expect(child.locator('.attachment-file-selected')).toHaveCount(0);
+  await page.goBack(); await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(child).toHaveCount(0);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(entry).toBeFocused();
+  await page.goForward(); await expect(child).toBeVisible();
+  await expect(child.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await child.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await child.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = child.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Flat member draft');
+  await child.getByRole('button', { name: 'Close task details' }).click();
+  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Flat member draft');
+  await child.getByRole('button', { name: 'Close task details' }).click();
+  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(child).toHaveCount(0);
+  await expect(entry).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(fixture.statusWrites()).toEqual([]);
+  expect(fixture.edits()).toEqual([]);
 });
 
 test('Goal summary follows snapshot membership without resetting disclosure or focus', async ({ page }) => {

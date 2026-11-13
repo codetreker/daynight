@@ -15,13 +15,17 @@ export const focusVisible = (element: HTMLElement | null | undefined): boolean =
   return document.activeElement === element;
 };
 
-export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | null, target: ProjectGraphTarget | null, index: GraphIndex | null, resourceWitness: string | null = null): boolean => {
+export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | null, target: ProjectGraphTarget | null, index: GraphIndex | null, resourceWitness: string | null = null, detailWitness: string | null = null): boolean => {
   if (origin?.view === view && focusVisible(origin.trigger)) return true;
-  const witness = origin?.resourceWitness ?? (target?.kind === 'chain' ? target.witnessTaskId : target?.goalId) ?? resourceWitness;
+  const witness = origin?.resourceWitness ?? (target?.kind === 'chain' ? target.witnessTaskId : target?.goalId) ?? resourceWitness ?? detailWitness;
   const list = document.getElementById(view === 'chains' ? 'project-chain-list' : view === 'goals' ? 'project-goal-list' : 'project-standalone-list');
   const sourceGoalId = origin?.view === view ? origin.sourceGoalId : view === 'goals' && witness !== null ? target?.kind === 'goal' ? target.goalId : index?.nodes.get(witness)?.parentId : null;
   if (view === 'goals' && list !== null && sourceGoalId != null) {
     const goal = [...list.querySelectorAll<HTMLElement>('[data-goal-id]')].find((item) => item.dataset.goalId === sourceGoalId);
+    if (origin === null && target === null && detailWitness !== null && index?.nodes.get(detailWitness)?.parentId === sourceGoalId) {
+      const entry = document.getElementById(`chain-task-goal-${sourceGoalId}-${detailWitness}`);
+      if (entry !== null && goal?.contains(entry) && focusVisible(entry)) return true;
+    }
     if (target?.kind === 'goal' && focusVisible(goal?.querySelector<HTMLElement>('.goal-list-graph'))) return true;
     if (focusVisible(goal?.querySelector<HTMLElement>('.goal-list-toggle')) || focusVisible(goal?.querySelector<HTMLElement>('.goal-list-detail'))) return true;
   }
