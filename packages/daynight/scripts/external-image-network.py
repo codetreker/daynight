@@ -93,10 +93,7 @@ def protected_cidrs(addresses, routes):
             if network.prefixlen:
                 result.add(network)
         if route.get("gateway"):
-            try:
-                gateway = ipaddress.ip_address(route["gateway"])
-            except ValueError as error:
-                raise ValueError(f"Invalid host route gateway: {route['gateway']!r}") from error
+            gateway = ipaddress.ip_address(route["gateway"])
             result.add(ipaddress.ip_network(str(gateway) + ("/32" if gateway.version == 4 else "/128")))
     return [str(v) for family in (4, 6) for v in
             ipaddress.collapse_addresses(n for n in result if n.version == family)]
@@ -109,11 +106,7 @@ def protected_domains(hosts, cidrs):
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2:
             continue
-        try:
-            address = ipaddress.ip_address(fields[0])
-        except ValueError:
-            # A hosts record without an IP address is not a name mapping.
-            continue
+        address = ipaddress.ip_address(fields[0])
         if not any(address in network for network in networks):
             continue
         for value in fields[1:]:

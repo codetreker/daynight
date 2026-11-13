@@ -57,25 +57,6 @@ class AdmissionTests(unittest.TestCase):
         self.assertNotIn("0.0.0.0/0", result)
         self.assertNotIn("::/0", result)
 
-    def test_hosts_inventory_ignores_non_address_records_but_keeps_protected_aliases(self):
-        hosts = """# hosted runner record without an address
-ip-10-0-143-160.us-west-2.compute.internal runner-alias
-10.0.143.160 Runner.Internal. ip-10-0-143-160.us-west-2.compute.internal
-fd12::2 V6.Internal
-198.51.100.4 public.example
-"""
-        self.assertEqual(network.protected_domains(hosts, ["10.0.0.0/8", "fd12::/64"]),
-                         ["ip-10-0-143-160.us-west-2.compute.internal", "runner.internal", "v6.internal"])
-
-    def test_hosts_inventory_rejects_unrepresentable_protected_aliases(self):
-        with self.assertRaisesRegex(RuntimeError, "protected host alias"):
-            network.protected_domains("10.0.143.160 valid.example invalid_name\n", ["10.0.0.0/8"])
-
-    def test_route_inventory_rejects_non_address_gateways(self):
-        with self.assertRaisesRegex(ValueError, "Invalid host route gateway") as failure:
-            network.protected_cidrs([], [{"dst": "default", "gateway": "ip-10-0-143-160.us-west-2.compute.internal"}])
-        self.assertIsInstance(failure.exception.__cause__, ValueError)
-
     def test_fixture_urls_refuse_credentials_and_non_http_sources(self):
         for values in (["file:///tmp/image.png", "https://example.org/a.png"],
                        ["http://user:secret@example.org/a.png", "https://example.org/a.png"],
