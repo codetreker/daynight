@@ -38,7 +38,7 @@ describe("Watchdog production data adapter", () => {
   });
 
   it.each([
-    page([message("user_message", "input", null)]),
+    page([message("user_message", "input", "invalid")]),
     page([{ ...message("assistant_message", "a", "2026-11-13T00:00:00Z"), truncated: true, body: null }]),
     page([], { coverage: { state: "partial" } }),
     page([], { source: "archive" }),
@@ -50,6 +50,25 @@ describe("Watchdog production data adapter", () => {
     const readTaskSession = vi.fn().mockResolvedValueOnce(page([message("tool_call", "tool", null)], { hasMoreBefore: true, beforeCursor: "older" }))
       .mockResolvedValueOnce(page([], { historyEpoch: "replacement" }));
     expect((await setup({ readTaskSession }).history(observation, signal)).complete).toBe(false);
+  });
+
+  it("requires a fresh matching quiet proof for untimed automatic input before submission", async () => {
+    const automatic = message("user_message", "automatic", null);
+    const readTaskSession = vi.fn().mockResolvedValue(page([message("assistant_message", "a", null, "Continue"), { ...automatic, body: { ...automatic.body, origin: "daynight" } }]));
+    const sendTaskSessionCommand = vi.fn().mockResolvedValue({ operation: { state: "accepted" } });
+    const source = setup({ readTaskSession, sendTaskSessionCommand, getObservedTask: vi.fn().mockResolvedValue({ title: "Task", status: "in_progress", assignedTo: "owner", session: observation.session }) });
+    const latest = await source.history(observation, signal);
+    expect(latest).toMatchObject({ complete: true, untimedInputId: "epoch/automatic/1", lastInputAt: null, lastEntryId: "epoch/a/1" });
+    expect(await source.send(observation, "unknown", "Continue", signal, latest)).toBe("rejected");
+    const now = Date.now(), proof = { ...latest, inputQuietSince: now - 121_000, inputQuietObservedAt: now };
+    for (const invalid of [{ inputQuietSince: Number.NaN }, { inputQuietSince: Infinity }, { inputQuietSince: now + 60_000 },
+      { inputQuietObservedAt: Number.NaN }, { inputQuietObservedAt: now + 60_000 }, { inputQuietObservedAt: now - 121_000 }]) {
+      expect(await source.send(observation, "invalid", "Continue", signal, { ...proof, ...invalid })).toBe("rejected");
+    }
+    expect(await source.send(observation, "proved", "Continue", signal, proof)).toBe("accepted");
+    readTaskSession.mockResolvedValue(page([message("assistant_message", "a", null, "Continue"), { ...automatic, entryId: "new-automatic", body: { ...automatic.body, origin: "daynight" } }]));
+    expect(await source.send(observation, "changed", "Continue", signal, proof)).toBe("rejected");
+    expect(sendTaskSessionCommand).toHaveBeenCalledOnce();
   });
 
   it("uses the original execution fence for both submission and recovery", async () => {

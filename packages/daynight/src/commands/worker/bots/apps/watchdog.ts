@@ -9,7 +9,7 @@ import { matchingWatchdogRule } from "./watchdog-rules.js";
 export type WatchdogCategory = "stalled" | "disconnected" | "waiting_input" | "no_execution" | "unobservable";
 export const WATCHDOG_DURATION: Readonly<Record<WatchdogCategory, number>> = { stalled: 600_000, disconnected: 300_000, waiting_input: 600_000, no_execution: 600_000, unobservable: 900_000 };
 export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; taskStatus?: string; assignedTo?: string | null; session: TaskSessionObservation };
-export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastAssistantText: string | null; lastInputAt: number | null };
+export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastAssistantText: string | null; lastInputAt: number | null; untimedInputId?: string; inputQuietSince?: number; inputQuietObservedAt?: number };
 export type WatchdogSource = {
   /** A complete inventory; a partial project or task listing must throw. */
   scan(signal: AbortSignal, prior?: WatchdogObservation[]): Promise<WatchdogObservation[]>;
@@ -19,7 +19,18 @@ export type WatchdogSource = {
 };
 type Notice = { id: string; recordId: string; type: string; kind: "fact" | "action" | "unknown"; text: string; payload: JsonValue };
 type Attempt = { operationId: string; ruleId: string; message: string; at: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
-export type WatchdogState = { schemaVersion: 1; since: number; reportedCategory: WatchdogCategory | null; reportedAt: number | null; closedAt: number | null; recurrence: boolean; observation: WatchdogObservation; attempt: Attempt | null; notices: Notice[] };
+export type WatchdogState = { schemaVersion: 1; since: number; reportedCategory: WatchdogCategory | null; reportedAt: number | null; closedAt: number | null; recurrence: boolean; observation: WatchdogObservation; attempt: Attempt | null; notices: Notice[]; inputQuiet?: { identity: string; since: number; observedAt: number } | null };
+export const watchdogHistoryIdentity = (observation: WatchdogObservation, history: WatchdogHistory): string => JSON.stringify([
+  observation.session.sessionId, observation.session.claimId, observation.session.executionGeneration, observation.session.connectionEpoch,
+  history.untimedInputId, history.lastEntryId, history.lastAssistantText,
+]);
+export const watchdogInputIsQuiet = (history: WatchdogHistory, now: number): boolean => {
+  if (!history.complete) return false;
+  if (history.untimedInputId !== undefined && (history.inputQuietObservedAt === undefined || !Number.isFinite(history.inputQuietObservedAt)
+    || now < history.inputQuietObservedAt || now - history.inputQuietObservedAt > ASSISTANT_TASK_INTERVAL_MS * 2)) return false;
+  const since = history.untimedInputId === undefined ? history.lastInputAt : history.inputQuietSince;
+  return since === null || typeof since === "number" && Number.isFinite(since) && now - since >= 120_000;
+};
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const confirmed = (state: string): boolean => ["provider_accepted", "confirmed"].includes(state);
 const terminal = (state: string): boolean => confirmed(state) || ["failed", "rejected", "expired"].includes(state);
@@ -135,6 +146,21 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     if (item.category !== (category ?? "observing")) { item = { ...item, category: category ?? "observing" }; state.since = now; }
     state.observation = observation;
     await updateAttempt(item, state, observation, now);
+    let directHistory: WatchdogHistory | undefined;
+    if (category === "stalled" && !state.recurrence && state.attempt === null) {
+      directHistory = await history(observation);
+      if (directHistory.complete && directHistory.untimedInputId !== undefined) {
+        const observedAt = clock.now(), identity = watchdogHistoryIdentity(observation, directHistory), prior = state.inputQuiet;
+        // A missing poll, changed execution/history or clock reversal starts a
+        // new observation interval; an unknown timestamp is never treated as old.
+        if (!prior || prior.identity !== identity || !Number.isFinite(prior.since) || !Number.isFinite(prior.observedAt)
+          || observedAt < prior.observedAt || prior.since > prior.observedAt || observedAt - prior.observedAt > ASSISTANT_TASK_INTERVAL_MS * 2) {
+          state.inputQuiet = { identity, since: observedAt, observedAt };
+        } else state.inputQuiet = { ...prior, observedAt };
+        directHistory.inputQuietSince = state.inputQuiet.since;
+        directHistory.inputQuietObservedAt = observedAt;
+      } else state.inputQuiet = null;
+    } else state.inputQuiet = null;
     const due = category !== null && now - state.since >= WATCHDOG_DURATION[category];
     if (due && state.reportedCategory !== category) {
       const latest = await history(observation);
@@ -148,8 +174,8 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     item = await save(item, state);
     item = await flush(item, state);
     if (!due || category !== "stalled" || state.recurrence || state.attempt !== null || observation.session.send.allowed !== true) return;
-    const latest = await history(observation);
-    if (!latest.complete || latest.lastInputAt !== null && now - latest.lastInputAt < 120_000) return;
+    const latest = directHistory!;
+    if (!watchdogInputIsQuiet(latest, clock.now())) return;
     const manual = await context.withClaim((api, task) => api.getManual(task.id));
     const rule = await matchingWatchdogRule(manual.rules, observation.projectId, latest.lastAssistantText, context.signal);
     if (!rule) return;
@@ -187,7 +213,7 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       const category = classifyWatchdogObservation(observation, now);
       if (!item && category !== null) {
         const previous = related[0], previousState = previous === undefined ? null : readState(previous);
-        if (previous && previous.category === category && previousState?.closedAt !== null && previousState !== null && previousState.reportedCategory !== null && now - previousState.closedAt <= 1_800_000) {
+        if (previous && previous.category === category && previousState?.closedAt !== null && previousState !== null && (previousState.reportedCategory !== null || previousState.recurrence) && now - previousState.closedAt <= 1_800_000) {
           previousState.recurrence = true; previousState.since = now; previousState.closedAt = null; previousState.reportedCategory = null; previousState.reportedAt = null; previousState.observation = observation;
           item = await save({ ...previous, state: "open" }, previousState);
         } else {

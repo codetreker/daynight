@@ -6,6 +6,8 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { SourceTimelineEntry } from "../../../src/session/controller-protocol.js";
 import { parseInspectionPage } from "../../../src/session/history.js";
+import { createWatchdogSource, type WatchdogApiScope } from "../../../src/commands/worker/bots/apps/watchdog-transport.js";
+import type { WatchdogObservation } from "../../../src/commands/worker/bots/apps/watchdog.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -45,6 +47,21 @@ it("returns a real empty page and validates limits before reading", async () => 
     expect(store.readInspection(query(epoch))).toMatchObject({ items: [], beforeCursor: null, hasMoreBefore: false, coverage: { state: "complete", reason: null } });
     for (const limit of [0, 201, 1.5]) expect(() => store.readInspection(query(epoch, null, limit))).toThrow();
     expect(() => store.readInspection({ ...query(epoch), responseOverhead: 262144 })).toThrow();
+  } finally { store.close(); }
+});
+
+it("supplies stable untimed input evidence to Watchdog through the real inspection producer", async () => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), inputId = randomUUID();
+  try {
+    store.projectTimeline({ entryId: inputId, revision: "1", kind: "user_message", content: [{ type: "text", text: "Complete the assigned task." }], origin: "daynight" });
+    store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
+    const source = createWatchdogSource(f.ticket.userId, (async (_signal, action) => action({
+      readTaskSession: async () => ({ ...store.readInspection(query(epoch)), source: "live", sessionId: f.ticket.sessionId }),
+    } as never)) as WatchdogApiScope);
+    const observation = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, session: { sessionId: f.ticket.sessionId } } as WatchdogObservation;
+    const history = await source.history(observation, new AbortController().signal);
+    expect(history).toMatchObject({ complete: true, lastInputAt: null, untimedInputId: `${epoch}/${inputId}/1`, lastAssistantText: "Please continue" });
+    expect(history.inputQuietSince).toBeUndefined();
   } finally { store.close(); }
 });
 

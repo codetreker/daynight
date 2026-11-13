@@ -6,7 +6,7 @@ import type { TaskWorkGroup } from "../../../../api/task-work.js";
 import { SESSION_PROTOCOL } from "../../../../session/protocol.js";
 import type { BotOwner } from "../types.js";
 import type { WatchdogHistory, WatchdogObservation, WatchdogSource } from "./watchdog.js";
-import { classifyWatchdogObservation } from "./watchdog.js";
+import { classifyWatchdogObservation, watchdogHistoryIdentity, watchdogInputIsQuiet } from "./watchdog.js";
 
 type WatchdogApi = Pick<ApiClient, "listProjects" | "listTaskWork" | "getObservedTask" | "readTaskSession" | "sendTaskSessionCommand" | "readTaskSessionOperation">;
 export type WatchdogApiScope = <T>(signal: AbortSignal, action: (api: WatchdogApi) => Promise<T>) => Promise<T>;
@@ -89,8 +89,11 @@ const source: WatchdogSource = {
         if (!automaticInput && result.lastEntryId === null) result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
         if (entry.kind === "user_message" && !inputFound) {
           inputFound = true;
-          if (entry.timestamp === null) return result;
-          result.lastInputAt = Date.parse(entry.timestamp);
+          if (entry.timestamp === null) result.untimedInputId = `${epoch}/${entry.entryId}/${entry.revision}`;
+          else {
+            result.lastInputAt = Date.parse(entry.timestamp);
+            if (!Number.isFinite(result.lastInputAt)) return result;
+          }
         }
         if (entry.kind === "assistant_message" && !assistantFound) {
           assistantFound = true;
@@ -112,8 +115,14 @@ const source: WatchdogSource = {
     if (task.session.sessionId !== sessionId || task.session.claimId !== claimId || task.session.executionGeneration !== executionGeneration
       || task.session.currentTurnId !== currentTurnId || task.session.send.allowed !== true || classifyWatchdogObservation(current, Date.now()) !== "stalled") return "rejected";
     const history = await source.history(current, signal);
+    if (history.untimedInputId !== undefined && expectedHistory !== undefined
+      && expectedHistory.inputQuietSince !== undefined && expectedHistory.inputQuietObservedAt !== undefined
+      && watchdogHistoryIdentity(current, history) === watchdogHistoryIdentity(observation, expectedHistory)) {
+      history.inputQuietSince = expectedHistory.inputQuietSince;
+      history.inputQuietObservedAt = expectedHistory.inputQuietObservedAt;
+    }
     if (!history.complete || expectedHistory !== undefined && (expectedHistory.lastEntryId !== history.lastEntryId || expectedHistory.lastAssistantText !== history.lastAssistantText)
-      || history.lastInputAt !== null && Date.now() - history.lastInputAt < 120_000
+      || !watchdogInputIsQuiet(history, Date.now())
       || task.session.freshUntil === null || Date.parse(task.session.freshUntil) <= Date.now()) return "rejected";
     if (beforeSubmit !== undefined && !await beforeSubmit()) return "rejected";
     signal.throwIfAborted();

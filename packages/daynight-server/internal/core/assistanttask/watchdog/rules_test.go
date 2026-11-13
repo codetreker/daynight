@@ -32,8 +32,24 @@ func TestRuleBoundary(t *testing.T) {
 			t.Fatalf("accepted %s", raw)
 		}
 	}
-	if _, err := ValidateRules(json.RawMessage(`{}`), rule("")); err == nil {
+	if _, err := ValidateRules(json.RawMessage(`{"unknown":true}`), rule("")); err == nil {
 		t.Fatal("invalid prior rules accepted")
+	}
+}
+
+func TestLegacyEmptyObjectCanBeRepairedWithoutRelaxingNewRules(t *testing.T) {
+	for _, legacy := range []string{`{}`, ` { } `} {
+		for _, next := range []json.RawMessage{json.RawMessage(`[]`), json.RawMessage(`null`), rule("")} {
+			widens, err := ValidateRules(json.RawMessage(legacy), next)
+			if err != nil || widens != (string(next) == string(rule(""))) {
+				t.Fatalf("repair %s to %s: widens=%v err=%v", legacy, next, widens, err)
+			}
+		}
+		for _, next := range []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{"rules":[]}`), json.RawMessage(strings.Replace(string(rule("")), "stalled", "waiting_input", 1))} {
+			if _, err := ValidateRules(json.RawMessage(legacy), next); err == nil {
+				t.Fatalf("legacy baseline admitted invalid replacement %s", next)
+			}
+		}
 	}
 }
 func TestPortableRegexBoundary(t *testing.T) {

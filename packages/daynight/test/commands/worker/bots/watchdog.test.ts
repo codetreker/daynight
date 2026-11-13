@@ -114,6 +114,54 @@ describe("Watchdog persistent evaluator", () => {
     expect([...f.items.values()].map(item => item.episode)).toEqual(["1", "2"]);
   });
 
+  it.each([false, true])("retains recurrence identity through an unreported short reopening (prior action: %s)", async priorAction => {
+    const f = fixture(); if (priorAction) f.rules();
+    await f.tick(); f.advance(600_000); await f.tick();
+    const original = [...f.items.keys()][0], attempt = f.state().attempt;
+    const recover = async () => { Object.assign(f.observation.session, { activity: "working", reason: "working", indicator: "working" }); await f.tick(); };
+    const reopen = async () => { f.advance(60_000); Object.assign(f.observation.session, { activity: "idle", reason: "idle", indicator: "warning" }); await f.tick(); };
+    await recover(); await reopen(); f.advance(60_000); await recover();
+    f.recover(true); f.rules(); await reopen(); f.advance(600_000); await f.tick();
+    expect([...f.items.keys()]).toEqual([original]);
+    expect(f.state().recurrence).toBe(true);
+    expect(f.state().attempt?.operationId ?? null).toBe(attempt?.operationId ?? null);
+    expect(f.source.send).toHaveBeenCalledTimes(priorAction ? 1 : 0);
+    expect(f.events.filter(event => event.type === "report")).toHaveLength(2);
+  });
+
+  it("proves untimed input quiet across complete stable polls and holder recovery", async () => {
+    const f = fixture(); f.rules(); f.history.lastInputAt = null; f.history.untimedInputId = "epoch/input/1";
+    await f.tick(); f.advance(600_000); await f.tick();
+    expect(f.source.send).not.toHaveBeenCalled();
+    f.advance(60_000); await f.tick(); f.recover(true); f.advance(60_000); await f.tick();
+    expect(f.source.send).toHaveBeenCalledOnce();
+  });
+
+  it.each(["input", "epoch", "fence", "incomplete", "gap", "clock"])("restarts untimed quiet evidence after %s changes", async change => {
+    const f = fixture(); f.rules(); f.history.lastInputAt = null; f.history.untimedInputId = "epoch/input/1";
+    await f.tick(); f.advance(600_000); await f.tick(); f.advance(60_000); await f.tick();
+    if (change === "input") f.history.untimedInputId = "epoch/new-input/1";
+    if (change === "epoch") f.history.untimedInputId = "new-epoch/input/1";
+    if (change === "fence") f.observation.session = { ...f.observation.session, connectionEpoch: "2" };
+    if (change === "incomplete") f.history.complete = false;
+    f.advance(change === "gap" ? 120_001 : change === "clock" ? -1 : 60_000); await f.tick();
+    expect(f.source.send).not.toHaveBeenCalled();
+    f.history.complete = true; await f.tick();
+    f.advance(60_000); await f.tick(); expect(f.source.send).not.toHaveBeenCalled();
+    f.advance(60_000); await f.tick(); expect(f.source.send).toHaveBeenCalledOnce();
+  });
+
+  it("starts the quiet interval only after a slow history read supplies its evidence", async () => {
+    const f = fixture(); await f.tick(); f.rules(); f.advance(600_000);
+    f.history.lastInputAt = null; f.history.untimedInputId = "epoch/new-input/1";
+    f.source.history.mockImplementationOnce(async () => { f.advance(50_000); return { ...f.history }; });
+    await f.tick();
+    expect(f.state().inputQuiet?.since).toBe(start + 650_000);
+    f.advance(10_000); await f.tick(); f.advance(60_000); await f.tick();
+    expect(f.source.send).not.toHaveBeenCalled();
+    f.advance(50_000); await f.tick(); expect(f.source.send).toHaveBeenCalledOnce();
+  });
+
   it("attempts one action and escalates after ten minutes without progress", async () => {
     const f = fixture(); f.rules(); await f.tick(); f.advance(600_000); await f.tick();
     expect(f.events.map(event => event.type)).toEqual(["report", "direct_success"]);

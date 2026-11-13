@@ -21,10 +21,19 @@ that matches the website's selected-assistant contract.
 
 The evaluator persists each attempt's operation ID and execution fence before
 submission. Recovery queries that operation only. One item permits at most one
-attempt, including after rule changes or recurrence. Complete authorized reads
+attempt, including after rule changes or recurrence. A short recurrence that
+recovers before reporting retains its episode and action history. Previously
+stored empty-object manuals remain valid comparison baselines so users can
+repair them with strictly validated replacement rules. Complete authorized reads
 are needed to resolve a disappearing task; permission loss is not completion.
 The [design](../../../../docs/design/assistant-task.md#watchdog-应用) owns the
 timings, rule fields, notification semantics and preset contract.
+
+Live inspection entries can lack provider timestamps. Watchdog persists when it
+first confirms an unchanged complete input/history snapshot, bound to the
+execution and connection identity. Two minutes of sufficiently frequent matching
+observations establish a conservative quiet interval; changed or incomplete
+evidence resets it. Final submission verifies that same evidence again.
 
 ## Alternatives
 
@@ -45,6 +54,12 @@ inputs to the user's execution.
 **Infer resolution from list absence.** A project can disappear because access
 changed. Reading the original task before resolution preserves that distinction
 at the cost of retaining unresolved evidence when access is unavailable.
+
+**Require provider timestamps for every input.** The current live inspection
+producer supplies null timestamps, so this would permanently disable direct
+handling for ordinary conversations. Observed quiet intervals preserve the
+recent-input safeguard without inventing timestamps or expanding the shared
+history protocol.
 
 ## Consequences
 

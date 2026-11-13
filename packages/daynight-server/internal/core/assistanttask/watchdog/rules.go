@@ -183,7 +183,13 @@ func narrower(old, new *Match) bool {
 func ValidateRules(oldRules, newRules json.RawMessage) (bool, error) {
 	old, err := parse(oldRules)
 	if err != nil {
-		return false, err
+		// Generic applications previously stored an empty object for report-only
+		// manuals. Accept that historical baseline without admitting it as a new
+		// rule set or allowing malformed executable rules to bypass validation.
+		var legacy map[string]json.RawMessage
+		if json.Unmarshal(oldRules, &legacy) != nil || len(legacy) != 0 {
+			return false, err
+		}
 	}
 	next, err := parse(newRules)
 	if err != nil {
