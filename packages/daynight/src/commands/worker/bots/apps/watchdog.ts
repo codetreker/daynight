@@ -33,7 +33,7 @@ const snapshot = (observation: WatchdogObservation): WatchdogObservation => {
   }
   return result;
 };
-type Attempt = { operationId: string; ruleId: string; message: string; manualVersion?: string; ruleIndex?: number; messageEvidence?: TextEvidence; ruleIdEvidence?: TextEvidence; at: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
+type Attempt = { operationId: string; ruleId: string; message: string; manualVersion?: string; ruleIndex?: number; messageEvidence?: TextEvidence; ruleIdEvidence?: TextEvidence; at: number; followUpSince?: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
 export type WatchdogState = { schemaVersion: 1; since: number; reportedCategory: WatchdogCategory | null; reportedAt: number | null; closedAt: number | null; recurrence: boolean; observation: WatchdogObservation; attempt: Attempt | null; notices: Notice[]; inputQuiet?: { identity: string; since: number; observedAt: number } | null };
 export const watchdogHistoryIdentity = (observation: WatchdogObservation, history: WatchdogHistory): string => digest(JSON.stringify([
   observation.session.sessionId, observation.session.claimId, observation.session.executionGeneration, observation.session.connectionEpoch,
@@ -102,9 +102,16 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
   const updateAttempt = async (item: AssistantTaskItem, state: WatchdogState, observation: WatchdogObservation, now: number): Promise<void> => {
     const attempt = state.attempt;
     if (!attempt) return;
-    if (!terminal(attempt.result)) {
-      try { attempt.result = await source.operation(attempt.observation, attempt.operationId, context.signal); }
-      catch { context.signal.throwIfAborted(); attempt.result = "unknown"; }
+    if (!terminal(attempt.result) || attempt.followUpSince === undefined) {
+      try {
+        const result = await source.operation(attempt.observation, attempt.operationId, context.signal);
+        if (!terminal(attempt.result)) attempt.result = result;
+      }
+      catch { context.signal.throwIfAborted(); if (!terminal(attempt.result)) attempt.result = "unknown"; }
+      // Recovery cannot reconstruct submission time from the prepared intent.
+      // Start a conservative follow-up interval after observing the original
+      // operation, retaining any baseline already persisted by the sender.
+      if (attempt.followUpSince === undefined) attempt.followUpSince = clock.now();
     }
     if (attempt.notifiedResult === null || terminal(attempt.result) && attempt.notifiedResult !== attempt.result) {
       const success = confirmed(attempt.result);
@@ -124,9 +131,9 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       const latest = await history(observation);
       if (latest.complete && latest.lastEntryId !== null && latest.lastEntryId !== attempt.historyId) attempt.progressed = true;
     }
-    if (!attempt.escalated && !attempt.progressed && now - attempt.at >= 600_000) {
+    if (!attempt.escalated && !attempt.progressed && clock.now() - attempt.followUpSince! >= 600_000) {
       attempt.escalated = true;
-      notice(state, "escalation", "No new Session history or working activity was observed within ten minutes of the Watchdog action.", { itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, operationId: attempt.operationId, attemptedAt: attempt.at, result: attempt.result });
+      notice(state, "escalation", "No new Session history or working activity was observed within the ten-minute follow-up interval.", { itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, operationId: attempt.operationId, attemptedAt: attempt.at, followUpSince: attempt.followUpSince, result: attempt.result });
     }
   };
 
@@ -205,7 +212,7 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     const message = summarize(rule.action.message), ruleId = summarize(rule.id);
     state.attempt = { operationId: randomUUID(), ruleId: ruleId.preview, message: message.preview, manualVersion: manual.version,
       ruleIndex: (manual.rules as JsonValue[]).indexOf(rule as unknown as JsonValue), messageEvidence: message.evidence, ruleIdEvidence: ruleId.evidence,
-      at: now, historyId: latest.lastEntryId, observation: snapshot(observation), result: "unknown", notifiedResult: null, escalated: false, progressed: false };
+      at: clock.now(), historyId: latest.lastEntryId, observation: snapshot(observation), result: "unknown", notifiedResult: null, escalated: false, progressed: false };
     // Persist the original fence before any possible submission. A crash here is
     // intentionally recovered by queries only, never by a replacement send.
     item = await save(item, state);
@@ -216,6 +223,7 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
           () => context.withClaim(async (_currentApi, current) => current.manualVersion === manual.version));
       });
     } catch { context.signal.throwIfAborted(); state.attempt.result = "unknown"; }
+    state.attempt.followUpSince = clock.now();
     await updateAttempt(item, state, observation, clock.now());
     item = await save(item, state); await flush(item, state);
   };

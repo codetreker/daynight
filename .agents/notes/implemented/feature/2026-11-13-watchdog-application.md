@@ -41,7 +41,10 @@ Persisted evidence uses bounded previews with original byte counts and hashes.
 Action attempts reference an immutable manual version and rule position for the
 complete approved message. The outbox carries references instead of duplicating
 large bodies, so a valid send cannot consume the capacity needed to record its
-result and escalation.
+result and escalation. Escalation uses a separate persisted follow-up baseline
+recorded after submission returns. Recovery without that baseline starts it
+conservatively after observing the original operation, preserving the original
+intent time without counting preparation or transport delay as response time.
 
 ## Alternatives
 

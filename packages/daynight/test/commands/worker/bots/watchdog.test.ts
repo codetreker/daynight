@@ -283,6 +283,70 @@ describe("Watchdog persistent evaluator", () => {
     expect(f.source.send).toHaveBeenCalledTimes(1);
   });
 
+  it("starts follow-up after slow history, manual, intent persistence and sending finish", async () => {
+    const f = fixture(); f.rules(); await f.tick(); f.advance(600_000);
+    f.source.history.mockImplementationOnce(async () => { f.advance(50_000); return { ...f.history }; });
+    const manual = f.api.getManual.getMockImplementation()!, save = f.api.saveItem.getMockImplementation()!;
+    f.api.getManual.mockImplementationOnce(async () => { f.advance(40_000); return manual(); });
+    let delayedIntent = false;
+    f.api.saveItem.mockImplementation(async (...args) => {
+      if (!delayedIntent && args[1].appState.attempt !== null) { delayedIntent = true; f.advance(20_000); }
+      return save(...args);
+    });
+    f.source.send.mockImplementationOnce(async () => { f.advance(30_000); return "confirmed"; });
+    await f.tick();
+    const attempt = f.state().attempt!;
+    expect(attempt.at).toBe(start + 690_000);
+    expect(attempt.followUpSince).toBe(start + 740_000);
+    f.advance(599_999); await f.tick(); expect(f.events.some(event => event.type === "escalation")).toBe(false);
+    f.advance(1); await f.tick();
+    expect(f.events.at(-1)!.payload).toMatchObject({ attemptedAt: attempt.at, followUpSince: attempt.followUpSince });
+    expect(f.events.at(-1)!.type).toBe("escalation");
+  });
+
+  it.each([false, true])("observes the persisted baseline after a lost post-send save (committed: %s)", async committed => {
+    const f = fixture(); f.rules(); f.sendResult("unknown"); await f.tick(); f.advance(600_000);
+    const save = f.api.saveItem.getMockImplementation()!;
+    let failed = false;
+    f.api.saveItem.mockImplementation(async (...args) => {
+      if (!failed && args[1].appState.attempt?.followUpSince !== undefined) {
+        failed = true; if (committed) await save(...args);
+        throw new Error("post-send response lost");
+      }
+      return save(...args);
+    });
+    await expect(f.tick()).rejects.toThrow("post-send response lost");
+    const original = structuredClone(f.state().attempt!);
+    expect(original.followUpSince).toBe(committed ? start + 600_000 : undefined);
+    f.recover(true); f.advance(120_000);
+    f.source.operation.mockImplementationOnce(async () => { f.advance(30_000); return "unknown"; });
+    await f.tick();
+    const baseline = f.state().attempt!.followUpSince!;
+    expect(baseline).toBe(committed ? start + 600_000 : start + 750_000);
+    expect(f.state().attempt!.at).toBe(original.at);
+    expect(f.state().attempt!.operationId).toBe(original.operationId);
+    f.advance(600_000 - (f.now() - baseline) - 1); await f.tick();
+    expect(f.state().attempt!.followUpSince).toBe(baseline);
+    expect(f.events.some(event => event.type === "escalation")).toBe(false);
+    f.advance(1); await f.tick(); expect(f.events.at(-1)!.type).toBe("escalation");
+    expect(f.source.send).toHaveBeenCalledOnce();
+  });
+
+  it.each(["confirmed", "unknown"])("initializes a legacy %s attempt only after querying its original operation", async result => {
+    const f = fixture(); f.rules(); f.sendResult(result); await f.tick(); f.advance(600_000); await f.tick();
+    const original = structuredClone(f.state().attempt!);
+    delete f.state().attempt!.followUpSince;
+    f.recover(true); f.advance(1_200_000);
+    f.source.operation.mockImplementationOnce(async () => { f.advance(30_000); throw new Error("operation unavailable"); });
+    await f.tick(); const baseline = f.state().attempt!.followUpSince!;
+    expect(baseline).toBe(f.now()); expect(f.state().attempt!.at).toBe(original.at);
+    expect(f.state().attempt!.result).toBe(result);
+    expect(f.events.some(event => event.type === "escalation")).toBe(false);
+    f.advance(599_999); await f.tick(); expect(f.events.some(event => event.type === "escalation")).toBe(false);
+    f.advance(1); await f.tick(); expect(f.events.at(-1)!.type).toBe("escalation");
+    expect(f.source.send).toHaveBeenCalledOnce();
+  });
+
   it("reconciles an outbox event with a lost response after a new holder resumes", async () => {
     const f = fixture(); await f.tick(); f.advance(600_000);
     f.api.addEvent.mockImplementationOnce(async (_task, input) => {

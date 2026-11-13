@@ -85,7 +85,7 @@ it("keeps escalation active when a large automatic input is projected without it
     const history = await source.history(observation, new AbortController().signal);
     expect(history).toMatchObject({ complete: true, lastEntryId: `${epoch}/${assistantId}/1`, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
     const state: WatchdogState = { schemaVersion: 1, since: now - 600_000, reportedCategory: "stalled", reportedAt: now,
-      closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now,
+      closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now, followUpSince: now,
         historyId: `${epoch}/${assistantId}/1`, observation, result: "confirmed", notifiedResult: "confirmed", escalated: false, progressed: false } };
     let item = { id: randomUUID(), key: observation.taskId, taskId: randomUUID(), episode: "1", state: "open", category: "stalled", version: "1", appState: state as unknown as JsonValue } as AssistantTaskItem;
     const events: { type: string }[] = [], records: unknown[] = [];
