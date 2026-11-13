@@ -92,7 +92,9 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程、legacy endpoint 和旧 attach。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
 
-Windows 的最终独立清理检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
+真实平台 fixture 从继承的 PATH 通过现有 `which` 依赖解析 Windows 的真实 `git.exe`，随后执行真实 `git init`，保留其 5 秒上限。子进程失败的上传诊断保留 `code`、`killed`、`signal` 与耗时，不能仅凭 `Command failed` 将非零退出或超时解释为缺少 Git。fixture 在创建 adapter 前记录初始化阶段，并在创建前切换阶段；失败材料保留该阶段。
+
+Windows 的最终独立清理检查区分尚未创建 adapter 的无资源初始化失败与已经进入 adapter 创建的执行。前者必须保留明确失败、诊断耗时、空进程与 endpoint/receipt 记录、零输入和请求、已关闭 mock 与空查询记录；矛盾或不完整的证据仍失败，目录和链接的清理检查继续执行。该分类只证明没有 Herdr 资源需要停证，测试本身仍保留原初始化失败。启动后的检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
 
 Windows 清理策略单测执行真实检查器及文件操作，仅在 OS 查询边界控制观察结果；专用 native job 必须实际验证 PowerShell 5、同来源出生身份比较和脚本入口。一个 Windows 机制测试保留对存活 owned 进程的真实 .NET 读取；脚本退出码测试在检查器模块边界控制返回结果。POSIX 脚本入口及查询子进程超时后的真实关闭验证分别保留，不以策略模拟代替 native 验收。
 

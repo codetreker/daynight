@@ -232,7 +232,19 @@ child or assembly file; its dynamic assembly ends with the original PowerShell
 process. The original shell, helper and native PIDs must all appear in the same
 console result.
 
-Final Windows acceptance cleanup independently rereads each original process birth.
+Real-platform initialization resolves Windows Git from inherited PATH with the
+existing filesystem-based `which` dependency, then runs real `git init` with its
+five-second execution timeout. Command failure diagnostics preserve code, killed,
+signal and elapsed time. The fixture records initialization before adapter
+construction and advances the stage before constructing it. Independent cleanup
+accepts a no-resource initialization failure only with an explicit error and
+elapsed diagnostic, absent process and endpoint/receipt evidence, zero inputs and
+requests, a closed mock and no query resources. Directory and link checks remain
+mandatory. Contradictory or missing initialization evidence fails cleanup; the
+original initialization error still fails the platform test.
+
+Final Windows acceptance cleanup independently rereads each original process birth
+after adapter construction.
 CIM CreationDate and the metadata oracle's .NET StartTime keep their respective
 original token sources and precision. Missing or replaced identities can confirm
 original absence only alongside complete original stop evidence; a live original,
@@ -367,6 +379,13 @@ and a compiler child, including with `GenerateInMemory=true`, and could repeat
 the same compilation dependency. `Reflection.Emit` preserves the independent
 console APIs without those resources or a cmdlet/JSON dependency. Actual PS5
 execution must still establish that the emitted declarations behave correctly.
+
+**Locate Git through a timed `where.exe` child.** The fixture only needs an
+executable path and already depends on `which`. An extra lookup child adds a
+process deadline before real Git runs. The observed Windows failure retained
+only `Command failed: where.exe git.exe`, which cannot distinguish nonzero exit
+from timeout; the historical exit status remains unknown. Filesystem resolution
+removes that extra child without extending the real Git deadline.
 
 ## Consequences
 

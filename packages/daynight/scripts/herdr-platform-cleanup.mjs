@@ -131,6 +131,15 @@ const inspectPid = pid => {
   catch (error) { return { pid, observation: error.code === "ESRCH" ? "missing" : "unknown", error: error.code === "ESRCH" ? null : details(error) }; }
 };
 
+const noResourceInitializationFailure = run => run.schemaVersion === 1 && run.resourceStage === "initialization" &&
+  typeof run.error === "string" && run.error.length > 0 && run.errorDetails &&
+  Number.isFinite(run.errorDetails.elapsedMs) && run.errorDetails.elapsedMs >= 0 &&
+  run.endpoints === null && run.receipt === null && run.daemonPid === undefined && run.shellPid === undefined &&
+  run.processProofCompleted === undefined && run.sameOriginalNativeAfterInput === undefined &&
+  run.initialInputAttempts === 0 && Array.isArray(run.requests) && run.requests.length === 0 &&
+  run.cleanup.mockClosed === true && Array.isArray(run.cleanup.windowsQueries) && run.cleanup.windowsQueries.length === 0 &&
+  ["processCapture", "originalProcesses", "instance", "workspaceClosed", "apiClosed", "clientClosed", "captureError", "processReadbackError", "workspaceError", "instanceError", "preparationProbes", "preparationProbeSetupError"].every(key => run.cleanup[key] === undefined);
+
 export const checkHerdrPlatformCleanup = async (directory, { platform = process.platform, observeWindows = observeWindowsCleanup } = {}) => {
   const entries = await readdir(directory);
   const files = entries.filter(file => /^acceptance-(?:argv-)?(codex|copilot)-.*\.json$/.test(file));
@@ -139,15 +148,17 @@ export const checkHerdrPlatformCleanup = async (directory, { platform = process.
   for (const file of files) {
     const run = JSON.parse(await readFile(path.join(directory, file), "utf8"));
     const pids = [...new Set([run.daemonPid, run.shellPid, run.receipt?.helperPid, run.receipt?.childPid, ...(run.cleanup.originalProcesses ?? []).map(row => row.pid)].filter(Boolean))];
-    const processResult = platform === "win32" ? await observeOriginals(run, false, observeWindows) : { processes: pids.map(inspectPid) };
+    const initializationFailure = run.resourceStage === "initialization";
+    const resourcesAbsent = noResourceInitializationFailure(run) === true;
+    const processResult = resourcesAbsent ? { resourcesAbsent: true, processes: [], processEvidenceError: null } : platform === "win32" ? await observeOriginals(run, false, observeWindows) : { processes: pids.map(inspectPid) };
     const livePids = processResult.processes.filter(row => (row.observation === "same-original" || row.observation === "present")).map(row => row.pid), unknownPids = processResult.processes.filter(row => row.observation === "unknown").map(row => row.pid);
     const endpointsClosed = run.endpoints ? await Promise.all(Object.values(run.endpoints).map(endpoint => closedEndpoint(endpoint, platform))) : [];
     const shortLinkRemoved = !run.shortLink || await lstat(run.shortLink).then(() => false, error => error.code === "ENOENT");
     const preparationProbesClosed = !run.cleanup.preparationProbeSetupError && (run.cleanup.preparationProbes ?? []).every(probe => probe.closed === true);
     const windowsQueriesClosed = (run.cleanup.windowsQueries ?? []).every(query => query.closed === true && query.cleanupConfirmed === true);
-    const result = { file, ...processResult, livePids, unknownPids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, windowsQueriesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
+    const result = { file, resourceState: resourcesAbsent ? "no-resource-initialization-failure" : initializationFailure ? "unconfirmed-initialization" : "started", ...processResult, livePids, unknownPids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, windowsQueriesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
     evidence.runs.push(result);
-    if (platform === "win32" && !result.processStopped || livePids.length || unknownPids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !windowsQueriesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
+    if (initializationFailure && !resourcesAbsent || platform === "win32" && !resourcesAbsent && !result.processStopped || livePids.length || unknownPids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !windowsQueriesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
   }
   for (const agent of ["codex", "copilot"]) if (!files.some(file => file.startsWith(`acceptance-${agent}-`))) evidence.failures.push(`Missing ${agent} completion evidence.`);
   if (platform === "win32" && !files.some(file => file.startsWith("acceptance-argv-codex-"))) evidence.failures.push("Missing Windows ExternalScript argument evidence.");
