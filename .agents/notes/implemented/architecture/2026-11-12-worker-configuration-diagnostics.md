@@ -67,8 +67,14 @@ this adds no DTO or dispatch behavior.
 The diagnostic owner records the first failure, changed reason or related target,
 and matching recovery immediately. Existing calls emit a summary at most every
 five minutes for a continuing cause. Its signature uses the component, actual
-phase, key, fixed reason and relevant target identity; changing request, sync,
-generation, time, count or retry scheduling fields does not create another cause.
+phase, key, fixed reason and relevant target identity. Native targets use the
+captured validation recipe: native tuple, actual execution mode and relevant
+configured tool choices. A mode or choice change under the same canonical
+revision is still a different target; its success does not recover an old
+recipe's retained failure. Dynamic generation and selection keys are excluded.
+The recipe remains internal comparison data and is never projected into JSONL.
+Changing request, sync, time, count or retry scheduling fields does not create
+another cause.
 Actual occurrence counts belong to this run and remain distinct from capped
 backoff steps. A new process starts a new diagnostic history.
 

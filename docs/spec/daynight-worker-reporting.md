@@ -98,7 +98,7 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 远端请求尚未派发为 remote=not_sent，可信响应确认结果为 confirmed，明确拒绝为 rejected，派发后未获可信响应为 unknown。配置 POST 在 ApiClient 排队期间取消、尚未调用传输时保持 not_sent；GET 不能仅从没有未确认变更标记推断未派发。source 保留操作捕获的本机状态，received 单独保留可信 GET/回执已返回的目标与观测基线；不能在本机落盘前把较低的服务版本冒充已提交本机状态。observationAccepted 保留实际布尔值，可信 HTTP 200 的 false 仍为报告结果已确认，不能解释为应用确认。cache-persist 的 storagePhase 区分 read、directory、persist。已确认远端但检查点仍等待持久化时保留 remote=confirmed/local=pending，旧代回执被忽略时记录 local=ignored；不能把本地等待超时、formatter 或通知失败改写成远端未知、重放依据或 lastFailure 确认。持久化成功后才能记录 local=persisted。
 
-首次失败、原因或相关目标变化，以及真实恢复立即记录。同因故障在现有周期中每五分钟最多输出一次摘要，包含本次运行中实际发生次数；退避档位单列为 backoffStep，不能冒充次数。分组按组件、实际阶段、key、固定原因和相关目标判断，requestId、syncId、generation、时间、次数与 nextAttemptAt 不使同因故障分裂。采集字段和普通传输继续分别报告故障及恢复。诊断失败保留独立错误链，不改变应用、确认、重试或恢复职责；日志不参与跨进程恢复。
+首次失败、原因或相关目标变化，以及真实恢复立即记录。同因故障在现有周期中每五分钟最多输出一次摘要，包含本次运行中实际发生次数；退避档位单列为 backoffStep，不能冒充次数。分组按组件、实际阶段、key、固定原因和相关目标判断；原生相关目标包含当次 native 元组、实际模式与相关工具的配置选择，同规范版本的模式/选择变化仍须区分，只有匹配配方的成功才能记录恢复。requestId、syncId、generation、selectionKey、时间、次数与 nextAttemptAt 不使同因故障分裂，内部比较配方不进入日志正文。采集字段和普通传输继续分别报告故障及恢复。诊断失败保留独立错误链，不改变应用、确认、重试或恢复职责；日志不参与跨进程恢复。
 
 ## 工具路径事实
 

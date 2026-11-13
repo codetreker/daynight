@@ -1,9 +1,15 @@
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
 import { OperationError } from "../../../src/api/operation.js";
 import { ToolSelectionError } from "../../../src/platform/tool-executables.js";
 import { createWorkerConfigurationDiagnostics } from "../../../src/commands/worker/configuration-diagnostics.js";
+import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationApplicationEvent } from "../../../src/commands/worker/configuration.js";
+import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
+import type { WorkerCloudDesired } from "../../../src/api/worker-configuration.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import type { ConfigurationPersistenceEvent } from "../../../src/commands/worker/configuration-persistence.js";
 import type { WorkerDiagnostic } from "../../../src/commands/worker/diagnostics.js";
@@ -60,6 +66,61 @@ it("records reason and target changes immediately without claiming a different t
   expect(events.filter(event => event.kind === "worker-configuration-failed")).toHaveLength(3);
   expect(events.filter(event => event.kind === "worker-configuration-recovered")).toHaveLength(0);
   expect(events.at(-1)?.configuration).toMatchObject({ status: "succeeded" });
+});
+
+it.each([
+  { change: "mode", secondFails: true }, { change: "mode", secondFails: false },
+  { change: "tool path", secondFails: true }, { change: "tool path", secondFails: false },
+] as const)("keeps changed $change recipes separate when second failure=$secondFails at the same revision", async ({ change, secondFails }) => {
+  const root = fileURLToPath(new URL("../../../../../.tmp/configuration-diagnostic-targets/", import.meta.url));
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(path.join(root, "run-")), file = path.join(directory, "configuration.json");
+  const events: WorkerDiagnostic[] = [], applications: WorkerConfigurationApplicationEvent[] = [];
+  const attempts: { mode: string; path: string | null }[] = [];
+  const diagnostics = createWorkerConfigurationDiagnostics({ now: () => 1_000, emit: event => { events.push(event); } });
+  const firstPath = path.join(directory, "private-old-tool"), nextPath = path.join(directory, "private-new-tool"), privateArgument = "private-native-argument";
+  const desired = (changed: boolean): WorkerCloudDesired => ({ revision: "5", updatedAt: "2026-11-13T04:00:00Z", value: {
+    maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false,
+    agentControlMode: change === "mode" && changed ? "herdr" : "web", native: { agent: "codex", model: null, args: [privateArgument] }, projects: [],
+    toolPaths: { codex: { kind: "path", path: change === "tool path" && changed ? nextPath : firstPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } },
+  } });
+  const manager = await createWorkerConfigurationManager({ file, identity: { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" },
+    signal: new AbortController().signal, now: () => 1_000, applyNative: async () => {},
+    prepareToolSelection: async (_native, mode, tools) => {
+      const choice = tools.choices.codex;
+      attempts.push({ mode, path: choice.kind === "path" ? choice.path : null });
+      if (attempts.length === 1 || secondFails) throw new ToolSelectionError("codex", mode, "probe", "probe_timeout");
+    },
+    onApplication: event => { applications.push(event); diagnostics.application(event); },
+  });
+  try {
+    await manager.receive(desired(false), "0"); await manager.settle();
+    const original: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
+    const originalNative = original.currentItems.find(item => item.value.key.kind === "native")!;
+    await manager.receive(desired(true), "0"); await manager.settle();
+    const current: WorkerConfigurationCache = JSON.parse(await readFile(file, "utf8"));
+    const currentNative = current.currentItems.find(item => item.value.key.kind === "native")!;
+    expect(attempts).toEqual([{ mode: "web", path: firstPath }, { mode: change === "mode" ? "herdr" : "web", path: change === "tool path" ? nextPath : firstPath }]);
+    expect(current.authority.desired?.revision).toBe("5");
+    expect(current.authority.desired?.value.native).toEqual(original.authority.desired?.value.native);
+    expect(currentNative.recordId).not.toBe(originalNative.recordId);
+    expect(current.authority.generation).not.toBe(original.authority.generation);
+    expect(currentNative.value.state).toBe(secondFails ? "error" : "applied");
+    expect(current.retainedItems.find(item => item.recordId === originalNative.recordId)?.value.lastFailure).toEqual(originalNative.value.lastFailure);
+    const failures = events.filter(event => event.kind === "worker-configuration-failed" && event.configuration?.key?.kind === "native" && event.configuration.phase === "prepare");
+    expect(failures).toHaveLength(secondFails ? 2 : 1);
+    expect(failures.every(event => event.configuration?.occurrences === 1)).toBe(true);
+    expect(events.filter(event => event.kind === "worker-configuration-recovered" && event.configuration?.key?.kind === "native")).toHaveLength(0);
+    const pending = applications.filter(event => event.key.kind === "native" && event.kind === "failed" && event.local === "pending");
+    expect(pending).toHaveLength(secondFails ? 2 : 1);
+    expect(pending[0]!.target).toEqual({ native: desired(false).value.native, mode: "web", tools: [{ tool: "codex", choice: { kind: "path", path: firstPath } }] });
+    expect(Object.isFrozen(pending[0]!.target)).toBe(true);
+    const persisted = applications.find(event => event.attemptId === pending[0]!.attemptId && event.kind === "failed" && event.local === "persisted")!;
+    expect(persisted.target).toBe(pending[0]!.target);
+    expect(JSON.stringify(events)).not.toContain(firstPath);
+    expect(JSON.stringify(events)).not.toContain(nextPath);
+    expect(JSON.stringify(events)).not.toContain(privateArgument);
+  } finally { await manager.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
 it("keeps confirmed report, rejected observation and pending local checkpoint as separate facts", () => {

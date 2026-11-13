@@ -116,7 +116,7 @@ API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩
 
 ## 失败与可观察性
 
-`configuration-diagnostics.ts` 接收拥有事实的 exchange、manager 与持久化边界事件，保存本次运行的失败分组与实际次数。首次失败、固定原因或相关目标变化、对应操作恢复立即输出；持续同因失败由现有调用周期每五分钟最多输出一条 summary，不新增操作重试。签名包含组件、实际阶段、key、固定原因与相关目标身份，排除 requestId、syncId、generation、时间、次数、backoffStep 和 nextAttemptAt；原生目标只用于本机比较，参数和正文不进入事件。occurrences 记录真实失败发生次数，backoffStep 仅说明封顶退避档位。普通采集字段和 report 子系统分别保留故障及恢复；诊断状态不承担执行、重放或恢复职责。
+`configuration-diagnostics.ts` 接收拥有事实的 exchange、manager 与持久化边界事件，保存本次运行的失败分组与实际次数。首次失败、固定原因或相关目标变化、对应操作恢复立即输出；持续同因失败由现有调用周期每五分钟最多输出一条 summary，不新增操作重试。签名包含组件、实际阶段、key、固定原因与相关目标身份，排除 requestId、syncId、generation、时间、次数、backoffStep 和 nextAttemptAt。native/projectNative 的相关目标采用当次捕获的完整验证配方：native 元组、当次验证模式，以及相关工具的配置选择；同一规范版本下切换模式或工具选择也形成不同目标。只有相同配方的真实成功才能恢复对应失败，新的模式成功不能把仍保留的旧模式失败标为已恢复。动态 generation 与 selectionKey 不属于该配方。配方只供本机比较，原生参数、工具选择正文及原始目标不进入 JSONL。occurrences 记录真实失败发生次数，backoffStep 仅说明封顶退避档位。普通采集字段和 report 子系统分别保留故障及恢复；诊断状态不承担执行、重放或恢复职责。
 
 `configuration-failure.ts` 从 ToolSelectionError、OperationError、本地来源校验和受控文件操作生成固定原因。工具类型以 reason 保留原闭合 code，并保留有限 tool/context/stage；Operation 保留 kind，文件边界保留经过识别的 systemCode。`configuration-source.ts` 在实际解析与纯校验边界构造 WorkerConfigurationSourceError，将非法 YAML、顶层结构和本地字段归为 invalid_configuration，保留原有纠错消息与 cause。重新读取文件中的新凭据不进入诊断。读取器的受控文件包装单独指认其已知原始文件错误，同时保留外层可操作错误链；项目准备仅将具有数值 errno、字符串 syscall 且可识别系统 code 的真实 Node 文件错误交给该包装。任意对象属性、裸 .code 和错误消息不参与分类。云端应用观测继续使用既有 code/category/phase，monitoring 映射到其固定英文摘要，本机允许的结构化细节不进入公开 DTO。采集与传输日志仍重新构造安全类别及 cause 结构，不带命令、输出或凭据。formatter 与通知错误单独保留原链，不把已成功应用改为失败，也不确认或丢弃 lastFailure。
 

@@ -248,6 +248,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     let phase: WorkerConfigurationApplicationEvent["phase"] = key.kind === "projectPreparation" ? "prepare" : key.kind === "projectRemoval" ? "stop" : "validate";
     const prepare = adapters.prepare, remove = adapters.remove;
     let intended = target(cache, key), mode = intendedMode(cache), effectiveProjectMode = projectMode(cache), began = false;
+    let applicationTarget: unknown = intended;
     let modeFailure: WorkerCloudFailure | null = null;
     const resetCancelled = async (): Promise<void> => {
       if (stopped) return;
@@ -260,6 +261,10 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       const item = findRecord(current, recordId);
       if (stopped || controller.signal.aborted || item === undefined || item.value.targetRevision !== revision || !runnable(item)) return current;
       intended = target(current, key); mode = intendedMode(current); effectiveProjectMode = projectMode(current); began = true;
+      if (key.kind === "native" || key.kind === "projectNative") {
+        const choices = toolTargets(current, localTools)?.choices;
+        applicationTarget = freeze({ native: intended, mode, tools: nativeTools(intended as WorkerCloudNative, mode).map(tool => ({ tool, choice: choices?.[tool] ?? null })) });
+      } else applicationTarget = intended;
       if (key.kind === "projectNative" && effectiveProjectMode !== mode) modeFailure = findItem(current, { kind: "native" })!.value.error;
       let next = replaceItem(current, { ...item, started: key.kind === "projectRemoval" || item.started, value: { ...item.value, state: "applying", error: null, nextAttemptAt: null } });
       const modeItem = findItem(current, { kind: "agentControlMode" });
@@ -272,7 +277,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     const notifyApplication = (kind: WorkerConfigurationApplicationEvent["kind"], local: WorkerConfigurationApplicationEvent["local"], error?: unknown, nextAttemptAt: string | null = null): void => {
       const event: WorkerConfigurationApplicationEvent = {
         kind, phase, attemptId, key: { ...key }, recordId, generation: original.origin.generation, revision,
-        target: intended, source: applicationSource, local, nextAttemptAt,
+        target: applicationTarget, source: applicationSource, local, nextAttemptAt,
         backoffStep: findRecord(cache, recordId)?.backoffStep ?? original.backoffStep,
         ...(error === undefined ? {} : { error }),
       };
