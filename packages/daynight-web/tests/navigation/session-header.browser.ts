@@ -249,6 +249,10 @@ for (const locale of ['en', 'zh-CN']) for (const width of [1280, 320]) for (cons
   test(`semantic Session roles distinguish ${activity} from health at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const { header, observations } = await open(page, locale, 'codex', activity, 'task', true);
+    await header.locator('.session-display-trigger').click();
+    await page.getByRole('menuitemradio', { name: locale === 'en' ? 'Standard' : '标准', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(header.locator('.session-display-trigger')).toHaveAttribute('aria-expanded', 'false');
     const health = header.locator('.session-status.online');
     await expect(health).toHaveCSS('color', 'rgb(85, 97, 118)');
     expect(await health.evaluate(node => getComputedStyle(node, '::before').backgroundColor)).toBe(roleColors.done[3]);

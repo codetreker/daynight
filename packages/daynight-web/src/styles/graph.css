@@ -58,13 +58,13 @@
 .chain-summary-meta .assignee-name{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
 .chain-summary-meta .chain-completion-time{padding:3px 4px}
 @container(max-width:600px){
-  .goal-header{grid-template-columns:minmax(0,1fr) auto auto}
+  .goal-header{grid-template-columns:minmax(0,1fr) auto}
   .chain-summary{grid-column:1/-1;padding:11px 11px 0}
   .goal-header .chain-summary .goal-toggle{min-height:28px;gap:8px;flex-wrap:nowrap}
   .chain-summary-meta{margin-left:22px}
   .goal-header>.root-progress{grid-column:1;margin:0 0 10px 11px}
   .goal-header>.session-status-slot{grid-column:2;width:auto;padding-right:0}
-  .goal-header>.goal-graph-button{grid-column:3;margin:0 11px 10px 8px}
+  .goal-header>.goal-graph-button{grid-column:1/-1;margin:0 11px 10px auto}
 }
 
 .task-chain-dialog :focus-visible { outline-color: var(--task-focus); }

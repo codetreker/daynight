@@ -197,6 +197,10 @@ test('mouse can reach the completion hint above a long chain title near the view
   await label.hover();
   const hint = header.getByRole('tooltip');
   await expect(hint).toBeVisible();
+  await expect.poll(async () => {
+    const labelBox = (await label.boundingBox())!, hintBox = (await hint.boundingBox())!;
+    return { above: hintBox.y + hintBox.height <= labelBox.y, reachable: labelBox.y - hintBox.y - hintBox.height <= 18 };
+  }).toEqual({ above: true, reachable: true });
   const labelBox = (await label.boundingBox())!, hintBox = (await hint.boundingBox())!;
   expect(hintBox.y + hintBox.height).toBeLessThanOrEqual(labelBox.y);
   expect(labelBox.y - (hintBox.y + hintBox.height)).toBeLessThanOrEqual(18);

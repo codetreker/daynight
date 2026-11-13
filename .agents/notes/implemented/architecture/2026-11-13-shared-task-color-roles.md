@@ -25,7 +25,9 @@ permission and connection health. Existing overdue surfaces retain their
 precedence. Combined ended progress uses a neutral fill, while existing Goal
 segments retain separate done and cancelled colors. Graph selection stays on
 the node's outer outline, and keyboard focus uses the body's inner outline so
-neither cue replaces the other.
+neither cue replaces the other. Compact chain headers place the graph action on
+its own row, keeping progress and status readable when their independent minimum
+widths cannot fit beside the action.
 
 The composer exposes its actual activity as a presentation attribute only while
 the snapshot is connected and synchronized. Working and waiting for input map to
