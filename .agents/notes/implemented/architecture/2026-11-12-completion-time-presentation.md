@@ -13,8 +13,10 @@ existing row interaction and accessibility.
 ## Decision
 
 Task and Goal rows display a non-interactive completion label and attach the
-exact time to the existing entry description; their details expose the exact
-value. Project Goal disclosures reuse Task rows and scoped chain summaries. Goal
+exact time to the detail entry description; their details expose the exact
+value. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md)
+assigns Goal keyboard hint access to its separate detail button. Project Goal
+disclosures reuse Task rows and scoped chain summaries. Goal
 detail displays its own exact completion time in the common metadata row,
 independently of child progress; task browsing remains in the project Goal list.
 Chain summaries use their complete scoped members and provide a separate time

@@ -46,7 +46,10 @@ detail while retaining the nested reading owners. The
 presentation and lifecycle.
 The [Goal overview graph decision](2026-11-13-goal-overview-graph.md) adds a separate complete Goal graph; the list still classifies ordinary chains before selecting scoped members.
 The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)
-uses the Goal's own state for its list heading while keeping scoped progress independent.
+uses the Goal's own state for its list heading while keeping scoped progress
+independent. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md)
+makes the heading body the disclosure and keeps detail and graph as separate
+actions.
 
 ## Alternatives
 
