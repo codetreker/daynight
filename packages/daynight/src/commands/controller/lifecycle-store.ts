@@ -15,13 +15,14 @@ import { parseStartupObservation, type StartupObservation } from "../../session/
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
-import { openPendingContent, reconcilePendingContent, finalizePendingMigration } from "./pending-content.js";
+import { openSessionContent, type SessionContent } from "./content/session-content.js";
+import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { controllerJournalFormat } from "./journal-format.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
-import { controllerJournalReadOptions, controllerJournalWriteOptions, prepareControllerStorage } from "./storage-preparation.js";
+import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, prepareControllerStorage } from "./storage-preparation.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -66,7 +67,7 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
   if (failed) throw failure;
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
-/** The store owns a supplied connection; file identifies its separate pending-content archive. */
+/** The store owns a supplied connection; file also identifies its Session-bound resource files. */
 type ControllerLifecycleOptions = { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
 const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions, permit: ControllerStoragePermit) => {
   assertControllerStoragePermit(permit, file);
@@ -74,46 +75,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
-  let pendingContent!: ReturnType<typeof openPendingContent>;
-  const db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId), file: options.database ?? file, allowCreate: true,
-    ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
-    onReady: (db) => {
-      if (!db.memory) chmodSync(file, 0o600);
-    const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
-    if (existing === undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
-    else {
-      if (existing.owner_pid !== null) {
-        try { process.kill(existing.owner_pid, 0); throw new Error("The original controller journal writer is still running."); }
-        catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
-      }
-      const previous = json<ControllerSnapshot>(existing.snapshot);
-      if (previous.executionId !== ticket.executionId || previous.claimId !== ticket.claimId || previous.testExecutionId !== ticket.testExecutionId || previous.sessionId !== ticket.sessionId) throw new Error("Controller journal belongs to another execution.");
-      if (existing.ticket_hash === controllerPayloadHash(ticket) && previous.controllerProcess !== null) throw new Error("A native controller generation cannot be relaunched without a new stopped-generation ticket.");
-      if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
-        if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
-        if (process.platform === "win32") validateWindowsStoredStopProof(previous, existing.ticket_hash);
-        db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(ticket), JSON.stringify({ ...initial, initialInputState: previous.initialInputState, controlsRevisionFloor: (() => {
-          let floor = BigInt(previous.controls?.revision ?? previous.controlsRevisionFloor ?? "0");
-          // Old source events are replayed before new provider state. Keep their
-          // highest revision across execution reset without dropping the outbox.
-          for (const row of db.prepare("SELECT json_extract(value, '$.payload.controls.revision') AS revision FROM outbox WHERE json_extract(value, '$.kind')='state'").iterate() as Iterable<{ revision: string | null }>) {
-            if (row.revision !== null && /^[1-9][0-9]{0,18}$/.test(row.revision) && BigInt(row.revision) > floor) floor = BigInt(row.revision);
-          }
-          return String(floor);
-        })() }));
-      }
-      db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
-    }
-    if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
-    pendingContent = openPendingContent(file, ticket.sessionId, db);
-    if (existing === undefined && (pendingContent.hasRetainedEntries() || pendingContent.entries.size !== 0 || pendingContent.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
-    reconcilePendingContent(db, pendingContent);
-    },
-  });
-  try {
-  finalizePendingMigration(db, pendingContent);
-  const metadataBudget = controllerMetadataBudget(file, db);
-  let quarantined = false;
+  let sessionContent!: SessionContent;
+  let db!: Database.Database;
+  let metadataBudget!: ReturnType<typeof controllerMetadataBudget>;
+  let quarantined = false, writeDepth = 0;
   const assertUsable = (): void => { if (quarantined) throw new Error("Controller journal has an unresolved transaction; independent recovery is required."); };
   const quarantine = (_cause: unknown): void => { quarantined = true; };
   const transaction = <T>(action: () => T, mode: "deferred" | "immediate"): T => {
@@ -123,8 +88,11 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     let failed = false, primary: unknown;
     try {
       return db.transaction(() => {
+        const previousDepth = writeDepth;
+        if (mode === "immediate") writeDepth++;
         try { assertCurrentSqlite(db, controllerJournalFormat); return action(); }
         catch (cause) { failed = true; primary = cause; throw cause; }
+        finally { writeDepth = previousDepth; }
       })[mode]();
     } catch (cause) {
       if (!nested && db.open && db.inTransaction) quarantine(cause);
@@ -134,6 +102,51 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
+  const assertTimelineWrite = (additionalBytes: number): void => {
+    assertUsable();
+    assertControllerStoragePermit(permit, file);
+    if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
+    if (additionalBytes > 0) metadataBudget.assert(additionalBytes, true);
+  };
+  db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true,
+    onReady: (connection) => {
+      db = connection;
+      metadataBudget = controllerMetadataBudget(file, db);
+      if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline maintenance must finish before writer initialization.");
+      if (!db.memory) chmodSync(file, 0o600);
+      const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
+      if (existing === undefined) {
+        assertNoOrphanTimelineSource(file);
+        db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
+      } else {
+        if (existing.owner_pid !== null) {
+          try { process.kill(existing.owner_pid, 0); throw new Error("The original controller journal writer is still running."); }
+          catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+        }
+        const previous = json<ControllerSnapshot>(existing.snapshot);
+        if (previous.executionId !== ticket.executionId || previous.claimId !== ticket.claimId || previous.testExecutionId !== ticket.testExecutionId || previous.sessionId !== ticket.sessionId) throw new Error("Controller journal belongs to another execution.");
+        if (existing.ticket_hash === controllerPayloadHash(ticket) && previous.controllerProcess !== null) throw new Error("A native controller generation cannot be relaunched without a new stopped-generation ticket.");
+        if (existing.ticket_hash !== controllerPayloadHash(ticket)) {
+          if (BigInt(ticket.executionGeneration) !== BigInt(previous.executionGeneration) + 1n || !previous.nativeStopped || previous.lifecycle !== "stopped" || previous.nativeSessionId === null || previous.nativeSessionId !== ticket.resumeNativeSessionId) throw new Error("Controller recovery requires a stopped original generation and exact native identity.");
+          if (process.platform === "win32") validateWindowsStoredStopProof(previous, existing.ticket_hash);
+          db.prepare("UPDATE execution SET ticket_hash=?,snapshot=? WHERE id=1").run(controllerPayloadHash(ticket), JSON.stringify({ ...initial, initialInputState: previous.initialInputState, controlsRevisionFloor: (() => {
+            let floor = BigInt(previous.controls?.revision ?? previous.controlsRevisionFloor ?? "0");
+            // Old source events are replayed before new provider state. Keep their
+            // highest revision across execution reset without dropping the outbox.
+            for (const row of db.prepare("SELECT json_extract(value, '$.payload.controls.revision') AS revision FROM outbox WHERE json_extract(value, '$.kind')='state'").iterate() as Iterable<{ revision: string | null }>) {
+              if (row.revision !== null && /^[1-9][0-9]{0,18}$/.test(row.revision) && BigInt(row.revision) > floor) floor = BigInt(row.revision);
+            }
+            return String(floor);
+          })() }));
+        }
+        db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+      }
+      if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
+      sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite });
+      if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
+    },
+  });
+  try {
   const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
@@ -148,7 +161,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   });
   const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
   const assertInputCapacity = (): void => { assertUsable(); metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
-  const localContent = createLocalSessionContent(pendingContent, ticket.sessionId, { read, write: atomic });
+  const localContent = createLocalSessionContent(sessionContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
       const event = parseSourceEvent({ sourceSeq: "1", ...payload });
@@ -171,7 +184,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   });
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
-  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
+  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, sessionContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
   const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
     const source = db.prepare("SELECT origin FROM input_message_origins WHERE entry_id=?").get(entry.entryId) as { origin: "user" | "daynight" } | undefined;
     if (source) {
@@ -187,16 +200,15 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (!part || part.type !== "image" && part.type !== "image_unavailable" || part.imageId !== original.image_id || part.type === "image" && part.resourceId !== original.resource_id) throw new Error("Timeline update cannot move or replace a committed original image association.");
     }
     const contentHash = controllerPayloadHash(content);
-    const previous = pendingContent.getEntry(entry.entryId);
+    const previous = sessionContent.timeline.get(entry.entryId);
     const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
     if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
     const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-    const entrySeq = previous?.entrySeq ?? pendingContent.nextEntrySequence();
+    const entrySeq = previous?.entrySeq ?? sessionContent.timeline.nextSequence();
     const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
     parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
-    // The immutable candidate is visible only through the transaction's committed pointer.
     const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
-    pendingContent.saveEntry(durableEntry);
+    sessionContent.timeline.save(durableEntry);
     return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
@@ -215,7 +227,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     const existing = db.prepare("SELECT operation_id,origin FROM input_message_origins WHERE entry_id=?").get(entryId) as { operation_id: string; origin: string } | undefined;
     if (existing && (existing.operation_id !== operationId || existing.origin !== origin)) throw new Error("Native message origin conflicts with its original input.");
-    const current = pendingContent.getEntry(entryId);
+    const current = sessionContent.timeline.get(entryId);
     if (current && current.kind !== "user_message") throw new Error("Native input cannot replace another timeline kind.");
     if (!existing) {
       metadataBudget.assert(Buffer.byteLength(entryId + operationId + origin) + 16384, true);
@@ -225,7 +237,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     return entryId;
   });
   const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
-    const current = pendingContent.getEntry(entry.entryId);
+    const current = sessionContent.timeline.get(entry.entryId);
     if (!current || controllerPayloadHash(current) !== controllerPayloadHash(entry)) throw new Error("Timeline publication requires its current committed content.");
     const { entrySeq, ...content } = entry;
     const payload = options.contentOwnedLocally ? { ...content, entrySeq } : content;
@@ -236,7 +248,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
     if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
-    const entry = pendingContent.getEntry(occurrence.entryId);
+    const entry = sessionContent.timeline.get(occurrence.entryId);
     if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
     const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
     const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
@@ -257,9 +269,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       markdownStore.put("projection", state.entryId, state);
       return projectTimeline(entry);
     }),
-    ...createNativeInputPublication({ db, ticket, pendingContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
+    ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
-    ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, metadataBudget),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
@@ -268,12 +280,12 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       const occurrence = parseImageOccurrence(input);
       const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
       if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
-      const entry = pendingContent.getEntry(occurrence.entryId);
+      const entry = sessionContent.timeline.get(occurrence.entryId);
       const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
       if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
       const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
       projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
-      return pendingContent.getEntry(entry.entryId)!;
+      return sessionContent.timeline.get(entry.entryId)!;
     }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
@@ -335,8 +347,8 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
-    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.hasEntry(entryId)),
-    getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => pendingContent.getEntry(entryId)),
+    hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.timeline.has(entryId)),
+    getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.timeline.get(entryId)),
     projectTimeline,
     associateInputMessage,
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {

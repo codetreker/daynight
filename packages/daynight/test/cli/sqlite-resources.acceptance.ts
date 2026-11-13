@@ -3,7 +3,7 @@ import { loadSqliteSequence, sqliteSchemaSnapshots } from "../../src/platform/sq
 import { workerStoreFormat } from "../../src/commands/worker/store-format.js";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
@@ -33,7 +33,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
 
-it("ships exact SQL resources and executes installed stores and staged timeline content", () => {
+it("ships exact SQL resources and executes installed stores and canonical timeline content", () => {
   const expectedResources = sqlDirectories.map(directory => ({ directory, source: files(path.join(packageDirectory, "src", directory)) }));
   const expectedCount = expectedResources.reduce((sum, { source }) => sum + Object.keys(source).length, 0);
   let count = 0;
@@ -44,8 +44,7 @@ it("ships exact SQL resources and executes installed stores and staged timeline 
     expect(installedResources).toEqual(source);
   }
   expect(count).toBe(expectedCount);
-  const stagedSql = "commands/controller/content/timeline-schema.sql";
-  expect(readFileSync(path.join(installed, "dist", stagedSql))).toEqual(readFileSync(path.join(packageDirectory, "src", stagedSql)));
+  expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
     .get(workerVersion)!.filter(object => object.type === "table").map(({ name }) => name);
@@ -67,7 +66,7 @@ const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 4, ["executions", "orchestration_blockers"]],
-  ["commands/controller/journal-format.js", "controllerJournalFormat", 9, ["content_index", "execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox"]],
+  ["commands/controller/journal-format.js", "controllerJournalFormat", 10, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox", "timeline_entries", "timeline_totals"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
 const versions = [];
@@ -84,15 +83,13 @@ for (const [module, name, version, tables] of owners) {
     versions.push(version);
   } finally { db.close(); if (permit !== undefined) permit.release(); }
 }
-const { controllerTimelineFormat, controllerTimelineFormatForMigration } = await load("commands/controller/content/migration.js");
+const { controllerJournalFormat, controllerJournalFormatForMigration } = await load("commands/controller/journal-format.js");
 const { createTimelineMaintenanceReservation } = await load("commands/controller/content/maintenance.js");
 const { openTimelineStore } = await load("commands/controller/content/timeline-store.js");
-const { controllerJournalFormat } = await load("commands/controller/journal-format.js");
-assert.equal(currentSqliteVersion(controllerJournalFormat), 9);
-assert.equal(currentSqliteVersion(controllerTimelineFormat), 10);
-const timelineFile = path.join(directory, "staged-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
+assert.equal(currentSqliteVersion(controllerJournalFormat), 10);
+const timelineFile = path.join(directory, "canonical-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
 let reservation, timelineDb;
-const timelineFormat = controllerTimelineFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, stateDirectory: directory, storagePermit: timelinePermit }));
+const timelineFormat = controllerJournalFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, stateDirectory: directory, storagePermit: timelinePermit }));
 const entry = { entryId: "00000000-0000-4000-8000-000000000001", entrySeq: "9007199254740993", revision: "9007199254740995", kind: "assistant_message", content: [{ type: "text", text: "Installed 正文 😀" }] };
 const replacement = { ...entry, revision: "9007199254740996", content: [{ type: "text", text: "Reopened 当前正文 🧩" }] };
 try {
@@ -106,9 +103,9 @@ try {
   assert.equal(timeline.nextSequence(), "9007199254740994");
   assert.deepEqual(timelineDb.prepare("SELECT COUNT(*) AS count,typeof(entry_seq) AS seq,typeof(revision) AS rev FROM timeline_entries").get(), { count: 1, seq: "integer", rev: "integer" });
   assert.equal(timelineDb.prepare("SELECT name FROM sqlite_schema WHERE name='content_index'").get(), undefined);
-  assert.throws(() => inspectSqlite(timelineDb, controllerJournalFormat), error => error.kind === "unsupported-version");
+  assert.deepEqual(inspectSqlite(timelineDb, controllerJournalFormat), { kind: "current", version: 10 });
   timelineDb.close();
-  timelineDb = openSqliteDatabase({ file: timelineFile, format: controllerTimelineFormat, allowCreate: false, onMigration: () => {} });
+  timelineDb = openSqliteDatabase({ file: timelineFile, format: controllerJournalFormat, allowCreate: false, onMigration: () => {} });
   const reopened = openTimelineStore(timelineDb, { assertWrite: () => { throw new Error("Installed readback is read-only."); } });
   assert.deepEqual(reopened.get(entry.entryId), replacement);
   assert.equal(timelineDb.pragma("user_version", { simple: true }), 10);
@@ -117,5 +114,5 @@ try {
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 9, 1, 10]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 10, 1, 10]);
 });

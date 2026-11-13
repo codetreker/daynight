@@ -20,15 +20,14 @@ export type NativeImageSlot = {
 };
 type Part = ImagePart | ImageUnavailablePart;
 type Saved = NativeImageProjectionState;
-type Pending = { saved: Saved; slot: NativeImageSlot; key: string; released: boolean };
+type Projection = { entry: ProviderEntry; metadata?: MarkdownTimelineMetadata };
+type Pending = { saved: Saved; slot: NativeImageSlot; key: string; released: boolean; projection: Projection | null };
 
 const pendingPart = (imageId: string, label: string, error: ImageError = { code: "capture_pending", message: "The original image is being saved." }): ImageUnavailablePart => ({ type: "image_unavailable", imageId, label, error });
 const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.output : entry.kind === "user_message" || entry.kind === "assistant_message" ? entry.content : null;
 
 /** Native positions and capture share the existing journal, ACK and resource pipeline. */
 export class ProviderImageProjector {
-  private readonly entries = new Map<string, ProviderEntry>();
-  private readonly metadata = new Map<string, MarkdownTimelineMetadata>();
   private readonly pending = new Map<string, Pending>();
   private readonly cleanup = new Set<NativeImagePayload>();
   private work: Promise<void> = Promise.resolve();
@@ -67,9 +66,6 @@ export class ProviderImageProjector {
       }
       if (restored.entry.content.some(part => (part.type === "image" || part.type === "image_unavailable") && !images.has(part.imageId))) throw new Error("Committed native image has no capture owner.");
       const { entrySeq: _entrySeq, ...entry } = restored.entry;
-      this.entries.set(entry.entryId, entry);
-      // A publication receipt proves image ownership, not Markdown completeness.
-      this.metadata.delete(entry.entryId);
       for (const committed of restored.slots) {
         const { state: saved, key, label, original } = committed, native = saved.request.nativeSource!;
         const incoming = payloads.find(slot => !handled.has(slot) && canonicalImageJson(slot.native) === canonicalImageJson(native));
@@ -85,12 +81,14 @@ export class ProviderImageProjector {
         const payload = original ? fallback : replace && incoming ? incoming.payload : active?.slot.payload ?? fallback;
         if (incoming) { if (payload === incoming.payload) handled.add(incoming); else release(incoming); }
         const slot: NativeImageSlot = { index: saved.index, label, native, payload, ...(original ? { original } : {}) };
-        const pending = active ?? { saved, slot, key, released: false };
+        const pending = active ?? { saved, slot, key, released: false, projection: null };
         pending.saved = saved; pending.slot = slot;
         if (replace) pending.released = false;
         this.pending.set(saved.request.occurrence.imageId, pending);
         this.resolvePending(pending);
       }
+      // A publication receipt proves image ownership, not Markdown completeness.
+      this.retainProjection(entry);
       this.acknowledged();
     } catch (error) { failures.push(error); }
     finally { for (const slot of payloads) if (!handled.has(slot)) release(slot); }
@@ -142,7 +140,7 @@ export class ProviderImageProjector {
           this.resolvePending(active);
         } else if (active || saved.phase === "settled") { handled.add(slot); this.releasePayload(slot.payload); }
         else {
-          const pending = { saved, slot, key, released: false };
+          const pending: Pending = { saved, slot, key, released: false, projection: null };
           this.pending.set(imageId, pending); handled.add(slot);
           this.resolvePending(pending);
           registrations.push(pending);
@@ -150,9 +148,7 @@ export class ProviderImageProjector {
       }
       const enriched = parts?.some(part => part.type !== "text" && part.type !== "resource") ? { imageProjectionError: "imageProjectionError" in input ? input.imageProjectionError ?? null : null } : {};
       const entry = parts ? input.kind === "tool_call" ? { ...input, ...enriched, output: parts } : { ...input, ...enriched, content: parts } as ProviderEntry : input;
-      this.entries.set(input.entryId, entry);
-      if (metadata) this.metadata.set(input.entryId, structuredClone(metadata));
-      else this.metadata.delete(input.entryId);
+      this.retainProjection(entry, metadata);
       this.options.onTimeline(entry, metadata);
       // The durable timeline callback precedes occurrence registration. The ACK
       // is checked again by the shared capture owner before any source is read.
@@ -186,6 +182,12 @@ export class ProviderImageProjector {
   }
 
   private save(pending: Pending): void { this.options.imageRuntime?.writeState(pending.key, pending.saved); }
+  private retainProjection(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void {
+    // The journal patch owns the current body. Standalone projection retains a
+    // shared body only while an image capture still needs its callback.
+    const projection = this.options.imageRuntime?.patchNativeImagePart ? null : { entry, ...(metadata ? { metadata: structuredClone(metadata) } : {}) };
+    for (const pending of this.pending.values()) if (pending.saved.request.occurrence.entryId === entry.entryId) pending.projection = projection;
+  }
   private resolvePending(pending: Pending): void {
     const { saved, slot } = pending;
     if (!saved.waitingForSource || slot.payload.kind === "pending") return;
@@ -196,15 +198,16 @@ export class ProviderImageProjector {
   private emitPart(pending: Pending): void {
     const { occurrence } = pending.saved.request, patch = this.options.imageRuntime?.patchNativeImagePart;
     if (patch) {
-      const { entrySeq: _entrySeq, ...entry } = patch(occurrence, pending.saved.part);
-      this.entries.set(entry.entryId, entry); return;
+      patch(occurrence, pending.saved.part); return;
     }
-    const entry = this.entries.get(occurrence.entryId);
-    if (!entry) return;
+    const projection = pending.projection;
+    if (!projection) throw new Error("Active native image projection has no current body.");
+    const { entry, metadata } = projection;
     const content = contentOf(entry); if (!content) return;
+    if (canonicalImageJson(content[pending.saved.index]) === canonicalImageJson(pending.saved.part)) return;
     const parts = content.map(part => (part.type === "image" || part.type === "image_unavailable") && part.imageId === occurrence.imageId ? pending.saved.part : part);
     const updated = entry.kind === "tool_call" ? { ...entry, output: parts } : { ...entry, content: parts } as ProviderEntry;
-    this.options.onTimeline(updated, this.metadata.get(entry.entryId)); this.entries.set(entry.entryId, updated);
+    this.options.onTimeline(updated, metadata); this.retainProjection(updated, metadata);
   }
   private releasePayload(payload: NativeImagePayload): void {
     if (payload.kind !== "file") return;
@@ -234,8 +237,7 @@ export class ProviderImageProjector {
         // The known receipt may precede either durable state or timeline
         // projection. Retry only these writes, never its capture or source IO.
         this.save(pending);
-        const entry = this.entries.get(request.occurrence.entryId), part = entry && contentOf(entry)?.[pending.saved.index];
-        if (canonicalImageJson(part) !== canonicalImageJson(pending.saved.part)) this.emitPart(pending);
+        this.emitPart(pending);
         this.retire(pending);
       } catch { this.scheduleQuery(); }
       return;
@@ -328,7 +330,5 @@ export class ProviderImageProjector {
       catch (error) { failures.push(error); }
     }
     if (failures.length) throw new AggregateError(failures, "Native image leases could not be released.");
-    this.entries.clear();
-    this.metadata.clear();
   }
 }

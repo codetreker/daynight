@@ -23,7 +23,7 @@
 
 原生图片 projector 逐 entry 保留当前正文的完成元数据；正文相同但 complete 改变仍须发布，迟到图片回执沿用当前元数据，缺失元数据的新正文不能继承旧允许。原生输入的原子 publication 或查询仅在 committed 后进入 Markdown 管线；初次完整性以及已有 streaming 正文的完成提升，必须由持久原始 intent 的文本与当前唯一正文精确一致证明，publication 的 seed 或图片回执本身不证明 Markdown 完整。
 
-`publishMarkdownProjection` 在 journal 的同一个 SQLite 事务中保存 Markdown projection state、不可变正文候选的可见指针及 source outbox，避免 state 已完成而时间线仍为旧正文的恢复窗口。失败回滚保持上一份完整可见状态；事务结果未确认时沿 journal 隔离规则处理，不能用本连接的未提交状态恢复。
+`publishMarkdownProjection` 在 journal 的同一个 SQLite 事务中保存 Markdown projection state、SQL 当前正文及 totals 和 source outbox，避免 state 已完成而时间线仍为旧正文的恢复窗口。失败回滚保持上一份完整可见状态；事务结果未确认时沿 journal 隔离规则处理，不能用本连接的未提交状态恢复。
 
 Markdown 状态在解析、回执与停止结算前读取 journal 的当前 committed entry，仅校准同位置、同 imageId 的原生图片更新及追加的原始图片，更新 parser token 使旧异步结果失效。这样即使进程在原生 patch 提交后、Markdown 同步前退出，恢复也不会写回旧图片状态。校准不重新登记原生 occurrence，不改变已接受 publication 的不可变回执或原生图片 index。解析失败的补充 Markdown carrier 位于原始正文之后，并保留协议要求的 text 前驱，避免插入到原生图片之前而移动已提交位置。
 

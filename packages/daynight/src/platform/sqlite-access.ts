@@ -72,7 +72,7 @@ const validateOptions = (options: CommonOptions): number => {
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
   return timeout;
 };
-const stderrReporter: SqliteMigrationReporter = (event) => { process.stderr.write(`${JSON.stringify({ kind: `sqlite-migration-${event.kind}`, sqlite: event })}\n`); };
+export const reportSqliteMigrationEvent: SqliteMigrationReporter = (event) => { process.stderr.write(`${JSON.stringify({ kind: `sqlite-migration-${event.kind}`, sqlite: event })}\n`); };
 const databaseName = (source: SqliteDatabaseSource): string => typeof source === "string" ? source : source.name;
 const context = (options: CommonOptions, phase: string, fromVersion?: number) => ({ database: options.format.name, file: databaseName(options.file), phase, ...(fromVersion === undefined ? {} : { fromVersion }), toVersion: currentSqliteVersion(options.format) });
 const accessContext = (error: unknown, depth = 0): SqliteAccessError | undefined => {
@@ -92,7 +92,7 @@ export const closeSqliteDatabase = (db: Database.Database, options: Pick<CommonO
 };
 
 const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boolean): Database.Database => {
-  const timeout = validateOptions(options), report = options.onMigration === undefined ? stderrReporter : options.onMigration;
+  const timeout = validateOptions(options), report = options.onMigration === undefined ? reportSqliteMigrationEvent : options.onMigration;
   let db: Database.Database;
   try { db = typeof options.file === "string" ? new Database(options.file, { timeout, fileMustExist: !options.allowCreate }) : options.file; }
   catch (cause) { throw wrap(options, "open", cause, true, "not-started"); }

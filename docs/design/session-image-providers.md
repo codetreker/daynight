@@ -185,7 +185,7 @@ SDK 未保证 messageId 等于 user.message.id。运行时只在同 native Sessi
 | 原生槽已公开，原 Promise 迟到返回且精确匹配 | 原槽位、原生 bytes 和顺序不变；持久 provenance，在同 entry 末尾追加有序“原上传图片”槽，用原 image/resource；既有槽标“原生记录图片”。 |
 | 同迟到证据重放 | operation+原 imageId 唯一键复用同附加槽，不重复追加；alias、引用和单调 entry revision 同事务。 |
 
-Copilot matcher 保存可恢复的原请求意图，随后调用共享 `publishNativeInputAssociation`。共享 owner 校验既有原接受观察、完整 intent 与原资源，以当前已提交 entry 选择首次绑定或尾部追加；Provider 草案不决定真实 revision 或覆盖已完成 capture。不可变候选文件持久后，alias、原件槽/引用、occurrence、实际 revision 与 outbox source sequence 在同一 SQLite 事务提交。所有内容读取由该事务的文件指针决定，未提交候选不可见。
+Copilot matcher 保存可恢复的原请求意图，随后调用共享 `publishNativeInputAssociation`。共享 owner 校验既有原接受观察、完整 intent 与原资源，以当前已提交 entry 选择首次绑定或尾部追加；Provider 草案不决定真实 revision 或覆盖已完成 capture。alias、原件槽/引用、occurrence、当前正文及 totals、实际 revision 与 outbox source sequence 在原 SQLite 写事务中提交。所有内容读取同一 SQL 当前行，事务失败保留上一完整视图。
 
 提交返回不可变 receipt 与当前 view。receipt 的 `publicationRevision` 和 `sourceSequence` 固定，view 的 revision 可以因后续 capture 更高。`ProviderImageProjector.adoptCommitted` 接管当前 view，不再次发布旧 timeline 或 occurrence。若先前 capture 终态已持久而对应 part 尚未写入 timeline 就中断，通过 `patchNativeImagePart` 在当前 SQL entry 上补写同 imageId 的持久 part；不重新 register、读取来源或发送原生输入。该单槽入口也防止异步捕获回调以旧整条消息覆盖刚提交的原件槽；写失败保留已确认 capture 终态，不改成未知采集结果。重复同身份返回原 receipt 和当前 view，不加槽、不推进 revision；同身份异请求拒绝。unknown 只通过 `queryNativeInputAssociation` 查询原身份；权威 absent 后才允许恢复同一元数据提交，不能再次 native send。旧 Provider publication 仅作恢复意图，缺少共享提交证据时不能冒充已提交。
 

@@ -53,8 +53,10 @@ position projection both succeed.
 
 Native image publication and Markdown projection share the current committed
 entry. The named Markdown publication operation commits projection state with
-the timeline candidate pointer and outbox in one SQLite transaction, following
-the [atomic publication decision](2026-11-10-atomic-content-publication.md).
+the current SQL body, totals and outbox in one SQLite transaction. The
+[atomic publication decision](2026-11-10-atomic-content-publication.md) owns the
+original visibility guarantee; [SQL activation](2026-11-12-session-sqlite-activation.md)
+replaces its candidate pointer with the body row.
 Before parsing, receipt updates or stop settlement, Markdown state adopts
 same-position native image updates and invalidates stale parser tokens. This
 also closes the crash window between a native patch and Markdown state repair.

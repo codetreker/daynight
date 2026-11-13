@@ -21,12 +21,13 @@ transaction. The resource composition guards deletion with current SQL and nativ
 input image references before delegating leases, pins and files to the existing
 [resource owner](2026-11-12-session-resource-files.md).
 
-Historical conversion and post-commit maintenance are callable components. Their
-isolated format combines the original numbered journal sequence with one staged
-SQL resource through the existing schema-snapshot and validation owner. Production
-numbered discovery remains at version 9 and ordinary consumers retain candidate
-files. Activation requires adopting the same SQL resource and components together;
-there is no runtime format selector or second body authority.
+Historical conversion and post-commit maintenance are callable components. They
+were delivered independently with a staged SQL resource outside numbered version 9
+discovery, allowing their full mechanisms to be validated before ordinary consumers
+changed. The [activation decision](2026-11-12-session-sqlite-activation.md) adopts
+that unchanged resource as canonical 010 and connects all consumers through the
+existing schema-snapshot and validation owner. There is one format path and one
+body authority.
 
 Conversion preserves the original execution, operation, provenance and stopping
 evidence. Only committed pointers determine current content. Source export and
@@ -93,7 +94,7 @@ Only the post-checkpoint file measurement can establish physical admission.
 
 **Enable the new format before adapting its consumers.** Readers, writers,
 resource guards and archive traversal must agree on one body authority. Keeping
-the completed components outside numbered production discovery permits that
+the completed components outside numbered production discovery allowed that
 adoption to remain one focused change.
 
 **Run VACUUM in a child with private temporary environment.** If the parent
@@ -120,7 +121,7 @@ expiration after it returns preserves the completed phase and pending allocation
 This adds explicit physical peak accounting and maintenance sequencing without
 changing Session protocols, resource paths, input origins or native execution.
 
-The production journal remains v9 until its consumers adopt these components.
-Generated stress data documents its own content and operating conditions; absent
+The production journal uses canonical v10 and these components through the original
+role-specific preparation entry. Generated stress data documents its own content and operating conditions; absent
 original incident bytes, it cannot establish exact incident replay or an
 equivalent performance result.

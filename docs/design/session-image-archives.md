@@ -37,6 +37,12 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 同 execution、同 Session 的原生恢复必须通过现有停止证明、准确 nativeSessionId 与代次递增规则，恢复持久映射并从服务读取原图。新代次只授予当前写资格，不改变旧图片读取归属。已有图片原件缺失时保持原 descriptor，显示读取/存储错误；不得重新打开改变后的路径或 URL 替换。
 
+### 本机 SQL 快照与上传生命周期
+
+活动同步与停止归档的本机正文均来自 `content/session-content.ts`，分页显示结果不能替代完整 SQL 遍历。一个短同步 SQL 快照同时物化有序 entries、资源 descriptor/引用、historyEpoch 与 sourceThrough；活动同步以原写事务提交同步 intent 和固定字节，停止归档以原读事务取得最终内容，事务结束后才进行网络传输。同 syncId 的重试使用原冻结字节，不能将后续修订写入旧同步文件。
+
+停止入口先以原 ticket、完整停止证据和 permit 完成待处理的正文退休/压缩及正常准入。冻结后关闭本机 SQL，并释放该本机阶段的存储许可。上传对象仅保留物化 timeline 与在快照内取得的资源文件 lease；lease 的 `read`/`close` 可独立于 SQL，且必须在上传结束后关闭；SQL timeline、metadata 与检查当前引用的资源释放入口均不得在关闭后继续使用。`assertFrozen()` 以新短连接复核原 stopped 身份、当前 SQL 正文和 source 截止点；source-tail ACK、ready receipt 对账和后续本机写入重新取得原 permit，并使用当前 SQL guard。[SQL 正文设计](session-sqlite-content.md)拥有迁移、reader barrier 与物理维护顺序。
+
 ### 新 Test Session 的原生历史恢复（消费者接入合同）
 
 本节定义 Provider 恢复与整体验收阶段的接入要求，基础资源与归档交付不表示跨 Session 导入入口已经启用。
@@ -75,7 +81,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 上传创建做最小新增关联预检；显式发送取得完整文字/图集合后，在原生调用前为整条已知输入、绑定及未来 retained 项预留元数据，unknown 持有预留。来源 register 在读取前为其出现及最大安全失败说明、available descriptor 和必要 retained 信息预留；无法预知正文增长不能承诺无限历史。所有并发文本/图片更新用同一 Session 容量序列和持久 revision/CAS，不能消耗已有输入的预留。真实投影结算只发生一次，拒绝/可信未派发才释放 operation 预留。
 
-metadata guard 需要完整当前历史投影，不能只看 snapshot 最近页。服务只持久控制账本，完整会话正文不入数据库，不能把空的或不完整的正文表当历史镜像。历史预算模块只保存每entry的ID/seq/revision、规范编码hash、统一编码长度/数量、图片引用ID及源epoch/截止seq的预算账本，不保存文字、Markdown、工具正文或Base64。Controller初次同步/恢复在固定historyEpoch/source截止点，以本地完整pending-content生成预算同步文件，使用与下文最终同步相同的1MiB原字节块传输与完整文件校验，落库的只是上述有界元数据；不能用可能把大entry替成error的在线wire-display分页作为完整容量证据。活动会话入口为`PUT/GET {base}/image-history-ledger/{syncId}`（GET追加`/status`），复用最终同步相同header/body/receipt/轮次算法，区别仅是要求当前有效ControllerFence和活动图片协议，而非stopped prepare权限；服务绑定实际Controller认证，不向普通浏览器开放正文同步。正文只进受写lease保护的有界临时文件，计量后清理，不写数据库正文表。以epoch及连续sourceSeq作为同步屏障，同步期间新增事件在Controller原持久outbox保持并按顺序接续；gap未消除前不宣布图片准备/发送可用。预算账本限制100000条entry、100000出现及固定字段长度，并独立计入服务物理准入；恢复不猜丢失正文。归档时流式解析上传timeline，逐entry比对账本hash/长度、序列和完整集合，不能用总长度相等代替内容闭包。接线必须覆盖timeline upsert、历史同步、reasoning/工具更新、纯文字并发和保留容器；大entry更新使用同样的原字节同步文件及source截止屏障完成计量，不以被截短的显示事件覆盖其hash/长度。在这次完整同步被确认之前保留旧预算与全部预留，暂停新图片准入，文本传输仍可进行但其最终容量不得侵占已保留空间。服务故障恢复后完整元数据账本、预留与source fence一起协调。超出已发布文本容量的原生输出仍按原有容量失败处理，保留上一可读快照及已经保存的图片引用，不通过截断文字、删旧图或只归档部分 entries 假装通过。
+metadata guard 需要完整当前历史投影，不能只看 snapshot 最近页。服务只持久控制账本，完整会话正文不入服务数据库；Controller 的 journal v10 当前正文是本机权威，不能把空的或不完整的服务账本当历史镜像。历史预算模块只保存每entry的ID/seq/revision、规范编码hash、统一编码长度/数量、图片引用ID及源epoch/截止seq的预算账本，不保存文字、Markdown、工具正文或Base64。Controller初次同步/恢复在短 SQL 快照内固定historyEpoch/source截止点并物化本地完整 timeline、资源描述，生成预算同步文件，使用与下文最终同步相同的1MiB原字节块传输与完整文件校验，落库的只是上述有界元数据；不能用可能把大entry替成error的在线wire-display分页作为完整容量证据。活动会话入口为`PUT/GET {base}/image-history-ledger/{syncId}`（GET追加`/status`），复用最终同步相同header/body/receipt/轮次算法，区别仅是要求当前有效ControllerFence和活动图片协议，而非stopped prepare权限；服务绑定实际Controller认证，不向普通浏览器开放正文同步。正文只进受写lease保护的有界临时文件，计量后清理，不写数据库正文表。以epoch及连续sourceSeq作为同步屏障，同步期间新增事件在Controller原持久outbox保持并按顺序接续；gap未消除前不宣布图片准备/发送可用。预算账本限制100000条entry、100000出现及固定字段长度，并独立计入服务物理准入；恢复不猜丢失正文。归档时流式解析上传timeline，逐entry比对账本hash/长度、序列和完整集合，不能用总长度相等代替内容闭包。接线必须覆盖timeline upsert、历史同步、reasoning/工具更新、纯文字并发和保留容器；大entry更新使用同样的原字节同步文件及source截止屏障完成计量，不以被截短的显示事件覆盖其hash/长度。在这次完整同步被确认之前保留旧预算与全部预留，暂停新图片准入，文本传输仍可进行但其最终容量不得侵占已保留空间。服务故障恢复后完整元数据账本、预留与source fence一起协调。超出已发布文本容量的原生输出仍按原有容量失败处理，保留上一可读快照及已经保存的图片引用，不通过截断文字、删旧图或只归档部分 entries 假装通过。
 
 逻辑容量不足返回公共协议 `quota_exceeded`（409，具体说明记录容量或图片容量）；物理空间不足为 `storage_unavailable`。只拒绝新准备/关联，不淘汰已发送、unknown 或历史。未能采集的输出用有界 ImageUnavailablePart，在既有 timeline 容量范围内继续文本。第1001个图片出现可为失败项而无需第1001个 descriptor；失败记录按 imageId 更新，不能每次 retry 无限追加。
 
@@ -292,7 +298,7 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 
 终结分为原生停止、媒体结算、文件封存、记录发布；不能在 active native 仍写正文时任意截取最后一页。归档模块保存服务内部归档准备账本，固定原 stopped fence、controller/instance、recordId、历史截止 revision、未决 capture 集合、预期文件摘要、准备 pin 与提交结果。原生 stopped 证明保留，图片协调器可继续读取已持久准备文件；不会启动/恢复 Agent。
 
-1. 在原owner/原Session归档权限与停止证明下建立settling准备，停止新原生执行和新的任意来源读取，但先允许原stopped writer补送本地已发生的最终正文、来源映射和连续source截止证据。归档重试不依赖原WebSocket重新上线：新增有界history同步profile接收原pending-content的完整最终投影，重建仅hash/长度/引用的服务预算账本，从有界临时文件逐项校验后清理正文。只有完整同步确认才固定候选occurrence集合；不能用尚未同步的服务视图seal。
+1. 在原owner/原Session归档权限与停止证明下建立settling准备，停止新原生执行和新的任意来源读取，但先允许原stopped writer补送本地已发生的最终正文、来源映射和连续source截止证据。归档重试不依赖原WebSocket重新上线：新增有界history同步profile接收原 SQL 当前正文的完整最终投影，重建仅hash/长度/引用的服务预算账本，从有界临时文件逐项校验后清理正文。只有完整同步确认才固定候选occurrence集合；不能用尚未同步的服务视图seal。
 2. 最多等待60秒完成当前已有本地来源/解码尝试和服务 query/复制。尚未开始或确定只有未提交 partial staging 的采集在确认 writer 停止后，原 capture 原子转 failed并释放预留，保留明确缺图原因。已 committed 的必须纳入原图。validated/copying/提交未知先查服务，不能以60秒到期宣称未采集。
 3. 最终正文同步后，已登记采集的终态/retained结算，以及对同一已持久正文的有界投影恢复，仍是允许的确定增量；解析成功即使得到零图片，也须将清除错误、完整绑定及修订通过新的最终同步轮次送达服务。保持原 stopped 身份和 source 截止点，不启动新的来源 IO；恢复发现的真实出现按已有停止后登记/结算规则处理，不放宽采集权限。完成这些增量并再次确认最终预算账本后才seal，禁止一切正文和出现变更。服务锁内对原 capture 做终结 CAS：commit 已获胜则只能纳入 committed；confirmed failed 获胜后旧 attempt 的 validated/复制完成不可再次提交。还有未知服务结果、活跃 writer 或未决原生消息关联时归档保持 pending或明确失败，持有 pin；之后只协调原准备，不生成竞争 manifest。prepared bytes 丢失但服务已 committed 仍可归档；服务明确从未提交才记缺失。
 4. 结算全部出现后取得冻结完整投影，包含当前/retained/撤回容器；共享 codec 验证闭包、统一 timeline/manifest 容量和原投影 gap，并要求全部 imageProjectionError=null 和完整有效的 Markdown/reasoning bindings；首次解析失败且 retained 为空也不能通过空集合检查。未解决图片投影错误时不进入 sealed，不创建可发布 manifest。gap 表示未知文本内容时整个归档失败，不把图片 partial当作文本缺页通行证。
@@ -302,9 +308,9 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 
 活动连接成功重连时，服务在校验原 grant、hello 与 controller 身份的同一事务内，将现有活动账本的最终目标 epoch 推进到新连接的 historyEpoch。账本保留上一完整同步的原 epoch、entry/hash/长度及所有完整、未完成文件回执；连续重连只能从最新已验证目标继续，不能回退到旧 epoch。重连后仍须完整同步才能恢复图片准入。若此前即停止，prepare 和 stopped source tail 沿已验证目标结算，先保留旧完整前缀，再由最终同步核验该前缀并提交新 epoch 的完整账本；未完成轮次只在停止与服务 IO lease 屏障通过后转 failed，已确认块和原文件身份保留。没有这条持久连接关系的跨 epoch 同步继续拒绝。
 
-settling 下的最终同步使用有界原字节文件传输，避免一条合法但 JSON 转义后大于普通历史页的 entry 永远无法同步。`PUT {base}/archive/prepare/history/{syncId}?offset=<Decimal>` 的原 stopped writer 权限与完整归档身份由 prepare 账本绑定。文件原内容严格为 `{historyEpoch,sourceThrough,entries,resources}`，前两项是原历史身份和最后已确认连续源序号，entries 为全部有序 TimelineEntry，resources 为统一描述符、不含 Base64；正文只在临时文件和有界解析中存在，不写 DB 正文表。原 timeline≤64MiB，再加有界同步 envelope 最多16KiB，故同步文件≤67125248 bytes；实际 timeline 独立64MiB检查不被这个传输余量放宽。
+settling 下的最终同步使用有界原字节文件传输，避免一条合法但 JSON 转义后大于普通历史页的 entry 永远无法同步。`PUT {base}/archive/prepare/history/{syncId}?offset=<Decimal>` 的原 stopped writer 权限与完整归档身份由 prepare 账本绑定。文件原内容严格为 `{historyEpoch,sourceThrough,entries,resources}`，前两项是原历史身份和最后已确认连续源序号，entries 为全部有序 TimelineEntry，resources 为统一描述符、不含 Base64；服务端收到的正文只在临时文件和有界解析中存在，不写服务 DB 正文表。原 timeline≤64MiB，再加有界同步 envelope 最多16KiB，故同步文件≤67125248 bytes；实际 timeline 独立64MiB检查不被这个传输余量放宽。
 
-每块1..1048576原bytes，完整文件长度/hash和块hash使用下节相同三个Daynight-* header，offset连续或精确同边界重传；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。最后完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及pending-content gap校验后，原子替换全部预算元数据并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；查询未知不换ID。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
+每块1..1048576原bytes，完整文件长度/hash和块hash使用下节相同三个Daynight-* header，offset连续或精确同边界重传；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。最后完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及原 journal gap校验后，原子替换全部预算元数据并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；查询未知不换ID。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
 
 本地采集终态结算改变绑定，或对已持久正文的有界解析恢复成功改变图片投影时，只有先确认原同步complete或failed、实际writer已停且prepare仍settling，才能显式以新syncId开启新完整轮次。解析成功清除imageProjectionError并输出完整空bindings也适用，不依赖capture结算或WebSocket重连。新轮次保持同一prepare/stopped身份、historyEpoch和sourceThrough，以推进的entry/片段revision提交修正投影；旧syncId的文件/hash不得改变，禁止新原生执行和新的来源IO。旧metadata账本和pin在新轮次complete前保留，旧轮次迟到请求不能覆盖新事实。服务计算并保存逐entry/hash/长度/引用元数据，legacy内嵌bytes的编码长度按其已登记长度和规范Base64计算，最终归档文件再验实际bytes。同步临时正文文件仅为校验使用，完成并写入元数据后删除；失败/未知按writer lease与准备引用协调清理。整个合法entry可跨任意文件块，不拆文字part、不改entryId；解析在有界执行单元完成，测量最坏64MiB文件而非假设单entry小于传输块。此同步 DTO 由本文定义并由公共 codec 统一实现，与图片upload和正式timeline file区分。
 

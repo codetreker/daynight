@@ -10,7 +10,7 @@ import type { TimelineEntry } from "../../../src/session/protocol.js";
 
 if (process.env.CI) throw new Error("CLI stress tests run only on local machines.");
 
-const schema = loadSqliteSql(new URL("../../../src/commands/controller/content/timeline-schema.sql", import.meta.url));
+const schema = loadSqliteSql(new URL("../../../src/commands/controller/sqlite/journal/010-timeline-content.sql", import.meta.url));
 const roots: string[] = [], connections: Database.Database[] = [];
 afterEach(() => {
   for (const db of connections.splice(0)) if (db.open) db.close();

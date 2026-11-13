@@ -464,8 +464,10 @@ them. Cases proving file persistence after reopen, WAL snapshots, separate live
 connections, filesystem errors, instance locking or cross-process recovery use
 real file databases in `*.integration.test.ts` suites. Ordinary `pnpm test` and
 the CLI CI matrix run both kinds with the existing platform and failure checks.
-Git repositories, IPC and Controller pending-content files retain their own
-private filesystem fixtures. The
+Git repositories, IPC, Controller resource files and historical body migration
+sources retain their own private filesystem fixtures. Current timeline bodies use
+the same SQL owner in memory and file cases; capacity stress probes run separately
+from ordinary test selection. The
 [memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
 owns storage selection and connection ownership.
 GitHub tests use controlled API responses and subprocess fixtures to verify

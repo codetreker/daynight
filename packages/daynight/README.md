@@ -2972,7 +2972,7 @@ input/results and stopped/closed/deleted flags, preserving cleanup intent,
 identity and deadline. Version 0 resets its schema and data through the common
 SQLite policy. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
-format version 9. Both Worker stores must open successfully before scheduling.
+format version 10. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
@@ -2987,7 +2987,22 @@ transport release local ownership before the network and verify the same stopped
 source after reacquiring it. Stopped settlement retains its existing 8 MiB reserve
 above the ordinary 128 MiB metadata limit, so an acknowledged tail can settle
 before recovery applies normal writer admission. Unknown process state and unconfirmed handle close
-retain their evidence. Current journal v9 and candidate body files remain in use.
+retain their evidence. The journal stores one current SQL row per timeline entry;
+body, UTF-8 totals, Markdown/image state, original input origins and outbox commit
+in the original transaction. Replaced body revisions do not create candidate files.
+Historical candidates remain only until reader-safe stopped maintenance finishes.
+
+Version 10 imports only committed historical body pointers and preserves the
+original execution, native identity, operations and message origins. Upgrade-only
+reads retain stopping evidence and pending cleanup; they do not prove native
+termination. Proven stopped maintenance completes the reader checkpoint barrier,
+legacy body retirement, in-place VACUUM, post-checkpoint file verification and
+actual reservation settlement before the next writer starts. Busy readers or
+physical capacity refusal keep the original history and report maintenance
+waiting. Current timeline JSON remains limited to 64 MiB and 100000 entries;
+normal physical admission still applies independently. The
+[SQL content design](../../docs/design/session-sqlite-content.md) defines these
+storage and recovery boundaries.
 
 Initial launch preflight uses the frozen ticket before spawn. The child prepares
 under its own permit and commits its generation and original Controller proof in
@@ -3090,9 +3105,15 @@ its recorded timeline and resources to file storage for read-only access. The
 service database stores archive metadata, not conversation payloads. Service
 unavailability does not prevent local process cleanup; failed uploads retain
 their private local source. The Controller stores resource descriptors, blobs,
-pins and leases through its resource file owner. The pending-content composition
-checks timeline and native input references before removing a resource. The
-current directory and user files are never removed by the launcher.
+pins and leases through its resource file owner. The SQL content composition
+checks current timeline and native input references before removing a resource.
+Archive and active history uploads materialize their ordered timeline, resource
+descriptors and source cutoff in a short SQL snapshot, then end the snapshot before
+network work. Stopped archives close their local SQL connection; the active
+Controller retains its lifetime writer. Frozen uploads retain only materialized
+values and file reads/leases; later stopped acknowledgement and archive checks
+reopen SQL under the original identity.
+The current directory and user files are never removed by the launcher.
 
 Retry a failed upload without starting or resuming the Agent:
 

@@ -2,14 +2,10 @@ import type Database from "better-sqlite3";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalId } from "../../../api/parse.js";
-import type { SqliteFormat } from "../../../platform/sqlite-format.js";
-import { loadSqliteSql } from "../../../platform/sqlite-sql.js";
-import { controllerJournalFormatWithExtension, type JournalMigrationContext } from "../journal-format.js";
+import type { JournalMigrationContext } from "../journal-format.js";
 import { captureCommittedPendingTimeline } from "../pending-content.js";
 import { assertControllerStoragePermit } from "../storage-lock.js";
 import { openTimelineStore } from "./timeline-store.js";
-
-const timelineSql = loadSqliteSql(new URL("./timeline-schema.sql", import.meta.url));
 
 /** Empty SQL cannot establish ownership of a retained file archive. */
 export const assertNoOrphanTimelineSource = (journal: string): void => {
@@ -39,7 +35,7 @@ export const assertNoOrphanTimelineSource = (journal: string): void => {
 };
 
 /** Import is part of the caller's original immediate versioned migration transaction. */
-export const importControllerTimeline = (db: Database.Database, context: JournalMigrationContext): undefined => {
+export const importControllerTimeline = (db: Database.Database, context: JournalMigrationContext, schemaSql: string): undefined => {
   const assertWrite = (additionalBytes: number): void => {
     if (!db.inTransaction) throw new Error("Timeline import requires the journal migration transaction.");
     assertControllerStoragePermit(context.storagePermit, context.storagePermit.journalFile);
@@ -58,7 +54,7 @@ export const importControllerTimeline = (db: Database.Database, context: Journal
     sessionId = snapshot.sessionId;
   }
   const source = sessionId === undefined ? undefined : captureCommittedPendingTimeline(db, sessionId);
-  db.exec(timelineSql);
+  db.exec(schemaSql);
   const store = openTimelineStore(db, { assertWrite });
   let count = 0, bytes = 0;
   source?.iterate(entry => {
@@ -72,17 +68,3 @@ export const importControllerTimeline = (db: Database.Database, context: Journal
   if (actual.count !== count || actual.bytes !== bytes) throw new Error("Imported timeline totals differ from the stored rows.");
   db.prepare("UPDATE execution SET legacy_timeline_cleanup_pending=1 WHERE id=1").run();
 };
-
-/** Production discovery remains the numbered journal; this isolated format is callable by components. */
-export const controllerTimelineFormatForMigration = (contextFor: (db: Database.Database) => JournalMigrationContext): SqliteFormat => {
-  const format = controllerJournalFormatWithExtension(contextFor, {
-    schema: { version: 10, sql: timelineSql },
-    migrate: (db, _source, context) => importControllerTimeline(db, context),
-  });
-  return { ...format, baseline: { ...format.baseline, create: db => {
-    assertNoOrphanTimelineSource(db.name);
-    return format.baseline.create(db);
-  } } };
-};
-
-export const controllerTimelineFormat = controllerTimelineFormatForMigration(() => { throw new Error("Timeline migration requires its original storage permit and reserved-write context."); });

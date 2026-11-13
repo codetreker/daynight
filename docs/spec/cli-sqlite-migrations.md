@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 12，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 9，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针和 9 输入来源 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 10，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针和 9 输入来源，10 将已提交当前正文与统计迁入 SQL |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -29,6 +29,8 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 一次打开所需的重置、基线建库和连续迁移在同一 `BEGIN IMMEDIATE` 事务中完成，SQL 结构、数据和 `user_version` 一起提交或回滚。重置不得删除或替换数据库文件。迁移失败或进程中断后，重新打开只接受完整旧格式或完整目标格式；修复实际原因后可再次打开。各数据库分别保证原子性，不承诺跨文件事务；Worker 所需任一库打开失败时不启动协调业务。
 
 Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，原非零历史必须先可靠导出再删除正文表。Web 的清理记录自 v2 起只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移移除旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。Web 2→3 新增编排阻塞表并保留原执行记录，已升级的库拒绝旧二进制访问。版本 0 重置不成为非零版本的历史数据清洗路径。
+
+Controller v10 必须从已验证的历史来源导入当前正文；v8–9 只能采用已提交指针，不收养目录中的较新候选。正文、totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对与预留结算完成，才允许下一 writer。upgrade-only 可以读取已导入历史并保留 pending，不得制造 stopped。当前格式的普通正文生产者和消费者必须统一使用 SQL，旧解码器仅服务编号迁移。
 
 ## 查询与并发
 
@@ -56,6 +58,6 @@ Resume lease 申请只有成功返回后才能用于启动新的原生执行。�
 
 ## 验证边界
 
-真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。
+真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。Controller v1–9 真实来源还须验证原子导入、来源关系保留、旧 reader 下不退休、空闲连接下的后置 checkpoint、旧索引耐久清空、清 pending 结果未知与返额失败后的真实阶段和可重入性。
 
 [升级设计](../design/cli-sqlite-migrations.md)拥有组件、事务和连接生命周期；[Review 需求](daynight-review.md)、[Worker 需求](daynight-worker.md)和[Controller 需求](controller-test-sessions.md)继续拥有各领域的业务行为。

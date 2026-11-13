@@ -114,8 +114,9 @@ it.each(["<", "\u2028", "x"])("keeps %s tool content local and uses identical bo
     store.acknowledgeEvents(emitted.sequence);
     expect(store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "following event" })).toMatchObject({ sequence: "2" });
     expect(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
-    const { openPendingContent } = await import("../../../src/commands/controller/pending-content.js");
-    expect(openPendingContent(filename, ticket.sessionId, database).entries.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
+    const { openTimelineStore } = await import("../../../src/commands/controller/content/timeline-store.js");
+    const timeline = openTimelineStore(database, { assertWrite: () => { throw new Error("Read-only assertion cannot publish history."); } });
+    expect(timeline.get(entry.entryId)).toMatchObject({ input: text, output: entry.output });
   } finally { store.close(); }
 });
 

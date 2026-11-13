@@ -107,8 +107,10 @@ shared [content commit owner](2026-11-10-atomic-content-publication.md) publishe
 aliases, original references, occurrences, the actual entry revision and outbox
 sequence together. The original implementation persisted a recoverable plan
 before separate timeline and occurrence writes; that preserved recovery facts
-but could not meet the atomic requirement. Immutable candidate files and a
-SQLite commit pointer now govern every content reader. The Provider adopts the
+but could not meet the atomic requirement. Immutable candidates originally
+provided a SQLite commit pointer; the
+[SQL activation decision](2026-11-12-session-sqlite-activation.md) replaces them
+with one committed current body row and preserves the same guarantee. The Provider adopts the
 current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata

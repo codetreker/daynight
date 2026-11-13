@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
@@ -7,6 +7,10 @@ import { readSqliteDatabase } from "../../../src/platform/sqlite-access.js";
 import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
+import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
+import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
+import { CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalReadOptions, prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
@@ -28,6 +32,7 @@ const initialize = (f: Awaited<ReturnType<typeof fixture>>, snapshot?: ReturnTyp
   const permit = acquireControllerStoragePermit(f.file);
   try {
     expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null });
+    openResourceFiles(f.file, f.ticket.sessionId);
     const db = new Database(f.file);
     try { if (snapshot !== undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(f.ticket), owner, JSON.stringify(snapshot)); }
     finally { db.close(); }
@@ -70,7 +75,7 @@ test("current-schema reads do not reacquire the writer's storage lock or invoke 
   try {
     expect(readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => -1 }, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
     const db = new Database(f.file);
-    try { expect(readSqliteDatabase({ ...controllerJournalReadOptions(db), onMissing: () => -1 }, current => current.pragma("user_version", { simple: true }))).toBe(9); }
+    try { expect(readSqliteDatabase({ ...controllerJournalReadOptions(db), onMissing: () => -1 }, current => current.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat)); }
     finally { db.close(); }
     assertControllerStoragePermit(permit, f.file);
   } finally { permit.release(); }
@@ -82,7 +87,7 @@ test("a borrowed outdated connection requires an explicit original migration per
     expect(() => readSqliteDatabase({ ...controllerJournalReadOptions(db), onMissing: () => null }, () => null)).toThrow(/migration-failed/);
     expect(db.open).toBe(true); expect(db.pragma("user_version", { simple: true })).toBe(0);
     expect(readSqliteDatabase({ ...controllerJournalReadOptions(db, permit), onMissing: () => null }, () => "ready")).toBe("ready");
-    expect(db.open).toBe(true); expect(db.pragma("user_version", { simple: true })).toBe(9);
+    expect(db.open).toBe(true); expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
   } finally { db.close(); permit.release(); }
 });
 
@@ -92,7 +97,7 @@ test("a fresh writer is prepared without committing a generation and accepts a s
     const ticket = { ...f.ticket, resumeNativeSessionId: randomUUID() };
     expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket }, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
     const db = new Database(f.file, { readonly: true });
-    try { expect(db.prepare("SELECT COUNT(*) AS count FROM execution").get()).toEqual({ count: 0 }); expect(db.pragma("user_version", { simple: true })).toBe(9); }
+    try { expect(db.prepare("SELECT COUNT(*) AS count FROM execution").get()).toEqual({ count: 0 }); expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
     finally { db.close(); }
     assertControllerStoragePermit(permit, f.file);
   } finally { permit.release(); }
@@ -187,7 +192,7 @@ test("a deadline crossed after schema commit reports the committed outcome and c
     try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket, deadline }, permit, event => { if (event.kind === "completed") clock.mockReturnValue(deadline); }); }
     catch (error) { failure = error; }
     expect(failure).toMatchObject({ name: "SqliteAccessError", outcome: "committed", connectionClosed: true });
-    const db = new Database(f.file, { readonly: true }); try { expect(db.pragma("user_version", { simple: true })).toBe(9); } finally { db.close(); }
+    const db = new Database(f.file, { readonly: true }); try { expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); } finally { db.close(); }
     expect(controllerStorageConnectionIsOpen(failure)).toBe(false);
   } finally { clock.mockRestore(); permit.release(); }
 });
@@ -199,7 +204,7 @@ test("an automatic file upgrade acquires and releases its own permit while a bus
   expect(await readFile(lockFile, "utf8")).toBe(owner);
   const old = new Database(f.file, { readonly: true }); try { expect(old.pragma("user_version", { simple: true })).toBe(0); } finally { old.close(); }
   permit.release();
-  expect(readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => -1, onMigration: () => {} }, db => db.pragma("user_version", { simple: true }))).toBe(9);
+  expect(readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => -1, onMigration: () => {} }, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
   await expect(readFile(lockFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -350,10 +355,10 @@ test.each(unsafeVersionZeroCases)("$mode retains version zero $variant owner evi
 test("version zero writer reset rolls back when retained pending content has no original execution", async () => {
   const f = await fixture(); versionZeroSource(f.file, "owner-only", null);
   const directory = `${f.file}.pending-content`, entry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "reasoning", text: "retained original" };
-  await mkdir(path.join(directory, "entries"), { recursive: true });
-  await writeFile(path.join(directory, "manifest.json"), JSON.stringify({ schemaVersion: 1, sessionId: f.ticket.sessionId }));
+  await mkdir(path.join(directory, "entries"), { recursive: true, mode: 0o700 });
+  await writeFile(path.join(directory, "manifest.json"), JSON.stringify({ schemaVersion: 1, sessionId: f.ticket.sessionId }), { mode: 0o600 });
   const orphan = path.join(directory, "entries", `${randomUUID()}.json`), bytes = JSON.stringify(entry);
-  await writeFile(orphan, bytes);
+  await writeFile(orphan, bytes, { mode: 0o600 });
   const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
   try {
     let failure: unknown;
@@ -367,5 +372,41 @@ test("version zero writer reset rolls back when retained pending content has no 
       expect(db.prepare("SELECT value FROM discarded").get()).toEqual({ value: "original evidence" });
     } finally { db.close(); }
     expect(await readFile(orphan, "utf8")).toBe(bytes);
+  } finally { permit.release(); }
+});
+
+
+test("automatic v9 reading uses its original peak reservation above normal metadata capacity and leaves stopped maintenance pending", async () => {
+  const f = await fixture(), db = new Database(f.file);
+  const snapshot = { ...stoppedSnapshot(f.ticket), lifecycle: "stopping", nativeStopped: false, stoppedAt: null };
+  const entry = { entryId: randomUUID(), entrySeq: "9007199254740993", revision: "3", kind: "reasoning", text: "original committed Ω body" };
+  const body = JSON.stringify(entry), candidate = `${randomUUID()}.json`, orphan = `${randomUUID()}.json`;
+  try {
+    db.pragma("journal_mode=WAL");
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 9)) db.exec(step.sql);
+    db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,NULL,?)").run(controllerPayloadHash(f.ticket), JSON.stringify(snapshot));
+    db.prepare("INSERT INTO content_index VALUES(?,?,?,?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, candidate, createHash("sha256").update(body).digest("hex"), Buffer.byteLength(body));
+    db.pragma("user_version=9");
+  } finally { db.close(); }
+  openResourceFiles(f.file, f.ticket.sessionId);
+  const directory = path.join(`${f.file}.pending-content`, "entries");
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(path.join(directory, candidate), body, { mode: 0o600 });
+  await writeFile(path.join(directory, orphan), "", { mode: 0o600 });
+  await truncate(path.join(directory, orphan), CONTROLLER_METADATA_BYTES + 1048576);
+  const actual = readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => { throw new Error("Original journal disappeared."); }, onMigration: () => {} }, reader => {
+    const timeline = openTimelineStore(reader, { assertWrite: () => { throw new Error("Read is not a writer."); } });
+    return { entry: timeline.get(entry.entryId), totals: timeline.totals(), row: reader.prepare("SELECT snapshot,legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1").get() };
+  });
+  expect(actual).toEqual({ entry, totals: { entryCount: 1, byteLength: Buffer.byteLength(body), timelineBytes: 14 + Buffer.byteLength(body) }, row: { snapshot: JSON.stringify(snapshot), pending: 1 } });
+  expect(await readFile(path.join(directory, candidate), "utf8")).toBe(body);
+  expect((await stat(path.join(directory, orphan))).size).toBe(CONTROLLER_METADATA_BYTES + 1048576);
+  await expect(stat(path.join(f.root, "storage.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  const permit = acquireControllerStoragePermit(f.file);
+  try {
+    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "stopped-maintenance", ticket: f.ticket }, permit, () => {})).toThrow(expect.objectContaining({ kind: "migration-failed", cause: expect.objectContaining({ cause: expect.objectContaining({ message: "Controller storage maintenance requires the original stopped generation." }) }) }));
+    const current = new Database(f.file, { readonly: true });
+    try { expect(current.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(current.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution").get()).toEqual({ pending: 1 }); }
+    finally { current.close(); }
   } finally { permit.release(); }
 });

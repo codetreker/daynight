@@ -34,11 +34,12 @@ setting. Required migration uses the same connection and preserves its owner's
 ability to inspect rollback after failure. This connection path does not infer a
 missing file or acquire a filesystem maintenance permit.
 
-Controller fixtures retain a filename for their separate pending-content source
-and supply the database connection through the lifecycle-store options. Startup
-ownership checks and content reconciliation remain inside the original migration
-transaction. In-memory SQLite does not imply that Git fixtures, IPC or pending
-archive content stop using their real files.
+Controller fixtures retain a filename for resource storage and historical body
+migration sources, and supply the database connection through lifecycle-store
+options. Current timeline bodies use the same SQL owner for memory and file
+connections. Startup ownership and content checks retain their original transaction
+boundary. In-memory SQLite does not imply that Git fixtures, IPC, resource files
+or historical migration sources stop using real files.
 
 Cases proving reopen persistence, WAL snapshots, separate live connections,
 filesystem errors or identity, instance locking and cross-process recovery live

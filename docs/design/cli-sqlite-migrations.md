@@ -24,7 +24,7 @@
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
 | Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql`、`007-resource-cleanup-intent.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql`、`003-orchestration-blockers.sql` |
-| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
@@ -37,11 +37,11 @@
 
 目标版本由实际发现的主链末尾给出。没有清单或第二套期望序列时，连续链缺少原本末尾文件无法仅靠目录发现判定；不能把中间缺号检查宣传成任意文件缺失检测。构建和安装验证核对实际源码目录与产物中的完整文件及字节，已交付 SQL 文件的保留仍属于源码变更审阅要求。
 
-构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle、上述五个 SQL 目录以及 `controller/content/timeline-schema.sql` 到相同的 dist 相对路径；SQL 目录递归复制 `.sql`。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
+构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle、上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录递归复制 `.sql`。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
 
 SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)。
 
-Controller 的可独立调用 SQL 正文组件使用唯一暂存 `content/timeline-schema.sql`，与同一编号序列组合为隔离 v10 格式。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；完整验证并捕获原已提交指针后，在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件并导入正文，随后核对统计；失败回滚恢复原索引。暂存资源不进入 `loadSqliteSequence`，生产格式仍为 v9。组件的当前行、历史源验证、局部峰值预留与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。
+Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；010 的领域 callback 先完整验证并捕获原已提交指针，再在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件、导入正文并核对统计。DDL 只执行一次；失败回滚恢复原索引。普通正文读写统一消费当前 SQL 行，旧文件解码器仅供编号迁移。当前行、历史源验证、局部峰值预留与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。
 
 ## 独立版本与起点
 
@@ -50,7 +50,7 @@ Controller 的可独立调用 SQL 正文组件使用唯一暂存 `content/timeli
 | Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
 | Web 执行状态 | 基线 1；版本 2 移除 cleanup 的重复操作回执及资源完成标记，保留意图、期限和操作身份；版本 3 新增独立编排阻塞表 |
-| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联 |
+| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休 |
 | Native resume lease | 基线及当前版本 1；任何保留 lease 阻止重置或迁移 |
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。
@@ -63,7 +63,7 @@ Controller 的可独立调用 SQL 正文组件使用唯一暂存 `content/timeli
 
 可写 opener 接管提供的连接；返回的 store 负责关闭，初始化失败按实际事务和关闭结果报告。只读入口借用连接，调用方继续负责迁移互斥与最终关闭。借用读取暂时启用 `query_only`，在同一个 DEFERRED 事务中检查格式并查询，随后恢复原设置；需要升级时在该连接上完成转换后再读。这个入口不检查文件缺失或申请文件系统维护 permit，失败也不代替连接所有者关闭数据库。文件路径入口继续采用下面的独立只读连接与维护重开流程。
 
-Controller 的文件路径还标识独立的待归档正文目录，因此保留 `file` 参数，并通过 options 中的 `database` 接收显式连接。内存连接不对数据库文件执行 chmod；ticket/generation 校验、writer 认领和待归档正文核对仍处于原来的 startup 事务。Git、IPC 和正文文件各自保留真实资源生命周期。
+Controller 的文件路径还标识原资源目录及历史迁移源，因此保留 `file` 参数，并通过 options 中的 `database` 接收显式连接。内存连接不对数据库文件执行 chmod；ticket/generation 校验、writer 认领和当前 SQL 正文核对仍处于原来的 startup 事务。Git、IPC 和正文文件各自保留真实资源生命周期。
 
 ## 事务与业务启动
 
@@ -71,7 +71,7 @@ Controller 的文件路径还标识独立的待归档正文目录，因此保留
 
 重置、迁移及包含迁移的 startup 使用明确的同步 BEGIN IMMEDIATE、action、COMMIT 边界。访问层记录连接原有的 `foreign_keys` 设置，仅在非空版本 0 重置前于事务外临时关闭并核实；空版本 0 初始化和非零迁移保持原设置。低层 `upgradeSqlite` 要求非空版本 0 的调用者已在 BEGIN 前关闭外键。事务内先完成业务准入，再删除用户 trigger 和 view，随后删除全部虚拟表，让模块清理自身 shadow 表；通过 `writable_schema=RESET` 重新加载 schema（仍禁用 schema 写入），再重新枚举并删除全部残留用户表，包括最初被识别为 shadow 的 FTS5 外部内容表。基线、升级和 onReady 完成后，每次实际发生的非空版本 0 重置都执行 `foreign_key_check`，通过后才能提交，与连接原有外键设置无关。DROP、基线、升级、数据、版本和 startup 一并提交或回滚，不删除或替换数据库文件。action 或提交失败时，若仍有活动事务则尝试回滚；回滚也失败时保留两个错误。已有活动事务和 Promise/thenable 结果明确拒绝。该边界不嵌套现有普通业务 transaction/savepoint；已归属运行期事务只断言当前版本，不在业务回调里迁移。
 
-Controller 的编号升级和原 ticket/generation 校验、writer 认领位于同一外层事务；runtime 将预先采集的 Controller proof 与新 generation 一次提交，原生副作用在该提交之后。纯升级不认领 writer 或推进 generation。Controller 的迁移工厂以实际迁移连接建立局部 `JournalMigrationContext`，通过原存储 permit 和预留写入能力准入，当前格式读取不调用 context provider。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
+Controller 在新 writer generation 提交前，以同一 permit 完成编号升级、待退休正文维护和正常物理准入。升级本身的 DDL、导入与版本使用同一 immediate 事务；停止维护在事务外完成 reader barrier、退休与 VACUUM。runtime 随后将 ticket/generation 校验、writer 认领、预先采集的 Controller proof 与新 generation 一次提交，原生副作用在该提交之后。纯升级不认领 writer 或推进 generation。Controller 的迁移工厂以实际迁移连接建立局部 `JournalMigrationContext`，通过原存储 permit 和预留写入能力准入，当前格式读取不调用 context provider。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
 
 可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有非零来源结构读取属于同一快照。版本 0 只识别重置，不执行历史 schema 或 JSON 来源验证。该读取事务结束后，才配置 writer 所需的 journal mode 和 FULL 同步；文件连接使用 WAL，显式内存连接使用 MEMORY；随后取得 IMMEDIATE 写事务并重新检查版本、结构及所需外键模式，不把初检结果当成迁移依据。如果并发 writer 已使来源改变、所需外键模式与连接不符，先结束这笔尚未运行准入或 startup 的纯读取事务，在事务外重配后重入；至多一次交接，再次模式变化明确失败。只有模式匹配才运行准入和迁移。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
 

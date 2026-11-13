@@ -1,35 +1,42 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { controllerPayloadHash } from "./launch-ticket.js";
 import { createHash, randomUUID } from "node:crypto";
 import { parseTimelineEntry, parseSessionResource, type TimelineEntry } from "../../session/protocol.js";
-import { sessionArchiveReferences } from "../../session/archive.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { syncDirectory, writeDurableJson } from "../../platform/durable-json.js";
 import { openResourceFiles } from "./content/resource-files.js";
 
 const entryName = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
 type EntryPointer = { id: string; content_hash: string; revision: string; entry_seq: string; content_file: string; content_sha256: string; content_bytes: number };
-const readPendingEntry = (entryDirectory: string, pointer: EntryPointer): TimelineEntry => {
-  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(pointer.content_file) || !/^[a-f0-9]{64}$/.test(pointer.content_sha256) || !Number.isSafeInteger(pointer.content_bytes) || pointer.content_bytes < 1 || pointer.content_bytes > 64 * 1024 * 1024) throw new Error("Pending archive entry pointer is corrupt.");
-  const file = join(entryDirectory, pointer.content_file);
-  if (!existsSync(file)) throw new Error("Pending archive source is incomplete: committed entry is missing.");
+const readPrivateTimelineBytes = (file: string, expectedBytes?: number): Buffer => {
   const before = lstatSync(file);
   if (!before.isFile() || before.isSymbolicLink() || process.platform !== "win32" && (before.mode & 0o077) !== 0) throw new Error("Pending archive entry is not a private regular file.");
+  const byteLength = expectedBytes === undefined ? before.size : expectedBytes;
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 64 * 1024 * 1024 || before.size !== byteLength) throw new Error("Pending archive entry is corrupt.");
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  let bytes: Buffer;
+  let bytes: Buffer | undefined, failure: unknown;
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || before.dev !== stat.dev || before.ino !== stat.ino || stat.size !== pointer.content_bytes) throw new Error("Pending archive entry is corrupt.");
-    bytes = Buffer.alloc(pointer.content_bytes);
+    if (!stat.isFile() || before.dev !== stat.dev || before.ino !== stat.ino || stat.size !== byteLength || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Pending archive entry is corrupt.");
+    bytes = Buffer.alloc(byteLength);
     let offset = 0;
     while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) throw new Error("Pending archive entry is corrupt."); offset += count; }
     if (readSync(fd, Buffer.alloc(1), 0, 1, bytes.length) !== 0) throw new Error("Pending archive entry is corrupt.");
     const after = fstatSync(fd), named = lstatSync(file);
     if (!named.isFile() || named.isSymbolicLink() || after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || named.dev !== stat.dev || named.ino !== stat.ino || named.size !== stat.size || named.mtimeMs !== stat.mtimeMs || named.ctimeMs !== stat.ctimeMs) throw new Error("Pending archive entry changed while being read.");
-  }
-  finally { closeSync(fd); }
+  } catch (cause) { failure = cause; }
+  try { closeSync(fd); }
+  catch (close) { throw failure === undefined ? close : new AggregateError([failure, close], "Pending archive entry read and close failed.", { cause: failure }); }
+  if (failure !== undefined) throw failure;
+  return bytes!;
+};
+const readPendingEntry = (entryDirectory: string, pointer: EntryPointer): TimelineEntry => {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(pointer.content_file) || !/^[a-f0-9]{64}$/.test(pointer.content_sha256) || !Number.isSafeInteger(pointer.content_bytes) || pointer.content_bytes < 1 || pointer.content_bytes > 64 * 1024 * 1024) throw new Error("Pending archive entry pointer is corrupt.");
+  const file = join(entryDirectory, pointer.content_file);
+  if (!existsSync(file)) throw new Error("Pending archive source is incomplete: committed entry is missing.");
+  const bytes = readPrivateTimelineBytes(file, pointer.content_bytes);
   if (createHash("sha256").update(bytes).digest("hex") !== pointer.content_sha256) throw new Error("Pending archive entry is corrupt.");
   const entry = parseTimelineEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
   if (entry.entryId !== pointer.id || entry.entrySeq !== pointer.entry_seq || entry.revision !== pointer.revision || controllerPayloadHash(entry) !== pointer.content_hash) throw new Error("Pending archive entry differs from its committed pointer.");
@@ -89,73 +96,33 @@ export const captureCommittedPendingTimeline = (db: Database.Database, sessionId
   };
 };
 
-const openPendingContentFiles = (journal: string, sessionId: string, db: Database.Database) => {
+const initializeLegacyContentFiles = (journal: string, sessionId: string) => {
   const root = `${journal}.pending-content`;
-  const timelineDirectory = join(root, "timeline"), entryDirectory = join(root, "entries");
-  mkdirSync(timelineDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(entryDirectory, { recursive: true, mode: 0o700 });
-  const entryStat = lstatSync(entryDirectory);
-  if (!entryStat.isDirectory() || entryStat.isSymbolicLink()) throw new Error("Invalid pending entry directory.");
-  const resourceFiles = openResourceFiles(journal, sessionId);
-  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(action).deferred();
-  const loadEntry = (pointer: EntryPointer): TimelineEntry => readPendingEntry(entryDirectory, pointer);
-  const getEntry = (id: string): TimelineEntry | undefined => read(() => { const row = db.prepare("SELECT * FROM content_index WHERE id=?").get(id) as EntryPointer | undefined; return row && loadEntry(row); });
-  const entries = (): Map<string, TimelineEntry> => read(() => new Map((db.prepare("SELECT * FROM content_index").all() as EntryPointer[]).map(row => [row.id, loadEntry(row)])));
-  const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-  const timelineBytes = (count: number, bytes: number) => encodedBytes({ entries: [] }) + bytes + Math.max(0, count - 1);
-  const timelineSize = () => read(() => db.prepare("SELECT COUNT(*) AS count,COALESCE(SUM(content_bytes),0) AS bytes FROM content_index").get() as { count: number; bytes: number });
-  const saveEntry = (value: TimelineEntry) => {
-    if (!db.inTransaction) throw new Error("Pending entry publication requires the journal transaction.");
-    const entry = parseTimelineEntry(JSON.parse(JSON.stringify(value)));
-    const old = getEntry(entry.entryId);
-    if (old && (old.entrySeq !== entry.entrySeq || BigInt(old.revision) > BigInt(entry.revision))) throw new Error("Pending timeline revision regressed.");
-    if (old && JSON.stringify(old) === JSON.stringify(entry)) return;
-    if (old?.revision === entry.revision) throw new Error("Pending timeline revision cannot change its content.");
-    const size = timelineSize(), count = size.count + (old ? 0 : 1), bytes = size.bytes - (old ? encodedBytes(old) : 0) + encodedBytes(entry);
-    if (count > 100000 || timelineBytes(count, bytes) > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
-    const pointer = writeEntryCandidate(journal, db, entry);
-    db.prepare("INSERT INTO content_index(id,content_hash,revision,entry_seq,content_file,content_sha256,content_bytes) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,entry_seq=excluded.entry_seq,content_file=excluded.content_file,content_sha256=excluded.content_sha256,content_bytes=excluded.content_bytes").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, pointer.file, pointer.sha256, pointer.bytes);
-  };
-  const releaseResource = (id: string): void => read(() => {
-    resourceFiles.assertResourceReleasable(id);
-    if (db.prepare("SELECT 1 FROM native_input_publication_images WHERE resource_id=? LIMIT 1").get(id) || sessionArchiveReferences([...entries().values()], false).resources.has(id)) throw new Error("Resource is referenced by session history.");
-    resourceFiles.releaseResource(id);
-  });
-  return { ...resourceFiles, get resources() { return resourceFiles.resources; }, resourceFiles: { ...resourceFiles, get resources() { return resourceFiles.resources; }, releaseResource }, releaseResource, get entries() { return entries(); }, getEntry, hasEntry: (id: string) => getEntry(id) !== undefined, saveEntry,
-    hasRetainedEntries: () => [timelineDirectory, entryDirectory].some(directory => readdirSync(directory).some(file => file.endsWith(".json"))),
-    metadataBytes: () => { const size = timelineSize(); return timelineBytes(size.count, size.bytes) + resourceFiles.descriptorBytes(); },
-    nextEntrySequence: () => read(() => String(BigInt((db.prepare("SELECT CAST(COALESCE(MAX(CAST(entry_seq AS INTEGER)),0) AS TEXT) AS sequence FROM content_index").get() as { sequence: string }).sequence) + 1n)),
-  };
+  for (const directory of [root, join(root, "timeline"), join(root, "entries")]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Legacy pending archive export requires a private directory.");
+  }
+  return openResourceFiles(journal, sessionId);
 };
 
-const writeEntryCandidate = (journal: string, db: Database.Database, entry: TimelineEntry, assertReservedWrite?: (additionalBytes: number) => void): { file: string; sha256: string; bytes: number } => {
+const writeMigrationEntry = (journal: string, db: Database.Database, entry: TimelineEntry, assertReservedWrite?: (additionalBytes: number) => void): { file: string; sha256: string; bytes: number } => {
   const bytes = Buffer.from(JSON.stringify(entry)), directory = join(`${journal}.pending-content`, "entries");
   if (assertReservedWrite === undefined) controllerMetadataBudget(journal, db).assert(bytes.length + 16_384, true);
   else assertReservedWrite(bytes.length + 16_384);
   const file = `${randomUUID()}.json`, fd = openSync(join(directory, file), "wx", 0o600);
   try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
   syncDirectory(directory);
-  // Old snapshots and unknown commits may still reference candidates. Their
-  // actual bytes remain charged until a reader-safe maintenance owner removes them.
+  // Original sources and durable intermediate exports survive rollback or an
+  // unknown commit until reader-safe v10 maintenance retires recognized files.
   return { file, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length };
 };
-
-export const openPendingContent = (journal: string, sessionId: string, db: Database.Database) => {
-  const content = openPendingContentFiles(journal, sessionId, db);
-  const validate = () => {
-    const size = db.prepare("SELECT COUNT(*) AS count,COALESCE(SUM(content_bytes),0) AS bytes FROM content_index").get() as { count: number; bytes: number };
-    if (size.count > 100000 || !Number.isSafeInteger(size.bytes) || size.bytes < 0 || Buffer.byteLength('{"entries":[]}') + size.bytes + Math.max(0, size.count - 1) > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
-    void content.entries;
-  };
-  if (db.inTransaction) validate(); else db.transaction(validate).deferred();
-  return content;
-};
-export type PendingContent = ReturnType<typeof openPendingContent>;
 
 /** File commit precedes SQL deletion. A crash leaves either both copies or files only. */
 export const migratePendingContent = (db: Database.Database, sessionId: string, schemaSql: string, assertReservedWrite?: (additionalBytes: number) => void): void => {
   if (!db.inTransaction) throw new Error("Pending content migration requires the journal migration transaction.");
-  const content = openPendingContentFiles(db.name, sessionId, db), entries: TimelineEntry[] = [];
+  const content = initializeLegacyContentFiles(db.name, sessionId);
+  const pointers: { id: string; contentHash: string; revision: string; entrySeq: string }[] = [];
   let timelineBytes = Buffer.byteLength('{"entries":[]}');
   const markerPath = join(content.root, "migration.json"), sourceDirectory = join(content.root, "legacy-sql");
   const inventory = createHash("sha256");
@@ -169,8 +136,8 @@ export const migratePendingContent = (db: Database.Database, sessionId: string, 
   db.pragma("secure_delete = ON");
   for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
     const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
-    const bytes = Buffer.byteLength(JSON.stringify(entry)); timelineBytes += bytes + (entries.length ? 1 : 0);
-    if (entries.length >= 100000 || timelineBytes > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
+    const bytes = Buffer.byteLength(JSON.stringify(entry)); timelineBytes += bytes + (pointers.length ? 1 : 0);
+    if (pointers.length >= 100000 || timelineBytes > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
     const filename = join(content.root, "timeline", entryName(entry.entryId));
     const existing = existsSync(filename) ? parseTimelineEntry(JSON.parse(readFileSync(filename, "utf8"))) : undefined;
     if (existing && JSON.stringify(existing) !== JSON.stringify(entry)) throw new Error("Legacy projection conflicts with pending archive source.");
@@ -178,19 +145,23 @@ export const migratePendingContent = (db: Database.Database, sessionId: string, 
     if (assertReservedWrite === undefined) controllerMetadataBudget(db.name, db).assert(additional, true);
     else assertReservedWrite(additional);
     writeDurableJson(join(sourceDirectory,`${row.seq}.timeline.json`),row);
-    writeDurableJson(filename, entry); entries.push(entry);
+    writeDurableJson(filename, entry); pointers.push({ id: entry.entryId, contentHash: controllerPayloadHash(entry), revision: entry.revision, entrySeq: entry.entrySeq });
   }
   for (const row of db.prepare("SELECT descriptor,content FROM resources").iterate() as Iterable<{ descriptor: string; content: Buffer | null }>) {
     const resource = parseSessionResource(JSON.parse(row.descriptor));
     const value = { resource, data: row.content?.toString("base64") ?? null };
     const existing = content.resources.get(resource.resourceId);
     if (existing && controllerPayloadHash(existing.resource) !== controllerPayloadHash(resource)) throw new Error("Legacy resource conflicts with pending archive source.");
-    writeDurableJson(join(sourceDirectory,`${resource.resourceId}.resource.json`),{descriptor:row.descriptor,content:row.content?.toString("base64")??null});
+    const backup = { descriptor: row.descriptor, content: row.content?.toString("base64") ?? null };
+    const additional = Buffer.byteLength(JSON.stringify(backup)) + 16_384;
+    if (assertReservedWrite === undefined) controllerMetadataBudget(db.name, db).assert(additional, true);
+    else assertReservedWrite(additional);
+    writeDurableJson(join(sourceDirectory, `${resource.resourceId}.resource.json`), backup);
     content.saveResource(value);
   }
   writeDurableJson(markerPath,{...marker,phase:"files_durable"});
   db.exec(schemaSql);
-  for (const entry of entries) db.prepare("INSERT INTO content_index VALUES(?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq);
+  for (const pointer of pointers) db.prepare("INSERT INTO content_index VALUES(?,?,?,?)").run(pointer.id, pointer.contentHash, pointer.revision, pointer.entrySeq);
 };
 
 type PendingTimelineSize = { entryCount: number; byteLength: number; timelineBytes: number };
@@ -213,9 +184,7 @@ const forEachLegacyPendingEntry = (db: Database.Database, sessionId: string, vis
   while (row !== undefined) {
     const filename = join(directory, entryName(row.id));
     if (!existsSync(filename)) throw new Error("Pending archive source is incomplete.");
-    const stat = lstatSync(filename);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 * 1024) throw new Error("Legacy pending timeline source is corrupt.");
-    const entry = parseTimelineEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(filename))));
+    const entry = parseTimelineEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readPrivateTimelineBytes(filename))));
     byteLength += Buffer.byteLength(JSON.stringify(entry)); entryCount++;
     if (entryCount > 100000 || Buffer.byteLength('{"entries":[]}') + byteLength + Math.max(0, entryCount - 1) > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
     if (entry.entryId !== row.id || entry.entrySeq !== row.entry_seq || entry.revision !== row.revision || controllerPayloadHash(entry) !== row.content_hash || sequences.has(entry.entrySeq)) throw new Error("Legacy pending timeline differs from its committed index; original evidence was retained.");
@@ -240,31 +209,10 @@ export const migratePendingEntryPointers = (db: Database.Database, sessionId: st
   if (!db.inTransaction) throw new Error("Pending entry migration requires the journal migration transaction.");
   if (!existsSync(join(`${db.name}.pending-content`, "manifest.json"))) throw new Error("Pending archive source is missing.");
   forEachLegacyPendingEntry(db, sessionId, () => {});
-  openPendingContentFiles(db.name, sessionId, db);
+  initializeLegacyContentFiles(db.name, sessionId);
   db.exec(schemaSql);
   forEachLegacyPendingEntry(db, sessionId, entry => {
-    const pointer = writeEntryCandidate(db.name, db, entry, assertReservedWrite);
+    const pointer = writeMigrationEntry(db.name, db, entry, assertReservedWrite);
     db.prepare("UPDATE content_index SET content_file=?,content_sha256=?,content_bytes=? WHERE id=?").run(pointer.file, pointer.sha256, pointer.bytes, entry.entryId);
   });
-};
-
-/** Called after the enclosing SQLite migration reports a committed outcome. */
-export const finalizePendingMigration = (db: Database.Database, content: PendingContent): void => {
-  const path=join(content.root,"migration.json");if (!existsSync(path)) return;
-  if (db.inTransaction) throw new Error("Migration readback requires a committed journal.");
-  const marker=JSON.parse(readFileSync(path,"utf8")) as {migrationId:string;sourceHash:string;phase:string};
-  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE name IN ('projection','resources')").get()) return;
-  if (!["files_durable", "committed", "verified"].includes(marker.phase)) throw new Error("Pending migration files were not confirmed durable.");
-  if (marker.phase !== "verified") writeDurableJson(path,{...marker,phase:"committed"});
-  const reopened=openPendingContent(db.name,(JSON.parse(readFileSync(join(content.root,"manifest.json"),"utf8")) as {sessionId:string}).sessionId,db);
-  reconcilePendingContent(db,reopened);
-  writeDurableJson(path,{...marker,phase:"verified"});
-};
-
-/** A candidate without a committed pointer is never promoted by recovery. */
-export const reconcilePendingContent = (db: Database.Database, content: PendingContent): void => {
-  db.transaction(() => {
-    const entries = content.entries;
-    if (new Set([...entries.values()].map(entry => entry.entrySeq)).size !== entries.size) throw new Error("Duplicate pending timeline sequence.");
-  }).deferred();
 };

@@ -4,10 +4,9 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
-import { prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
-import { prepareControllerTimelineStorage, maintainControllerTimeline, createTimelineMaintenanceReservation } from "../../../src/commands/controller/content/maintenance.js";
+import { controllerJournalReadOptions, prepareControllerStorage } from "../../../src/commands/controller/storage-preparation.js";
+import { maintainControllerTimeline, createTimelineMaintenanceReservation } from "../../../src/commands/controller/content/maintenance.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
 import { type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { sessionBinding, type TimelineEntry } from "../../../src/session/protocol.js";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
@@ -15,11 +14,12 @@ import { ControllerMediaBudgetError, openMediaBudgetLedger } from "../../../src/
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
 import { assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
-import type { SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
+import { readSqliteDatabase, type SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { openResourceFiles, retireLegacyTimelineReferences } from "../../../src/commands/controller/content/resource-files.js";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { syncDirectory } from "../../../src/platform/durable-json.js";
+import { withStoppedControllerStorage } from "../../../src/commands/controller/stopped-storage.js";
 
 vi.mock("node:fs", async importOriginal => { const original = await importOriginal<typeof import("node:fs")>(); return { ...original, unlinkSync: vi.fn(original.unlinkSync), fsyncSync: vi.fn(original.fsyncSync), rmdirSync: vi.fn(original.rmdirSync), renameSync: vi.fn(original.renameSync), existsSync: vi.fn(original.existsSync) }; });
 
@@ -34,6 +34,7 @@ const restoreMocks = (): void => {
   vi.mocked(fs.existsSync).mockImplementation(actualFs.existsSync);
 };
 
+const failureOf = (action: () => unknown): unknown => { try { action(); } catch (cause) { return cause; } throw new Error("Expected preparation to fail."); };
 const roots: string[] = [];
 afterEach(() => { restoreMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 const fixture = (version: 7 | 9 = 9) => {
@@ -44,18 +45,18 @@ const fixture = (version: 7 | 9 = 9) => {
   const snapshot: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: "1", controllerInstanceId: ticket.controllerInstanceId, lifecycle: "stopped", activity: "stopped", initialInputState: "confirmed", nativeSessionId: randomUUID(), nativeStopped: true, stoppedAt: new Date().toISOString(), controllerProcess: { pid: 12345, parentPid: 1, processGroupId: null, startedAt: new Date().toISOString(), commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` }, nativeProcesses: [], currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, error: null };
   snapshot.windowsJobStopProof = { version: 1, ticketHash: controllerPayloadHash(ticket), snapshotHash: controllerPayloadHash(snapshot) };
   const permit = acquireControllerStoragePermit(file);
-  if (version === 9) expect(prepareControllerStorage({ journalFile: file, stateDirectory: root, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "prepared" });
   const db = new Database(file);
   const entry: TimelineEntry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "reasoning", text: "当前正文 Ω" };
   try {
-    if (version === 7) {
-      for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= version)) db.exec(step.sql);
-      db.pragma("user_version=7");
-    }
+    db.pragma("journal_mode=WAL"); db.pragma("synchronous=FULL"); db.pragma("wal_autocheckpoint=1000");
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= version)) db.exec(step.sql);
+    db.pragma(`user_version=${version}`);
     db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,NULL,?)").run(controllerPayloadHash(ticket), JSON.stringify(snapshot));
     if (version === 9) {
-      const content = openPendingContent(file, ticket.sessionId, db);
-      db.transaction(() => content.saveEntry(entry)).immediate();
+      openResourceFiles(file, ticket.sessionId);
+      const directory = path.join(`${file}.pending-content`, "entries"), name = `${randomUUID()}.json`, bytes = Buffer.from(JSON.stringify(entry));
+      fs.mkdirSync(directory, { mode: 0o700 }); fs.writeFileSync(path.join(directory, name), bytes, { mode: 0o600 });
+      db.prepare("INSERT INTO content_index VALUES(?,?,?,?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, name, createHash("sha256").update(bytes).digest("hex"), bytes.length);
     } else {
       openResourceFiles(file, ticket.sessionId);
       const directory = path.join(`${file}.pending-content`, "timeline"), name = `${createHash("sha256").update(entry.entryId).digest("hex")}.json`;
@@ -70,7 +71,7 @@ const fixture = (version: 7 | 9 = 9) => {
   return { root, file, ticket, snapshot, permit, entry, old, request };
 };
 const upgrade = (f: ReturnType<typeof fixture>) => {
-  expect(prepareControllerTimelineStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: true });
+  expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: true });
   return new Database(f.file);
 };
 const marker = (db: Database.Database): number => (db.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution").get() as { pending: number }).pending;
@@ -233,9 +234,12 @@ test("isolated upgrade preserves stopped evidence and original files, then real 
   try {
     expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot);
     expect(fs.existsSync(f.old)).toBe(true);
-    const beforeCharge = charge(f), events: string[] = [];
-    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event.phase); } })).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
-    expect(events).toContain("legacy-timeline-retirement"); expect(events).toContain("journal-compaction"); expect(events).toContain("storage-admission");
+    const beforeCharge = charge(f), events: SqliteMigrationEvent[] = [];
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event); } })).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(events.map(event => event.phase)).toContain("legacy-timeline-retirement"); expect(events.map(event => event.phase)).toContain("journal-compaction"); expect(events.map(event => event.phase)).toContain("storage-admission");
+    const compacted = events.find(event => event.phase === "journal-compaction" && event.kind === "completed")!;
+    expect(compacted.storage).toMatchObject({ executionId: f.ticket.executionId, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, generation: "1", role: "stopped-maintenance", roleResult: "admitted", entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(f.entry)), oldFileCount: 0, oldFileBytes: 0, freePageCount: 0, freePageBytes: 0, databaseBytes: expect.any(Number), walBytes: 0, shmBytes: expect.any(Number), preCheckpointBusy: 0, preCheckpointLogFrames: 0, preCheckpointedFrames: 0, preCheckpointRemainingFrames: 0, postCheckpointBusy: 0, postCheckpointLogFrames: 0, postCheckpointedFrames: 0, postCheckpointRemainingFrames: 0 });
+    expect(events.find(event => event.phase === "journal-compaction" && event.kind === "started")!.storage!.freePageBytes).toBeGreaterThan(0);
     expect(sawUnshrunkMain).toBe(true); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
     expect(fs.readdirSync(path.join(`${f.file}.pending-content`, "entries"))).toEqual([]);
     expect(openTimelineStore(db, { assertWrite: () => { throw new Error("read only"); } }).get(f.entry.entryId)).toEqual(f.entry);
@@ -264,7 +268,7 @@ test("an incident source beyond the ordinary metadata ceiling imports using its 
   const f = fixture();
   fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
   try {
-    expect(prepareControllerTimelineStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
     expect(fs.existsSync(f.old)).toBe(false); expect(charge(f)).toBe(136 * 1048576);
   } finally { f.permit.release(); }
 });
@@ -345,7 +349,7 @@ test.each(["maintenance", "preparation", "upgrade-only"] as const)("completed cl
     expect(() => assertControllerStorageCapacity(f.file, db, f.root, f.ticket.executionId)).not.toThrow();
     const result = entry === "maintenance"
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
-      : prepareControllerTimelineStorage(entry === "preparation" ? f.request : { journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {});
+      : prepareControllerStorage(entry === "preparation" ? f.request : { journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {});
     expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
     expect(charge(f)).toBe(136 * 1048576);
   } finally { db.close(); f.permit.release(); }
@@ -362,7 +366,7 @@ test.each(["maintenance", "preparation"] as const)("completed cleanup retains it
     expect(retainedBytes).toBeGreaterThan(CONTROLLER_METADATA_BYTES);
     const result = entry === "maintenance"
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
-      : prepareControllerTimelineStorage(f.request, f.permit, () => {});
+      : prepareControllerStorage(f.request, f.permit, () => {});
     expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
     expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(true);
     expect(charge(f)).toBe(before); expect(charge(f)).toBeGreaterThan(retainedBytes);
@@ -374,8 +378,8 @@ test("upgrade-only preserves stopping evidence while exact stopped maintenance r
   try {
     const snapshot = { ...f.snapshot, lifecycle: "stopping", nativeStopped: false, stoppedAt: null };
     db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(snapshot)); db.close();
-    expect(prepareControllerTimelineStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {})).toMatchObject({ kind: "prepared", snapshot, legacyTimelineCleanupPending: true });
-    expect(() => prepareControllerTimelineStorage(f.request, f.permit, () => {})).toThrow(/stopped generation/);
+    expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {})).toMatchObject({ kind: "prepared", snapshot, legacyTimelineCleanupPending: true });
+    expect(failureOf(() => prepareControllerStorage(f.request, f.permit, () => {}))).toMatchObject({ kind: "migration-failed", cause: { cause: { message: expect.stringMatching(/stopped generation/) } } });
     expect(fs.existsSync(f.old)).toBe(true);
   } finally { if (db.open) db.close(); f.permit.release(); }
 });
@@ -465,7 +469,7 @@ test("preparation close failure retains an unknown cleanup marker outcome after 
       return value;
     });
     let failure: unknown;
-    try { prepareControllerTimelineStorage(f.request, f.permit, () => {}); } catch (cause) { failure = cause; }
+    try { prepareControllerStorage(f.request, f.permit, () => {}); } catch (cause) { failure = cause; }
     expect(failure).toBeInstanceOf(SqliteAccessError);
     expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "unknown", connectionClosed: true, context: { phase: "timeline-preparation-close" } });
     const causes = ((failure as Error).cause as AggregateError).errors;
@@ -475,7 +479,7 @@ test("preparation close failure retains an unknown cleanup marker outcome after 
     const actual = new Database(f.file);
     try { expect(actual.pragma("user_version", { simple: true })).toBe(10); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
     finally { actual.close(); }
-    expect(prepareControllerTimelineStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
   } finally { restoreMocks(); f.permit.release(); }
 });
 
@@ -500,7 +504,7 @@ test("isolated preparation recognizes only a pure wrapped capacity refusal as wa
   try {
     const space = fs.statfsSync(f.root, { bigint: true });
     vi.spyOn(fs, "statfsSync").mockReturnValue({ ...space, bavail: 0n });
-    expect(prepareControllerTimelineStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
+    expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
     restoreMocks(); const db = new Database(f.file, { readonly: true });
     try { expect(db.pragma("user_version", { simple: true })).toBe(9); expect(fs.existsSync(f.old)).toBe(true); } finally { db.close(); }
   } finally { f.permit.release(); }
@@ -510,7 +514,7 @@ test("current v10 cannot adopt SQL rows or retained files without the original e
   const f = fixture(), db = upgrade(f);
   try {
     db.prepare("DELETE FROM execution").run(); db.close();
-    expect(() => prepareControllerTimelineStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {})).toThrow(/no original/);
+    expect(failureOf(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {}))).toMatchObject({ kind: "migration-failed", cause: { cause: { message: expect.stringMatching(/no original/) } } });
     expect(fs.existsSync(f.old)).toBe(true);
   } finally { if (db.open) db.close(); f.permit.release(); }
 });
@@ -519,4 +523,121 @@ test("a memory connection cannot authorize retirement from a different physical 
   const f = fixture(), db = new Database(":memory:");
   try { expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow(/original idle connection/); expect(fs.existsSync(f.old)).toBe(true); }
   finally { db.close(); f.permit.release(); }
+});
+
+test("stopped archive storage preserves a held legacy reader and completes maintenance before invoking its action", () => {
+  const f = fixture(), reader = new Database(f.file, { readonly: true });
+  reader.exec("BEGIN"); reader.prepare("SELECT * FROM content_index").all(); f.permit.release();
+  const pragma = Database.prototype.pragma;
+  vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source, options) {
+    return pragma.call(this, source.startsWith("busy_timeout =") ? "busy_timeout = 10" : source, options);
+  });
+  let invoked = false;
+  const original = (db: Database.Database) => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot);
+  const action = () => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: original }, db => {
+    invoked = true;
+    expect(db.pragma("user_version", { simple: true })).toBe(10); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
+    expect(openTimelineStore(db, { assertWrite: () => { throw new Error("Archive readback is read-only."); } }).get(f.entry.entryId)).toEqual(f.entry);
+  });
+  try {
+    expect(failureOf(action)).toMatchObject({ reason: "reader_busy" }); expect(invoked).toBe(false); expect(fs.existsSync(f.old)).toBe(true);
+    reader.exec("ROLLBACK"); action(); expect(invoked).toBe(true);
+  } finally { reader.close(); f.permit.release(); }
+});
+
+test("completed stopped settlement retains its 8 MiB allowance while a replacement writer still waits for normal admission", () => {
+  const f = fixture(), db = upgrade(f);
+  expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
+  db.close(); f.permit.release();
+  const retained = path.join(`${f.file}.pending-content`, "retained-metadata"); fs.writeFileSync(retained, "", { mode: 0o600 }); fs.truncateSync(retained, CONTROLLER_METADATA_BYTES + 1048576);
+  expect(withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: connection => expect(marker(connection)).toBe(0) }, connection => openTimelineStore(connection, { assertWrite: () => {} }).totals().entryCount)).toBe(1);
+  const permit = acquireControllerStoragePermit(f.file);
+  try {
+    const ticket = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: f.snapshot.nativeSessionId };
+    expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
+    expect(fs.statSync(retained).size).toBe(CONTROLLER_METADATA_BYTES + 1048576);
+  } finally { permit.release(); }
+});
+
+test("an empty current journal still reports a committed deadline failure after its preparation transaction", () => {
+  const f = fixture(), directory = path.join(f.root, "empty-current"); fs.mkdirSync(directory, { mode: 0o700 });
+  const file = path.join(directory, "journal.sqlite"), permit = acquireControllerStoragePermit(file);
+  try {
+    const ticket = { ...f.ticket, executionId: randomUUID(), sessionId: randomUUID() };
+    expect(prepareControllerStorage({ journalFile: file, stateDirectory: f.root, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null });
+    const now = Date.now(), exec = Database.prototype.exec; let expired = false, immediate = false;
+    vi.spyOn(Date, "now").mockImplementation(() => now + (expired ? 100 : 0));
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, source) {
+      const result = exec.call(this, source);
+      if (this.name === file) {
+        if (source.startsWith("BEGIN")) immediate = source === "BEGIN IMMEDIATE";
+        if (source === "COMMIT" && immediate) expired = true;
+      }
+      return result;
+    });
+    const reporter = vi.fn<(event: SqliteMigrationEvent) => undefined>(() => { throw new Error("Current preparation must not report a migration."); });
+    expect(failureOf(() => prepareControllerStorage({ journalFile: file, stateDirectory: f.root, mode: "upgrade-only", deadline: now + 50 }, permit, reporter))).toMatchObject({ kind: "migration-failed", outcome: "committed", connectionClosed: true, cause: { message: expect.stringMatching(/deadline/) } });
+    expect(expired).toBe(true); expect(reporter).not.toHaveBeenCalled();
+  } finally { permit.release(); f.permit.release(); }
+});
+
+test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonical import stage through the existing production envelope", mode => {
+  const f = fixture(); f.permit.release();
+  const writes: string[] = [];
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; });
+  try {
+    if (mode === "automatic-read") {
+      expect(readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => { throw new Error("Original source disappeared."); } }, db => openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId))).toEqual(f.entry);
+    } else {
+      withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: db => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot) }, db => expect(marker(db)).toBe(0));
+    }
+    const envelopes = writes.flatMap(text => text.split("\n").filter(Boolean).map(line => JSON.parse(line) as { kind: string; sqlite: SqliteMigrationEvent })).filter(item => item.sqlite?.file === f.file);
+    const events = envelopes.map(item => item.sqlite), imported = events.filter(event => event.phase === "timeline-import");
+    expect(imported.map(event => event.kind)).toEqual(["started", "completed"]);
+    expect(envelopes.every(item => item.kind === `sqlite-migration-${item.sqlite.kind}`)).toBe(true);
+    expect(imported[0]).toMatchObject({ fromVersion: 9, toVersion: 10, outcome: "not-started", storage: { role: "upgrade-only", roleResult: "pending", sqlitePhase: "begin" } });
+    expect(imported[1]).toMatchObject({ fromVersion: 9, toVersion: 10, outcome: "committed", storage: { executionId: f.ticket.executionId, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, generation: "1", role: "upgrade-only", roleResult: "admitted", sqlitePhase: "commit", entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(f.entry)), databaseBytes: expect.any(Number), walBytes: expect.any(Number), freePageCount: expect.any(Number), freePageBytes: expect.any(Number), oldFileCount: 2, oldFileBytes: Buffer.byteLength(JSON.stringify(f.entry)) + Buffer.byteLength("interrupted candidate") } });
+    if (mode === "stopped-storage") {
+      expect(new Set(events.map(event => event.phase))).toEqual(new Set(["timeline-import", "legacy-timeline-retirement", "journal-compaction", "storage-admission"]));
+      expect(events.at(-1)).toMatchObject({ phase: "storage-admission", kind: "completed", storage: { admission: "settlement", role: "stopped-maintenance", roleResult: "admitted", executionId: f.ticket.executionId } });
+    }
+    const serialized = JSON.stringify(envelopes);
+    expect(serialized).not.toContain(f.entry.kind === "reasoning" ? f.entry.text : "not-a-real-body"); expect(serialized).not.toContain(f.ticket.initialPrompt); expect(serialized).not.toContain(f.ticket.ipcSecret);
+  } finally { f.permit.release(); }
+});
+
+test("an automatic upgrade's supplied reporter cannot override committed storage, and current reads remain reporter-free under a held writer permit", () => {
+  const f = fixture(); f.permit.release();
+  const events: SqliteMigrationEvent[] = [], warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+  const reporter = vi.fn<(event: SqliteMigrationEvent) => undefined>(event => { events.push(event); throw new Error("injected reporter failure"); });
+  const read = () => readSqliteDatabase({ ...controllerJournalReadOptions(f.file, undefined, reporter), onMissing: () => { throw new Error("Original source disappeared."); } }, db => openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId));
+  expect(read()).toEqual(f.entry); expect(events.map(event => event.phase)).toEqual(["timeline-import", "timeline-import"]); expect(events.at(-1)).toMatchObject({ kind: "completed", outcome: "committed", storage: { executionId: f.ticket.executionId } }); expect(warnings).toHaveBeenCalled();
+  const permit = acquireControllerStoragePermit(f.file);
+  try { reporter.mockClear(); expect(read()).toEqual(f.entry); expect(reporter).not.toHaveBeenCalled(); }
+  finally { permit.release(); f.permit.release(); }
+});
+
+test("corrupt stored totals fail the real operation without leaking their value as a metric", () => {
+  const f = fixture(), db = upgrade(f), events: SqliteMigrationEvent[] = [], secret = "private-stored-total-value";
+  try {
+    db.prepare("UPDATE timeline_totals SET byte_length=? WHERE id=1").run(secret);
+    vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event); } })).toThrow(/totals are corrupt/);
+    expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", storage: { executionId: f.ticket.executionId, roleResult: "admitted" } });
+    expect(events.at(-1)!.storage).not.toHaveProperty("byteLength"); expect(JSON.stringify(events)).not.toContain(secret);
+  } finally { db.close(); f.permit.release(); }
+});
+
+test("an unresolved marker transaction reports its physical evidence without claiming uncommitted SQL statistics", () => {
+  const f = fixture(), db = upgrade(f), exec = db.exec.bind(db), events: SqliteMigrationEvent[] = [];
+  try {
+    vi.spyOn(db, "exec").mockImplementation(source => { if (source === "COMMIT" || source === "ROLLBACK") throw new Error(`injected ${source} uncertainty`); return exec(source); });
+    const failure = failureOf(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event); } }));
+    expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "unknown", connectionClosed: false }); expect(db.inTransaction).toBe(true);
+    const reported = events.at(-1)!;
+    expect(reported).toMatchObject({ phase: "storage-admission", kind: "failed", outcome: "unknown", storage: { executionId: f.ticket.executionId, generation: "1", pending: "unknown", databaseBytes: expect.any(Number), walBytes: expect.any(Number) } });
+    for (const name of ["entryCount", "byteLength", "timelineBytes", "pageCount", "freePageCount", "freePageBytes"]) expect(reported.storage).not.toHaveProperty(name);
+    const observer = new Database(f.file, { readonly: true });
+    try { expect(marker(observer)).toBe(1); } finally { observer.close(); }
+  } finally { restoreMocks(); if (db.inTransaction) db.exec("ROLLBACK"); db.close(); f.permit.release(); }
 });

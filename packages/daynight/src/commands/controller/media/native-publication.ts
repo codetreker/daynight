@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerOperation, ControllerOutboxEvent, ControllerSnapshot } from "../lifecycle-store.js";
-import type { PendingContent } from "../pending-content.js";
+import type { SessionContent } from "../content/session-content.js";
 import type { SourceTimelineEntry } from "../../../session/controller-protocol.js";
 import { canonicalImageJson, imageId, parseImageCaptureRequest, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
 import { parseTimelineEntry, type MessagePart, type TimelineEntry } from "../../../session/protocol.js";
@@ -17,7 +17,7 @@ import type { CommittedImageProjectionSlot, NativeImageProjectionState, NativeIn
 type Context = {
   db: Database.Database;
   ticket: ControllerLaunchTicket;
-  pendingContent: PendingContent;
+  content: SessionContent;
   assertUsable(): void;
   quarantine(cause: unknown): void;
   read<T>(action: () => T): T;
@@ -54,7 +54,7 @@ const errorValue = (cause: unknown, unknown: boolean) => ({
 
 /** Native association facts and their visible content share the journal commit. */
 export const createNativeInputPublication = (context: Context) => {
-  const { db, ticket, pendingContent, metadataBudget } = context;
+  const { db, ticket, content: sessionContent, metadataBudget } = context;
   const load = (operationId: string): Saved | null => {
     const row = db.prepare("SELECT request_hash,value FROM native_input_publications WHERE operation_id=?").get(operationId) as { request_hash: string; value: string } | undefined;
     if (!row) return null;
@@ -72,7 +72,7 @@ export const createNativeInputPublication = (context: Context) => {
   };
   const committed = (saved: Saved, identity: NativeInputPublicationIdentity): Extract<NativeInputPublicationResult, { state: "committed" }> => {
     if (!same(saved.receipt.identity, identity)) conflict("Native publication identity conflicts with the original operation.");
-    const entry = pendingContent.getEntry(identity.entryId);
+    const entry = sessionContent.timeline.get(identity.entryId);
     if (!entry || entry.kind !== "user_message" || BigInt(entry.revision) < BigInt(saved.receipt.publicationRevision)) throw new Error("Native publication has no current committed entry.");
     const slots = saved.slots.map(loadSlot);
     for (const slot of slots) {
@@ -105,7 +105,7 @@ export const createNativeInputPublication = (context: Context) => {
       if (input.imageId !== original.imageId || input.resourceId !== original.resourceId || request.seed.nativeSlots[index]!.index !== original.nativeSlotIndex || !indexes.has(original.nativeSlotIndex) || mapped.has(original.nativeSlotIndex)) conflict("Native publication changed the original image identities or order.");
       mapped.add(original.nativeSlotIndex);
       if (original.appendNativeSource.provider !== observation.provider || original.appendNativeSource.nativeSessionId !== observation.nativeSessionId || original.appendNativeSource.nativeMessageId !== observation.nativeMessageId) conflict("Native publication append source differs from its accepted message.");
-      const resource = pendingContent.resources.get(original.resourceId)?.resource;
+      const resource = sessionContent.resourceFiles.resources.get(original.resourceId)?.resource;
       if (!resource || resource.status !== "available" || resource.sha256 !== input.sha256 || resource.byteLength !== input.byteLength) conflict("Native publication original resource is unavailable or changed.");
       const metadata = parseValidatedImage({ mediaType: resource.mediaType, byteLength: resource.byteLength, sha256: resource.sha256, width: resource.width, height: resource.height, frameCount: resource.frameCount });
       const prepared = db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(input.uploadId) as { value: string } | undefined;
@@ -155,7 +155,7 @@ export const createNativeInputPublication = (context: Context) => {
             return committed(previous, request.identity);
           }
           if (context.associateInputMessage(request.identity.operationId, request.identity.nativeSessionId, request.identity.entryId) !== request.identity.entryId) conflict("Native publication conflicts with its original message owner.");
-          const current = pendingContent.getEntry(request.identity.entryId);
+          const current = sessionContent.timeline.get(request.identity.entryId);
           if (current && current.kind !== "user_message") conflict("Native publication cannot replace another entry kind.");
           const content = [...(current?.kind === "user_message" ? current.content : request.seed.entry.content)];
           const slots: CommittedImageProjectionSlot[] = [];
@@ -183,8 +183,8 @@ export const createNativeInputPublication = (context: Context) => {
           if (content.some((part, index) => imagePart(part) && !slots.some(item => item.state.index === index))) conflict("Native publication has an image without its durable source.");
           const entry = { ...(current ?? request.seed.entry), imageProjectionError: current?.imageProjectionError ?? request.seed.entry.imageProjectionError ?? null, revision: current?.revision ?? "1", content } as SourceTimelineEntry;
           const changed = context.projectTimeline(entry);
-          const published = pendingContent.getEntry(request.identity.entryId);
-          if (!published || published.kind !== "user_message") throw new Error("Native publication has no staged entry pointer.");
+          const published = sessionContent.timeline.get(request.identity.entryId);
+          if (!published || published.kind !== "user_message") throw new Error("Native publication has no staged SQL entry.");
           const event = changed ?? context.publishTimelineSnapshot(published);
           for (const item of slots) context.registerImageOccurrence(item.state.request.occurrence, item.state.request.nativeSource);
           const receipt: NativeInputPublicationReceipt = { identity: request.identity, requestSha256: hash, publicationRevision: published.revision, sourceSequence: event.sequence, originalSlots: slots.flatMap(item => item.original ? [{ ...item.original, index: item.state.index }] : []) };

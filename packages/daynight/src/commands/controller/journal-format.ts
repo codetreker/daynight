@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { currentSqliteVersion, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
-import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject, type SqliteSchemaStep } from "../../platform/sqlite-sql.js";
+import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 import { canonicalId } from "../../api/parse.js";
 import { migratePendingContent, migratePendingEntryPointers } from "./pending-content.js";
+import { assertNoOrphanTimelineSource, importControllerTimeline } from "./content/migration.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 
 const steps = loadSqliteSequence(new URL("./sqlite/journal/", import.meta.url));
@@ -12,16 +13,13 @@ const [baseline, ...upgrades] = steps;
 // These shipped definitions contain no case- or whitespace-sensitive string
 // literals; normalize only their finite CREATE/ALTER layouts.
 const normalized = (sql: string): string => sql.replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
-const schemaValidator = (sequence: readonly SqliteSchemaStep[]) => {
-  const schemas = sqliteSchemaSnapshots(sequence);
-  return (db: Database.Database, version: number): undefined => {
-    const expected = schemas.get(version);
-    if (expected === undefined) throw new Error("Unsupported Controller journal schema version.");
-    const actual = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
-    if (actual.length !== expected.length || actual.some((row, index) => row.type !== expected[index]!.type || row.name !== expected[index]!.name || row.sql === null || expected[index]!.sql === null || normalized(row.sql) !== normalized(expected[index]!.sql!))) throw new Error("Controller journal does not match its declared schema version.");
-  };
+const schemas = sqliteSchemaSnapshots(steps);
+const validateVersioned = (db: Database.Database, version: number): undefined => {
+  const expected = schemas.get(version);
+  if (expected === undefined) throw new Error("Unsupported Controller journal schema version.");
+  const actual = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
+  if (actual.length !== expected.length || actual.some((row, index) => row.type !== expected[index]!.type || row.name !== expected[index]!.name || row.sql === null || expected[index]!.sql === null || normalized(row.sql) !== normalized(expected[index]!.sql!))) throw new Error("Controller journal does not match its declared schema version.");
 };
-const validateVersioned = schemaValidator(steps);
 
 export type JournalMigrationContext = {
   readonly storagePermit: ControllerStoragePermit;
@@ -30,13 +28,7 @@ export type JournalMigrationContext = {
   assertPendingWrite?(additionalBytes: number): void;
 };
 
-export type JournalSchemaExtension = {
-  readonly schema: SqliteSchemaStep;
-  readonly migrate: (db: Database.Database, source: SqliteSource, context: JournalMigrationContext) => undefined;
-};
-
-/** The numbered journal and isolated components share one complete schema validator. */
-export const controllerJournalFormatWithExtension = (context: (db: Database.Database) => JournalMigrationContext, extension?: JournalSchemaExtension): SqliteFormat => {
+export const controllerJournalFormatForMigration = (context: (db: Database.Database) => JournalMigrationContext): SqliteFormat => {
   const assertWrite = (db: Database.Database, additionalBytes: number): void => {
     const permission = context(db);
     assertControllerStoragePermit(permission.storagePermit, permission.storagePermit.journalFile);
@@ -45,9 +37,10 @@ export const controllerJournalFormatWithExtension = (context: (db: Database.Data
   };
   return {
     name: "controller-journal",
-    baseline: { version: baseline.version, create: (db) => { assertWrite(db, Buffer.byteLength(baseline.sql) + 16384); db.exec(baseline.sql); } },
+    baseline: { version: baseline.version, create: (db) => { assertNoOrphanTimelineSource(db.name); assertWrite(db, Buffer.byteLength(baseline.sql) + 16384); db.exec(baseline.sql); } },
     migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
       assertWrite(db, Buffer.byteLength(step.sql) + 16384);
+      if (step.version === 10) return importControllerTimeline(db, context(db), step.sql);
       if (step.version !== 6 && step.version !== 8) { db.exec(step.sql); return; }
       const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
       if (row === undefined) {
@@ -63,15 +56,10 @@ export const controllerJournalFormatWithExtension = (context: (db: Database.Data
       // Version 1 has no durable projection, and its acknowledged outbox may have
       // discarded history. Intermediate DDL cannot establish that source as complete.
       if (source.kind === "outdated" && source.version === 1) db.exec("UPDATE execution SET archive_incomplete=1 WHERE id=1");
-    } })).concat(extension === undefined ? [] : [{ toVersion: extension.schema.version, up: (db: Database.Database, source: SqliteSource): undefined => {
-      assertWrite(db, Buffer.byteLength(extension.schema.sql) + 16384);
-      return extension.migrate(db, source, context(db));
-    } }]),
-    validateVersioned: extension === undefined ? validateVersioned : schemaValidator([...steps, extension.schema]),
+    } })),
+    validateVersioned,
   };
 };
-
-export const controllerJournalFormatForMigration = (context: (db: Database.Database) => JournalMigrationContext): SqliteFormat => controllerJournalFormatWithExtension(context);
 
 export const controllerJournalFormat = controllerJournalFormatForMigration(() => { throw new Error("Controller journal migration requires its original storage permit and reserved-write context."); });
 
