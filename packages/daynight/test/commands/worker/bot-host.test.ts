@@ -8,6 +8,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botStores from "../../../src/commands/worker/bots/store.js";
 import * as executionStores from "../../../src/commands/worker/bots/execution-store.js";
+import { bot } from "./bot-store.fixtures.js";
 
 const mocks = vi.hoisted(() => ({ collector: vi.fn() }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.collector }));
@@ -61,4 +62,46 @@ it("closes the first store if opening the execution store fails", async () => {
   vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation(() => { throw new Error("Execution store unavailable"); });
   expect(() => createWorkerBotHost(f.options)).toThrow("Execution store unavailable");
   expect(() => store.list(f.options.owner)).toThrow(/not open|closed/i);
+});
+
+it("requires Copilot for every non-deleted definition, including inactive and failed Bots", async () => {
+  const f = await fixture();
+  let store!: ReturnType<typeof openStore>;
+  vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => store = openStore(createMemoryDatabase(), options));
+  const host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  const original = bot();
+  if (original.deletion !== null) throw new Error("Expected a Bot definition");
+  const copilot = { ...original, resolvedConfiguration: { ...original.resolvedConfiguration, provider: "copilot" as const } };
+  expect(host.requiresCopilot()).toBe(false);
+  store.observe(f.options.owner, original, 1);
+  expect(host.requiresCopilot()).toBe(false);
+  for (const [index, state] of (["pending", "failed", "ready"] as const).entries()) {
+    const id = `00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}`;
+    store.observe(f.options.owner, { ...copilot, id, startupResult: { state, code: state === "failed" ? "startup_failed" : null } }, 2 + index * 2);
+    expect(host.requiresCopilot()).toBe(true);
+    expect(host.activeToolSelections()).toEqual([]);
+    store.observe(f.options.owner, { id, workerId: f.options.owner.workerId, version: "2", deletion: { deletionId: `00000000-0000-4000-8000-${String(index + 20).padStart(12, "0")}`,
+      requestedVersion: "1", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } }, 3 + index * 2);
+    expect(host.requiresCopilot()).toBe(false);
+  }
+});
+
+it("supplies only existing Web selection proof to the collector", async () => {
+  const f = await fixture();
+  const launch = { tool: "copilot", context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch;
+  let selected: typeof launch | undefined = launch, observation = true;
+  const readSelection = vi.fn(() => selected), readObservation = vi.fn(() => observation ? { version: "1.0.105", checkedAt: "2026-11-13T00:00:00Z" } : undefined);
+  const inspector = { check: vi.fn(), close: vi.fn(), reconcile: vi.fn(), admit: vi.fn(), assertAvailable: vi.fn(), revision: vi.fn(), discover: vi.fn(), verify: vi.fn() } as unknown as NonNullable<Parameters<typeof createWorkerBotHost>[0]["toolInspector"]>;
+  const host = createWorkerBotHost({ ...f.options, copilotRequired: () => false, toolLaunchForHost: readSelection, toolObservationFor: readObservation, toolInspector: inspector });
+  cleanups.push(host.close);
+  const collectorOptions = mocks.collector.mock.calls.at(-1)![0] as { copilotRequired(): boolean; hasCopilotProof(): boolean };
+  expect(collectorOptions.copilotRequired()).toBe(false);
+  expect(collectorOptions.hasCopilotProof()).toBe(true);
+  expect(readSelection).toHaveBeenCalledWith("copilot");
+  expect(readObservation).toHaveBeenCalledWith(launch);
+  observation = false;
+  expect(collectorOptions.hasCopilotProof()).toBe(false);
+  selected = undefined;
+  expect(collectorOptions.hasCopilotProof()).toBe(false);
+  expect(inspector.check).not.toHaveBeenCalled();
 });

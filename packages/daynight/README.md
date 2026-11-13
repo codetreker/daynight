@@ -1967,10 +1967,12 @@ defines its freshness, permissions and retention.
 Snapshots include actual OS, logical CPU count and utilization, memory usage,
 and available/total space for the filesystem containing the directory where
 `worker run` started. They also include the running Daynight version, a read-only
-private Herdr version observation, and Codex/Copilot installation and versions.
-Native CLI results are cached for at most 60 seconds with their original check
-time. Reporting does not run launch preflight or repair integrations; a pure-Web
-worker does not start Herdr to collect its version. Unknown task inventory and
+private Herdr version observation, and observed Codex/Copilot tool versions.
+An unchecked tool is not reported as installed or missing. Standalone native CLI
+results are cached for at most 60 seconds with their original check time; the
+composed Worker reads the tool manager snapshot without another version probe.
+Reporting does not run launch preflight or repair integrations; a pure-Web worker
+does not start Herdr to collect its version. Unknown task inventory and
 observed idleness remain distinct, and individual probe errors remain explicit.
 The [reporting requirements](../../docs/spec/daynight-worker-reporting.md) and
 [design](../../docs/design/daynight-worker-reporting.md) define sampling,
@@ -2247,9 +2249,18 @@ worker:
 Cloud configuration exchanges these choices when the server negotiates tool-path
 support. Web Codex/Copilot Task and Bot launches, version/host checks and model
 discovery consume one verified selection; saving a target does not establish that
-it is applied. Explicit Herdr targets are rejected until its instance mapping
-supports them; all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute on
-the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+it is applied. Background Copilot preparation runs when the effective global or
+any Project agent is Copilot, or this Worker has a non-deleted Copilot Bot
+definition, including pending, failed and recoverable definitions. With no such
+demand, background cycles do not resolve or probe Copilot; an existing successful
+selection and inspection proof may still be read for the complete assistant-host report. Without
+that proof, the Copilot entry is unavailable without an issue. Explicit Copilot
+model discovery and execution continue to prepare it on demand. A tool path or
+previous success alone does not create background demand.
+
+Explicit Herdr targets are rejected until its instance mapping supports them;
+all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute
+on the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
 characters. Windows paths need a drive or complete UNC share. Values retain all
 spaces and punctuation: the parser does not trim, normalize, expand `~` or
 environment variables, split arguments, or access the filesystem. Provide one

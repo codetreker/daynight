@@ -62,7 +62,8 @@ the cache generation. A fresh probe follows confirmed cleanup; unconfirmed clean
 continues to block spawning. This order lets later requests recover without a
 Worker restart while preserving ownership. Provider, version, host and model
 queries share the same Copilot process owner, while model queries retain in-memory
-SessionFs and reject permissions.
+SessionFs and reject permissions. The later [background demand decision](../bug-fix/2026-11-13-worker-copilot-background-demand.md)
+limits when Copilot candidates are prepared without changing those ownership rules.
 
 Published trees remain with Worker state, including after ordinary shutdown. A
 2 GiB budget and durable 512 MiB extraction reservations bound retention and refuse

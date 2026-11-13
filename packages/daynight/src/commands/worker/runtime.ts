@@ -68,7 +68,7 @@ import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
 import { browseWorkerDirectory } from "./read-only/directory.js";
-import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModelInput } from "./read-only/models.js";
+import { createWorkerModelDiscovery, createWorkerReadOnlyConfiguration, type WorkerModelInput } from "./read-only/models.js";
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
@@ -611,6 +611,11 @@ export const runWorker = async (options: {
       const current = proofSignature(); if (current === observedToolProof) return;
       observedToolProof = current; return manager.refreshToolSelections(signal);
     };
+    const readOnlyConfiguration = createWorkerReadOnlyConfiguration({ current: () => manager.current(), local,
+      selection: tool => {
+        const launch = toolRuntime.manager.currentSelection(tool, "web");
+        return launch === undefined ? undefined : { selectionKey: launch.selectionKey, revision: toolRuntime.inspector.revision(launch) };
+      } });
     modelDiscovery = createWorkerModelDiscovery({
       prepare: async (provider, operation) => { if (provider === "codex" || provider === "copilot") await toolRuntime.manager.prepare(provider, "web", operation); },
       defaultCwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, verifier: { discover: async (input, operation) => {
@@ -618,11 +623,7 @@ export const runWorker = async (options: {
         const toolLaunch = await toolRuntime.manager.selectForNewExecution(input.native.agent, "web", operation);
         return toolRuntime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: toolRuntime.toolRuntimeRoot }, operation);
       } },
-      configuration: () => {
-        const native = manager.current().effective.native;
-        if (native === null) throw new WorkerModelDiscoveryError("capability_error");
-        return { ...normalizeWorkerNative(native, "web", local, false), toolSelections: ["codex", "copilot"].map(tool => toolRuntime.manager.currentSelection(tool as "codex" | "copilot", "web")?.selectionKey ?? null) };
-      },
+      configuration: readOnlyConfiguration.modelConfiguration,
     });
     const executeReadOnly = async <K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], requestSignal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]> => {
       const result = operation === "directory.list"
@@ -631,7 +632,7 @@ export const runWorker = async (options: {
       return result as WorkerReadOnlyOperations[K]["result"];
     };
     readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
-      configurationSignature: () => JSON.stringify([manager.current().effective, local.agentModel, local.agentReasoningEffort, toolRuntime.manager.currentSelection("codex", "web")?.selectionKey, toolRuntime.manager.currentSelection("copilot", "web")?.selectionKey]),
+      configurationSignature: readOnlyConfiguration.channelSignature,
       execute: executeReadOnly,
       onInvalidate: () => modelDiscovery?.invalidate(),
       onError: message => emit({ kind: "worker-readonly", message }),
@@ -724,7 +725,11 @@ export const runWorker = async (options: {
       void job.finally(() => { if (initialRemovalsJob === job) initialRemovalsJob = undefined; }).catch(() => undefined);
       return job;
     };
-    bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
+    const copilotRequired = (): boolean => {
+      const effective = manager.current().effective;
+      return effective.native?.agent === "copilot" || effective.projects.some(project => project.native?.agent === "copilot") || (bots?.requiresCopilot() ?? false);
+    };
+    bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), copilotRequired, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
       canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.synchronized && current.desired !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
       configuration: () => {
         const effective = manager.current().effective;
@@ -869,7 +874,7 @@ export const runWorker = async (options: {
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
       const revision = reconcileWake.snapshot();
-      void toolRuntime.prepareWebCandidates(signal).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
+      void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
       try {
         const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
         observeMonitoring(m => m.setPhase("configuration"));

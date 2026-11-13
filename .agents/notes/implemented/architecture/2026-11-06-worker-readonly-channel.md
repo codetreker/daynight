@@ -17,7 +17,8 @@ connection, and capability generation. Configuration changes replace the
 connection. The Worker alone enumerates directories using OS permission checks.
 The [design](../../../../docs/design/worker-readonly.md) owns the wire protocol
 and lifecycle; the [requirements](../../../../docs/spec/worker-readonly.md) own
-observable behavior and limits.
+observable behavior and limits. The later [Copilot background demand decision](../bug-fix/2026-11-13-worker-copilot-background-demand.md)
+defines the connection and inspection-proof boundaries for on-demand model queries.
 
 The API OAuth requester uses the same application authenticator as other OAuth
 admission. Its callback locks the current access family against the fixed API

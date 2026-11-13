@@ -68,6 +68,8 @@ export const createAssistantHostCollector = (options: {
   environment: NodeJS.ProcessEnv;
   resolveExecutable?: (provider: WorkerAgent) => string;
   selectToolLaunch?: (provider: WorkerAgent, operation: Operation) => Promise<ResolvedToolLaunch | undefined>;
+  copilotRequired?: () => boolean;
+  hasCopilotProof?: () => boolean;
   toolRuntimeRoot?: string;
   toolInspector?: ReturnType<typeof createWorkerToolInspector>;
   runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
@@ -108,6 +110,7 @@ export const createAssistantHostCollector = (options: {
       operation.check();
       const current = configuration();
       const configured = { ...current, args: [...current.args] };
+      const copilotRequired = options.copilotRequired?.() ?? true;
       const collection = createOperation({ signal: operation.signal, limits: { ...operation.limits, totalMs: Math.max(1, Math.floor(Math.min(5_000, operation.remainingMs()))), requestMs: Math.min(5_000, operation.limits.requestMs) } });
       const observedAt = new Date().toISOString();
       const issues: AssistantHostIssue[] = [];
@@ -115,6 +118,10 @@ export const createAssistantHostCollector = (options: {
       try {
         try { cwd = await directory(collection); } catch (error) { directoryError = error; }
         const entries = await Promise.all(providers.map(async (provider): Promise<WorkerAssistantProvider> => {
+          if (provider === "copilot" && !copilotRequired) {
+            const available = directoryError === undefined && (options.hasCopilotProof?.() ?? false);
+            return { provider, available, reason: available ? null : "unavailable", model: null, args: [] };
+          }
           const model = provider === configured.agent ? configured.model : null;
           const args = provider === configured.agent ? [...configured.args] : [];
           const fail = (reason: WorkerAssistantHostReason, error: unknown, hideConfiguration = false): WorkerAssistantProvider => {
