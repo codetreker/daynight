@@ -3,10 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { createServer, type Socket } from "node:net";
 import sharp from "sharp";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import { openNativeMediaSpool } from "../../../src/commands/controller/media/native-spool.js";
 import { inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { stopNativeFixture, withCleanup, withNativeFixtureExit } from "./claude-live-loss-cleanup.js";
 // The package test command builds these production helper entries before collection.
 const { queryClaudeLive, claudeLiveImage, releaseClaudeLiveRecord } = await import(new URL("../../../dist/commands/controller/providers/claude-live.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude-live.js");
 const { openClaudeProvider } = await import(new URL("../../../dist/commands/controller/providers/claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude.js");
@@ -97,27 +100,78 @@ test.each(["read", "unknown-metadata"])("the SDK helper bounds duplicate Read im
 
 test("helper loss remains unknown even after native child stop is independently observed", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-loss-")); let child!: ChildProcess; const proofs: ProcessProof[] = [];
-  const env = { ...process.env, DAYNIGHT_TEST_CLAUDE_HOLD_ON_EOF: "1" };
-  const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId: randomUUID(), pathToClaudeCodeExecutable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env } }, { cwd: root, env, onSpawn: (process: ChildProcess) => { child = process; }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); } } as unknown as ProviderOptions);
-  const pump = (async () => { for await (const event of native) releaseClaudeLiveRecord(event); })().catch(error => error);
-  try {
+  const token = randomUUID(); let control: Socket | undefined, closing = false, controlError: unknown;
+  const server = createServer();
+  const connected = new Promise<Socket>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Native fixture control connection timed out.")), 10_000); timer.unref();
+    server.once("connection", socket => {
+      control = socket; if (closing) { socket.destroy(); return; }
+      socket.on("error", error => { controlError = error; clearTimeout(timer); reject(error); });
+      socket.once("end", () => { clearTimeout(timer); reject(new Error("Native fixture control connection closed before identification.")); });
+      let received = "";
+      socket.on("data", data => {
+        received += data.toString();
+        if (received.length >= token.length) {
+          clearTimeout(timer);
+          if (received === token) resolve(socket); else reject(new Error("Unexpected native fixture control connection."));
+        }
+      });
+    });
+  });
+  void connected.catch(() => {});
+  const stop = () => { if (controlError) throw controlError; if (control === undefined) throw new Error("Native fixture control connection is unavailable."); if (!control.destroyed && !control.writableEnded) control.end("stop"); };
+  await withCleanup(async () => {
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const address = server.address(); if (address === null || typeof address === "string") throw new Error("Native fixture control listener has no port.");
+    const env = { ...process.env, DAYNIGHT_TEST_CLAUDE_HOLD_ON_EOF: "1", DAYNIGHT_TEST_CLAUDE_CONTROL_PORT: String(address.port), DAYNIGHT_TEST_CLAUDE_CONTROL_TOKEN: token };
+    const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId: randomUUID(), pathToClaudeCodeExecutable: path.resolve("test/commands/controller/claude-live-loss-fixture.mjs"), env } }, { cwd: root, env, onSpawn: (process: ChildProcess) => { child = process; }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); } } as unknown as ProviderOptions);
+    const pump = (async () => { for await (const event of native) releaseClaudeLiveRecord(event); })().catch(error => error);
     await native.initializationResult(); expect(proofs).toHaveLength(1);
+    await connected;
     expect(await inspectProcessProof(proofs[0]!)).toBe("running");
-    const exited = new Promise<void>(resolve => child.once("exit", () => resolve())); child.kill("SIGKILL"); await exited;
-    // Holding this fixture open after helper death is a POSIX mechanism. Every
-    // platform still requires the missing helper stop receipt, even after exit.
-    if (process.platform !== "win32") expect(await inspectProcessProof(proofs[0]!)).toBe("running");
-    await expect(native.join()).rejects.toThrow(/closed|unknown/); expect(await pump).toBeInstanceOf(Error);
-    for (const proof of proofs) if (await inspectProcessProof(proof) === "running") process.kill(proof.pid, "SIGTERM");
-    for (const proof of proofs) await expect.poll(() => inspectProcessProof(proof)).toBe("stopped");
+    await withNativeFixtureExit(proofs[0]!, async () => {
+      const exited = once(child, "exit", { signal: AbortSignal.timeout(5000) }); child.kill("SIGKILL"); await exited;
+      // Holding this fixture open after helper death is a POSIX mechanism. Every
+      // platform still requires the missing helper stop receipt, even after exit.
+      if (process.platform !== "win32") expect(await inspectProcessProof(proofs[0]!)).toBe("running");
+      await expect(native.join()).rejects.toThrow(/closed|unknown/); expect(await pump).toBeInstanceOf(Error);
+    }, stop);
     await expect(native.join()).rejects.toThrow(/closed|unknown/);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) { const exited = new Promise<void>(resolve => child.once("exit", () => resolve())); child.kill("SIGTERM"); await exited; }
-    for (const proof of proofs) if (await inspectProcessProof(proof) === "running") process.kill(proof.pid, "SIGTERM");
-    for (const proof of proofs) await expect.poll(() => inspectProcessProof(proof)).toBe("stopped");
-    await rm(root, { recursive: true, force: true });
-  }
+  }, async () => {
+    const failures: unknown[] = [];
+    const stopHelper = async () => { if (child && child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit", { signal: AbortSignal.timeout(5000) }); child.kill("SIGTERM"); await exited; } };
+    try {
+      if (proofs.length) {
+        await withNativeFixtureExit(proofs[0]!, stopHelper, stop);
+        for (const proof of proofs.slice(1)) await withNativeFixtureExit(proof, async () => {}, stop);
+      } else await stopHelper();
+    } catch (error) { failures.push(error); }
+    closing = true;
+    const closed = server.listening ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) : Promise.resolve();
+    control?.destroy();
+    try { await closed; } catch (error) { failures.push(error); }
+    try { await rm(root, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Native fixture cleanup failed.");
+  });
 }, 20_000);
+
+test("native fixture cleanup waits through exiting and never signals a replacement", async () => {
+  const proof: ProcessProof = { pid: 1, parentPid: 2, processGroupId: null, startedAt: "birth", commandHash: "hash" };
+  const stop = vi.fn(), observe = vi.fn().mockResolvedValueOnce("running").mockResolvedValueOnce("exiting").mockResolvedValueOnce("stopped");
+  await stopNativeFixture(proof, stop, Date.now() + 1000, observe);
+  expect(stop).toHaveBeenCalledOnce(); expect(observe).toHaveBeenCalledTimes(3);
+  stop.mockClear();
+  await expect(stopNativeFixture(proof, stop, Date.now() + 1000, vi.fn().mockResolvedValueOnce("exiting").mockResolvedValueOnce("stopped"))).resolves.toBeUndefined();
+  expect(stop).not.toHaveBeenCalled();
+  await expect(stopNativeFixture(proof, stop, Date.now() + 1000, vi.fn().mockResolvedValue("replaced"))).rejects.toThrow(/replaced/);
+  expect(stop).not.toHaveBeenCalled();
+  await expect(stopNativeFixture(proof, stop, Date.now() - 1, observe)).rejects.toThrow(/deadline/);
+});
+
+test("native fixture cleanup retains both test and cleanup errors", async () => {
+  const body = new Error("body"), cleanup = new Error("cleanup");
+  await expect(withCleanup(async () => { throw body; }, async () => { throw cleanup; })).rejects.toMatchObject({ errors: [body, cleanup] });
+});
 
 test("the actual Claude adapter submits image-only input once and waits for durable root evidence", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-adapter-images-")), log = path.join(root, "native.jsonl"), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
