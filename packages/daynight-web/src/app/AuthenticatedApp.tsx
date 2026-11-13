@@ -60,18 +60,20 @@ const followLink = (event: MouseEvent<HTMLAnchorElement>) => {
   event.preventDefault(); navigate(event.currentTarget.pathname + event.currentTarget.search + event.currentTarget.hash);
 };
 const accountLabel = (user: CurrentUser, currentAccount: string) => user.name ?? user.email ?? currentAccount;
-const AccessUnavailable = () => {
-  const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
-  return <section className="state-box" role="alert"><h1>{m.accessUnavailable}</h1><p>{m.accessUnavailableDetail}</p><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>;
+const AccessUnavailable = ({ onRetry }: { readonly onRetry?: () => void }) => {
+  const { messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
+  return <section className="state-box" role="alert"><h1>{m.accessUnavailable}</h1><p>{m.accessUnavailableDetail}</p>{onRetry !== undefined && <button className="button" type="button" onClick={onRetry}>{projects.retry}</button>}<a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>;
 };
 
 const AuthorizedProject = ({ projectId, onOpenMembers }: { readonly projectId: string; readonly onOpenMembers: (project: Project) => void }) => {
   const { messages: { auth: { shell: m } } } = useI18n();
   const access = useProjectAccess(projectId);
   const admitted = useRef(false);
-  if (access.status === "ready") admitted.current = true;
-  if (access.status === "unavailable" && !admitted.current) return <AccessUnavailable />;
-  return <>{access.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => access.session.revalidate()}>{m.retryPermissions}</button></div>}<ProjectPage projectId={projectId} renderActions={(project) => access.access !== null && access.status !== "unavailable" ? <><a className="button" href={`/projects/${projectId}/members`} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenMembers(project); }}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink}>{m.projectSettings}</a></> : <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{m.members}</span><span className="button">{m.projectSettings}</span></span>} /></>;
+  const denied = useRef(false);
+  if (access.status === "unavailable") denied.current = true;
+  if (access.status === "ready" || access.projectReadAvailable === true) { admitted.current = true; denied.current = false; }
+  const unavailable = denied.current && !admitted.current && access.projectReadAvailable !== true;
+  return <>{unavailable && <AccessUnavailable onRetry={access.session.retryProjectRead} />}{access.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => access.session.revalidate()}>{m.retryPermissions}</button></div>}<div hidden={unavailable} inert={unavailable}><ProjectPage projectId={projectId} renderActions={(project) => access.projectReadAvailable === true ? <><a className="button" href={`/projects/${projectId}/members`} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenMembers(project); }}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink}>{m.projectSettings}</a></> : <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{m.members}</span><span className="button">{m.projectSettings}</span></span>} /></div></>;
 };
 
 const ProjectManagementNav = ({ projectId, current }: { readonly projectId: string; readonly current: "settings" | "members" }) => {

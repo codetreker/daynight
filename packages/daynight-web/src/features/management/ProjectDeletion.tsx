@@ -50,7 +50,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   useEffect(() => { if (!onRoute) { read.current?.abort(); setLoading(false); if (operation.current !== null && !operation.current.dispatched) operation.current.controller.abort(); } }, [onRoute]);
   useEffect(() => scope.subscribe((event) => {
     if (event.projectId !== projectId || !event.accessRevoked) return;
-    read.current?.abort(); setPreview(null); setTyped("");
+    read.current?.abort(); read.current = null; setLoading(false); setPreview(null); setTyped("");
     if (resultRef.current?.kind !== "unknown" && operation.current === null) setDialog(false);
   }), [scope, projectId]);
   useEffect(() => {
@@ -64,7 +64,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     const stopPause = subscribeAuthPause(cancelRead);
     const signal = AbortSignal.any([controller.signal, scope.signal]); setLoading(true); setReadError(null);
     if (authRequestsPaused()) cancelRead();
-    void (async () => { let ticket: Awaited<ReturnType<typeof scope.beginSync>> | null = null; try {
+    void (async () => { let ticket: Awaited<ReturnType<typeof scope.beginSync>> | null = null; let projectReadRevision = 0; try {
       await scope.ready(signal);
       ticket = await scope.beginSync(projectId, signal);
       const checkingUnknown = resultRef.current?.kind === "unknown";
@@ -72,11 +72,13 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
         const before = await access.session.waitForFreshAccess(signal, true);
         if (before?.teamRole !== "admin" || !scope.canRevokeProject(ticket)) throw new Error("Project deletion access changed");
       }
+      projectReadRevision = scope.getProjectReadRevision(projectId);
       const page = await previewProjectDeletion(projectId, cursor === undefined ? {} : { cursor }, scope.userId, signal, scope.principalMismatch);
       await scope.ready(signal);
       const fresh = checkingUnknown ? null : await access.session.waitForFreshAccess(signal, true);
       if (signal.aborted || scope.isInvalidated || !latest.current.onRoute) return;
       if (!scope.canRevokeProject(ticket) || !checkingUnknown && fresh?.teamRole !== "admin") { setPreview(null); setTyped(""); setReadError(new Error("Project observation changed")); return; }
+      scope.markProjectReadable(projectId);
       if (resultRef.current?.kind === "unknown") { setChecked("available"); return; }
       setPreview((previous) => cursor === undefined || previous === null ? page : { ...page, activeClaims: [...previous.activeClaims, ...page.activeClaims] });
     } catch (error) {
@@ -85,9 +87,9 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       if (denied && read.current === controller) read.current = null;
       try { await scope.ready(signal); } catch { return; }
       if (signal.aborted || scope.isInvalidated) return;
-      const withdrawal = denied ? scope.revokeProject(ticket!, signal).catch((failure: unknown) => failure) : null;
+      const withdrawal = denied && scope.canRevokeProjectRead(ticket!, projectReadRevision) ? scope.revokeProject(ticket!, signal).catch((failure: unknown) => failure) : null;
       if (denied) {
-        const value = await withdrawal;
+        const value = withdrawal === null ? false : await withdrawal;
         if (signal.aborted || scope.isInvalidated) return;
         if (value === true && scope.canRevokeProject(ticket!)) {
           if (resultRef.current?.kind === "unknown") setChecked("unavailable");
@@ -114,18 +116,19 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     const stopPause = subscribeAuthPause(() => { paused = true; if (!op.dispatched) op.controller.abort(); });
     if (paused) op.controller.abort();
     const signal = AbortSignal.any([op.controller.signal, scope.signal]); setPending(true); resultRef.current = null; setResult(null); setReadError(null); onRetentionChange?.(true);
-    void (async () => { let ticket: Awaited<ReturnType<typeof scope.beginSync>> | null = null; try {
+    void (async () => { let ticket: Awaited<ReturnType<typeof scope.beginSync>> | null = null; let projectReadRevision: number | null = null; try {
       signal.throwIfAborted();
       ticket = await abortable(scope.beginSync(projectId, signal), signal);
       const fresh = await abortable(access.session.waitForFreshAccess(signal, true), signal);
       if (signal.aborted || !latest.current.active || !latest.current.onRoute || !latest.current.dialog || fresh?.teamRole !== "admin") throw new Error("Project deletion admission changed");
+      projectReadRevision = scope.getProjectReadRevision(projectId);
       const receipt = await deleteProject(projectId, scope.userId, signal, scope.principalMismatch, () => { op.dispatched = true; });
       const confirmedTicket = ticket;
       let cleanupStarted = false;
       const finish = async (publicationSignal: AbortSignal = scope.signal): Promise<void | "skipped"> => {
         if (!cleanupStarted && !stillEditing()) { guard.release("delete"); onRetentionChange?.(false); return "skipped"; }
         publicationSignal.throwIfAborted();
-        const work = cleanupStarted ? scope.retryDeniedProjectCleanup(confirmedTicket, publicationSignal) : scope.revokeProject(confirmedTicket, publicationSignal, true, undefined, true, () => { cleanupStarted = true; });
+        const work = cleanupStarted ? scope.retryDeniedProjectCleanup(confirmedTicket, publicationSignal) : scope.revokeProject(confirmedTicket, publicationSignal, true, undefined, true, () => { cleanupStarted = true; }, { confirmedDeletion: true });
         const revoked = await work;
         await scope.ready(publicationSignal);
         if (revoked && stillEditing()) setDialog(false);
@@ -148,27 +151,31 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       const next = { kind, error } as const; resultRef.current = next;
       const check = async (): Promise<"available" | "unavailable"> => {
         const controller = new AbortController();
+        let withdrawn = false;
+        const stopWithdrawal = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) withdrawn = true; });
         const stop = subscribeAuthPause(() => controller.abort());
         if (authRequestsPaused()) controller.abort();
         const checkSignal = AbortSignal.any([controller.signal, scope.signal]);
         try {
           const checkTicket = await scope.beginSync(projectId, checkSignal);
+          const projectReadRevision = scope.getProjectReadRevision(projectId);
           try {
             await previewProjectDeletion(projectId, {}, scope.userId, checkSignal, scope.principalMismatch);
             await scope.ready(checkSignal);
-            if (!scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
+            if (withdrawn || !scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
+            scope.markProjectReadable(projectId);
             return "available";
           } catch (failure) {
             if (failure instanceof ApiError && failure.kind === "server" && failure.status === 404 && failure.code === "not_found") {
               await scope.ready(checkSignal);
-              if (!await scope.revokeProject(checkTicket, checkSignal) || !scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
+              if (!scope.canRevokeProjectRead(checkTicket, projectReadRevision) || !await scope.revokeProject(checkTicket, checkSignal) || !scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
               await scope.ready(checkSignal);
               if (!scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
               return "unavailable";
             }
             throw failure;
           }
-        } finally { stop(); }
+        } finally { stop(); stopWithdrawal(); }
       };
       if (kind === "rejected") guard.release("delete");
       const controller = new AbortController(); publication.current = controller;
@@ -181,7 +188,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
           onOutcome?.(kind, error, check);
           if (kind === "rejected") onRetentionChange?.(false);
           if (kind === "rejected" && !paused && stillEditing()) {
-            if (isConfirmedProjectDeletionRefusal(error) && error.status === 404 && ticket !== null) {
+            if (isConfirmedProjectDeletionRefusal(error) && error.status === 404 && ticket !== null && projectReadRevision !== null && scope.canRevokeProjectRead(ticket, projectReadRevision)) {
               await scope.revokeProject(ticket, publicationSignal);
             }
             if (publicationSignal.aborted || scope.isInvalidated || authRequestsPaused() || !stillEditing()) return;

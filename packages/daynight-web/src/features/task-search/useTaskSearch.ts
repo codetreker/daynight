@@ -63,6 +63,7 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
         const observed = preceding.reduce((sum, [, prior]) => sum + prior.ids.length, result.items.length);
         if (preceding.length !== page - 1 || observed > result.total || (result.nextCursor === null ? observed !== result.total : observed >= result.total)) throw new ApiError('protocol');
       } else if (result.nextCursor === null && result.items.length !== result.total) throw new ApiError('protocol');
+      scope.markProjectReadable(projectId);
       console.debug('Task search', { type: 'resource', component: 'task_search', phase: 'read', cycle_id: cycleId, request_id: requestId, project_id: projectId, user_id: scope.userId, duration_ms: performance.now() - started, returned_count: result.items.length, total: result.total });
       if (page === 1) pages.current.clear();
       pages.current.set(page, { ids: result.items.map(item => item.id), total: result.total });

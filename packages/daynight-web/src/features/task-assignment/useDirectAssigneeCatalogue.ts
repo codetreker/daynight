@@ -51,7 +51,7 @@ export const useDirectAssigneeCatalogue = (projectId: string, taskId: string, en
           }
         };
         const result = await runQualified(() => listProjectPeople(projectId, { kind: 'catalogue' }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
-        await runQualified(() => setState({ status: 'ready', items: result.items, error: null }));
+        await runQualified(() => { scope.markProjectReadable(projectId); setState({ status: 'ready', items: result.items, error: null }); });
       } catch (error) {
         if (!signal.aborted && !scope.isInvalidated) setState({ status: 'error', items: [], error });
       }
