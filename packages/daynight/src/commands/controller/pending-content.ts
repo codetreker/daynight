@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { controllerPayloadHash } from "./launch-ticket.js";
 import { createHash, randomUUID } from "node:crypto";
 import { parseTimelineEntry, parseSessionResource, type TimelineEntry } from "../../session/protocol.js";
+import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../session/archive.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { syncDirectory, writeDurableJson } from "../../platform/durable-json.js";
 import { openResourceFiles } from "./content/resource-files.js";
@@ -14,7 +15,7 @@ const readPrivateTimelineBytes = (file: string, expectedBytes?: number): Buffer 
   const before = lstatSync(file);
   if (!before.isFile() || before.isSymbolicLink() || process.platform !== "win32" && (before.mode & 0o077) !== 0) throw new Error("Pending archive entry is not a private regular file.");
   const byteLength = expectedBytes === undefined ? before.size : expectedBytes;
-  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 64 * 1024 * 1024 || before.size !== byteLength) throw new Error("Pending archive entry is corrupt.");
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > SESSION_ARCHIVE_TIMELINE_MAX_BYTES || before.size !== byteLength) throw new Error("Pending archive entry is corrupt.");
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let bytes: Buffer | undefined, failure: unknown;
   try {
@@ -33,7 +34,7 @@ const readPrivateTimelineBytes = (file: string, expectedBytes?: number): Buffer 
   return bytes!;
 };
 const readPendingEntry = (entryDirectory: string, pointer: EntryPointer): TimelineEntry => {
-  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(pointer.content_file) || !/^[a-f0-9]{64}$/.test(pointer.content_sha256) || !Number.isSafeInteger(pointer.content_bytes) || pointer.content_bytes < 1 || pointer.content_bytes > 64 * 1024 * 1024) throw new Error("Pending archive entry pointer is corrupt.");
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(pointer.content_file) || !/^[a-f0-9]{64}$/.test(pointer.content_sha256) || !Number.isSafeInteger(pointer.content_bytes) || pointer.content_bytes < 1 || pointer.content_bytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending archive entry pointer is corrupt.");
   const file = join(entryDirectory, pointer.content_file);
   if (!existsSync(file)) throw new Error("Pending archive source is incomplete: committed entry is missing.");
   const bytes = readPrivateTimelineBytes(file, pointer.content_bytes);
@@ -68,7 +69,7 @@ export const forEachCommittedPendingEntry = (db: Database.Database, sessionId: s
   while (pointer !== undefined) {
     const entry = readPendingEntry(directory, pointer);
     bytes += Buffer.byteLength(JSON.stringify(entry)) + (count === 0 ? 0 : 1);
-    if (++count > 100000 || bytes > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
+    if (++count > 100000 || bytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
     visit(entry);
     pointer = next.get(pointer.id) as EntryPointer | undefined;
   }
@@ -137,7 +138,7 @@ export const migratePendingContent = (db: Database.Database, sessionId: string, 
   for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
     const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
     const bytes = Buffer.byteLength(JSON.stringify(entry)); timelineBytes += bytes + (pointers.length ? 1 : 0);
-    if (pointers.length >= 100000 || timelineBytes > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
+    if (pointers.length >= 100000 || timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
     const filename = join(content.root, "timeline", entryName(entry.entryId));
     const existing = existsSync(filename) ? parseTimelineEntry(JSON.parse(readFileSync(filename, "utf8"))) : undefined;
     if (existing && JSON.stringify(existing) !== JSON.stringify(entry)) throw new Error("Legacy projection conflicts with pending archive source.");
@@ -186,7 +187,7 @@ const forEachLegacyPendingEntry = (db: Database.Database, sessionId: string, vis
     if (!existsSync(filename)) throw new Error("Pending archive source is incomplete.");
     const entry = parseTimelineEntry(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readPrivateTimelineBytes(filename))));
     byteLength += Buffer.byteLength(JSON.stringify(entry)); entryCount++;
-    if (entryCount > 100000 || Buffer.byteLength('{"entries":[]}') + byteLength + Math.max(0, entryCount - 1) > 64 * 1024 * 1024) throw new Error("Pending session timeline budget exceeded.");
+    if (entryCount > 100000 || Buffer.byteLength('{"entries":[]}') + byteLength + Math.max(0, entryCount - 1) > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
     if (entry.entryId !== row.id || entry.entrySeq !== row.entry_seq || entry.revision !== row.revision || controllerPayloadHash(entry) !== row.content_hash || sequences.has(entry.entrySeq)) throw new Error("Legacy pending timeline differs from its committed index; original evidence was retained.");
     sequences.add(entry.entrySeq); visit(entry);
     row = next.get(row.id) as typeof row;

@@ -18,8 +18,6 @@ const (
 	MaxImagesPerMessage           = 8
 	MaxSessionResourceBytes int64 = 1024 * 1024 * 1024
 	MaxSessionResources           = 1000
-	ArchiveResourceReserve  int64 = 132 * 1024 * 1024
-	MaxUploadIdentities           = 10000
 )
 
 type ImageError struct {

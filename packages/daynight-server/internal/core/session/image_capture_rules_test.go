@@ -292,7 +292,7 @@ func copyingCaptureFixture(t *testing.T) (imageRuleFixture, store.SessionCapture
 	capture.Validated = &sp.ValidatedImage{MediaType: "image/png", ByteLength: "8", SHA256: imageBytesHash([]byte("original")), Width: 2, Height: 3, FrameCount: 1}
 	f.d.captures[capture.Request.CaptureID] = capture
 	f.spec.UploadID, f.spec.ImageID = capture.Receipt.AttemptID, capture.Request.Occurrence.ImageID
-	if _, _, err := f.s.prepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID); err != nil {
+	if _, _, err := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID); err != nil {
 		t.Fatal(err)
 	}
 	return f, capture
@@ -387,29 +387,20 @@ func TestCaptureFailureDoesNotRewindConcurrentAdvancedUpload(t *testing.T) {
 	}
 }
 
-func TestCaptureAdmissionFailureUpdatesBudgetWithoutUpload(t *testing.T) {
+func TestCaptureIdentityDoesNotReserveVolume(t *testing.T) {
 	f := newImageRuleFixture(t, []byte("original"))
 	capture := registerOccurrenceFixture(t, f)
 	capture.Receipt.State = "copying"
 	capture.Validated = &sp.ValidatedImage{MediaType: "image/png", ByteLength: "8", SHA256: imageBytesHash([]byte("original")), Width: 2, Height: 3, FrameCount: 1}
 	f.d.captures[capture.Request.CaptureID] = capture
-	usage, err := f.d.SessionResourceUsage(t.Context(), capture.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updateImageBudget(f.r, usage)
 	f.spec.UploadID, f.spec.ImageID = capture.Receipt.AttemptID, capture.Request.Occurrence.ImageID
 	f.files.free = 0
-	_, _, err = f.s.prepareUpload(t.Context(), f.p, "", "", capture.SessionID, f.spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
-	failure := imageFailureEvidence(err)
-	if failure == nil || !failure.expectAbsent || failure.image.Code != "quota_exceeded" {
-		t.Fatal("copy admission lacked absence evidence", err)
+	receipt, created, err := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", capture.SessionID, f.spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
+	if err != nil || !created || receipt.State != "receiving" || f.d.uploads[f.spec.UploadID].BlobID != *capture.Receipt.ResourceID {
+		t.Fatal("copy identity depended on future volume capacity", receipt, err)
 	}
-	if err = f.s.settleCaptureFailure(t.Context(), f.p, "", "", capture.SessionID, capture, failure); err != nil {
-		t.Fatal(err)
-	}
-	if f.d.captures[capture.Request.CaptureID].Receipt.State != "failed" || f.r.Snapshot.ImageBudget.ReservedBytes != "0" {
-		t.Fatal("capture budget did not release", f.r.Snapshot.ImageBudget)
+	if f.r.Snapshot.ImageBudget.ReservedBytes != "0" {
+		t.Fatal("copy identity reserved future bytes", f.r.Snapshot.ImageBudget)
 	}
 }
 
@@ -438,7 +429,7 @@ func (d *captureFailureDAO) SavedSessionResource(ctx context.Context, s, id stri
 	return d.imageRuleDAO.SavedSessionResource(ctx, s, id)
 }
 func TestImageCaptureAdmissionRefusesChangedNativeScopeAndResourceCapacity(t *testing.T) {
-	for _, kind := range []string{"old content", "rate", "invalid", "native locator", "native source", "frozen", "deleting", "identity capacity", "decoder missing", "volume capacity", "capture failure", "usage failure", "save failure", "alias missing", "alias unavailable", "resource failure"} {
+	for _, kind := range []string{"old content", "rate", "invalid", "native locator", "native source", "frozen", "deleting", "decoder missing", "capture failure", "usage failure", "save failure", "alias missing", "alias unavailable", "resource failure"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newImageRuleFixture(t, []byte("original"))
 			old := registerOccurrenceFixture(t, f)
@@ -463,12 +454,8 @@ func TestImageCaptureAdmissionRefusesChangedNativeScopeAndResourceCapacity(t *te
 				f.d.usage.Frozen = true
 			case "deleting":
 				f.d.usage.Deleting = true
-			case "identity capacity":
-				f.d.usage.UploadIdentities = sp.MaxUploadIdentities
 			case "decoder missing":
 				f.s.SetImageDecoder(nil)
-			case "volume capacity":
-				f.files.free = 0
 			case "capture failure":
 				d.point = "capture"
 			case "usage failure":
@@ -497,7 +484,7 @@ func TestImageCaptureAdmissionRefusesChangedNativeScopeAndResourceCapacity(t *te
 				t.Fatal("capture storage error hidden", e)
 			}
 			switch kind {
-			case "identity capacity", "decoder missing", "volume capacity", "alias missing", "alias unavailable":
+			case "decoder missing", "alias missing", "alias unavailable":
 				failed, ok := f.d.captures[request.CaptureID]
 				if !ok || failed.Request.AttemptID != request.AttemptID || failed.Receipt.State != "failed" || failed.Receipt.ResourceID != nil || failed.Receipt.Error == nil || len(f.d.captures) != 2 {
 					t.Fatal("refusal did not retain the failed original identity", failed)

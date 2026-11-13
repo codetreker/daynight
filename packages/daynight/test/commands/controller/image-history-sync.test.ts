@@ -6,7 +6,8 @@ import { afterEach, expect, test } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
-import { syncControllerImageHistory } from "../../../src/commands/controller/media/history-sync.js";
+import { assertImageHistoryAvailable, syncControllerImageHistory } from "../../../src/commands/controller/media/history-sync.js";
+import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (count = 1, text = "durable history") => {
@@ -108,6 +109,7 @@ test("a failed original synchronization can be retired but a conflicting receipt
     expect(f.journal.prepareImageHistorySync()).toEqual(intent);
     await expect(syncControllerImageHistory({ ...f, request: async () => Response.json({ syncId: intent.syncId, state: "failed", acceptedOffset: "0", byteLength: intent.byteLength, sha256: intent.sha256, timelineRevision: null, error: { code: "source_changed", message: "Source changed" } }) })).rejects.toMatchObject({ name: "ImageHistorySyncFailedError", imageError: { code: "source_changed", message: "Source changed" } });
     const db = new Database(f.file, { readonly: true }); try { expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='active_history_sync'").get()).toBeUndefined(); } finally { db.close(); }
+    expect(f.journal.getImageHistorySyncFailure()).toEqual({ code: "source_changed", message: "Source changed" });
     expect(f.journal.prepareImageHistorySync()!.syncId).not.toBe(intent.syncId);
   } finally { f.journal.close(); }
 });
@@ -129,5 +131,59 @@ test("connection changes and cancellation retain the original frozen identity", 
     const pending = syncControllerImageHistory({ ...f, signal: abort.signal, request });
     const rejected = expect(pending).rejects.toThrow("Stopped by caller"); await sending; abort.abort(new Error("Stopped by caller")); await rejected;
     expect(joined).toBe(true); expect(f.journal.prepareImageHistorySync()).toEqual(intent); expect(await readFile(intent.filename)).not.toHaveLength(0);
+  } finally { f.journal.close(); }
+});
+
+
+test("a confirmed failed history reaches captures even when background synchronization observes it first", async () => {
+  const f = await fixture(), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { imageId, entryId, container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-native-part" };
+  f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text: "image location" }] });
+  f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const request = { captureId: randomUUID(), attemptId: randomUUID(), occurrence, nativeSource: null, locator: { kind: "local" as const, path: "/original.png", contextId: randomUUID() } };
+  let puts = 0, gets = 0;
+  const intent = f.journal.prepareImageHistorySync()!;
+  const requestHistory: typeof fetch = async (_url, init) => {
+    if (init!.method === "PUT") { puts++; return Response.json({ error: { code: "quota_exceeded", message: "Session content capacity is exhausted.", requestId: randomUUID() } }, { status: 409 }); }
+    gets++;
+    if (gets === 1) return new Response(null, { status: 404 });
+    return Response.json({ syncId: intent.syncId, state: "failed", acceptedOffset: intent.byteLength, byteLength: intent.byteLength, sha256: intent.sha256, timelineRevision: null, error: { code: "quota_exceeded", message: "Session content capacity is exhausted." } });
+  };
+  try {
+    await expect(syncControllerImageHistory({ ...f, request: requestHistory })).rejects.toMatchObject({ name: "ImageHistorySyncFailedError", imageError: { code: "quota_exceeded" } });
+    expect(puts).toBe(1); expect(gets).toBe(2);
+    expect(f.journal.getImageHistorySyncFailure()).toEqual({ code: "quota_exceeded", message: "Session content capacity is exhausted." });
+    // A later ACK cannot erase a failure that the capture has not yet observed.
+    f.journal.projectTimeline({ entryId: randomUUID(), kind: "assistant_message", revision: "1", content: [{ type: "text", text: "later source" }] });
+    f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+    f.journal.close();
+    const journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true });
+    try {
+      let registrations = 0;
+      const capture = async () => { registrations++; return { captureId: request.captureId, attemptId: request.attemptId, revision: "1", occurrence, state: "reserved" as const, resourceId: randomUUID(), resource: null, error: null }; };
+      const bridge = createControllerCaptureBridge({ journal, capture, beforeCapture: async () => { assertImageHistoryAvailable(journal); }, provider: () => null, writable: () => true });
+      await expect(bridge.providerOptions.registerImageCapture!(request)).rejects.toMatchObject({ name: "ImageCapturePrerequisiteError", code: "quota_exceeded" });
+      expect(registrations).toBe(0); expect(journal.getImageCaptureRequest(request.captureId)).toEqual(request);
+      // A new successful complete checkpoint is the only event that clears it.
+      await syncControllerImageHistory({ ...f, journal, request: receiver().request });
+      expect(journal.getImageHistorySyncFailure()).toBeNull();
+      await bridge.providerOptions.registerImageCapture!(request);
+      expect(registrations).toBe(1);
+    } finally { journal.close(); }
+  } finally { try { f.journal.close(); } catch { /* already closed for reopen */ } }
+});
+
+test("failed status observation keeps the frozen original and does not invent a refusal", async () => {
+  const f = await fixture();
+  try {
+    const intent = f.journal.prepareImageHistorySync()!; let gets = 0;
+    const request: typeof fetch = async (_url, init) => {
+      if (init!.method === "PUT") return new Response(null, { status: 409 });
+      gets++; return new Response(null, { status: gets === 1 ? 404 : 503 });
+    };
+    await expect(syncControllerImageHistory({ ...f, request })).rejects.toThrow("original status observation failed");
+    expect(f.journal.prepareImageHistorySync()).toEqual(intent);
+    expect(f.journal.getImageHistorySyncFailure()).toBeNull();
+    expect(await readFile(intent.filename)).not.toHaveLength(0);
   } finally { f.journal.close(); }
 });

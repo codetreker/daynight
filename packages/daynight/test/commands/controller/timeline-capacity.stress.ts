@@ -7,6 +7,7 @@ import { loadSqliteSql } from "../../../src/platform/sqlite-sql.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
+import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../src/session/archive.js";
 
 if (process.env.CI) throw new Error("CLI stress tests run only on local machines.");
 
@@ -58,8 +59,8 @@ it("keeps exact 100000 current entries and rejects one additional entry without 
   expect(count).toBe(100000);
 }, 120000);
 
-it("accepts the exact 64 MiB UTF-8 envelope and rejects a one-byte replacement growth", () => {
-  const f = fixture(), maximum = 64 * 1048576, count = 64;
+it("accepts the exact 128 MiB UTF-8 envelope and rejects a one-byte replacement growth", () => {
+  const f = fixture(), maximum = SESSION_ARCHIVE_TIMELINE_MAX_BYTES, count = 256;
   const available = maximum - Buffer.byteLength('{"entries":[]}') - (count - 1);
   let written = 0;
   f.write(() => {
@@ -78,7 +79,7 @@ it("accepts the exact 64 MiB UTF-8 envelope and rejects a one-byte replacement g
   expect(f.store.get(id(count))).toEqual(last);
   expect(f.store.totals().timelineBytes).toBe(maximum);
   f.db.pragma("wal_checkpoint(TRUNCATE)");
-  expect(f.physical()).toBeLessThan(128 * 1048576);
+  expect(f.physical()).toBeLessThan(256 * 1048576);
   expect(openTimelineStore(f.db, f.context).totals().timelineBytes).toBe(maximum);
 }, 120000);
 

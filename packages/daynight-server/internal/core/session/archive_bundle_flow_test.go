@@ -28,6 +28,7 @@ type archiveFlowDAO struct {
 	resources   map[string]store.SessionResourceRecord
 	status      sp.ArchiveStatus
 	leases      int
+	leaseRows   map[string]store.SessionResourceLease
 	migration   *store.ArchiveMigration
 	archivePath string
 }
@@ -62,6 +63,15 @@ func (d *archiveFlowDAO) SaveSessionArchiveFile(_ context.Context, f store.Archi
 	d.files[f.FileID] = f
 	return nil
 }
+func (d *archiveFlowDAO) FailSessionArchiveFile(_ context.Context, expected store.ArchiveBundleFile, resource json.RawMessage) error {
+	current, ok := d.files[expected.FileID]
+	if !ok || !jsonEqual(encode(current), encode(expected)) || current.State != "receiving" {
+		return archiveConflict()
+	}
+	current.State, current.Resource = "failed", resource
+	d.files[current.FileID] = current
+	return nil
+}
 func (d *archiveFlowDAO) InsertSessionArchiveChunk(_ context.Context, c store.ArchiveBundleChunk) error {
 	d.chunks[c.FileID] = append(d.chunks[c.FileID], c)
 	return nil
@@ -72,13 +82,35 @@ func (d *archiveFlowDAO) SessionArchiveChunks(_ context.Context, _, id string) (
 func (d *archiveFlowDAO) SessionResourceUsage(context.Context, string) (store.SessionResourceUsage, error) {
 	return store.SessionResourceUsage{}, nil
 }
-func (d *archiveFlowDAO) AcquireSessionResourceLease(context.Context, store.SessionResourceLease) error {
+func (d *archiveFlowDAO) ListSessionResources(_ context.Context, id string) ([]store.SessionResourceRecord, error) {
+	var rows []store.SessionResourceRecord
+	for _, row := range d.resources {
+		if row.SessionID != id {
+			return nil, errors.New("wrong session resource scope")
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+func (d *archiveFlowDAO) AcquireSessionResourceLease(_ context.Context, lease store.SessionResourceLease) error {
 	d.leases++
+	if d.leaseRows == nil {
+		d.leaseRows = map[string]store.SessionResourceLease{}
+	}
+	d.leaseRows[lease.ID] = lease
 	return nil
 }
-func (d *archiveFlowDAO) ReleaseSessionResourceLease(context.Context, string, string) error {
+func (d *archiveFlowDAO) ReleaseSessionResourceLease(_ context.Context, _, id string) error {
 	d.leases--
+	delete(d.leaseRows, id)
 	return nil
+}
+func (d *archiveFlowDAO) ListSessionResourceLeases(context.Context, string) ([]store.SessionResourceLease, error) {
+	rows := make([]store.SessionResourceLease, 0, len(d.leaseRows))
+	for _, lease := range d.leaseRows {
+		rows = append(rows, lease)
+	}
+	return rows, nil
 }
 func (d *archiveFlowDAO) UnsettledSessionResourceWrites(context.Context, string) (int, error) {
 	return 0, nil
@@ -428,5 +460,31 @@ func TestArchiveDefiniteFailureRequiresExactStoppedReset(t *testing.T) {
 	}
 	if _, err = op.PrepareArchive(ctx, input); err == nil {
 		t.Fatal("stale reset accepted")
+	}
+}
+
+func TestSealChecksNewUnavailableDescriptorBeforeSaving(t *testing.T) {
+	op, d, r := archiveFlowFixture(t)
+	descriptor := sp.Resource{ResourceID: uuid.NewString(), Status: "unavailable", Name: "missing"}
+	historyID := uuid.NewString()
+	ledger := archiveLedger{HistoryID: historyID, HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: "7", Sealable: true, Entries: []archiveLedgerEntry{{ByteLength: int(MaxSessionContentBytes - 1000)}}, Resources: []sp.Resource{descriptor}}
+	cost, err := measureContent(contentState{ledger: &ledger, resources: []sp.Resource{descriptor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.Entries[0].ByteLength += int(MaxSessionContentBytes - cost.TimelineBytes - cost.IndexBytes - cost.ResourceMetadataBytes + 1)
+	d.bundle.HistoryID, d.bundle.Ledger = historyID, encode(ledger)
+	d.files[historyID] = store.ArchiveBundleFile{SessionID: op.id, FileID: historyID, Purpose: "history", State: "complete"}
+	var refusal *model.Fault
+	if _, err = op.SealArchive(t.Context()); !errors.As(err, &refusal) || refusal.Code != "quota_exceeded" || len(d.resources) != 0 || d.bundle.Phase != "settling" {
+		t.Fatal("oversized descriptor was saved", err, d.bundle.Phase, d.resources)
+	}
+	ledger.Entries[0].ByteLength--
+	d.bundle.Ledger = encode(ledger)
+	if receipt, err := op.SealArchive(t.Context()); err != nil || receipt.Phase != "sealed" || len(d.resources) != 1 {
+		t.Fatal("boundary descriptor was not sealed", receipt, err)
+	}
+	if _, err = op.SealArchive(t.Context()); err != nil || len(d.resources) != 1 {
+		t.Fatal("sealed replay changed descriptors", err)
 	}
 }

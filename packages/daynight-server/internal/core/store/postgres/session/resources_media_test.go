@@ -39,17 +39,22 @@ func testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlemen
 		}
 		return base.(store.SessionMediaDAO).SaveSessionMediaRequest(t.Context(), prepare)
 	})
-	assertReserved := func(size int64) {
+	assertRelease := func(released bool) {
 		t.Helper()
 		sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
-			usage, err := base.(store.SessionResourceDAO).SessionResourceUsage(t.Context(), id)
-			if err == nil && (usage.ReservedBytes != size || usage.ReservedResources != map[bool]int{true: 1}[size > 0]) {
-				t.Fatal("quota did not follow committed storage release", usage, size)
+			resources := base.(store.SessionResourceDAO)
+			usage, err := resources.SessionResourceUsage(t.Context(), id)
+			if err != nil {
+				return err
+			}
+			saved, err := resources.SessionUpload(t.Context(), id, spec.UploadID)
+			if err == nil && (usage.Bytes != 0 || usage.Resources != 0 || saved.StorageReleased != released || saved.Spec != spec) {
+				t.Fatal("original identity or release state changed", usage, saved)
 			}
 			return err
 		})
 	}
-	assertReserved(8)
+	assertRelease(false)
 	rollback := errors.New("release transaction rolled back")
 	_, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
 		if err := scope.SessionDAO().(store.SessionMediaDAO).SaveSessionMediaRequest(t.Context(), release); err != nil {
@@ -66,7 +71,7 @@ func testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlemen
 		}
 		return base.(store.SessionMediaDAO).SaveSessionMediaRequest(t.Context(), release)
 	})
-	assertReserved(8)
+	assertRelease(false)
 	for _, replacement := range []store.SessionMediaRequest{
 		{SessionID: id, RequestID: prepare.RequestID, Action: "prepare", Fence: fence, Body: encode(spec), Complete: true, Result: encode(receipt)},
 		{SessionID: id, RequestID: release.RequestID, Action: "release", Fence: fence, Body: encode(map[string]any{"uploadId": spec.UploadID}), Complete: true, Result: encode(receipt)},
@@ -112,11 +117,11 @@ func testFailedPreparationAndOriginalReleasePersistIndependentlyOfQuotaSettlemen
 	if !errors.Is(err, rollback) {
 		t.Fatal(err)
 	}
-	assertReserved(8)
+	assertRelease(false)
 	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
 		return base.(store.SessionResourceDAO).SaveSessionUpload(t.Context(), upload)
 	})
-	assertReserved(0)
+	assertRelease(true)
 }
 
 func testPendingMediaOffersRejectCorruptCandidateWithoutPartialResults(t *testing.T, db *postgres.Store) {

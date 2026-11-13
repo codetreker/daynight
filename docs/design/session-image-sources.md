@@ -64,7 +64,7 @@ SDK callback 与 permission event 的共享对象跨进程时，由 worker 对�
 
 图片采集不依赖滚动、工具展开或浏览器在线。Controller 从可信消息内容建立位置，保存成功后才公开 available；浏览器懒加载只影响已保存原件的读取。Thread、Herdr、通用文件浏览、第三方登录、任意 MCP resource/read、网络文件共享和主动刷新历史图片不在此设计内。
 
-共同流程为：可信投影器提交 entry、正文片段和来源上下文；纯 AST 模块只识别节点、不做 IO；Controller 持久原 imageId/sourceKey/locator 与位置，经 timeline/source outbox 得到覆盖该位置的服务 ACK；服务 register 原子核验位置和来源映射并预留；Controller 得到 reserved 后才读取来源；公共存储完整验证实际 bytes 并提交；服务耐久保存 blob、引用与来源索引后 committed。任何未知 register/commit 结果只查询原 captureId，不重抓来源、不更换身份。
+共同流程为：可信投影器提交 entry、正文片段和来源上下文；纯 AST 模块只识别节点、不做 IO；Controller 持久原 imageId/sourceKey/locator 与位置，经 timeline/source outbox 得到覆盖该位置的服务 ACK；服务 register 原子核验位置和来源映射并登记原身份；Controller 得到兼容 reserved 回执后才读取来源，状态名称不表示服务端容量预留；公共存储完整验证实际 bytes 并提交；服务耐久保存 blob、引用与来源索引后 committed。任何未知 register/commit 结果只查询原 captureId，不重抓来源、不更换身份。
 
 可信 `NativeImageSource` 与 locator 分工不同：前者证明原生位置，后者说明如何取 bytes。原生位置须先 ACK，自有上传图的回显也以 resource locator 执行 register；同 Session available 原件直接 committed，只增加出现引用和来源映射，不复制 blob、不增加资源槽。它不证明原生接受，也不能解除发送 unknown。
 
@@ -109,7 +109,7 @@ text 与 bindings 在同一 entry revision 原子发布；旧图移出 bindings 
 
 整个 part 被删除时，原 entry 保留同 partId 的只读容器，text/bindings 为空而 retained 不变；整个 entry 撤回但记录尚存时保留同 entryId 的图片历史容器。原 reserved/copying/unknown 出现不能随 UI 删除，迟到 committed 原子进入原容器；确定从未采集的失败才保留 unavailable。不能产生无主 blob 或以删除节点为由释放 unknown pin。
 
-所有当前 bindings、reasoning、retained 和撤回容器均进入统一在线/历史/content/schema3、引用闭包、授权、删除及 JSON 容量检查。关联前预留潜在 retained 元数据；修订容不下既有引用时保留上一可读快照并报容量失败，不删旧图腾出空间。含新 Markdown part 的记录要求支持 contentRevision2 的 reader，不生成另一份降级文字投影。旧文本记录在读取边界保留完整原正文和 event/entry 序列。
+所有当前 bindings、reasoning、retained 和撤回容器均进入统一在线/历史/content/schema3、引用闭包、授权、删除及 JSON 容量检查。完整历史实际发布时按统一 Session 内容总量检查 retained 元数据；修订超限时保留上一可读快照并报容量失败，不删旧图腾出空间。含新 Markdown part 的记录要求支持 contentRevision2 的 reader，不生成另一份降级文字投影。旧文本记录在读取边界保留完整原正文和 event/entry 序列。
 
 ### 解析失败的严格分支
 
@@ -196,7 +196,7 @@ final 来源判定通过、helper 完成复制和校验、公共 decoder 成功�
 
 ## 外部 HTTP(S) 获取
 
-外部读取使用 Controller 专用 transport，与 Daynight 认证客户端、请求头和重定向实现分开。只处理已登记可信 occurrence，register 预留资源槽及未知长度的 10 MiB 后才向外站发请求。字节交公共 stageCapture，获取器不生成 uploadId 或 available。
+外部读取使用 Controller 专用 transport，与 Daynight 认证客户端、请求头和重定向实现分开。只处理已登记可信 occurrence，register 确认原身份并取得本机暂存许可后才向外站发请求。字节交公共 stageCapture，获取器不生成 uploadId 或 available。
 
 ### URL、DNS 与实际对端
 
@@ -269,7 +269,7 @@ coordinator 在 register 或 commit 发出前持久原请求及 unknown 阶段�
 
 浏览器来源重试唯一为 `POST {base}/image-occurrences/{imageId}/retry`，严格 `{}`，回 `{capture:ImageCaptureReceipt}`；Controller 控制为 `retry_capture {captureId,attemptId}`。它只处理已登记原 occurrence、原可信 local/external locator，不接受 path、URL、headers、actor、roots 或其他 Session。新attempt须等待旧writer实际停止和staging释放，旧attempt迟到结果不能提交。当前真实 operator 须有操作权限，不要求等于原上传 actor；只读权限不够。具体返回类型和 `GET image-occurrences/{imageId}` 的 state/action/null 组合由[公共合同](session-image-contracts.md)唯一规定。
 
-服务 action 是按钮资格依据，不按错误文案猜：pending/unknown 只 observe 原身份；committed 只 read_saved；failed 只有从未 committed、服务已确认释放旧预留、来源可信且当前可操作才 retry_source。POST 响应未知先 GET 原状态，不能自动重发 POST；并发按 capture 键串行。query 观察到服务已切换为新 retry attempt 时，只持久原 capture 下的新 attempt 和 `awaitingRetry`，继续观察而不启动 writer；只有服务随后下发精确原 `retry_capture {captureId,attemptId}` 控制，才能在旧 writer/预留退出并重新核权后开始该次来源读取。
+服务 action 是按钮资格依据，不按错误文案猜：pending/unknown 只 observe 原身份；committed 只 read_saved；failed 只有从未 committed、服务已确认旧 staging 清理、来源可信且当前可操作才 retry_source。POST 响应未知先 GET 原状态，不能自动重发 POST；并发按 capture 键串行。query 观察到服务已切换为新 retry attempt 时，只持久原 capture 下的新 attempt 和 `awaitingRetry`，继续观察而不启动 writer；只有服务随后下发精确原 `retry_capture {captureId,attemptId}` 控制，才能在旧 writer 退出、staging 清理并重新核权后开始该次来源读取。
 
 | 状态/失败 | 允许的恢复 |
 | --- | --- |

@@ -23,6 +23,7 @@ import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-err
 import { controllerJournalFormat } from "./journal-format.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, prepareControllerStorage } from "./storage-preparation.js";
+import { controllerStorageMediaUsage, reserveControllerStoragePeak } from "./storage-capacity.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -102,11 +103,21 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
-  const assertTimelineWrite = (additionalBytes: number): void => {
+  let reservedContentCeiling = 0;
+  const reserveContent = (additionalBytes: number, contentGrowth: number): void => {
+    metadataBudget.assert(additionalBytes, true, contentGrowth);
+    if (db.memory) return;
+    const current = metadataBudget.reservationCeiling(), next = metadataBudget.reservationCeiling(contentGrowth);
+    if (next <= reservedContentCeiling && current === reservedContentCeiling) return;
+    const media = controllerStorageMediaUsage(file, db);
+    reserveControllerStoragePeak(file, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, media.reservedBytes + next, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes);
+    reservedContentCeiling = next;
+  };
+  const assertTimelineWrite = (additionalBytes: number, contentGrowth = 0): void => {
     assertUsable();
     assertControllerStoragePermit(permit, file);
     if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
-    if (additionalBytes > 0) metadataBudget.assert(additionalBytes, true);
+    if (additionalBytes > 0) reserveContent(additionalBytes, contentGrowth);
   };
   db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true,
     onReady: (connection) => {
@@ -271,7 +282,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
-    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, metadataBudget),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, reserveContent),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
