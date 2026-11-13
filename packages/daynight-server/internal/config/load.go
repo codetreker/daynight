@@ -11,6 +11,7 @@ import (
 	serverconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/config"
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 	applicationconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/application/config"
+	githubconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/github/config"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
 	transferconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer/config"
 	oauthconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth/config"
@@ -39,6 +40,7 @@ type patch struct {
 	UniAuth      identityconfig.Patch            `yaml:"uniauth"`
 	MCP          mcpPatch                        `yaml:"mcp"`
 	OAuth        oauthconfig.Patch               `yaml:"oauth"`
+	GitHub       githubconfig.Patch              `yaml:"github"`
 	Webhook      webhookconfig.Patch             `yaml:"webhook"`
 	TaskSync     applicationconfig.TaskSyncPatch `yaml:"task_sync"`
 	ImageDecoder imageconfig.Patch               `yaml:"image_decoder"`
@@ -89,6 +91,9 @@ func readLayer(root, name string) (layer, error) {
 	}
 	if len(doc.Content) != 1 {
 		return result, &configvalue.ConfigurationError{Phase: "decode", Rule: "must contain a mapping", Origin: configvalue.Origin{Source: name}}
+	}
+	if err = validateGitHubKeys(doc.Content[0], name); err != nil {
+		return result, err
 	}
 	result.origins, err = configvalue.Validate(doc.Content[0], patch{}, name)
 	if err != nil {
@@ -157,7 +162,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 			{"s2s", func() error { return p.S2S.ApplyTo(&c.S2S) }}, {"server", func() error { return p.Server.ApplyTo(&c.Server) }}, {"database", func() error { return p.Database.ApplyTo(&c.Database) }}, {"storage", func() error { return p.Storage.ApplyTo(&c.Storage) }},
 			{"monitoring", func() error { return p.Monitoring.Redis.ApplyTo(&c.Monitoring.Redis) }}, {"monitoring", func() error { return p.Monitoring.Metrics.ApplyTo(&c.Monitoring.Metrics) }},
 			{"uniauth", func() error { return p.UniAuth.ApplyTo(&c.UniAuth) }}, {"mcp", func() error { return p.MCP.Origins.ApplyTo(&c.MCP.Origins) }}, {"mcp", func() error { return p.MCP.Transfer.ApplyTo(&c.MCP.Transfer) }},
-			{"oauth", func() error { return p.OAuth.ApplyTo(&c.OAuth) }}, {"webhook", func() error { return p.Webhook.ApplyTo(&c.Webhook) }}, {"task_sync", func() error { return p.TaskSync.ApplyTo(&c.TaskSync) }}, {"image_decoder", func() error { return p.ImageDecoder.ApplyTo(&c.ImageDecoder) }},
+			{"github", func() error { return p.GitHub.ApplyTo(&c.GitHub) }}, {"oauth", func() error { return p.OAuth.ApplyTo(&c.OAuth) }}, {"webhook", func() error { return p.Webhook.ApplyTo(&c.Webhook) }}, {"task_sync", func() error { return p.TaskSync.ApplyTo(&c.TaskSync) }}, {"image_decoder", func() error { return p.ImageDecoder.ApplyTo(&c.ImageDecoder) }},
 		} {
 			if err = item.apply(); err != nil {
 				return Config{}, decorate(err, item.group, "decode", origins, configvalue.Origin{})
@@ -169,7 +174,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group string
 		apply func(func(string) (string, bool), func(string, string)) error
 	}{
-		{"s2s", c.S2S.ApplyEnvironment}, {"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment},
+		{"s2s", c.S2S.ApplyEnvironment}, {"server", c.Server.ApplyEnvironment}, {"database", c.Database.ApplyEnvironment}, {"storage", c.Storage.ApplyEnvironment}, {"monitoring", c.Monitoring.Redis.ApplyEnvironment}, {"monitoring", c.Monitoring.Metrics.ApplyEnvironment}, {"uniauth", c.UniAuth.ApplyEnvironment}, {"mcp", c.MCP.Origins.ApplyEnvironment}, {"mcp", c.MCP.Transfer.ApplyEnvironment}, {"github", c.GitHub.ApplyEnvironment}, {"oauth", c.OAuth.ApplyEnvironment}, {"webhook", c.Webhook.ApplyEnvironment}, {"task_sync", c.TaskSync.ApplyEnvironment}, {"image_decoder", c.ImageDecoder.ApplyEnvironment},
 	} {
 		mark := func(field, variable string) {
 			origins[item.group+"."+field] = configvalue.Origin{Source: "environment", EnvName: variable}
@@ -181,7 +186,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 	for _, item := range []struct {
 		group string
 		apply func(string) error
-	}{{"storage", c.Storage.ResolvePaths}, {"image_decoder", c.ImageDecoder.ResolvePaths}} {
+	}{{"storage", c.Storage.ResolvePaths}, {"github", c.GitHub.ResolvePaths}, {"image_decoder", c.ImageDecoder.ResolvePaths}} {
 		if err = item.apply(root); err != nil {
 			return Config{}, decorate(err, item.group, "validate", origins, configvalue.Origin{})
 		}
@@ -190,7 +195,7 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		group    string
 		validate func() error
 	}{
-		{"s2s", func() error { return c.S2S.Validate(c.Server.AllowHTTPTestOrigin) }}, {"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
+		{"s2s", func() error { return c.S2S.Validate(c.Server.AllowHTTPTestOrigin) }}, {"github", c.GitHub.Validate}, {"oauth", c.OAuth.Validate}, {"mcp", c.MCP.Transfer.Validate}, {"database", c.Database.Validate}, {"monitoring", c.Monitoring.Redis.Validate}, {"storage", c.Storage.Validate}, {"server", c.Server.ValidateRequired}, {"uniauth", c.UniAuth.ValidateRequired},
 	} {
 		if err = item.validate(); err != nil {
 			return Config{}, decorate(err, item.group, "validate", origins, configvalue.Origin{})
@@ -285,4 +290,80 @@ func LoadStorageVerification(root string, lookup func(string) (string, bool)) (S
 		}
 	}
 	return c, nil
+}
+
+// validateGitHubKeys enforces the GitHub section contract while preserving the
+// existing loader's treatment of unknown fields in other sections.
+func validateGitHubKeys(root *yaml.Node, source string) error {
+	var section func(*yaml.Node, map[*yaml.Node]bool) error
+	section = func(n *yaml.Node, seen map[*yaml.Node]bool) error {
+		if n == nil || seen[n] {
+			return nil
+		}
+		seen[n] = true
+		if n.Kind == yaml.AliasNode {
+			return section(n.Alias, seen)
+		}
+		if n.Kind == yaml.SequenceNode {
+			for _, child := range n.Content {
+				if err := section(child, seen); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if n.Kind != yaml.MappingNode {
+			return nil
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, value := n.Content[i], n.Content[i+1]
+			if key.ShortTag() == "!!merge" {
+				if err := section(value, seen); err != nil {
+					return err
+				}
+				continue
+			}
+			switch key.Value {
+			case "enabled", "app_id", "private_key_file", "webhook_secret":
+			default:
+				return &configvalue.ConfigurationError{Field: "github", Phase: "decode", Rule: "contains an unknown field", Origin: configvalue.Origin{Source: source, Line: key.Line, Column: key.Column}}
+			}
+		}
+		return nil
+	}
+	var walk func(*yaml.Node, map[*yaml.Node]bool) error
+	walk = func(n *yaml.Node, seen map[*yaml.Node]bool) error {
+		if n == nil || seen[n] {
+			return nil
+		}
+		seen[n] = true
+		if n.Kind == yaml.AliasNode {
+			return walk(n.Alias, seen)
+		}
+		if n.Kind == yaml.SequenceNode {
+			for _, child := range n.Content {
+				if err := walk(child, seen); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if n.Kind != yaml.MappingNode {
+			return nil
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			if k.ShortTag() == "!!merge" {
+				if err := walk(v, seen); err != nil {
+					return err
+				}
+			} else if k.Value == "github" {
+				if err := section(v, map[*yaml.Node]bool{}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(root, map[*yaml.Node]bool{})
 }

@@ -68,3 +68,4 @@
 }
 
 .task-chain-dialog :focus-visible { outline-color: var(--task-focus); }
+.task-node-goal .task-node-bottom{padding-right:0}

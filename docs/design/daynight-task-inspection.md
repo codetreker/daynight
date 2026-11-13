@@ -4,12 +4,12 @@
 
 ## 实现范围
 
-完整 P、渐进 S、50/100 概览、显式 20 直接邻居批次、真实诱导边、reset 和实际 S 刷新保留共同构成图浏览机制。
+普通链图的完整 P、渐进 S、50/100 概览、显式 20 直接邻居批次、真实诱导边、reset 和实际 S 刷新保留共同构成图浏览机制。
 图与详情保留并校验 externalDependsOn，性质也进入图等价和详情新鲜度；
 成员来自普通依赖弱连通分量，虚线箭头来自显式外部边，虚线卡片表示链外上下文，
 机制由[外部依赖架构](daynight-external-dependencies.md)定义。完整数据、进度和七项统计不因展示缩小。完整详情在弹窗与独立页面共用主体；TaskDetailPanels、附件分屏、五态读取、locale、鉴权/资源失效及手动/定时刷新策略保持，图检查不新增业务请求或刷新触发。
 
-主体切换图局部检查，独立 Details 入口阅读详情。完整 H 从完整索引计算，可见 H 和它们的全部真实可见路线/箭头同步高亮，隐藏 H−S 按 ID 去重计数。选择不展开、不布局、不编译几何、不适应或移动视口。Details、普通成员的方向控件及链外卡片的独立展开入口均为主体的兄弟原生按钮，键盘动作明确。
+普通链图的主体切换图局部检查，独立 Details 入口阅读详情。完整 H 从完整索引计算，可见 H 和它们的全部真实可见路线/箭头同步高亮，隐藏 H−S 按 ID 去重计数。选择不展开、不布局、不编译几何、不适应或移动视口。Details、普通成员的方向控件及链外卡片的独立展开入口均为主体的兄弟原生按钮，键盘动作明确。
 
 ## 责任与数据流
 
@@ -29,7 +29,15 @@ flowchart LR
   Canvas -->|链外卡片展开| Navigate[ProjectPage 解析所属 Goal 或独立任务]
 ```
 
-ProjectPage 持有当前图资源的 `openChainWitness`、详情资源和列表浏览状态；ChainList 在同一浮层会话中保留最初列表按钮 `opener` 及最初 task witness `openedTask`，用于关闭焦点恢复。当前画布拥有局部检查状态，不与详情ID绑定。图局部Context为节点/边提供呈现状态，受控节点几何和布局输入保持稳定。完整索引拥有H，渐进可见规则拥有S；不能从已淡化或已显示元素反推完整依赖和统计。
+ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列表浏览状态；ChainList 在同一浮层会话中保留最初列表按钮 `opener` 及最初 task witness `openedTask`，用于关闭焦点恢复。`TaskGraph` 拥有链投影、渐进可见集合、局部检查和根节点 framing，不与详情 ID 绑定。`GraphProjection` 只包含主体、外部节点和真实边，`ChainProjection` 另保留实际 root 和完成数；`layoutGraph` 以共享投影计算几何。`TaskGraphCanvas` 接收控制器生成的节点、几何、检查状态及视口计算，不推导链成员；图局部 Context 为节点和边提供呈现状态。`TaskGraphToolbar` 接收调用方的摘要、文案和动作。`TaskGraphDialogShell` 拥有 portal、浮层、滚动锁、焦点约束、Escape 和全屏，`TaskChainDialog` 提供实际链元数据和内容。完整索引拥有 H，渐进可见规则拥有 S；不能从已淡化或已显示元素反推完整依赖和统计。
+
+## Goal 整体图
+
+项目 Goal 整体图与普通链图共享 `GraphProjection`、布局、画布、工具栏和弹窗机械层，但各自拥有成员和交互策略。`projectGoal` 从完整索引按 Parent 选择全部直接成员，再读取成员完整 `dependsOn`，将可访问的范围外直接前置按 ID 去重；只以成员为 target 产生真实边，边的 external 分类取目标的 `externalDependsOn`。外部节点之间的边、更深祖先和仅反向后续不进入投影。空成员集合是有效空图，不使用虚拟根。Goal 标题与自身状态来自 typed Goal，进度和暂停统计只计算直接成员。
+
+`GoalTaskGraph` 直接呈现全部成员和外部节点，不调用链的渐进可见集合或检查状态机。Goal 模式卡片为 220×96，主体是唯一 Task 详情入口，没有检查、重复 Details、展开或外部导航尾部；普通链保留自己的动作。非空图按完整布局 bounds 居中适应，最小缩放允许达到完整 fit；空图不计算 bounds。图身份与拓扑分离，拓扑包含节点角色、边端点和分类；首次、真实拓扑变化、方向切换或显式适应更新 framing，相同数据、状态变化、详情和全屏切换保留视口。布局失败显式显示并可重试，不伪装为空图。
+
+`GoalGraphDialog` 使用共享弹窗外壳及项目已有 Clock/Pause provider，图内显示后台同步错误和重试，同时保留有效内容。项目图 target 由权威摘要中的资源类型决定：Goal 可以为空或在筛选/分页之外，Task witness 仍解析为多成员普通链。history 继续保存 UUID；Goal 卡片打开详情时保留同一个图和 witness。入口和来源焦点的所有权见 [Web 设计](daynight-web.md#项目详情-projectsprojectid)，范围及阅读要求见 [Goal 需求](../spec/daynight-goals.md#goal-整体依赖图)。
 
 ## 完整依赖与可见交互
 

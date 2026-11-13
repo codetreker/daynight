@@ -13,13 +13,14 @@ import { useCompletionHint } from '../task-completion/useCompletionHint';
 import { CompletionTimeLabel } from '../task-completion/CompletionTimeLabel';
 import '../../styles/task-status-rows.css';
 
-export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, onOpenGoal, onOpenListTask, onOpenListChain, onOpenSession }: {
+export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, onOpenGoal, onOpenGoalGraph, onOpenListTask, onOpenListChain, onOpenSession }: {
   readonly projectId: string;
   readonly index: GraphIndex;
   readonly goal: TaskSummary;
   readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, 'state' | 'machine'>>;
   readonly openChainId: string | null;
   readonly onOpenGoal: (id: string, trigger: HTMLElement) => void;
+  readonly onOpenGoalGraph: (id: string, trigger: HTMLElement) => void;
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
@@ -55,6 +56,7 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
         <span className="goal-list-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={goal.assignedTo} /><span>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span>{hint.hint}</span>
       <span className="goal-list-progress"><span>{graph.progress({ done, cancelled, total: count })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${count === 0 ? 0 : done / count * 100}%` }} /><i className="goal-list-cancelled" style={{ width: `${count === 0 ? 0 : cancelled / count * 100}%` }} /></span></span>
       <span className={`root-status graph-status-${goal.status}`}>{common.status[goal.status]}</span>
+      <button className="goal-list-graph" type="button" id={`project-goal-graph-${goal.id}`} aria-haspopup="dialog" aria-label={graph.goalGraphLabel({ title })} title={graph.goalGraph} onClick={(event) => onOpenGoalGraph(goal.id, event.currentTarget)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></button>
     </div>
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
