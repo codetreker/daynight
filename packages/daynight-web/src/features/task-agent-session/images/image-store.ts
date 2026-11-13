@@ -177,7 +177,7 @@ export class SessionImageStore {
   acquire(asset: StoredAsset, signal: AbortSignal, priority: ImageReadPriority): Promise<VerifiedImageLease> {
     try { signal.throwIfAborted(); this.assertAsset(asset); } catch (error) { return Promise.reject(error); }
     let entry = this.entries.get(asset.key);
-    if (entry?.controller.signal.aborted) return Promise.reject(entry.controller.signal.reason);
+    if (entry?.controller.signal.aborted) return this.acquireAfterDrain(entry, signal, priority);
     if (!entry) {
       entry = { asset, controller: new AbortController(), waiters: new Set(), leases: new Set(), decodeJobs: new Set(), validation: null, priority, frameCount: null, singleFrame: false, metadata: null, bytes: 0, admitted: false, reading: false, blob: null, pending: null, touched: Date.now(), expiry: null };
       this.entries.set(asset.key, entry);
@@ -196,6 +196,23 @@ export class SessionImageStore {
       combined.addEventListener('abort', aborted, { once: true }); owned.waiters.add(waiter);
       if (priority !== 'background' && owned.validation?.priority === 'background') owned.validation.controller.abort();
       this.pump();
+    });
+  }
+  private acquireAfterDrain(entry: Entry, signal: AbortSignal, priority: ImageReadPriority): Promise<VerifiedImageLease> {
+    const asset = entry.asset, waiting = AbortSignal.any([signal, asset.scope.lifetime.signal, asset.lifetime.signal]);
+    // A previous consumer's cancellation cannot fail a new read or release its
+    // reservation before the original reader and decoders have actually stopped.
+    return new Promise<void>((resolve, reject) => {
+      const aborted = () => { waiting.removeEventListener('abort', aborted); reject(waiting.reason); };
+      if (waiting.aborted) { aborted(); return; }
+      waiting.addEventListener('abort', aborted, { once: true });
+      void Promise.allSettled([entry.pending, ...entry.decodeJobs]).then(() => {
+        waiting.removeEventListener('abort', aborted);
+        if (waiting.aborted) reject(waiting.reason); else resolve();
+      });
+    }).then(() => {
+      this.remove(entry);
+      return this.acquire(asset, signal, priority);
     });
   }
   private admitted() { return [...this.entries.values()].filter(entry => entry.admitted); }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { parseSessionArchiveManifest, verifySessionArchiveMetadata } from '../../../daynight/src/session/archive';
 import type { SessionHistoryItem } from '../../src/api/terminal-sessions';
 import { imageBrowserData } from '../helpers/sessionImageBrowser';
@@ -37,7 +37,21 @@ async function openRecords(page: Page, completed: boolean) {
     return { ...record, item, manifest, status, timeline };
   });
   await Promise.all(records.map(record => verifySessionArchiveMetadata(parseSessionArchiveManifest(record.manifest), new TextEncoder().encode(record.timeline))));
-  const observations = { currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], pageErrors: [] as string[], unexpected: [] as string[] };
+  const observations = { currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], completedResourceReads: [] as string[], cancelledResourceReads: [] as string[], failedResourceReads: [] as { key: string; error: string | null }[], pageErrors: [] as string[], unexpected: [] as string[] };
+  const resourceRequests = new Map<Request, string>();
+  page.on('requestfinished', request => {
+    const key = resourceRequests.get(request);
+    if (key === undefined) return;
+    observations.completedResourceReads.push(key); resourceRequests.delete(request);
+  });
+  page.on('requestfailed', request => {
+    const key = resourceRequests.get(request);
+    if (key === undefined) return;
+    const error = request.failure()?.errorText ?? null;
+    if (error === 'net::ERR_ABORTED') observations.cancelledResourceReads.push(key);
+    else observations.failedResourceReads.push({ key, error });
+    resourceRequests.delete(request);
+  });
   page.on('pageerror', error => observations.pageErrors.push(error.message));
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.routeWebSocket('**/channel*', socket => { observations.channels++; socket.close(); });
@@ -65,7 +79,8 @@ async function openRecords(page: Page, completed: boolean) {
       if (path === `${base}/archive/files/${record.manifest.timeline.fileId}`) return route.fulfill({ status: 200, body: record.timeline, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
       const resourceId = path.startsWith(`${base}/resources/`) && path.endsWith('/content') ? path.split('/').at(-2) : null;
       if (resourceId && bodies.has(resourceId)) {
-        observations.resourceReads.push(`${record.sessionId}/${resourceId}`);
+        const key = `${record.sessionId}/${resourceId}`;
+        observations.resourceReads.push(key); resourceRequests.set(request, key);
         const resource = resources.find(item => item.resourceId === resourceId)!, original = bodies.get(resourceId)!, offset = Number(url.searchParams.get('offset'));
         const bytes = original.subarray(offset, offset + Number(url.searchParams.get('limit')));
         return send({ resourceId, byteLength: resource.byteLength, sha256: resource.sha256, offset: String(offset), data: bytes.toString('base64'), eof: offset + bytes.length === original.length });
@@ -96,6 +111,8 @@ async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof o
     const trigger = host.getByRole('button', { name: `View image: ${resource.name}`, exact: true });
     await trigger.scrollIntoViewIfNeeded();
     await assertDecoded(trigger.getByRole('img', { name: resource.name, exact: true }));
+    const readCount = () => fixture.observations.resourceReads.filter(key => key.endsWith(`/${resource.resourceId}`)).length;
+    const readsBeforePreview = readCount();
     await trigger.click();
     const preview = host.getByRole('dialog', { name: resource.name, exact: true });
     await assertDecoded(preview.getByRole('img', { name: resource.name, exact: true }));
@@ -113,6 +130,7 @@ async function inspectOriginals(page: Page, fixture: Awaited<ReturnType<typeof o
     expect(hash(bytes)).toBe(resource.sha256); expect(bytes).toEqual(fixture.bodies.get(resource.resourceId));
     await page.keyboard.press('Escape');
     await expect(preview).not.toBeVisible(); await expect(trigger).toBeFocused();
+    expect(readCount()).toBe(readsBeforePreview);
     if (fullscreen) await expect(host).toHaveClass(/session-fullscreen/);
   }
   if (fullscreen) { await page.keyboard.press('Escape'); await expect(host).not.toHaveClass(/session-fullscreen/); }
@@ -131,7 +149,11 @@ for (const width of [390, 1360]) test(`${width}px completed and attachment recor
   await expect(page.getByText(fixture.records[1]!.name, { exact: true })).toBeVisible();
   await inspectOriginals(page, fixture, false);
   await page.screenshot({ path: info.outputPath('attachment-record.png') });
-  for (const record of fixture.records) for (const resource of fixture.resources) expect(fixture.observations.resourceReads.filter(key => key === `${record.sessionId}/${resource.resourceId}`)).toHaveLength(1);
+  // Initial layout can move an in-flight thumbnail outside its read margin.
+  // Cancellation is not a completed download; each original still completes once.
+  await expect.poll(() => fixture.observations.completedResourceReads.length + fixture.observations.cancelledResourceReads.length + fixture.observations.failedResourceReads.length).toBe(fixture.observations.resourceReads.length);
+  for (const record of fixture.records) for (const resource of fixture.resources) expect(fixture.observations.completedResourceReads.filter(key => key === `${record.sessionId}/${resource.resourceId}`)).toHaveLength(1);
+  expect(fixture.observations.failedResourceReads).toEqual([]);
   expect(fixture.observations.currentReads).toBe(1); expect(fixture.observations.channels).toBe(0);
   expect(fixture.observations.writes).toEqual([]); expect(fixture.observations.pageErrors).toEqual([]); expect(fixture.observations.unexpected).toEqual([]);
   await info.attach('record-image-evidence', { body: JSON.stringify({ boundary: 'Production App and fixed-record reader with controlled HTTP; real Chrome pixel decoding, Blob preview and original downloads.', width, formats: fixture.resources.map(resource => ({ mediaType: resource.mediaType, sha256: resource.sha256, byteLength: resource.byteLength })), observations: fixture.observations }), contentType: 'application/json' });

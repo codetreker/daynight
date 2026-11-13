@@ -277,7 +277,7 @@ type ImageAssetAdapter = {
 
 saved reader 由真实 Session/record resolver 得到 base，使用公共协议的 `GET {base}/resources/{resourceId}/content?offset&limit` 和内容 revision header，每块至多 524288 原字节，每 Session 最多两个媒体块在途。只接受规范 Base64、连续 offset、相同 resourceId/hash/byteLength、精确 EOF；最终 SHA 对完整原始 bytes 计算，不能对 Base64 或像素计算。不得把 10 MiB 图片塞回旧 8 MiB raw resource reader。HTTP `private, no-store`，不放 Service Worker、共享 HTTP 缓存或 localStorage；草稿模块本地草稿持久化是另一责任。
 
-缓存键为规范 service origin、真实 accountId、owner kind+owner ID、读取表示/legacy 命名空间、resourceId、sha256；live owner 还含当前 Session 的授权身份边界。recordId 不能替成 taskId/botId，resource UUID/hash 不能作为权限凭据。epoch 改变不改变已确认相同 owner 的内容身份。单次读取的请求合并、lease 引用计数和最后使用时间独立于 React 卡片。一个消费者卸载只释放自身 lease，最后一个等待者取消才取消尚未完成的请求。
+缓存键为规范 service origin、真实 accountId、owner kind+owner ID、读取表示/legacy 命名空间、resourceId、sha256；live owner 还含当前 Session 的授权身份边界。recordId 不能替成 taskId/botId，resource UUID/hash 不能作为权限凭据。epoch 改变不改变已确认相同 owner 的内容身份。单次读取的请求合并、lease 引用计数和最后使用时间独立于 React 卡片。一个消费者卸载只释放自身 lease，最后一个等待者取消才取消尚未完成的请求。同一原件的新消费者在旧请求取消后重新进入时，等待旧 reader 和 decoder 真正结束，不能继承旧消费者的取消错误，也不能提前归还旧预算。等待期间新消费者、asset 或 scope 失效立即拒绝；结束后重新核验当前权限并走普通合并与准入，没有存活消费者则不再读取。
 
 浏览器预算采用页面级协调器：压缩原件 Blob 上限 128 MiB/32 项，每个 owner 上限 64 MiB/16 项；在途完整缓冲计入预算，预留成功后才读取。单图仍支持 10 MiB。先释放不显示且无 lease 的 LRU；同一图消息卡片/预览/下载共享 Blob。只预取可视区及上下各一屏的小窗口，隐藏 pane、折叠工具和未加载历史不申请新读取。未使用项最多保留 5 分钟；owner 销毁或撤权立即清理，不等待 TTL。到期只处理无 lease 项，不能删当前预览。
 
