@@ -77,6 +77,9 @@ type GitHubWriteDAO interface {
 	UnseenActive(context.Context, GitHubLease, string, int64, int) ([]int64, bool, error)
 	Pending(context.Context, GitHubLease, time.Time, int) ([]GitHubPendingPR, bool, error)
 	HasPending(context.Context, GitHubLease) (bool, bool, error)
+	// HasDuePending locks Connection and checks the current generation at the
+	// supplied database time without requiring a claim.
+	HasDuePending(context.Context, time.Time) (bool, error)
 	AckPending(context.Context, GitHubLease, int64, string) (bool, error)
 	ReschedulePending(context.Context, GitHubLease, int64, string, time.Time) (bool, error)
 	AckAccessHint(context.Context, GitHubLease, string) (bool, error)
