@@ -1,6 +1,6 @@
 # 完成时间展示设计
 
-[完成时间规格](../spec/daynight-completion-time.md)定义任务、任务链与 Goal 的完成事实、文案和访问要求。Web 使用共享时钟展示 Task、任务链和 Goal 的完成时间，详情提供精确值。Goal 的状态与子任务独立，不以子任务时间代替 Goal 自身时间。
+[完成时间规格](../spec/daynight-completion-time.md)定义任务、任务链与 Goal 的完成事实、文案和访问要求。Web 使用共享时钟展示 Task、任务链和 Goal 的完成时间，详情提供精确值。Goal 显示自身的完成事实，不以子任务时间代替 Goal 自身时间；子任务开始时的状态联动遵守 [Goal 需求](../spec/daynight-goals.md)。
 
 ## 完成事实与时间读取
 
