@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -43,10 +44,12 @@ func TestManagerSettingsAndDisconnect(t *testing.T) {
 
 type proofCoverageRemote struct {
 	mgmtRemote
-	fail string
+	fail  string
+	calls []string
 }
 
 func (r *proofCoverageRemote) ResolveRepository(context.Context, int64, int64) (githubpr.RepositoryObservation, error) {
+	r.calls = append(r.calls, "resolve")
 	if r.fail == "resolve" {
 		return githubpr.RepositoryObservation{}, errors.New("offline")
 	}
@@ -61,6 +64,7 @@ func (r *proofCoverageRemote) ResolveRepository(context.Context, int64, int64) (
 	return githubpr.RepositoryObservation{ID: id, FullName: name}, nil
 }
 func (r *proofCoverageRemote) VerifyAccess(context.Context, int64, string, string) (githubpr.RepositoryObservation, error) {
+	r.calls = append(r.calls, "verify")
 	if r.fail == "verify" {
 		return githubpr.RepositoryObservation{}, errors.New("offline")
 	}
@@ -71,6 +75,7 @@ func (r *proofCoverageRemote) VerifyAccess(context.Context, int64, string, strin
 	return githubpr.RepositoryObservation{ID: id, FullName: "owner/repo"}, nil
 }
 func (r *proofCoverageRemote) DiscoverInstallation(context.Context, string, string) (githubpr.InstallationObservation, error) {
+	r.calls = append(r.calls, "discover")
 	if r.fail == "discover" {
 		return githubpr.InstallationObservation{}, errors.New("offline")
 	}
@@ -80,40 +85,79 @@ func (r *proofCoverageRemote) DiscoverInstallation(context.Context, string, stri
 	}
 	return githubpr.InstallationObservation{ID: id, AccountLogin: "provider"}, nil
 }
+func (r *proofCoverageRemote) FindInstallationByRepository(context.Context, int64) (githubpr.InstallationObservation, error) {
+	r.calls = append(r.calls, "scan")
+	return githubpr.InstallationObservation{}, errors.New("unexpected installation scan")
+}
 func TestProofBoundFailures(t *testing.T) {
-	for _, failure := range []string{"resolve", "identity", "name", "verify", "changed", "discover", "installation"} {
-		t.Run(failure, func(t *testing.T) {
+	for _, tc := range []struct {
+		failure, code string
+		calls         []string
+	}{
+		{"resolve", "github_unavailable", []string{"resolve"}},
+		{"identity", "github_repository_mismatch", []string{"resolve"}},
+		{"name", "github_unavailable", []string{"resolve"}},
+		{"verify", "github_unavailable", []string{"resolve", "verify"}},
+		{"changed", "github_repository_mismatch", []string{"resolve", "verify"}},
+		{"discover", "github_unavailable", []string{"resolve", "verify", "discover"}},
+		{"installation", "github_permission_denied", []string{"resolve", "verify", "discover"}},
+	} {
+		t.Run(tc.failure, func(t *testing.T) {
 			s, _ := mgmtFixture()
-			r := &proofCoverageRemote{fail: failure}
+			r := &proofCoverageRemote{fail: tc.failure}
 			_, err := NewManager(s, r, 13).proofBound(context.Background(), 99, 42)
-			if err == nil {
-				t.Fatal("proof accepted failure")
-			}
-			var m *ManagementError
-			var f *model.Fault
-			if !errors.As(err, &m) && !errors.As(err, &f) {
-				t.Fatalf("unexpected classification %v", err)
+			assertManagementCode(t, err, tc.code)
+			if !reflect.DeepEqual(r.calls, tc.calls) || s.writes != 0 {
+				t.Fatalf("unexpected calls %v, writes %d", r.calls, s.writes)
 			}
 		})
 	}
 }
 
+func assertManagementCode(t *testing.T, err error, want string) {
+	t.Helper()
+	var m *ManagementError
+	var f *model.Fault
+	got := ""
+	if errors.As(err, &m) {
+		got = m.Code
+	} else if errors.As(err, &f) {
+		got = f.Code
+	}
+	if got != want {
+		t.Fatalf("error code %q, want %q; error %v", got, want, err)
+	}
+}
+
+type discoveryGuard struct {
+	*mgmtRemote
+	find int
+}
+
+func (r *discoveryGuard) FindInstallationByRepository(ctx context.Context, id int64) (githubpr.InstallationObservation, error) {
+	r.find++
+	return r.mgmtRemote.FindInstallationByRepository(ctx, id)
+}
+
 func TestDiscoverRejectsInvalidAndUnavailableRequests(t *testing.T) {
 	for _, tc := range []struct {
-		name, id string
-		prepare  func(*mgmtStore, *mgmtRemote)
+		name, id, code string
+		discover       int
+		prepare        func(*mgmtStore, *mgmtRemote)
 	}{
-		{"invalid-id", "invalid", func(*mgmtStore, *mgmtRemote) {}},
-		{"member", mgmtProject, func(s *mgmtStore, _ *mgmtRemote) { s.snapshot.projects.role = model.ProjectMemberRole }},
-		{"not-github", mgmtProject, func(s *mgmtStore, _ *mgmtRemote) { s.snapshot.projects.repo = "https://example.com/o/r" }},
-		{"upstream", mgmtProject, func(_ *mgmtStore, r *mgmtRemote) { r.err = errors.New("offline") }},
+		{"invalid-id", "invalid", "invalid_input", 0, func(*mgmtStore, *mgmtRemote) {}},
+		{"member", mgmtProject, "forbidden", 0, func(s *mgmtStore, _ *mgmtRemote) { s.snapshot.projects.role = model.ProjectMemberRole }},
+		{"not-github", mgmtProject, "github_repository_mismatch", 0, func(s *mgmtStore, _ *mgmtRemote) { s.snapshot.projects.repo = "https://example.com/o/r" }},
+		{"upstream", mgmtProject, "github_unavailable", 1, func(_ *mgmtStore, r *mgmtRemote) { r.err = errors.New("offline") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, r := mgmtFixture()
-			tc.prepare(s, r)
+			s, base := mgmtFixture()
+			tc.prepare(s, base)
+			r := &discoveryGuard{mgmtRemote: base}
 			_, err := NewManager(s, r, 13).Discover(context.Background(), mgmtPrincipal, tc.id)
-			if err == nil || s.writes != 0 {
-				t.Fatalf("discovery refusal: %v", err)
+			assertManagementCode(t, err, tc.code)
+			if s.writes != 0 || r.discover != tc.discover || r.verify != 0 || r.resolve != 0 || r.find != 0 {
+				t.Fatalf("unexpected calls: writes %d discover %d verify %d resolve %d scan %d", s.writes, r.discover, r.verify, r.resolve, r.find)
 			}
 		})
 	}
