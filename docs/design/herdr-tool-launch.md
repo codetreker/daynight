@@ -54,6 +54,8 @@ Windows 在首次输入已提交后的进程复核中，若原生命令行读取
 
 退出与清理包含 helper、loader、native 和已登记后代。helper 退出但 native 仍活着不能证明关闭，也不能授权 mapping 换代或共享 daemon 切换。macOS 的 audit/birth 身份及停止顺序继续由独占生命周期维护；共享路径保留各代进程 journal，缺损或未解释资源阻止新 spawn。启动 intent/receipt 声明的 helper 与 native 都必须有原出生证明；只有 shell 的 journal 不能证明尚未登记的 native 已停止。已严格确认的 retirement 是该代的终态停证，后续 PID 复用不重新开启旧责任。
 
+POSIX 清理中的 foreground PID 只作为待核实候选；前次失败后保留的编号不能直接建立新出生证明。只有准备阶段可以登记首个根进程，清理缺失原 journal 时保持未知。追加后代必须由本轮仍匹配原出生身份的存活父进程，或仍存活的原进程组成员证明归属；候选采集前后都复核该原身份。历史已退出进程的 PID 或进程组编号不参与扩树，已经登记的脱离父链后代仍按各自原 proof 清理。无法关联到原树的 foreground 候选不写入 journal、不发送信号，也不允许调用 `workspace.close`；原清理责任继续保留。
+
 Windows 清理把原进程的 exiting 作为仅允许等待的状态，不把退出码变化或 `STATUS_PROCESS_IS_TERMINATING` 当作已经停止。停止通过同一个原进程句柄核对身份；只有 running 才发送终止，exiting 等待句柄 signaled。即使当前清单不再包含 PID，也须逐个核验原进程证明及 Job 停止；身份替换、读取失败、超时或句柄释放失败都保留清理责任，不发布 retirement。输入与启动前的完整运行身份证明仍保持严格要求。
 
 Windows helper 在 native spawn 前创建唯一命名 Job、配置 kill-on-close 并加入自身，使后续子进程继承同一 Job；全部成功后才持久发布绑定原 owner、nonce、selection 和 helper 的边界记录。helper 的原句柄保留到 OS 处理其自然或异常退出，不在 JavaScript 清理中关闭并误杀自身，从而保留 native 的退出码。Job 成员引用可以保留对象本体，却不能在最后命名句柄关闭后保留名称；按名称查询失败不能解释为空 Job。

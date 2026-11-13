@@ -54,6 +54,15 @@ Windows reopens the original validated manifest's
 Node/helper paths; POSIX also checks the retained shell runtime. An installation
 change cannot replace the helper in an existing generation.
 
+POSIX cleanup treats foreground PIDs as candidates, including IDs retained after
+an earlier failed stop. Only preparation can establish the first root; cleanup
+requires the original journal. New descendants need a live original parent or
+process-group member whose recorded identity matches before and after candidate
+capture. Historical stopped PID and group numbers cannot establish ownership.
+Already enrolled detached descendants retain their individual original proofs.
+An unexplained foreground candidate cannot be enrolled or signaled and blocks
+workspace closure while preserving the original cleanup responsibility.
+
 Windows cleanup distinguishes an exit transition from completed process exit.
 It retains the original process handle while inspecting identity, terminates only
 a running original instance, and waits for an exiting instance to become signaled.
@@ -261,6 +270,12 @@ configuration supplies the owner-bound identity independently of live detection.
 resources would admit new work without accounting for retained native processes.
 Scheduling only independently proven active Web executions preserves their
 progress while leaving global admission and Herdr responsibility unresolved.
+
+**Capture every reported foreground PID and check its new birth before signaling.**
+Cleanup retains candidate IDs across failures. If an uncaptured child exits and
+its PID is reused, the new proof consistently identifies an unrelated process.
+A fresh birth token cannot establish ownership; enrollment must first connect
+the candidate to a still-live original tree or group member.
 
 **Trust parent PID links and verify each descendant only at shutdown.** A birth
 proof can faithfully identify the wrong descendant. Windows retains stale parent

@@ -107,7 +107,7 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     let closingJob: Awaited<ReturnType<typeof retainHerdrJobObserver>> | undefined;
     if (freeze) {
       const receipt = await assertDeclaredLaunchProofs(previous);
-      if (process.platform === "win32" && previous === null) throw new Error("The original Windows cleanup root has no prepared process journal; process ownership remains unknown.");
+      if (previous === null) throw new Error("The original cleanup root has no prepared process journal; process ownership remains unknown.");
       if (process.platform === "win32" && receipt !== null) {
         closingJob = await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, previous!.proofs.find(proof => proof.pid === receipt.helperPid));
         closingJob.captureForeground(pids, operation);
@@ -126,7 +126,7 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
         if (proofs.has(id) || closingJob?.closedMember(id)) continue;
         // Only preparation can supply the first root. Further foreground IDs
         // need the same parent and birth checks as inventory discoveries.
-        if (process.platform === "win32" && proofs.size !== 0) continue;
+        if (proofs.size !== 0) continue;
         // An unknown vanished helper cannot establish that its descendants exited.
         const proof = await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
         proofs.set(id, proof); await save([...proofs.values()]);
@@ -138,22 +138,40 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
       }
       for (let round = 0; round < 1000; round++) {
         operation.check();
-        const rows = (await inventory(environment, operation)).filter(row => !closingJob?.closedMember(row.pid)), ids = new Set(proofs.keys()), groups = new Set([...proofs.values()].map(proof => proof.processGroupId).filter(group => group !== null));
+        const rows = (await inventory(environment, operation)).filter(row => !closingJob?.closedMember(row.pid));
+        const anchors = new Map<number, ProcessProof>();
+        for (const proof of proofs.values()) {
+          operation.check();
+          // Historical PID and group numbers cannot establish ownership after
+          // their original process exits. Existing births still remain our responsibility.
+          const state = process.platform === "win32" ? "running" : await inspectProcessProof(proof);
+          if (state === "replaced") throw new Error("An original Herdr process identity changed during descendant discovery.");
+          if (state === "running") anchors.set(proof.pid, proof);
+        }
+        const ids = new Set(anchors.keys()), groups = new Set([...anchors.values()].map(proof => proof.processGroupId).filter(group => group !== null));
         let changed = true;
         while (changed) { changed = false; for (const row of rows) if (!ids.has(row.pid) && (ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) { ids.add(row.pid); changed = true; } }
-        if (process.platform === "win32" && pids.some(id => !ids.has(id) && !closingJob?.closedMember(id))) throw new Error("The original Windows foreground process has no complete original parent chain; process ownership remains unknown.");
+        if (pids.some(id => !proofs.has(id) && !ids.has(id) && !closingJob?.closedMember(id))) throw new Error("The original foreground process has no complete original parent or process group chain; process ownership remains unknown.");
         const unseen = rows.filter(row => ids.has(row.pid) && !proofs.has(row.pid));
         if (unseen.length === 0) return [...proofs.keys()];
         while (unseen.length > 0) {
           if (proofs.size >= 1000) throw new Error("The original Herdr process tree exceeds its supported ownership bound.");
-          const index = process.platform === "win32" ? unseen.findIndex(row => proofs.has(row.parentPid)) : 0;
-          if (index < 0) throw new Error("The original Windows descendant has no registered parent birth proof; process ownership remains unknown.");
-          const row = unseen.splice(index, 1)[0]!, parent = process.platform === "win32" ? proofs.get(row.parentPid)! : undefined;
-          if (parent !== undefined) await observeWindowsParent(parent, operation);
+          const anchorFor = (row: Inventory): ProcessProof | undefined => anchors.get(row.parentPid) ?? (process.platform === "win32" || row.group === null ? undefined : [...anchors.values()].find(proof => proof.processGroupId === row.group));
+          const index = unseen.findIndex(row => anchorFor(row) !== undefined);
+          if (index < 0) throw new Error("The original descendant has no registered live parent or group birth proof; process ownership remains unknown.");
+          const row = unseen.splice(index, 1)[0]!, anchor = anchorFor(row)!;
+          const observeAnchor = async (): Promise<void> => {
+            operation.check();
+            if (process.platform === "win32") await observeWindowsParent(anchor, operation);
+            else if (await inspectProcessProof(anchor) !== "running") throw new Error("The original descendant parent or group identity changed; process ownership remains unknown.");
+          };
+          await observeAnchor();
           const proof = await captureProcessProof(row.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
           if (proof.parentPid !== row.parentPid || proof.processGroupId !== row.group) throw new Error("The original Herdr descendant changed during identity registration.");
-          if (parent !== undefined) { assertWindowsParentBirth(proof, parent); await observeWindowsParent(parent, operation); }
+          if (process.platform === "win32") assertWindowsParentBirth(proof, anchor);
+          await observeAnchor();
           proofs.set(proof.pid, proof); await save([...proofs.values()]); await freezeOriginal(proof);
+          anchors.set(proof.pid, proof);
         }
       }
       throw new Error("The original Herdr process tree did not stabilize before closure.");

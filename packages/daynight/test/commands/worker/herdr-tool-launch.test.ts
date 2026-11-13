@@ -11,6 +11,7 @@ import { createToolLaunchMapping, posixToolMappingRc } from "../../../src/comman
 import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch-inventory.js";
 import { advanceToolStartRequest, deferToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
+import * as herdrCommands from "../../../src/commands/worker/herdr/command.js";
 import * as metadata from "../../../src/commands/worker/herdr/windows-process-metadata.js";
 import * as processProofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import { readToolManifest } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
@@ -61,9 +62,112 @@ const windowsTree = async (proofs: processProofs.MappingProcessProof[], rows = p
   const query = vi.spyOn(metadata, "captureWindowsProcessInventory").mockResolvedValue(rows.map(row => ({ pid: row.pid, parentPid: row.parentPid, group: null })));
   return { ...f, capture, query, journal: path.join(path.dirname(f.mapping.manifestPath), "processes.json") };
 };
+const posixProof = (pid: number, parentPid: number, group = pid): processProofs.MappingProcessProof => ({ pid, parentPid, processGroupId: group, startedAt: `original-${pid}`, commandHash: "a".repeat(64) });
+const posixTree = async (proofs: processProofs.MappingProcessProof[], rows = proofs) => {
+  const f = await fixture();
+  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
+  const capture = vi.spyOn(processProofs, "captureMappingProcessProof").mockImplementation(async id => {
+    const proof = proofs.find(value => value.pid === id);
+    if (proof === undefined) throw new Error("An unexpected process proof was requested.");
+    return { ...proof };
+  });
+  const inspect = vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
+  const query = vi.spyOn(herdrCommands, "runHerdrCommand").mockImplementation(async command => {
+    expect(command.file).toBe("/bin/ps");
+    return { stdout: rows.map(row => `${row.pid} ${row.parentPid} ${row.processGroupId} S`).join("\n"), stderr: "" };
+  });
+  const signal = vi.spyOn(process, "kill").mockReturnValue(true);
+  return { ...f, capture, inspect, query, signal, journal: path.join(path.dirname(f.mapping.manifestPath), "processes.json") };
+};
 const controlledReceipt = (f: Awaited<ReturnType<typeof fixture>>, helperPid: number, childPid: number) => ({ schemaVersion: 1 as const, owner, nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, logicalArgvDigest: "b".repeat(64), file: f.launch.command.file, prefixArgs: [...f.launch.command.prefixArgs], helperPid, childPid });
 
 describe("owned Herdr launch mapping", () => {
+  it("retains unknown POSIX foreground responsibility across failed cleanup and PID reuse", async () => {
+    const f = await fixture(), root = { ...windowsProof(501, 1, "original-root"), processGroupId: 501 }, child = { ...windowsProof(502, 501, "original-child"), processGroupId: 502 };
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
+    const journal = path.join(path.dirname(f.mapping.manifestPath), "processes.json");
+    await writeFile(journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    let reused = false;
+    const replacement = { ...child, parentPid: 999, processGroupId: 999, startedAt: "replacement" };
+    const capture = vi.spyOn(processProofs, "captureMappingProcessProof").mockImplementation(async pid => {
+      if (pid === root.pid) return root;
+      if (pid !== child.pid) throw new Error("Unexpected process proof");
+      if (!reused) throw new Error("The original child exited before capture");
+      return replacement;
+    });
+    vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
+    vi.spyOn(herdrCommands, "runHerdrCommand").mockImplementation(async command => {
+      expect(command.file).toBe("/bin/ps");
+      const current = reused ? replacement : child;
+      return { stdout: `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${current.pid} ${current.parentPid} ${current.processGroupId} S\n`, stderr: "" };
+    });
+    const signal = vi.spyOn(process, "kill").mockReturnValue(true);
+    const context = { ...owner, cwd: f.directory, agent: "codex" as const }, binding = { session: "w", workspaceId: "owned", paneId: "pane", terminalId: "terminal" };
+    const close = vi.fn(() => { throw new Error("Unsafe workspace closure"); });
+    const rpc: HerdrRpcClient = { request: async method => {
+      if (method === "session.snapshot") return { type: "session_snapshot", snapshot: { workspaces: [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context, "Task") }], panes: [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, agent: "codex" }], agents: [], tabs: [] } };
+      if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: root.pid, foreground_processes: reused ? [] : [{ pid: child.pid }] } };
+      if (method === "workspace.close") return close();
+      throw new Error(`Unexpected cleanup RPC: ${method}`);
+    } };
+    const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: async () => f.mapping });
+    await expect(manager.stopAndClose(context, binding, operation())).rejects.toThrow("original child exited before capture");
+    expect(JSON.parse(await readFile(journal, "utf8")).proofs).toEqual([root]);
+    reused = true; capture.mockClear(); signal.mockClear();
+    // The second pane observation omits the PID; only the retained stop responsibility carries it forward.
+    await expect(manager.stopAndClose(context, binding, operation())).rejects.toThrow(/foreground.*original/);
+    expect(capture.mock.calls.some(([pid]) => pid === child.pid)).toBe(false);
+    expect(signal.mock.calls.some(([pid]) => pid === child.pid)).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(journal, "utf8")).proofs).toEqual([root]);
+    await expect(readFile(path.join(path.dirname(journal), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not invent a POSIX cleanup root from foreground PIDs without a prepared journal", async () => {
+    const root = posixProof(501, 1), f = await posixTree([root]);
+    await expect(f.mapping.captureProcesses([root.pid], operation(), true)).rejects.toThrow(/root.*journal/);
+    expect(f.capture).not.toHaveBeenCalled(); expect(f.signal).not.toHaveBeenCalled();
+    await expect(readFile(f.journal, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["parent", "group"] as const)("does not enroll POSIX descendants using a stopped original %s anchor", async relation => {
+    const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), f = await posixTree([root, child], [child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    f.inspect.mockResolvedValue("stopped");
+    await expect(f.mapping.captureProcesses([root.pid, child.pid], operation(), true)).rejects.toThrow(/foreground.*original/);
+    expect(f.capture).not.toHaveBeenCalled(); expect(f.signal).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it("rejects a registered POSIX root replaced after the initial cleanup check", async () => {
+    const root = posixProof(501, 1), f = await posixTree([root]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    f.inspect.mockImplementation(async () => f.query.mock.calls.length === 0 ? "running" : "replaced");
+    await expect(f.mapping.captureProcesses([root.pid], operation())).rejects.toThrow(/identity changed/);
+    expect(f.capture).not.toHaveBeenCalled(); expect(f.signal).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it.each(["parent", "group"].flatMap(relation => ["before-stopped", "after-stopped", "before-replaced", "after-replaced"].map(transition => ({ relation, transition }))))("rechecks the original POSIX $relation anchor when it is $transition during capture", async ({ relation, transition }) => {
+    const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), f = await posixTree([root, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    let observations = 0;
+    f.inspect.mockImplementation(async proof => {
+      if (proof.pid !== root.pid || f.query.mock.calls.length === 0) return "running";
+      return ++observations >= (transition.startsWith("before") ? 2 : 3) ? (transition.endsWith("stopped") ? "stopped" : "replaced") : "running";
+    });
+    await expect(f.mapping.captureProcesses([root.pid, child.pid], operation())).rejects.toThrow(/identity changed/);
+    expect(f.capture.mock.calls.some(([pid]) => pid === child.pid)).toBe(transition.startsWith("after"));
+    expect(f.signal).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it.each(["parent", "group"] as const)("registers POSIX descendants through a live original %s anchor with reversed inventory", async relation => {
+    const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), grandchild = posixProof(503, child.pid), f = await posixTree([root, child, grandchild], [grandchild, child, root]);
+    expect(await f.mapping.captureProcesses([root.pid, grandchild.pid, child.pid], operation())).toEqual([root.pid, child.pid, grandchild.pid]);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root, child, grandchild]);
+  });
+
   it.each(["exact", "ticks", "executable"] as const)("compares Windows readiness against native metadata without rounding (%s)", async kind => {
     const f = await fixture("win32"), shell = 501, executable = f.mapping.windowsCommand![0]!, startToken = "639300096001234567";
     await writeFile(path.join(path.dirname(f.mapping.manifestPath), "shell-ready.json"), JSON.stringify({ nonce: f.mapping.nonce, pid: shell, executable, startToken }), { mode: 0o600 });
@@ -415,6 +519,7 @@ describe("owned Herdr launch mapping", () => {
     const timer = setTimeout(() => { shell.kill("SIGKILL"); if (descendant !== undefined) process.kill(descendant, "SIGKILL"); }, 8_000);
     try {
       const [data] = await once(shell.stdout!, "data"); descendant = Number(String(data));
+      await f.mapping.captureProcesses([shell.pid!], operation());
       const ids = await f.mapping.captureProcesses([shell.pid!], operation(), true);
       expect(ids).toContain(descendant);
       shell.kill("SIGKILL"); await closed;
@@ -439,6 +544,7 @@ describe("owned Herdr launch mapping", () => {
     const timer = setTimeout(() => { shell.kill("SIGKILL"); if (descendant !== undefined) process.kill(descendant, "SIGKILL"); }, 8_000);
     try {
       const [data] = await once(shell.stdout!, "data"); descendant = Number(String(data));
+      await f.mapping.captureProcesses([shell.pid!], operation());
       await f.mapping.captureProcesses([shell.pid!], operation(), true);
       shell.kill("SIGKILL"); await closed;
       await f.mapping.releaseFrozen();
