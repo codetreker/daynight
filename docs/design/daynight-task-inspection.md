@@ -29,7 +29,7 @@ flowchart LR
   Canvas -->|链外卡片展开| Navigate[ProjectPage 解析所属 Goal 或独立任务]
 ```
 
-ProjectPage 持有当前图资源的 `openChainWitness`、详情资源和列表浏览状态；ChainList 在同一浮层会话中保留最初列表按钮 `opener` 及最初 task witness `openedTask`，用于关闭焦点恢复。当前画布拥有局部检查状态，不与详情ID绑定。图局部Context为节点/边提供呈现状态，受控节点几何和布局输入保持稳定。完整索引拥有H，渐进可见规则拥有S；不能从已淡化或已显示元素反推完整依赖和统计。
+ProjectPage 持有当前图资源的 `openChainWitness`、详情资源和列表浏览状态；ChainList 在同一浮层会话中保留最初列表按钮 `opener` 及最初 task witness `openedTask`，用于关闭焦点恢复。`TaskGraph` 拥有链投影、渐进可见集合、局部检查和根节点 framing，不与详情 ID 绑定。`GraphProjection` 只包含主体、外部节点和真实边，`ChainProjection` 另保留实际 root 和完成数；`layoutGraph` 以共享投影计算几何。`TaskGraphCanvas` 接收控制器生成的节点、几何、检查状态及视口计算，不推导链成员；图局部 Context 为节点和边提供呈现状态。`TaskGraphToolbar` 接收调用方的摘要、文案和动作。`TaskGraphDialogShell` 拥有 portal、浮层、滚动锁、焦点约束、Escape 和全屏，`TaskChainDialog` 提供实际链元数据和内容。完整索引拥有 H，渐进可见规则拥有 S；不能从已淡化或已显示元素反推完整依赖和统计。
 
 ## 完整依赖与可见交互
 

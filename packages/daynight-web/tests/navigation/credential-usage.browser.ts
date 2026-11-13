@@ -55,6 +55,7 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
     if (path === '/api/v2/oauth/grants') return send({ userId, grants: [
       { id: grantId, clientName: 'Long client', clientId, resource, scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: grantUse, revokedAt: null, status: 'active' },
       { id: '00000000-0000-4000-8000-000000000032', clientName: 'Unused client', clientId: 'https://unused.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: null, revokedAt: null, status: 'active' },
+      { id: '00000000-0000-4000-8000-000000000033', clientName: 'Revoked client', clientId: 'https://revoked.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: usedAt, revokedAt: usedAt, status: 'revoked' },
     ] });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -62,18 +63,44 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
 };
 
 for (const locale of ['en', 'zh-CN'] as const) {
-  for (const width of [1440, 390, 320]) {
-    test(`credential metadata remains readable and operable in ${locale} at ${width}px`, async ({ page }) => {
+  for (const width of [1440, 800, 390, 320]) {
+    test(`credential metadata remains readable and operable in ${locale} at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
       await install(page, locale);
       await page.goto('/account');
       await page.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
       const token = page.locator('.token-row').filter({ hasText: tokenName });
       const grant = page.locator('.grant-row').filter({ hasText: clientId });
+      const revoked = page.locator('.owner-grant-row.revoked').filter({ hasText: 'Revoked client' });
       const tokenSummary = token.locator('details > summary');
       const grantSummary = grant.locator('details > summary');
       await expect(tokenSummary).toBeVisible();
       await expect(grantSummary).toBeVisible();
+      await expect(revoked.locator('.actions button')).toHaveCount(0);
+      expect(await revoked.locator('.person-name').evaluate(element => getComputedStyle(element).color)).toBe('rgb(119, 130, 152)');
+      const mainBox = (await grant.locator('.grant-main').boundingBox())!;
+      const factsBox = (await grant.locator('.grant-facts').boundingBox())!;
+      const actionsBox = (await grant.locator('.actions').boundingBox())!;
+      await testInfo.attach('grant-geometry', { contentType: 'application/json', body: JSON.stringify({ width, locale, mainBox, factsBox, actionsBox }) });
+      if (width > 800) {
+        expect(mainBox.x + mainBox.width).toBeLessThanOrEqual(factsBox.x + 1);
+        expect(factsBox.x + factsBox.width).toBeLessThanOrEqual(actionsBox.x + 1);
+        expect(mainBox.y).toBeLessThan(factsBox.y + factsBox.height);
+        expect(factsBox.y).toBeLessThan(mainBox.y + mainBox.height);
+        expect(actionsBox.y).toBeLessThan(mainBox.y + mainBox.height);
+        expect(actionsBox.y + actionsBox.height).toBeGreaterThan(mainBox.y);
+        expect(actionsBox.y).toBeLessThan(factsBox.y + factsBox.height);
+        expect(actionsBox.y + actionsBox.height).toBeGreaterThan(factsBox.y);
+      } else if (width > 400) {
+        expect(mainBox.y + mainBox.height).toBeLessThanOrEqual(factsBox.y + 1);
+        expect(factsBox.x + factsBox.width).toBeLessThanOrEqual(actionsBox.x + 1);
+        expect(actionsBox.y).toBeGreaterThanOrEqual(mainBox.y + mainBox.height - 1);
+        expect(actionsBox.y).toBeLessThan(factsBox.y + factsBox.height);
+        expect(actionsBox.y + actionsBox.height).toBeGreaterThan(factsBox.y);
+      } else {
+        expect(mainBox.y + mainBox.height).toBeLessThanOrEqual(factsBox.y + 1);
+        expect(factsBox.y + factsBox.height).toBeLessThanOrEqual(actionsBox.y + 1);
+      }
       const noUsage = locale === 'en' ? 'Last used: No usage recorded' : '最后使用: 暂无使用记录';
       await expect(page.getByText(noUsage, { exact: true })).toHaveCount(2);
       await expect(tokenSummary).toContainText(locale === 'en' ? 'About 3 min ago' : '约 3 分钟前');
@@ -110,6 +137,11 @@ for (const locale of ['en', 'zh-CN'] as const) {
       for (const content of [grant.locator('.grant-origin'), grant.locator('.grant-facts p').first()]) {
         expect(await content.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
       }
+      await grant.locator('.actions button').click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await page.screenshot({ path: testInfo.outputPath(`credential-layout-${width}-${locale}.png`) });
     });
   }
 }
