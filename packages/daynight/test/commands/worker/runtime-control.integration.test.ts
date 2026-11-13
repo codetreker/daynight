@@ -234,7 +234,9 @@ describe("worker synchronous management runtime ownership", () => {
     expect(f.store.getNativeConfiguration(f.task)).toEqual(configuration);
   });
 
-  it.each((["linux", "win32"] as const).flatMap(platform => (["allowed", "paused", "revoked", "claim", "worker", "worktree", "provider", "mode", "daemon-unknown", "legacy", "no-restore", "migration"] as const).map(gate => ({ platform, gate }))))("restores only the authorized original execution through the real one-shot retry path (%j)", async ({ platform, gate }) => {
+  // Migration uses real Git and durable filesystem operations: a Windows host
+  // cannot implement POSIX directory fsync by changing process.platform.
+  it.each((["linux", "win32"] as const).flatMap(platform => (["allowed", "paused", "revoked", "claim", "worker", "worktree", "provider", "mode", "daemon-unknown", "legacy", "no-restore", "migration"] as const).filter(gate => gate !== "migration" || (platformDescriptor.value === "win32") === (platform === "win32")).map(gate => ({ platform, gate }))))("restores only the authorized original execution through the real one-shot retry path (%j)", async ({ platform, gate }) => {
     const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
     const { submitWorkerControl } = await vi.importActual<typeof import("../../../src/commands/worker/control.js")>("../../../src/commands/worker/control.js");
     const f = await fixture(), launches = recordedHerdrTools(), sessionId = uuid(21), worktreeId = uuid(9);

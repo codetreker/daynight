@@ -19,6 +19,7 @@ import { createHerdrAgentManager, herdrExecutionLabel } from "../../../src/comma
 import type { HerdrRpcClient } from "../../../src/commands/worker/herdr/rpc.js";
 import { loadWindowsJobKernel, type WindowsNamedJobKernel, type WindowsJobProcess } from "../../../src/platform/windows-job.js";
 import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
+import * as windowsProcessProofs from "../../../src/commands/controller/windows-process-proof.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -207,21 +208,34 @@ describe("owned Herdr launch mapping", () => {
     await writeFile(path.join(directory, "launch-intent.json"), JSON.stringify(intent), { mode: 0o600 });
     await writeFile(path.join(directory, "launch-receipt.json"), JSON.stringify(receipt), { mode: 0o600 });
     const alive = new Set([root.pid, helper.pid, child.pid]), job = vi.spyOn(windowsJobs, "inspectControllerJob").mockResolvedValue([]), kill = vi.spyOn(process, "kill").mockImplementation(id => { alive.delete(id); return true; });
+    const stop = vi.spyOn(windowsProcessProofs, "stopWindowsBootstrapProcess").mockRejectedValue(new Error("An invalid journal must not reach process termination."));
     f.query.mockImplementation(async () => [...[root, helper, child].filter(row => alive.has(row.pid)).map(row => ({ pid: row.pid, parentPid: row.parentPid, group: null })), { pid: 999, parentPid: 1, group: null }]);
     await expect(f.mapping.stopProcesses(operation())).rejects.toThrow(/birth|parent/);
-    expect(job).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled();
+    expect(job).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
     expect(await readFile(f.journal, "utf8")).toBe(journal);
   });
 
   it("retains a valid Windows descendant as cleanup responsibility after its original parent exits", async () => {
     const root = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), child = windowsProof(502, root.pid, "2026-11-12T00:00:00.1235000Z"), f = await windowsTree([root, child]);
-    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root, child] }), { mode: 0o600 });
-    vi.mocked(processProofs.inspectMappingProcessForCleanup).mockImplementation(async proof => proof.pid === root.pid ? "stopped" : "running");
+    const journal = JSON.stringify({ nonce: f.mapping.nonce, proofs: [root, child] });
+    await writeFile(f.journal, journal, { mode: 0o600 });
     let running = true;
-    const kill = vi.spyOn(process, "kill").mockImplementation(() => { running = false; return true; });
+    vi.mocked(processProofs.inspectMappingProcessForCleanup).mockImplementation(async proof => {
+      expect(proof).toEqual(proof.pid === root.pid ? root : child);
+      return proof.pid === root.pid || !running ? "stopped" : "running";
+    });
+    const kill = vi.spyOn(process, "kill");
+    const stop = vi.spyOn(windowsProcessProofs, "stopWindowsBootstrapProcess").mockImplementation(async (proof, deadline) => {
+      expect(proof).toEqual(child);
+      expect(deadline).toBeGreaterThan(Date.now()); expect(deadline).toBeLessThanOrEqual(Date.now() + 10_000);
+      running = false;
+    });
     f.query.mockImplementation(async () => running ? [{ pid: child.pid, parentPid: root.pid, group: null }] : [{ pid: 999, parentPid: 1, group: null }]);
     await f.mapping.stopProcesses(operation());
-    expect(kill).toHaveBeenCalledExactlyOnceWith(child.pid, "SIGKILL");
+    expect(stop).toHaveBeenCalledExactlyOnceWith(child, expect.any(Number));
+    expect(kill).not.toHaveBeenCalled();
+    expect(await f.mapping.confirmStopped(operation())).toBe(true);
+    expect(await readFile(f.journal, "utf8")).toBe(journal);
   });
   it.skipIf(process.platform !== "win32")("reads native Windows process inventory independently of shell module paths", async () => {
     const f = await fixture(), native = spawn(process.execPath, ["-e", "process.stdout.write('ready');setInterval(()=>{},1000);"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
@@ -443,6 +457,8 @@ describe("owned Herdr launch mapping", () => {
     const helper = spawn(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args], { stdio: ["pipe", "pipe", "pipe"] });
     const closed = once(helper, "close"), job = `Local\\Daynight-${f.mapping.nonce}`;
     const timer = setTimeout(() => { helper.kill("SIGKILL"); }, 8_000);
+    let failure: unknown, failed = false, retired = false;
+    const cleanupFailures: unknown[] = [];
     try {
       await once(helper.stdout!, "data");
       const receipt = await f.mapping.verifyReceipt(args, operation());
@@ -455,8 +471,19 @@ describe("owned Herdr launch mapping", () => {
       await closed;
       expect(await inspectControllerJob(job)).toEqual([]);
       expect(await f.mapping.confirmStopped(operation())).toBe(true);
-      await f.mapping.retire(operation());
-    } finally { clearTimeout(timer); await inspectControllerJob(job, true); helper.kill("SIGKILL"); await closed; }
+      await f.mapping.retire(operation()); retired = true;
+    } catch (error) { failed = true; failure = error; }
+    finally {
+      try { if (!retired) { await f.mapping.stopProcesses(operation()); await f.mapping.retire(operation()); } }
+      catch (error) { cleanupFailures.push(error); }
+      // Retirement releases the original Job lease. A reused or missing name
+      // cannot authorize another termination or replace that closure proof.
+      try { helper.kill("SIGKILL"); await closed; }
+      catch (error) { cleanupFailures.push(error); }
+      clearTimeout(timer);
+    }
+    if (cleanupFailures.length) throw new AggregateError(failed ? [failure, ...cleanupFailures] : cleanupFailures, "The original Windows Job fixture cleanup failed.", failed ? { cause: failure } : undefined);
+    if (failed) throw failure;
   });
 
   it.skipIf(process.platform !== "win32").each([0, 37, "killed"] as const)("keeps the original Windows Job observable through helper exit (%s) and stops unregistered descendants", async outcome => {
@@ -488,7 +515,7 @@ describe("owned Herdr launch mapping", () => {
     finally {
       try { if (!retired) { await f.mapping.stopProcesses(operation()); await f.mapping.retire(operation()); } }
       catch (error) { cleanupFailures.push(error); }
-      try { await inspectControllerJob(job, true); helper.kill("SIGKILL"); await closed; }
+      try { helper.kill("SIGKILL"); await closed; }
       catch (error) { cleanupFailures.push(error); }
       clearTimeout(timer);
     }

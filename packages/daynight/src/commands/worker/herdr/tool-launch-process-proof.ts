@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { inspectWindowsProcessProof } from "../../controller/windows-process-proof.js";
 
 export type MappingProcessProof = ProcessProof & { readonly birthToken?: string };
 export const validLinuxBirthToken = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]+$/.test(value);
@@ -33,5 +34,7 @@ const inspect = async (proof: MappingProcessProof, cleanup: boolean): Promise<"r
 };
 
 export const inspectMappingProcessProof = (proof: MappingProcessProof): Promise<"running" | "stopped" | "replaced"> => inspect(proof, false);
-/** A registered birth remains cleanup responsibility after its original parent exits. */
-export const inspectMappingProcessForCleanup = (proof: MappingProcessProof): Promise<"running" | "stopped" | "replaced"> => inspect(proof, true);
+/** A registered birth remains cleanup responsibility after its original parent exits.
+ * Windows exit transitions permit waiting only, never input or completion.
+ */
+export const inspectMappingProcessForCleanup = (proof: MappingProcessProof): Promise<"running" | "stopped" | "replaced" | "exiting"> => process.platform === "win32" ? inspectWindowsProcessProof(proof, 5000) : inspect(proof, true);

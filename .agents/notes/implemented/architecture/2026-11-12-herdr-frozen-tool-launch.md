@@ -54,6 +54,15 @@ Windows reopens the original validated manifest's
 Node/helper paths; POSIX also checks the retained shell runtime. An installation
 change cannot replace the helper in an existing generation.
 
+Windows cleanup distinguishes an exit transition from completed process exit.
+It retains the original process handle while inspecting identity, terminates only
+a running original instance, and waits for an exiting instance to become signaled.
+An absent inventory entry alone cannot discharge an original proof. Retirement
+requires every retained process and Job to be stopped; mismatches, timeout and
+handle-release failures keep responsibility. Input and launch verification still
+require complete running identity. This follows the process API's exit-state
+contract without treating a cleanup race as success.
+
 Windows metadata inspection uses the repository's native process inspection
 pattern. One held process handle supplies the root executable path and creation
 time, with liveness checked before and after the observation. The readiness token

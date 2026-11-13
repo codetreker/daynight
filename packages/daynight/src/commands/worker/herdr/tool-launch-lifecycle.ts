@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Operation } from "../../../api/operation.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
+import { stopWindowsBootstrapProcess } from "../../controller/windows-process-proof.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { runHerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
@@ -182,6 +183,14 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     const rows = await inventory(environment, operation), ids = new Set(record.proofs.map(proof => proof.pid)), groups = new Set(record.proofs.map(proof => proof.processGroupId).filter(group => group !== null));
     if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) return false;
     if (job !== null && !job.stopped()) return false;
+    // The root shell is outside the helper Job. Inventory disappearance and
+    // an empty Job do not prove that its original handle has become signaled.
+    if (process.platform === "win32") for (const proof of record.proofs) {
+      operation.check();
+      const state = await inspectProcessProof(proof);
+      if (state === "replaced") throw new Error("An original Herdr process has conflicting birth evidence; complete stop remains unknown.");
+      if (state !== "stopped") return false;
+    }
     await assertDeclaredLaunchProofs(record);
     return true;
   };
@@ -195,9 +204,17 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     const current = new Set((await inventory(environment, operation)).map(row => row.pid));
     for (const proof of [...record.proofs].reverse()) {
       operation.check();
-      if (!current.has(proof.pid)) continue;
+      if (process.platform !== "win32" && !current.has(proof.pid)) continue;
       const state = await inspectProcessProof(proof);
       if (state === "replaced") throw new Error("An original Herdr process has conflicting birth evidence; termination remains unknown.");
+      if (process.platform === "win32") {
+        // Retain and recheck the original handle through termination and wait.
+        // An exiting process cannot supply complete command identity or accept
+        // another signal; only that same handle becoming signaled closes it.
+        if (state !== "stopped") await stopWindowsBootstrapProcess(proof, Date.now() + Math.max(1, Math.floor(operation.remainingMs())));
+        operation.check();
+        continue;
+      }
       if (state === "running") {
         try { process.kill(proof.pid, "SIGKILL"); }
         catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ESRCH") throw cause; }

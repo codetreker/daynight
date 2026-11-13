@@ -1337,7 +1337,7 @@ describe("minimal worker resource reconciliation", () => {
     const frozen = { ...configuration, herdrLaunch };
     const pending = f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, agent: "codex", nativeConfiguration: frozen });
     vi.mocked(f.herdr.ensureInstance).mockRejectedValue(new Error("The original daemon is stopped."));
-    const restore = vi.fn(async (_context: HerdrExecutionContext, _operation: Operation) => ({ reconnected: false, version: "0.9.5", protocol: 22 as const, snapshot: {} }));
+    const restore = vi.fn(async (_context: Pick<HerdrExecutionContext, "claimId" | "worktreeId" | "projectId" | "taskId" | "agent">, _operation: Operation) => ({ reconnected: false, version: "0.9.5", protocol: 22 as const, snapshot: {} }));
     f.herdr.ensureExecution = restore;
     let fresh = structuredClone(granted);
     if (state === "paused") fresh = { ...fresh, properties: { ...fresh.properties, paused: true } };
@@ -1347,7 +1347,7 @@ describe("minimal worker resource reconciliation", () => {
     if (state === "authorized") await f.coordinator.tick();
     else await expect(f.coordinator.tick()).rejects.toThrow("The original daemon is stopped.");
     expect(restore).toHaveBeenCalledTimes(state === "authorized" ? 1 : 0);
-    if (state === "authorized") expect(restore.mock.calls[0]![0]).toMatchObject({ claimId: descriptor.claimId, worktreeId: descriptor.worktreeId, projectId: granted.projectId, taskId: granted.id, cwd: f.bind({ ...descriptor, projectId: granted.projectId, taskId: granted.id }).worktreePath });
+    if (state === "authorized") expect(restore.mock.calls[0]![0]).toEqual({ claimId: descriptor.claimId, worktreeId: descriptor.worktreeId, projectId: granted.projectId, taskId: granted.id, agent: "codex" });
     expect(f.store.getTask(pending)?.status).toBe("pending");
     expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
   });
