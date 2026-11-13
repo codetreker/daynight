@@ -253,7 +253,7 @@ Go 以现有 HTML handler 注册精确 `/setup` GET/HEAD，沿用 `no-store`、4
 
 概览在七项完整项目统计下提供整体进度列表。任务链以普通依赖弱连通分量定义，每个未结束或近期结束的分量占一行；单成员仍按独立任务分类。成员按 ID 去重，代表参与进度，链外前置不计入。列表负责人和状态筛选不改变完整分量或进度范围。
 
-Goal 列表与详情、普通及 Goal 范围任务链、任务链详情和项目概览共用完成进度：分子为 done，分母为 total - cancelled。进度文案以“完成数/分母 已完成”或英文 completed 表达，概览行显示完成数/分母及百分比，所有可访问标签使用相同数字；轨道只有绿色完成段。分母为零时显示 0/0、0% 和空轨道，不推断 Goal 或链的状态。概览百分比向下取整，Goal 和链轨道使用未取整比例。9 done + 3 cancelled 显示 9/9、100%；4 done + 2 todo + 3 cancelled 显示 4/6、66%，轨道约 66.67%。取消成员仍属于真实成员与统计，done 变为 cancelled 后分子和分母均减少。
+Goal 列表、详情与整体图、普通及 Goal 范围任务链、任务链详情和项目概览共用完成进度：分子为 done，分母为 total - cancelled。进度文案以“完成数/分母 已完成”或英文 completed 表达，概览行显示完成数/分母及百分比，所有可访问标签使用相同数字；轨道只有绿色完成段。分母为零时显示 0/0、0% 和空轨道，不推断 Goal 或链的状态。概览百分比向下取整，Goal 和链轨道使用未取整比例。9 done + 3 cancelled 显示 9/9、100%；4 done + 2 todo + 3 cancelled 显示 4/6、66%，轨道约 66.67%。取消成员仍属于真实成员与统计，done 变为 cancelled 后分子和分母均减少。
 
 终态为 done/cancelled。全部 done 的链汇总为 done，全部 cancelled 汇总为 cancelled，混合终态汇总为仅供 UI 使用的 ended；ended 不是 TaskStatus。真实已结束数仍为 done + cancelled，与完成进度独立。尚未全部结束但已有终态或 in_progress 成员的分量为 in_progress，全部普通成员为 proposed 时为 proposed，其余未开始分量为 todo。Goal 自身状态独立于子 Task 的完成进度。
 

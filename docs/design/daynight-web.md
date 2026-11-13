@@ -453,7 +453,7 @@ S ⊆ P，包含代表，当前实际可见 ID
          否则有终态或 in_progress 时 in_progress；全部 proposed 时 proposed；其余 todo
 ```
 
-`completionProgress` 从真实 `{done, cancelled, total}` 纯粹派生展示用 done 和 total（即 `total - cancelled`）；零分母时百分比及轨道宽度均为 0，否则整数百分比向下取整，轨道保留精确比例。Goal 列表、Goal 信息栏、普通和范围链行、链详情及项目概览共用这一投影，本地化只格式化展示值。轨道只有完成色段；Goal 信息栏的实际 total/done/cancelled/unfinished 保持原值，展开空态也按真实 total 判断。投影不产生状态，也不改变真实成员、ended、排序或近期窗口。
+`completionProgress` 从真实 `{done, cancelled, total}` 纯粹派生展示用 done 和 total（即 `total - cancelled`）；零分母时百分比及轨道宽度均为 0，否则整数百分比向下取整，轨道保留精确比例。Goal 列表、Goal 信息栏和整体图、普通和范围链行、链详情及项目概览共用这一投影，本地化只格式化展示值。轨道只有完成色段；Goal 信息栏的实际 total/done/cancelled/unfinished 保持原值，展开空态也按真实 total 判断。投影不产生状态，也不改变真实成员、ended、排序或近期窗口。
 
 `buildGraphIndex` 验证完整快照并保存分量、componentByTask 和成员进度。
 `projectChain` 从普通分量全体成员只补齐直接 external 前置并去重，不沿链外任务

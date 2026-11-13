@@ -1643,6 +1643,11 @@ for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as co
   const scoped = card.locator('[data-chain-id="00000000-0000-4000-8000-000000000300"]');
   await expect(scoped.locator('.root-progress-label')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
   expect(parseFloat(await scoped.locator('.root-progress-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const goalGraph = page.locator(`#task-graph-${goalId}`);
+  await expect(goalGraph.locator('.task-chain-meta')).toContainText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(goalGraph.locator('.task-node')).toHaveCount(9);
+  await goalGraph.locator('.task-chain-close').click();
   await card.locator('.goal-list-title').click();
   const info = page.locator('.goal-information');
   await expect(info.locator('.goal-information-progress')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
@@ -1674,6 +1679,11 @@ for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as co
   await expect(toggle).toBeFocused();
   await expect(card.locator('.goal-list-empty')).toHaveCount(0);
   expect(await progress.locator('i').evaluate(node => node.style.width)).toBe('0%');
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const goalGraph = page.locator(`#task-graph-${goalId}`);
+  await expect(goalGraph.locator('.task-chain-meta')).toContainText(locale === 'en' ? '0/0 completed' : '0/0 已完成');
+  await expect(goalGraph.locator('.task-node')).toHaveCount(3);
+  await goalGraph.locator('.task-chain-close').click();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
