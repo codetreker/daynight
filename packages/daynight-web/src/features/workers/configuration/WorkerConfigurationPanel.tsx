@@ -2,12 +2,15 @@ import { useLayoutEffect, useState, type FormEvent, type ReactNode } from 'react
 import { ApiError } from '../../../api/client';
 import type { WorkerConfigurationResource, WorkerConfigurationOutcome } from '../../../api/worker-configuration';
 import type { WorkerTaskSnapshot } from '../../../api/workers';
+import type { ToolPathTelemetry } from '../../../api/worker-tool-paths';
 import type { ExecutionPlatform } from '../../../api/types';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { WorkerTimestamp } from '../presentation';
 import { ConfigurationFeedback, configurationOutcome, configurationOutcomeState } from './ConfigurationFeedback';
 import { ConfigurationControlModeField } from './ConfigurationControlModeField';
+import { ConfigurationToolPathsFields } from './ConfigurationToolPathsFields';
+import { toolPathSummaryStates } from '../tool-path-presentation';
 import { ConfigurationFieldError, ConfigurationNativeFields, ConfigurationProjectNativeFields } from './ConfigurationNativeFields';
 import { ConfigurationProjectsDialog, ConfigurationRemovalDialog } from './ConfigurationDialogs';
 import { configurationFieldChanges, emptyProjectDraft, parseConfigurationDraft, resolvedProjectNative, type ConfigurationDraft } from './model';
@@ -37,14 +40,17 @@ const applicationStates = (resource: WorkerConfigurationResource): readonly Work
   return states;
 };
 
-const ConfigurationSummary = ({ resource, online }: { readonly resource: WorkerConfigurationResource; readonly online: boolean | null }) => {
+const ConfigurationSummary = ({ resource, online, toolPaths }: { readonly resource: WorkerConfigurationResource; readonly online: boolean | null; readonly toolPaths: ToolPathTelemetry | undefined }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
   const states = applicationStates(resource), failed = states.includes('error');
-  const status = failed ? states.includes('applied') ? m.partialFailure : m.state.error : states.length > 0 && states.every(state => state === 'applied') ? m.allApplied : m.applying;
+  const tools = toolPathSummaryStates(resource, toolPaths, online);
+  const toolsApplied = resource.toolPathsSupported !== true || tools.length > 0 && tools.every(state => state === 'applied');
+  const status = failed ? states.includes('applied') ? m.partialFailure : m.state.error : states.length > 0 && states.every(state => state === 'applied') && toolsApplied && online === true ? m.allApplied : m.applying;
   return <aside className="configuration-aside"><section className="worker-panel summary-panel"><h2 className="worker-panel-heading">{m.summary}</h2><dl className="configuration-summary">
     <div><dt>{m.targetVersion}</dt><dd>{resource.desired?.revision}</dd></div>
     <div><dt>{m.updatedAt}</dt><dd>{resource.desired !== null && <WorkerTimestamp value={resource.desired.updatedAt} />}</dd></div>
     <div><dt>{m.application}</dt><dd aria-live="polite"><span className={`status-chip ${failed ? 'error' : status === m.allApplied ? 'applied' : 'pending'}`}>{status}</span></dd></div>
+    {resource.toolPathsSupported === true && <div><dt>{m.toolPaths.title}</dt><dd>{online !== true ? m.toolPaths.state[online === false ? 'offline' : 'unconfirmed'] : tools.includes('error') ? m.partialFailure : toolsApplied ? m.toolPaths.state.applied : m.toolPaths.state.not_checked}</dd></div>}
     <div><dt>{m.reportedAt}</dt><dd>{resource.observation === null ? m.awaitingReport : <WorkerTimestamp value={resource.observation.reportedAt} />}</dd></div>
     <div><dt>{m.workerConnection}</dt><dd>{online === null ? m.noRecentReport : online ? m.online : m.offline}</dd></div>
   </dl></section><details className="local-settings"><summary>{m.localSettings}</summary><p>{m.localSettingsDetail}</p><ul>{m.localSettingsItems.map(item => <li key={item}>{item}</li>)}</ul></details></aside>;
@@ -57,16 +63,18 @@ const ConfigurationError = ({ error, write, retained }: { readonly error: unknow
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 
-export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnabled, online, tasks, state, confirming }: {
+export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnabled, online, tasks, toolPaths, state, confirming }: {
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
   readonly visible: boolean;
   readonly readEnabled: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];
+  readonly toolPaths?: ToolPathTelemetry;
   readonly state: ReturnType<typeof useWorkerConfiguration>;
   readonly confirming: boolean;
 }) => {
+  const toolPathsEditable = toolPaths !== undefined;
   const choices = useConfigurationProjects(readEnabled);
   const { messages: { workers: { configuration: m }, workers, platform: platformMessages }, format } = useI18n();
   const scope = useTaskCacheScope();
@@ -84,7 +92,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   if (state.unavailable) return shell(<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section>);
   if (resource === null) return shell(<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section>);
   if (resource.desired === null || draft === null) return shell(<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section>);
-  const desired = resource.desired, parsed = parseConfigurationDraft(draft, resource.controlModeSupported === true), changed = configurationFieldChanges(draft, desired.value, parsed.errors);
+  const desired = resource.desired, parsed = parseConfigurationDraft(draft, resource.controlModeSupported === true, { toolPathsSupported: resource.toolPathsSupported === true && toolPathsEditable, ...(platform === undefined ? {} : { platform }) }), changed = configurationFieldChanges(draft, desired.value, parsed.errors);
   const removed = desired.value.projects.filter(project => !draft.projects.some(selected => selected.projectId === project.projectId)).map(project => ({ projectId: project.projectId, name: metadata.get(project.projectId)?.name ?? project.projectId }));
   const removals = resource.observation?.items.filter(item => item.key.kind === 'projectRemoval') ?? [];
   const updateProject = (projectId: string, value: ConfigurationDraft['projects'][number]['native']) => state.setDraft(old => ({ ...old, projects: old.projects.map(project => project.projectId === projectId ? { ...project, native: value } : project) }));
@@ -106,6 +114,8 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
     <div className="configuration-layout"><div className="configuration-main"><form ref={formRef} className={state.dirty ? 'configuration-form is-dirty' : 'configuration-form'} onSubmit={save} noValidate aria-label={m.configuration}>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.settings}</h2></header><div className="panel-body config-grid">{globalFields.map(key => <div className="field" key={key}><label htmlFor={`config-${key}`}>{m[key]}</label><div className="field-unit"><input id={`config-${key}`} type="text" inputMode="numeric" value={draft[key]} disabled={disabled} aria-invalid={parsed.errors[key] !== undefined} aria-describedby={`feedback-${key}${parsed.errors[key] === undefined ? '' : ` config-${key}-error`}`} onChange={event => state.setDraft(old => ({ ...old, [key]: event.target.value }))} />{key === 'pollIntervalMs' && <span>{m.milliseconds}</span>}</div><ConfigurationFieldError issue={parsed.errors[key]} id={`config-${key}-error`} range={{ minimum: key === 'recoveryLimit' ? 0 : 1, maximum: key === 'pollIntervalMs' ? 2_147_483_647 : Number.MAX_SAFE_INTEGER }} /><ConfigurationFeedback id={`feedback-${key}`} resource={resource} kind={key} expected={desired.value[key]} changed={changed[key]} /></div>)}<ConfigurationControlModeField resource={resource} value={draft.agentControlMode} changed={changed.agentControlMode} disabled={disabled} onChange={agentControlMode => state.setDraft(old => ({ ...old, agentControlMode }))} /><div className="field full"><label className="configuration-toggle" htmlFor="config-preferPlatformSpecificTasks"><input id="config-preferPlatformSpecificTasks" type="checkbox" checked={draft.preferPlatformSpecificTasks} disabled={disabled} aria-describedby="platform-preference-detail feedback-preferPlatformSpecificTasks" onChange={event => state.setDraft(old => ({ ...old, preferPlatformSpecificTasks: event.target.checked }))} /><span>{platform === undefined ? m.preferPlatformSpecificTasks : m.preferPlatformTasks({ platform: platformMessages.names[platform] })}</span></label><p className="configuration-toggle-detail" id="platform-preference-detail">{m.platformPreferenceDetail}</p><ConfigurationFeedback id="feedback-preferPlatformSpecificTasks" resource={resource} kind="preferPlatformSpecificTasks" expected={desired.value.preferPlatformSpecificTasks} changed={changed.preferPlatformSpecificTasks} /></div></div></section>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.defaultNative}</h2></header><div className="panel-body config-grid"><ConfigurationNativeFields value={draft.native} onChange={native => state.setDraft(old => ({ ...old, native }))} disabled={disabled} errors={parsed.errors} /><div className="native-summary"><ConfigurationFeedback resource={resource} kind="native" expected={desired.value.native} changed={changed.native} /></div></div></section>
+      <ConfigurationToolPathsFields key={workerId} resource={resource} value={draft.toolPaths} telemetry={toolPaths} online={online} disabled={disabled} changed={changed.toolPaths} errors={parsed.errors}
+        onChange={(tool, choice) => state.setDraft(old => ({ ...old, toolPaths: { codex: null, copilot: null, herdr: null, ...old.toolPaths, [tool]: choice } }))} />
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.projects} <span className="worker-count-badge">{format.number(draft.projects.length)}</span></h2><button className="button" type="button" disabled={disabled} onClick={chooseProjects}>＋ {m.chooseProjects}</button></header>
         {draft.projects.length === 0 ? <div className="empty-projects"><p>{m.noProjects}</p><button className="button" type="button" disabled={disabled} onClick={chooseProjects}>{m.chooseProjects}</button></div> : <div className="project-config-list">{draft.projects.map(project => {
           const meta = metadata.get(project.projectId), name = meta?.name ?? project.projectId;
@@ -125,7 +135,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
         return <article className="project-config-item" key={projectId}><div className="project-config-heading"><div className="project-config-identity"><span className="project-config-icon" aria-hidden="true">▦</span><div><h3>{metadata.get(projectId)?.name ?? projectId}</h3><p>{m.kind.projectRemoval}</p></div></div></div><ConfigurationFeedback resource={resource} kind="projectRemoval" projectId={projectId} expected={true} /></article>;
       })}</div></section>}
       <div className="config-save-slot"><footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || state.publicationPending || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={actionsDisabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' || !state.saveableDirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer></div>
-    </form></div><ConfigurationSummary resource={resource} online={online} /></div>
+    </form></div><ConfigurationSummary resource={resource} online={online} toolPaths={toolPaths} /></div>
     {!confirming && dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
     {!confirming && dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
   </>);

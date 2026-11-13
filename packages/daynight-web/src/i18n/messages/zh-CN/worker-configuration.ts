@@ -1,6 +1,22 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  toolPaths: {
+    title: '工具路径', detail: '填写此 Worker 机器上的绝对文件路径；恢复自动发现请使用对应按钮。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
+    unsupportedService: '升级服务后可配置工具路径。', unsupportedWorker: 'Worker 尚未上报工具路径能力，请升级或等待支持版本上报。',
+    invalidPath: '请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', unsaved: '未保存',
+    target: '已保存目标', reportedTarget: '上报目标', actual: '新执行使用', previousActual: '此前实际选择', reportedActual: '上报的实际选择',
+    candidate: '待应用选择', active: '运行中的选择', noActual: '尚无已验证的实际选择', otherContext: '其他执行模式', details: '查看实际路径',
+    entryPath: '入口路径', executablePath: '执行文件', interpreterPath: '解释器路径', version: '版本', checkedAt: '检查时间', reportedAt: '上报时间',
+    copy: '复制路径', copied: '已复制', copyFailed: '复制失败，请选择完整路径后复制。', copyPath: ({ label }) => `复制${label}`,
+    incomplete: '仍有未展示的运行选择。', unknownCount: '未知', activeCount: ({ count }) => `${count} 组运行选择`,
+    executionCount: ({ count }) => `执行数：${count}`, instanceCount: ({ count }) => `实例数：${count}`, unconfirmedCount: ({ count }) => `停止未确认：${count}`,
+    state: { not_checked: '等待检查', checking: '正在检查', pending: '等待应用', applied: '已应用', error: '应用失败', offline: '离线前记录', unconfirmed: '近期状态未确认' },
+    source: { explicit: '显式指定', path: '自动发现', bundled: '内置运行时' }, configurationSource: { local: '本机配置', cloud: '云端配置' },
+    reason: { active_instance: '共享 Herdr 实例仍有原执行依赖，等待安全切换。', cleanup_unconfirmed: '等待确认进程清理完成。', configuration_unavailable: '当前配置尚无法检查。', report_budget_exceeded: '工具信息超出报告容量，此报告不完整。' },
+    activeError: { legacy_tool_identity_missing: '旧执行未记录工具身份。', cleanup_unknown: '部分进程的停止结果尚未确认。', inventory_unavailable: '尚无法取得完整的运行选择清单。' },
+    error: { not_found: '工具文件不存在。', permission_denied: '没有访问或执行工具的权限。', not_executable: '所选文件不可执行。', invalid_path: '指定路径无效。', unsupported_launcher: '不支持此启动入口或软件包布局。', unrecognized_output: '无法识别工具版本。', incompatible_runtime: '工具不支持所需协议或能力。', probe_timeout: '工具检查超时。', cleanup_unknown: '进程清理结果尚未确认。', tool_identity_changed: '已记录的工具身份发生变化。', legacy_tool_identity_missing: '原执行未记录工具身份。', io_error: '工具文件或存储操作失败。', unavailable: '工具当前不可用。' },
+  },
   leaveQuestion: '离开此 Worker 的配置并放弃未保存的修改吗？',
   leaveExplanation: '未保存的修改将丢失。已提交到服务端的更改不会撤销。',
   overview: '运行监控', configuration: '配置', prompt: '提示词', sections: 'Worker 页面', loading: '正在读取配置', unavailable: 'Worker 配置不可用',

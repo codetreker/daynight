@@ -1,6 +1,22 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  toolPaths: {
+    title: 'Tool paths', detail: 'Use an absolute file path on this Worker. Restore automatic discovery explicitly.', auto: 'Automatic', awaitingImport: 'Waiting for Worker import', reset: 'Restore automatic',
+    unsupportedService: 'Upgrade the service to configure tool paths.', unsupportedWorker: 'This Worker has not reported tool path support. Upgrade it or wait for a supported report.',
+    invalidPath: 'Enter an absolute file path for this Worker, up to 4096 UTF-8 bytes and without control characters.', unsaved: 'Unsaved',
+    target: 'Saved target', reportedTarget: 'Reported target', actual: 'For new executions', previousActual: 'Previous actual selection', reportedActual: 'Reported actual selection',
+    candidate: 'Candidate selection', active: 'Running selections', noActual: 'No verified actual selection', otherContext: 'Other execution mode', details: 'View actual paths',
+    entryPath: 'Entry path', executablePath: 'Executable path', interpreterPath: 'Interpreter path', version: 'Version', checkedAt: 'Checked', reportedAt: 'Reported',
+    copy: 'Copy path', copied: 'Copied', copyFailed: 'Copy failed. Select and copy the full path.', copyPath: ({ label }) => `Copy ${label.toLowerCase()}`,
+    incomplete: 'Some running selections are not shown.', unknownCount: 'Unknown', activeCount: ({ count }) => `${count} running selections`,
+    executionCount: ({ count }) => `Executions: ${count}`, instanceCount: ({ count }) => `Instances: ${count}`, unconfirmedCount: ({ count }) => `Stop unconfirmed: ${count}`,
+    state: { not_checked: 'Not checked', checking: 'Checking', pending: 'Awaiting application', applied: 'Applied', error: 'Application failed', offline: 'Recorded before going offline', unconfirmed: 'Current state unconfirmed' },
+    source: { explicit: 'Explicit path', path: 'Automatic discovery', bundled: 'Bundled runtime' }, configurationSource: { local: 'Local configuration', cloud: 'Cloud configuration' },
+    reason: { active_instance: 'Waiting for running executions to release the shared Herdr instance.', cleanup_unconfirmed: 'Waiting for process cleanup to be confirmed.', configuration_unavailable: 'The current configuration cannot be checked.', report_budget_exceeded: 'Tool information exceeds the report limit; this report is incomplete.' },
+    activeError: { legacy_tool_identity_missing: 'Older executions did not record their tool identity.', cleanup_unknown: 'Some process stops are unconfirmed.', inventory_unavailable: 'The complete running selection inventory is unavailable.' },
+    error: { not_found: 'The tool file was not found.', permission_denied: 'Permission to access or execute the tool was denied.', not_executable: 'The selected file is not executable.', invalid_path: 'The selected path is invalid.', unsupported_launcher: 'This launcher or package layout is unsupported.', unrecognized_output: 'The tool version could not be recognized.', incompatible_runtime: 'The tool does not support the required protocol or capabilities.', probe_timeout: 'The tool check timed out.', cleanup_unknown: 'Process cleanup has not been confirmed.', tool_identity_changed: 'The recorded tool identity has changed.', legacy_tool_identity_missing: 'The original execution did not record its tool identity.', io_error: 'A tool file or storage operation failed.', unavailable: 'The tool is currently unavailable.' },
+  },
   overview: 'Runtime monitoring', configuration: 'Configuration', prompt: 'Prompts', sections: 'Worker sections',
   leaveQuestion: 'Leave this Worker configuration and discard unsaved changes?',
   leaveExplanation: 'Unsaved edits will be lost. Changes already submitted to the service are not undone.',
