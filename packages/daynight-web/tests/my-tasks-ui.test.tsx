@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PersonalTaskItem } from '../src/api/personal-tasks';
 import { MyTasksPage } from '../src/features/my-tasks/MyTasksPage';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -15,6 +15,7 @@ const item = (n: number, overrides: Partial<PersonalTaskItem> = {}): PersonalTas
   observedAt: anchor, receivedMonotonic: performance.now(), ...overrides,
 });
 const state = (items: PersonalTaskItem[], overrides: Record<string, unknown> = {}) => ({ items, totalTaskCount: items.length, totalProjectCount: items.length ? 1 : 0, observedAt: anchor, receivedMonotonic: performance.now(), sessionPartial: false, loading: false, loaded: true, stale: false, error: null, refresh: vi.fn(), ...overrides });
+beforeEach(() => history.replaceState(null, '', '/my-tasks'));
 afterEach(() => vi.useRealTimers());
 
 describe('personal task overview', () => {
@@ -23,7 +24,7 @@ describe('personal task overview', () => {
     const last = items[16]!;
     items[16] = { ...last, task: { ...last.task, goal: { id: id(55), title: 'Release goal' } } };
     mock.value = state(items);
-    const view = renderWithLocale(<MyTasksPage />, { locale: 'en' });
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     expect(screen.getByText('17 in progress')).toBeInTheDocument();
     expect(screen.getByText('Tasks: 17 · Projects: 1')).toBeInTheDocument();
     expect(screen.queryByText('Task 16')).not.toBeInTheDocument();
@@ -33,6 +34,9 @@ describe('personal task overview', () => {
     mock.value = state(items.map(i => ({ ...i })));
     view.rerender(<MyTasksPage />);
     expect(screen.getByText('Task 16')).toBeInTheDocument();
+    mock.value = state(items.slice(0, 3), { totalTaskCount: null, totalProjectCount: null, loading: true, loaded: false });
+    view.rerender(<MyTasksPage />);
+    expect(screen.getByText('Task 0')).toBeInTheDocument();
     mock.value = state([], { totalTaskCount: null, totalProjectCount: null, loaded: false });
     view.rerender(<MyTasksPage />);
     mock.value = state(items);
@@ -49,7 +53,7 @@ describe('personal task overview', () => {
     const b = item(1);
     const c = item(2);
     mock.value = state([a, { ...b, task: { ...b.task, startedAt: null, paused: true }, session: { ...b.session, observation: 'unavailable' } }, { ...c, session: { ...c.session, freshUntil: '2026-11-13T09:59:59Z', indicator: 'working', registration: 'registered' } }]);
-    const view = renderWithLocale(<MyTasksPage />, { locale: 'en' });
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     expect(screen.getByText('No Session')).toBeInTheDocument();
     expect(screen.getByText('Session status unavailable')).toBeInTheDocument();
     expect(screen.getByText('Session observation expired')).toBeInTheDocument();
@@ -64,7 +68,7 @@ describe('personal task overview', () => {
     vi.useFakeTimers();
     const a = item(0);
     mock.value = state([{ ...a, session: { ...a.session, registration: 'registered', indicator: 'working', freshUntil: '2026-11-13T10:00:02Z' } }]);
-    renderWithLocale(<MyTasksPage />, { locale: 'en' });
+    renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     const row = screen.getByText('Task 0').closest('li')!;
     expect(within(row).getByText('Session is working')).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(3_000));
@@ -75,7 +79,7 @@ describe('personal task overview', () => {
   it('does not present partial or failed results as a complete empty list or full count', () => {
     const a = item(0);
     mock.value = state([a], { totalTaskCount: null, totalProjectCount: null, loaded: false, error: new Error('failed') });
-    const view = renderWithLocale(<MyTasksPage />, { locale: 'en' });
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('alert')).toHaveTextContent('Tasks could not be updated');
     expect(screen.getByText('The task list is incomplete; counts cannot be confirmed.')).toBeInTheDocument();
     expect(screen.getByText('1 loaded')).toBeInTheDocument();
@@ -91,7 +95,7 @@ describe('personal task overview', () => {
   it('uses full project IDs to distinguish identical names and spaces', () => {
     const a = item(0); const b = item(1);
     mock.value = state([a, { ...b, project: { ...b.project, id: id(3) } }], { totalProjectCount: 2 });
-    renderWithLocale(<MyTasksPage />, { locale: 'en' });
+    renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('region', { name: `Project · Team · ${id(1)}` })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: `Project · Team · ${id(3)}` })).toBeInTheDocument();
     expect(screen.getByText(id(1))).toBeInTheDocument();
